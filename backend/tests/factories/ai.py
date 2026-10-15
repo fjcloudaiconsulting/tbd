@@ -15,3 +15,6 @@ def ai_on_rows(org_id: int, *features: str) -> list:
         OrgAIConsent(org_id=org_id, consent_version=settings.ai_native_current_consent_version),
         *(OrgFeatureOverride(org_id=org_id, feature_key=f, value=True) for f in features),
     ]
+
+
+AI_ALL = ("ai.agent", "ai.autocategorize", "ai.budget", "ai.forecast", "ai.smart_plan")

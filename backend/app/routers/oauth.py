@@ -26,7 +26,7 @@ from starlette.routing import Match
 
 from app.agent import actions
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
-from app.auth.feature_deps import require_feature, require_meter_open
+from app.auth.feature_deps import assert_ai_on, require_ai_on, require_feature, require_meter_open
 from app.auth.pat import require_interactive_session
 from app.auth.stepup import consume_stepup
 from app.config import settings
@@ -145,7 +145,7 @@ class AuthorizeRequest(BaseModel):
     mfa_code: Optional[str] = None
 
 
-@router.get("/api/v1/oauth/authorize/context", dependencies=_CONSENT_GATES)
+@router.get("/api/v1/oauth/authorize/context", dependencies=[*_CONSENT_GATES, Depends(require_ai_on)])
 async def authorize_context(
     client_id: Optional[str] = None,
     redirect_uri: Optional[str] = None,
@@ -198,6 +198,9 @@ async def authorize_decision(
     response.headers.update(NO_STORE)
     if not body.approve:
         return {"redirect_to": oauth_service.build_redirect(redirect, {"error": "access_denied"}, state)}
+    # TBD-627: only Approve is refused while AI is off (Deny above always
+    # redirects), and before the mint bucket and the step-up proof below.
+    await assert_ai_on(db, actor[2])
     granted = body.granted_scope
     if granted not in oauth_service.OAUTH_SCOPES or AGENT_SCOPE_RANK[granted] > AGENT_SCOPE_RANK[requested]:
         raise _consent_400(ConsentError(

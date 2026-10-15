@@ -14,7 +14,8 @@ before the caller is known):
 2. agent-token auth; every 401 carries ``resource_metadata`` (F-M4, F-O8);
    then every request draws on its token's request bucket;
 3. the entitlement door: ``ai.agent`` on and an ``mcp.calls`` limit other than
-   0, or 403 (F-E4). It admits nothing: only ``tools/call`` counts (F-Q5);
+   0, or 403 (F-E4); then the org's AI switch (current consent), or 403
+   ``ai_off`` (TBD-627). It admits nothing: only ``tools/call`` counts (F-Q5);
 4. the body, capped, then JSON-RPC dispatch.
 
 Hand-rolled rather than the ``mcp`` SDK (the SDK's 2.x needs a pydantic
@@ -48,7 +49,8 @@ from app.database import async_session, engine
 from app import logs
 from app.middleware.request_context import RequestContextMiddleware
 from app.rate_limit import rate_limit_key
-from app.services import feature_service
+from app.services import ai_consent_service, feature_service
+from app.services.ai_consent_service import AI_OFF_MESSAGE
 
 logs.configure()
 logger = logging.getLogger(__name__)
@@ -269,6 +271,16 @@ async def mcp_endpoint(request: Request) -> Response:
             return _rpc_error(403, FORBIDDEN, "feature not enabled", data={
                 "code": "feature_not_enabled", "feature_key": AGENT_FEATURE_KEY, "meter": METER,
             })
+        # TBD-627: the org's AI switch. Its own try (the one above wraps only
+        # the entitlements) and before the protocol-version check, so the
+        # refusal never depends on headers or the body.
+        try:
+            on = await ai_consent_service.has_current_consent(db, org_id=user.org_id)
+        except SQLAlchemyError:
+            logger.exception("mcp.consent_unavailable")
+            return _rpc_error(503, UNAVAILABLE, "temporarily unavailable")
+        if not on:
+            return _rpc_error(403, FORBIDDEN, AI_OFF_MESSAGE, data={"code": "ai_off"})
 
         version = request.headers.get("mcp-protocol-version")
         if version is not None and version not in SUPPORTED_VERSIONS:

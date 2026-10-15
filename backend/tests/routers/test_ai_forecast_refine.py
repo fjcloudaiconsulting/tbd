@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from tests.factories.ai import ai_on_rows
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -135,6 +136,8 @@ async def _seed_org_with_data(
     async with factory() as db:
         org = Organization(name="Acme", billing_cycle_day=1)
         db.add(org)
+        await db.flush()
+        db.add(ai_on_rows(org.id)[0])  # TBD-627: the org's AI switch is on
         await db.commit()
 
         owner = User(
@@ -974,6 +977,10 @@ async def _seed_byok_routing_no_consent(factory, org_id: int) -> None:
     from app.services.ai_credential_crypto import encrypt
 
     async with factory() as db:
+        from app.models.org_ai_consent import OrgAIConsent
+
+        db.add(OrgAIConsent(org_id=org_id, revoked_at=datetime.datetime.utcnow(),
+                            consent_version=app_settings.ai_native_current_consent_version))
         cred = OrgAICredential(
             org_id=org_id, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-test-12345"),
             key_fingerprint="0123456789abcdef", last_four="2345", label="p",

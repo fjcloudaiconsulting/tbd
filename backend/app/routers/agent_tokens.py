@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent import actions
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
-from app.auth.feature_deps import require_feature, require_meter_open
+from app.auth.feature_deps import require_ai_on, require_feature, require_meter_open
 from app.auth.org_permissions import require_org_admin
 from app.auth.pat import require_interactive_session
 from app.auth.stepup import consume_stepup
@@ -119,6 +119,9 @@ async def _audit(
         Depends(require_feature(AGENT_FEATURE_KEY)),
         # TBD-585: a token is useless when the org's mcp.calls limit is 0.
         Depends(require_meter_open(AGENT_FEATURE_KEY, "mcp.calls")),
+        # TBD-627: no token while the org's AI is off. Before the handler, so no
+        # step-up proof is consumed and the mint bucket is not charged.
+        Depends(require_ai_on),
         Depends(load_rate_limit_overrides),
     ],
 )

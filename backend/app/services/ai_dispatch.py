@@ -85,12 +85,14 @@ from app.models.user import Role, User
 from app.services import (
     ai_consent_service,
     ai_routing_service,
+    feature_service,
     notification_service,
     platform_ai,
     platform_ai_settings,
     platform_reserve,
 )
 from app.services.ai_credential_crypto import decrypt
+from app.services.ai_feature_map import AI_FEATURE_MAP
 from app.services.ai_pricing import estimate_cost_cents
 from app.services.ai_token_estimate import (
     _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL,
@@ -287,12 +289,28 @@ class AIPlatformProjectionFailed(AICapExceeded):
 
 
 class PlatformConsentRequired(NativeNotAvailable):
-    """A platform dispatch for an org whose consent is missing, revoked or on
-    an older ToS version. A ``NativeNotAvailable`` so every existing handler
+    """The org's AI switch is off: no current consent (missing, revoked, or on
+    an older ToS version). A ``NativeNotAvailable`` so every existing handler
     still catches it; ``http_for_dispatch_error`` gives it its own 412 code."""
 
     def __init__(self) -> None:
         super().__init__("ai_consent_required")
+
+
+class AIFeatureNotEntitled(NativeNotAvailable):
+    """The org's plan lacks the ``ai.*`` entitlement for this routing feature
+    (or the feature key maps to none: unknown keys fail closed). Same
+    ``NativeNotAvailable`` precedent as ``PlatformConsentRequired``;
+    ``http_for_dispatch_error`` gives it the ``require_feature`` 403 shape."""
+
+    def __init__(self, feature_key: str) -> None:
+        super().__init__("feature_not_enabled")
+        self.feature_key = feature_key
+
+
+# Routing feature name -> its ``ai.*`` entitlement key (fenced against
+# ROUTABLE_FEATURE_NAMES in tests).
+_ENTITLEMENT = {routing: ent for ent, routing, _ in AI_FEATURE_MAP}
 
 
 class AIDispatchFailed(AIDispatchError):
@@ -380,7 +398,13 @@ def http_for_dispatch_error(exc: AIDispatchError) -> HTTPException:
             detail={
                 "code": exc.code,
                 "current_consent_version": settings.ai_native_current_consent_version,
+                "message": ai_consent_service.AI_OFF_MESSAGE,
             },
+        )
+    if isinstance(exc, AIFeatureNotEntitled):
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": exc.code, "feature_key": exc.feature_key},
         )
     if isinstance(exc, NativeNotAvailable):
         return HTTPException(
@@ -1204,15 +1228,6 @@ async def _prepare_platform(
         )
     ):
         raise NativeNotAvailable("platform_model_not_allowed")
-    # Consent is re-checked on every dispatch, AFTER the switch refusals so a
-    # dark platform never asks for consent.
-    try:
-        consented = await ai_consent_service.has_current_consent(db, org_id=org_id)
-    except SQLAlchemyError:
-        await db.rollback()
-        raise AIPlatformUnavailable() from None
-    if not consented:
-        raise PlatformConsentRequired()
     if conf.global_monthly_cents <= 0:
         raise AIPlatformUnavailable()
     ceiling = _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL[model]
@@ -1346,12 +1361,21 @@ async def _prepare_dispatch(
     credential doesn't list the capability we refuse with a 412 so
     the caller routes to a different provider.
 
+    Raises ``AIFeatureNotEntitled`` (no ``ai.*`` entitlement, or an unmapped
+    feature key) and ``PlatformConsentRequired`` (the org's AI is off) before
+    anything else.
+
     PURE with respect to platform spend (the agent-chat pre-flight calls it
     as a dry gate): a platform row is checked (switch, key, allowlist,
     pricing, headroom) but never reserved and never given an adapter.
     ``model_override`` (embed only) is the model the caller will actually
     send; a platform row projects and allowlists THAT model.
     """
+    # TBD-627: the entitlement, fail closed. Routing falls back to the default
+    # row for ANY name, so an unmapped key must be refused here, not there.
+    ent = _ENTITLEMENT.get(feature_key)
+    if ent is None or not await feature_service.has_feature(db, org_id, ent):
+        raise AIFeatureNotEntitled(ent or feature_key)
     routing = await ai_routing_service.get_routing_for_feature(
         db, org_id=org_id, feature_name=feature_key
     )
@@ -1386,6 +1410,12 @@ async def _prepare_dispatch(
             },
         )
         raise NoRoutingConfigured()
+
+    # The org AI master switch (TBD-627), BYOK and platform alike, before the
+    # capability check, ``_prepare_platform``, ``decrypt`` and any reservation.
+    # A DB error here propagates (fail closed).
+    if not await ai_consent_service.has_current_consent(db, org_id=org_id):
+        raise PlatformConsentRequired()
 
     # Capability check — credential must advertise the capability.
     # ``chat`` is always allowed (the original call_llm path doesn't

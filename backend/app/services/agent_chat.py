@@ -341,7 +341,7 @@ async def stream_turn(
                 rd["ledger_id"] = getattr(exc, "ledger_id", None)  # set on a ledgered failure
                 await emit(outcome)
                 break
-            except ai_dispatch.PlatformConsentRequired as exc:
+            except (ai_dispatch.PlatformConsentRequired, ai_dispatch.AIFeatureNotEntitled) as exc:
                 outcome = exc.code  # same code as the pre-flight refusal
                 await emit(outcome)
                 break

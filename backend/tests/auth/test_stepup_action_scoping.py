@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 import app as app_pkg
+from tests.factories.ai import AI_ALL, ai_on_rows
 from app.auth.stepup import STEPUP_ACTIONS, consume_stepup, issue_stepup, stepup_valid
 from app.config import settings as app_settings
 from app.database import get_db
@@ -130,6 +131,7 @@ async def _seed(factory) -> int:
         await s.flush()
         # ai.agent so the agent_token_mint consumer's feature gate admits it.
         s.add(OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True))
+        s.add(ai_on_rows(org.id)[0])  # TBD-627: AI switch on
         u = User(
             org_id=org.id,
             username=f"u{tag}",

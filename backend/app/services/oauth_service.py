@@ -40,7 +40,7 @@ from app.models.api_token import ApiToken
 from app.models.oauth_client import OAuthClient
 from app.models.user import User
 from app.security import token_cutoff
-from app.services import audit_service, feature_service
+from app.services import ai_consent_service, audit_service, feature_service
 from app.services.api_token_service import (
     AGENT_SCOPE_RANK,
     _aware,
@@ -409,13 +409,17 @@ def _tokens(access: str, refresh: str, scope: str) -> dict[str, Any]:
 
 
 async def _owner_ok(db: AsyncSession, owner_id: Optional[int], created_at: datetime) -> None:
-    """Owner present and active, grant newer than the session cutoff, and the
-    org still entitled (``ai.agent`` on, ``mcp.calls`` limit non-zero)."""
+    """Owner present and active, grant newer than the session cutoff, the org
+    still entitled (``ai.agent`` on, ``mcp.calls`` limit non-zero) and its AI
+    switch on."""
     owner = await db.get(User, owner_id) if owner_id is not None else None
     if owner is None or not owner.is_active or _aware(created_at) <= token_cutoff(owner):
         raise _invalid_grant()
     ent = await feature_service.get_entitlements(db, owner.org_id)
     if not ent.features.get(AGENT_FEATURE_KEY) or ent.limits[METER].limit == 0:
+        raise _invalid_grant()
+    # TBD-627: AI off pauses the grant (invalid_grant, row untouched).
+    if not await ai_consent_service.has_current_consent(db, org_id=owner.org_id):
         raise _invalid_grant()
 
 

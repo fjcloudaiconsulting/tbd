@@ -135,9 +135,7 @@ async def test_post_consent_then_get_reflects_latest(session_factory):
         "/api/v1/settings/ai-providers/consent",
         json={
             "consent_version": "ai-tos-2026-05-22",
-            "allow_training": True,
-            "allow_rag": False,
-            "allow_telemetry": True,
+            "allow_training": False,
         },
     )
     assert resp.status_code == 201, resp.text
@@ -145,9 +143,9 @@ async def test_post_consent_then_get_reflects_latest(session_factory):
     get_resp = client.get("/api/v1/settings/ai-providers/consent")
     body = get_resp.json()
     assert body["has_consent"] is True
-    assert body["allow_training"] is True
+    assert body["allow_training"] is False
     assert body["allow_rag"] is False
-    assert body["allow_telemetry"] is True
+    assert body["allow_telemetry"] is False
     assert body["consent_version"] == "ai-tos-2026-05-22"
 
 
@@ -162,9 +160,6 @@ async def test_revocation_row_flips_snapshot(session_factory):
         "/api/v1/settings/ai-providers/consent",
         json={
             "consent_version": "ai-tos-2026-05-22",
-            "allow_training": True,
-            "allow_rag": True,
-            "allow_telemetry": True,
         },
     )
     client.post(
@@ -205,7 +200,6 @@ async def test_consent_post_rejects_outdated_version(
         "/api/v1/settings/ai-providers/consent",
         json={
             "consent_version": "ai-tos-2025-12-01",
-            "allow_training": True,
         },
     )
     assert resp.status_code == 400
@@ -231,7 +225,6 @@ async def test_consent_post_rejects_future_version(
         "/api/v1/settings/ai-providers/consent",
         json={
             "consent_version": "ai-tos-2999-01-01",
-            "allow_training": True,
         },
     )
     assert resp.status_code == 400
@@ -254,7 +247,6 @@ async def test_consent_post_accepts_current_version(
         "/api/v1/settings/ai-providers/consent",
         json={
             "consent_version": "ai-tos-2026-05-22",
-            "allow_training": True,
         },
     )
     assert resp.status_code == 201

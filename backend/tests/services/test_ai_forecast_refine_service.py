@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from tests.factories.ai import AI_ALL, ai_on_rows
 from app.config import settings as app_settings
 from app.models import Base
 from app.models.ai_usage_ledger import AIUsageLedger
@@ -81,6 +82,8 @@ async def seeded_org(db_session: AsyncSession) -> Organization:
     """Minimal org with a user + routing so the service can resolve a model."""
     org = Organization(name="TestOrg", billing_cycle_day=1)
     db_session.add(org)
+    await db_session.flush()
+    db_session.add_all(ai_on_rows(org.id, *AI_ALL))
     await db_session.commit()
 
     user = User(

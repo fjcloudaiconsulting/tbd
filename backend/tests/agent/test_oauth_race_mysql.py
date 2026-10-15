@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from tests.factories.ai import AI_ALL, ai_on_rows
 from app.config import settings
 from app.models.api_token import ApiToken
 from app.models.feature_override import OrgFeatureOverride
@@ -41,6 +42,7 @@ async def _setup(factory, tag):
         s.add(org)
         await s.flush()
         s.add(OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True))
+        s.add(ai_on_rows(org.id)[0])  # TBD-627: AI switch on
         u = User(org_id=org.id, username=f"oa{tag}", email=f"oa{tag}@acme.io",
                  password_hash="x", role=Role.MEMBER, is_active=True)
         s.add(u)

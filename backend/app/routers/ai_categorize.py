@@ -109,11 +109,8 @@ async def categorize_transaction(
                 "feature_key": exc.feature_key,
             },
         )
-    except NativeNotAvailable:
-        raise HTTPException(
-            status_code=status.HTTP_412_PRECONDITION_FAILED,
-            detail={"code": "ai_native_not_available"},
-        )
+    except NativeNotAvailable as exc:
+        raise http_for_dispatch_error(exc)
     except AICapExceeded as exc:
         # Also the platform refusals (plan limit, ceiling, projection):
         # the shared mapper owns each one's 402 detail.

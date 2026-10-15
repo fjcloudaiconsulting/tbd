@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from tests.factories.ai import AI_ALL, ai_on_rows
 from app.config import settings as app_settings
 from app.models import Base
 from app.models.org_ai_credential import AiProvider, OrgAICredential
@@ -95,6 +96,8 @@ def _isolated_touch_factory(monkeypatch, session_factory):
 async def org(db: AsyncSession) -> Organization:
     org = Organization(name="Acme", billing_cycle_day=1)
     db.add(org)
+    await db.flush()
+    db.add_all(ai_on_rows(org.id, *AI_ALL))
     await db.commit()
     return org
 

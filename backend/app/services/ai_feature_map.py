@@ -11,6 +11,7 @@ AI_FEATURE_MAP: tuple[tuple[str, str, str], ...] = (
     ("ai.autocategorize", "categorize_transactions", "categorize"),
     ("ai.forecast", "smart_forecast", "forecast"),
     ("ai.budget", "smart_budget", "budget"),
+    ("ai.smart_plan", "smart_plan", "plan"),
     # TBD-559: one key for both agent surfaces (in-app assistant and MCP).
     ("ai.agent", "chat", "agent"),
 )

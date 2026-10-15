@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from tests.factories.ai import ai_on_rows
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -143,6 +144,8 @@ async def _seed(
         db.add(plan)
         org = Organization(name="Acme", billing_cycle_day=1)
         db.add(org)
+        await db.flush()
+        db.add(ai_on_rows(org.id)[0])  # TBD-627: the org's AI switch is on
         await db.commit()
         sub = Subscription(
             org_id=org.id,

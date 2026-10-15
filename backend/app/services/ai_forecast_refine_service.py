@@ -54,7 +54,7 @@ from app.schemas.ai_forecast import (
     RefinedForecastProvenance,
     RefinedForecastResponse,
 )
-from app.services import ai_dispatch, ai_routing_service, forecast_service
+from app.services import ai_consent_service, ai_dispatch, ai_routing_service, forecast_service
 from app.services.ai_forecast_refine_token_estimate import (
     Scope,
     _duration_band,
@@ -628,6 +628,9 @@ async def refine_forecast(
             baseline=baseline,
             fallback_reason="ai_capability_not_supported",
         )
+    except (ai_dispatch.PlatformConsentRequired, ai_dispatch.AIFeatureNotEntitled) as exc:
+        # The org's AI is off (or not entitled): serve the baseline, say why.
+        return _baseline_response(baseline=baseline, fallback_reason=exc.code)
     except NativeNotAvailable:
         # Provider doesn't natively support structured output. Per
         # ai_dispatch this is re-raised directly (NOT wrapped); the
@@ -818,6 +821,17 @@ async def estimate_refine(
             duration_band=_duration_band(scope),
             can_proceed=False,
             reason="ai_routing_not_configured",
+        )
+
+    # TBD-627: the org's AI is off, so never offer Confirm.
+    if not await ai_consent_service.has_current_consent(db, org_id=org_id):
+        return ForecastRefineEstimate(
+            est_prompt_tokens=est_prompt,
+            est_output_tokens=est_out,
+            est_cost_cents=0,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="ai_consent_required",
         )
 
     cost = estimate_cost_cents(

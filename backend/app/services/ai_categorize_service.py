@@ -15,8 +15,8 @@ for category suggestions. The boundary contract:
    structural validator only checks the required keys. Hence the
    defense-in-depth slug check on the way out (step 4).
 3. ``call_llm_structured`` handles routing, caps, the ledger row, and
-   the retry budget. Adapter selection, BYOK decryption, and feature
-   gating happen there.
+   the retry budget. Adapter selection and BYOK decryption happen there,
+   after its own ``ai.*`` entitlement and org AI-switch checks.
 4. We translate ``slug -> category_id`` on the way out. If the LLM
    returns a slug we don't recognise (because the provider didn't
    honor the enum, or our schema check didn't catch it) we refuse

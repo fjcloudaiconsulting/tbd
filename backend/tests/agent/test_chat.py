@@ -24,6 +24,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from tests.factories.ai import ai_on_rows
 from app import state_db
 from app.agent import registry
 from app.services import agent_chat as chat
@@ -144,6 +145,7 @@ async def w(factory):
         db.add_all([
             budget, cred, BillingPeriod(org_id=org.id, start_date=P_START),
             OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True),
+            *ai_on_rows(org.id)[:1],  # TBD-627: the org's AI switch is on
             Account(org_id=org.id, name="Main", account_type_id=at.id, balance=Decimal("10.00"),
                     currency="EUR", is_default=True),
         ])

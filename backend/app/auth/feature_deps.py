@@ -16,7 +16,7 @@ from app.auth.feature_catalog import ALL_FEATURE_KEYS, ALL_METER_KEYS, FeatureKe
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
-from app.services import feature_service
+from app.services import ai_consent_service, feature_service
 from app.services.feature_service import UnknownFeatureKey
 
 
@@ -81,3 +81,18 @@ def require_meter_open(key: FeatureKey, meter: str) -> Callable:
             )
 
     return _dep
+
+
+async def assert_ai_on(db: AsyncSession, org_id: int) -> None:
+    """403 ``ai_off`` unless the org's AI master switch is on (TBD-627)."""
+    if not await ai_consent_service.has_current_consent(db, org_id=org_id):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "ai_off", "message": ai_consent_service.AI_OFF_MESSAGE},
+        )
+
+
+async def require_ai_on(
+    db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
+) -> None:
+    await assert_ai_on(db, user.org_id)

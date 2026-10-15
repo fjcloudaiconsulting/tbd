@@ -1330,11 +1330,11 @@ async def test_f10_refresh_and_code_exchange_refuse_while_ai_is_off_and_resume_a
     Wrong implementations: no check; revoking the grant on AI off."""
     g = await _connected(factory, client)
     g2 = await _grant(factory, client, uid=g["uid"], cid=g["cid"])
-    before = await _one(factory, g["uid"])
+    before = (await _rows(factory, g["uid"]))[0]
     await _ai_off(factory, g["org"])
     assert _err(await _refresh(client, g["refresh_token"])) == (400, "invalid_grant")
     assert _err(await _exchange(client, g2)) == (400, "invalid_grant")
-    after = await _one(factory, g["uid"])
+    after = (await _rows(factory, g["uid"]))[0]
     assert (after.revoked_at, after.refresh_hash) == (None, before.refresh_hash)
     await _ai_on(factory, g["org"])
     r = await _refresh(client, g["refresh_token"])
