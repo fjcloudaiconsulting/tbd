@@ -355,6 +355,12 @@ async def test_db_enabled_survives_a_sync_that_changes_prices(sf, audits):
     assert r["enabled"] is True and r["zdr_prompt_micros_per_mtok"] == 300_000
 
 
+async def test_db_disabled_row_stays_disabled_when_present_and_after_returning(sf, audits):
+    await seed(sf, row("a/m", enabled=False))
+    assert await run_platform_ai_catalog_sync(sf, fetch=fake(*feeds("a/m")), now=NOW) == "synced"
+    assert (await snapshot(sf))["a/m"]["enabled"] is False
+
+
 async def test_db_refused_plan_writes_nothing_and_audits_once(sf, audits):
     await seed(sf, *[row(f"a/{i}", enabled=True, zp=1, zc=1) for i in range(3)])
     before = await snapshot(sf)
@@ -396,8 +402,8 @@ BAD_FETCHES = {
     "links_next": (_mod(links={"next": "https://openrouter.ai/api/v1/models?page=2"}), ok_zdr()),
     "models_empty": (_mod(data=[]), ok_zdr()),
     "zdr_empty": (ok_models(), httpx.Response(200, json={"data": []})),
-    "http_500": (httpx.Response(500, text="x"), ok_zdr()),
-    "zdr_500": (ok_models(), httpx.Response(500, text="x")),
+    "http_500": (httpx.Response(500, json=fx("models.json")), ok_zdr()),
+    "zdr_500": (ok_models(), httpx.Response(500, json=fx("zdr.json"))),
     "not_json": (httpx.Response(200, text="<html>"), ok_zdr()),
     "connect_error": (httpx.ConnectError("boom"), ok_zdr()),
 }
