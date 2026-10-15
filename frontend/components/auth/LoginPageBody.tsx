@@ -21,6 +21,8 @@ type ResendState = "idle" | "sending" | "sent" | "failed";
 const REASON_COPY: Record<string, string> = {
   expired: "Your session expired. Please sign in to continue.",
   logout: "You've been signed out.",
+  account_changed:
+    "Another account signed in on this browser, so this page was signed out to keep the two accounts apart. Signing in here signs the other account out.",
 };
 
 /**

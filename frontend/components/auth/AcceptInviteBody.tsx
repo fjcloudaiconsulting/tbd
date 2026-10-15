@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import Spinner from "@/components/ui/Spinner";
-import { ApiResponseError, apiFetch, setAccessToken } from "@/lib/api";
+import { ApiResponseError, apiFetch, signInWithAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 
@@ -79,7 +79,7 @@ export default function AcceptInviteBody() {
           body: JSON.stringify({ token, username, password }),
         },
       );
-      setAccessToken(data.access_token);
+      signInWithAccessToken(data.access_token);
       await refreshMe();
       router.push("/dashboard");
     } catch (err) {

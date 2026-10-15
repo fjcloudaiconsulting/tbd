@@ -150,10 +150,38 @@ let refreshAwaiters = 0;
 // terminal refresh share the same probe.
 let mePromise: Promise<boolean> | null = null;
 
-export function setAccessToken(token: string | null) {
+// TBD-623: the tab's identity, pinned when it signs in. The refresh cookie is
+// shared by every tab of the browser, so another tab signing in as someone else
+// makes THIS tab's next /refresh return that other user's token. null = not armed.
+let pinnedIdentity: string | null = null;
+
+/**
+ * Guarded default. Returns false (storing nothing, changing nothing) when the
+ * token belongs to a different (sub, org_id) than the pinned identity. null
+ * always clears and never touches the pin: the pin survives a drop on purpose,
+ * so a stray post-drop refresh returning the other user is still refused.
+ * Check and assign are synchronous (no await between).
+ */
+export function setAccessToken(token: string | null): boolean {
+  if (token !== null) {
+    const id = identityOf(token);
+    if (pinnedIdentity === null) pinnedIdentity = id;
+    else if (id !== pinnedIdentity) return false;
+  }
   accessToken = token;
-  accessTokenExp = token ? decodeJwtExp(token) : null;
+  accessTokenExp = token ? decodeJwtClaims(token).exp : null;
   scheduleProactiveRefresh();
+  return true;
+}
+
+/**
+ * The ONLY re-arm of the pin: a deliberate sign-in (login, MFA, Google, invite
+ * accept). Never call it from a refresh-like path; tests/convention/
+ * sign-in-rearm.test.ts fences the caller set.
+ */
+export function signInWithAccessToken(token: string | null): void {
+  pinnedIdentity = null;
+  setAccessToken(token);
 }
 
 export function getAccessToken(): string | null {
@@ -161,27 +189,48 @@ export function getAccessToken(): string | null {
 }
 
 /**
- * Decode the ``exp`` claim from a JWT WITHOUT verifying the
- * signature (verification is the backend's job). Returns the exp
- * as unix seconds, or ``null`` if the token isn't a parseable JWT
- * or has no numeric ``exp`` claim. The "no exp" fallback is
- * critical for the proactive-refresh design: a token whose exp is
- * unknown drives the reactive 401 path as today, not a silent
+ * Decode the ``exp``, ``sub`` and ``org_id`` claims from a JWT WITHOUT
+ * verifying the signature (verification is the backend's job). Every field is
+ * ``null`` when the token isn't a parseable JWT or the claim is missing. The
+ * "no exp" fallback is critical for the proactive-refresh design: a token whose
+ * exp is unknown drives the reactive 401 path as today, not a silent
  * forever-stale session.
  */
-function decodeJwtExp(token: string): number | null {
+function decodeJwtClaims(token: string): {
+  exp: number | null;
+  sub: string | null;
+  org_id: string | null;
+} {
+  const none = { exp: null, sub: null, org_id: null };
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) return none;
     // JWT payload is base64url-encoded. Normalize to standard base64
     // then pad to a length divisible by 4 so ``atob`` accepts it.
     let payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     while (payloadB64.length % 4 !== 0) payloadB64 += "=";
-    const payload = JSON.parse(atob(payloadB64)) as { exp?: unknown };
-    return typeof payload.exp === "number" ? payload.exp : null;
+    const p = JSON.parse(atob(payloadB64)) as {
+      exp?: unknown;
+      sub?: unknown;
+      org_id?: unknown;
+    };
+    const str = (v: unknown) =>
+      typeof v === "string" || typeof v === "number" ? String(v) : null;
+    return {
+      exp: typeof p.exp === "number" ? p.exp : null,
+      sub: str(p.sub),
+      org_id: str(p.org_id),
+    };
   } catch {
-    return null;
+    return none;
   }
+}
+
+// "|" for an undecodable or claim-less token, so opaque fixtures match each
+// other while a real pinned identity such as "5|7" never matches "|".
+function identityOf(token: string): string {
+  const { sub, org_id } = decodeJwtClaims(token);
+  return `${sub ?? ""}|${org_id ?? ""}`;
 }
 
 /**
@@ -260,7 +309,7 @@ function scheduleProactiveRefresh(): void {
  * the reactive 401 handler so a 401-driven refresh in flight and a
  * proactive one never run in parallel.
  *
- * Failure semantics — DELIBERATELY non-destructive:
+ * Failure semantics — non-destructive except for an identity mismatch:
  *   - ok: ``accessToken`` is updated by ``refreshAccessTokenOnce``,
  *     ``setAccessToken`` re-schedules the next timer.
  *   - terminal (401/403): silent return. The next normal apiFetch
@@ -270,8 +319,12 @@ function scheduleProactiveRefresh(): void {
  *   - transient (timeout/5xx/network): silent return. State is
  *     preserved; the reactive 401 path recovers on next failure.
  *
- * This way "should clear auth only through the already established
- * terminal path" holds — proactive refresh is purely additive.
+ * The one exception (TBD-623): a refresh that returns a different
+ * (sub, org_id) than the pinned identity is refused INSIDE
+ * ``refreshAccessTokenOnce``, which clears the token and dispatches
+ * ``auth:unauthenticated`` with ``reason: "account_changed"``. That is
+ * positive evidence another account took over the shared cookie, not an
+ * ambiguous 401, so it does not wait for the reactive path.
  */
 export async function ensureFreshAccessToken(): Promise<void> {
   if (!accessToken || !isAccessTokenNearExpiry()) return;
@@ -426,7 +479,18 @@ async function refreshAccessTokenOnce(attempt: number): Promise<RefreshResult> {
   // Route through setAccessToken so the exp decode + next-refresh
   // timer reschedule fire — without this the proactive timer would
   // keep firing off the OLD token's exp after a successful refresh.
-  setAccessToken(data.access_token);
+  if (!setAccessToken(data.access_token)) {
+    // TBD-623: the shared refresh cookie now belongs to a DIFFERENT user. This
+    // is positive evidence, not an ambiguous 401, so drop the session here
+    // (covers the proactive path too) and never hand the token to a caller:
+    // apiFetch retries with the returned token, not the module variable.
+    const hadToken = accessToken !== null;
+    setAccessToken(null);
+    if (hadToken) {
+      dispatchAuthEvent("auth:unauthenticated", { reason: "account_changed" });
+    }
+    return emit({ ok: false, kind: "terminal", status: 401 });
+  }
   return emit({ ok: true, accessToken: data.access_token });
 }
 
