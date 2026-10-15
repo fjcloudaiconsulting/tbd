@@ -65,6 +65,7 @@ from app.models.rate_limit_override import RateLimitOverride  # noqa: F401
 from app.models.rate_limit import RateLimit  # noqa: F401
 from app.models.session_state import AuthSessionFamily, AuthSessionMember, Lease, UsedToken  # noqa: F401
 from app.models.platform_ai_spend import PlatformAISpend  # noqa: F401
+from app.models.platform_ai_model import PlatformAIModel  # noqa: F401
 from app.models.email_broadcast import (  # noqa: F401
     BroadcastStatus,
     RecipientStatus,
@@ -155,4 +156,5 @@ __all__ = [
     "Lease",
     "UsedToken",
     "PlatformAISpend",
+    "PlatformAIModel",
 ]
