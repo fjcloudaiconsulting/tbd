@@ -26,6 +26,10 @@ def _id(n: int = 64):
     return sa.String(n).with_variant(mysql.VARCHAR(n, charset="ascii", collation="ascii_bin"), "mysql")
 
 
+def _ts():
+    return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
+
+
 def upgrade() -> None:
     op.create_table(
         "platform_ai_models",
@@ -39,7 +43,7 @@ def upgrade() -> None:
         sa.Column("zdr_prompt_micros_per_mtok", sa.BigInteger(), nullable=True),
         sa.Column("zdr_completion_micros_per_mtok", sa.BigInteger(), nullable=True),
         sa.Column("expires_at", sa.Date(), nullable=True),
-        sa.Column("last_seen_at", sa.DateTime(), nullable=False),
+        sa.Column("last_seen_at", _ts(), nullable=False),
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
 

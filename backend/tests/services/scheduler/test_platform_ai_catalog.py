@@ -112,6 +112,7 @@ def fx(name):
     ("0.0000000000615", 62),
     ("-1", None), ("NaN", None), ("Infinity", None), ("abc", None), (None, None),
     ("0.011", None), ([], None),
+    ("1e999999", None), ("1e-999999", 1), ("9" * 400, None),
 ])
 def test_parse_price(raw, want):
     assert parse_price(raw) == want
@@ -169,6 +170,11 @@ def test_no_zdr_model_has_null_ceilings_never_offerable_and_disables():
     assert offerable(r, NAIVE_NOW) is False
 
 
+def test_offerable_requires_both_zdr_ceilings():
+    assert offerable(row("a/g", enabled=True, zp=None), NAIVE_NOW) is False
+    assert offerable(row("a/g", enabled=True, zc=None), NAIVE_NOW) is False
+
+
 def test_offerable_requires_everything():
     good = row("a/g", enabled=True)
     assert offerable(good, NAIVE_NOW) is True
@@ -205,7 +211,7 @@ def test_discount_is_grossed_up():
     assert ceil("0.000000075", 0.75) == 300_000
     assert ceil("0.00000075", 0.5) == 1_500_000
     assert ceil("0.0000001", 0.5, [{"min_prompt_tokens": 1, "prompt": "0.0000003", "completion": "0.000001"}]) == 600_000
-    for bad in (1, 1.2, -0.1, "NaN", "x"):
+    for bad in (1, 1.2, -0.1, "NaN", "x", float("nan"), float("inf")):
         assert ceil("0.0000001", bad) is None
     assert ceil("0.000000465", 0.07) == 500_000  # float division says 500_001
     assert ceil("0.0000001", 0.99999999999999) is None  # cap applies AFTER the gross-up
@@ -277,6 +283,37 @@ def test_ceiling_drop_alerts_and_applies_rise_and_disabled_do_not():
     d = p.ceiling_drops[0]
     assert d["old"] == (200_000, 500_000) and d["new"] == (100_000, 500_000)
     assert p.upserts["a/en"]["zdr_prompt_micros_per_mtok"] == 100_000
+
+
+def test_hostile_items_are_skipped_or_null_never_underpriced():
+    big = 2**31
+    ms = [model("a/bigctx", ctx=big), model("a/badprice"), model("a/sur", name="x\ud800y"),
+          model("a/nul\x00"), model("a/nl\n"), model("a/ok")]
+    ms[1]["pricing"] = "free"
+    zf = zfeed("junk", None, *[ep(m["id"]) for m in ms])
+    p = plan([], mfeed(*ms), zf)
+    assert set(p.upserts) == {"a/ok"}
+
+
+def test_oversized_endpoint_limits_are_ignored_for_the_min():
+    zf = zfeed(ep("a/m", mct=2**31, ctx=2**31), ep("a/m", mct=4096, ctx=50_000))
+    u = plan([], mfeed(model("a/m")), zf).upserts["a/m"]
+    assert (u["max_completion_tokens"], u["context_length"]) == (4096, 50_000)
+    only = plan([], mfeed(model("a/m", ctx=7)), zfeed(ep("a/m", mct=2**31, ctx=2**31))).upserts["a/m"]
+    assert (only["max_completion_tokens"], only["context_length"]) == (None, 7)
+
+
+@pytest.mark.parametrize("pricing", [
+    "free", ["x"],
+    {"prompt": "0.0000001", "completion": "0.0000005", "overrides": "x"},
+    {"prompt": "0.0000001", "completion": "0.0000005", "overrides": ["x"]},
+    {"prompt": "0.0000001", "completion": "0.0000005", "overrides": {"prompt": "9"}},
+])
+def test_malformed_endpoint_pricing_gives_null_ceiling_not_base_price(pricing):
+    e = ep("a/m")
+    e["pricing"] = pricing
+    u = plan([], mfeed(model("a/m")), zfeed(e)).upserts["a/m"]
+    assert u["zdr_prompt_micros_per_mtok"] is None and u["zdr_completion_micros_per_mtok"] is None
 
 
 # ── DB-backed ────────────────────────────────────────────────────────────────
@@ -361,6 +398,17 @@ async def test_db_disabled_row_stays_disabled_when_present_and_after_returning(s
     assert (await snapshot(sf))["a/m"]["enabled"] is False
 
 
+async def test_db_enabled_row_that_vanishes_and_returns_stays_disabled(sf, audits):
+    await seed(sf, *[row(f"a/{i}", enabled=True) for i in range(3)])
+    assert await run_platform_ai_catalog_sync(sf, fetch=fake(*feeds("a/1", "a/2")), now=NOW) == "synced"
+    assert (await snapshot(sf))["a/0"]["enabled"] is False
+    from tests.conftest import expire_lease
+    expire_lease("platform_ai_catalog:attempt")
+    later = NOW + datetime.timedelta(days=2)
+    assert await run_platform_ai_catalog_sync(sf, fetch=fake(*feeds("a/0", "a/1", "a/2")), now=later) == "synced"
+    assert (await snapshot(sf))["a/0"]["enabled"] is False
+
+
 async def test_db_refused_plan_writes_nothing_and_audits_once(sf, audits):
     await seed(sf, *[row(f"a/{i}", enabled=True, zp=1, zc=1) for i in range(3)])
     before = await snapshot(sf)
@@ -400,7 +448,7 @@ def _mod(**over):
 BAD_FETCHES = {
     "total_count_mismatch": (_mod(total_count=99), ok_zdr()),
     "links_next": (_mod(links={"next": "https://openrouter.ai/api/v1/models?page=2"}), ok_zdr()),
-    "models_empty": (_mod(data=[]), ok_zdr()),
+    "models_empty": (_mod(data=[], total_count=0), ok_zdr()),
     "zdr_empty": (ok_models(), httpx.Response(200, json={"data": []})),
     "http_500": (httpx.Response(500, json=fx("models.json")), ok_zdr()),
     "zdr_500": (ok_models(), httpx.Response(500, json=fx("zdr.json"))),
@@ -451,8 +499,21 @@ async def test_fetch_urls_no_auth_and_overall_deadline(monkeypatch):
         await fetch_feeds(transport=httpx.MockTransport(slow))
 
 
-async def test_fetch_feeds_error_type_is_exported():
-    assert issubclass(CatalogFeedError, Exception)
+async def test_fetch_caps_the_body_and_ignores_proxy_env(monkeypatch):
+    monkeypatch.setattr(job, "MAX_BODY_BYTES", 100)
+    with pytest.raises(CatalogFeedError):
+        await fetch_feeds(transport=transport(ok_models(), ok_zdr()))
+    monkeypatch.undo()
+    kwargs = {}
+    real = httpx.AsyncClient
+
+    def spy(**kw):
+        kwargs.update(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(job.httpx, "AsyncClient", spy)
+    await fetch_feeds(transport=transport(ok_models(), ok_zdr()))
+    assert kwargs["trust_env"] is False
 
 
 # 19-20

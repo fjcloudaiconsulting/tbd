@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
-from app.models.session_state import ascii_id
+from app.models.session_state import ascii_id, ts6
 
 
 class PlatformAIModel(Base):
@@ -27,5 +27,5 @@ class PlatformAIModel(Base):
     zdr_prompt_micros_per_mtok: Mapped[int | None] = mapped_column(sa.BigInteger, nullable=True)
     zdr_completion_micros_per_mtok: Mapped[int | None] = mapped_column(sa.BigInteger, nullable=True)
     expires_at: Mapped[date | None] = mapped_column(sa.Date, nullable=True)
-    last_seen_at: Mapped[datetime] = mapped_column(sa.DateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(ts6(), nullable=False)
     enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, server_default=sa.false())

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 import math
 from dataclasses import dataclass, field
@@ -38,11 +39,9 @@ ATTEMPT_LEASE = "platform_ai_catalog:attempt"
 ATTEMPT_LEASE_TTL = 3600
 FETCH_DEADLINE_SECONDS = 90
 _ONE_MTOK = Decimal(10) ** 12
-_DATA_COLUMNS = (
-    "name", "context_length", "max_completion_tokens", "supports_structured_outputs",
-    "headline_prompt_micros_per_mtok", "headline_completion_micros_per_mtok",
-    "zdr_prompt_micros_per_mtok", "zdr_completion_micros_per_mtok", "expires_at",
-)
+MAX_BODY_BYTES = 5_000_000
+INT_MAX = 2**31 - 1  # MySQL INT
+# Never released: the lease TTL is the 1h retry backoff after a failed or refused run.
 
 
 class CatalogFeedError(Exception):
@@ -57,18 +56,29 @@ def parse_price(value) -> int | None:
         d = Decimal(str(value))
     except InvalidOperation:
         return None
-    if not d.is_finite() or d < 0:  # is_finite before ceil: ceil(NaN/Inf) raises
+    # Bound BEFORE scaling: "1e999999" overflows Decimal and huge exponents build giant ints.
+    if not d.is_finite() or d < 0 or d > Decimal(PRICE_CAP_MICROS) / _ONE_MTOK:
         return None
     micros = math.ceil(d * _ONE_MTOK)
     return micros if micros <= PRICE_CAP_MICROS else None
 
 
+def _encodable(s: str) -> bool:
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:  # lone surrogate
+        return False
+    return True
+
+
 def _pos_int(v) -> bool:
-    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+    return isinstance(v, int) and not isinstance(v, bool) and 0 < v <= INT_MAX
 
 
 def _endpoint_ceiling(pricing: dict, field_name: str) -> int | None:
     """Max of the base and every override price, grossed up for the endpoint's discount."""
+    if not isinstance(pricing, dict):
+        return None
     discount = pricing.get("discount")
     if discount is None:
         discount = 0
@@ -78,9 +88,10 @@ def _endpoint_ceiling(pricing: dict, field_name: str) -> int | None:
     if not dd.is_finite() or not (0 <= dd < 1):
         return None
     candidates = [pricing.get(field_name)]
-    for o in pricing.get("overrides") or []:
-        if isinstance(o, dict) and field_name in o:
-            candidates.append(o[field_name])
+    overrides = pricing.get("overrides") or []
+    if not isinstance(overrides, list) or not all(isinstance(o, dict) for o in overrides):
+        return None  # a shape we cannot read must not fall back to the (cheaper) base price
+    candidates += [o[field_name] for o in overrides if field_name in o]
     parsed = [parse_price(c) for c in candidates]
     if any(p is None for p in parsed):
         return None
@@ -89,7 +100,8 @@ def _endpoint_ceiling(pricing: dict, field_name: str) -> int | None:
 
 
 def _zdr_facts(endpoints: list[dict], fallback_ctx: int) -> dict:
-    tools = [e for e in endpoints if "tools" in (e.get("supported_parameters") or [])]
+    tools = [e for e in endpoints if isinstance(e.get("supported_parameters"), list)
+             and "tools" in e["supported_parameters"]]
     facts = {
         "max_completion_tokens": None, "context_length": fallback_ctx,
         "supports_structured_outputs": False,
@@ -103,7 +115,7 @@ def _zdr_facts(endpoints: list[dict], fallback_ctx: int) -> dict:
     facts["context_length"] = min(ctxs) if ctxs else fallback_ctx
     facts["supports_structured_outputs"] = any("structured_outputs" in e["supported_parameters"] for e in tools)
     for col, f in (("zdr_prompt_micros_per_mtok", "prompt"), ("zdr_completion_micros_per_mtok", "completion")):
-        per_ep = [_endpoint_ceiling(e.get("pricing") or {}, f) for e in tools]
+        per_ep = [_endpoint_ceiling(e.get("pricing"), f) for e in tools]
         facts[col] = None if any(c is None for c in per_ep) else max(per_ep)
     if facts["zdr_prompt_micros_per_mtok"] is None or facts["zdr_completion_micros_per_mtok"] is None:
         facts["zdr_prompt_micros_per_mtok"] = facts["zdr_completion_micros_per_mtok"] = None
@@ -128,12 +140,12 @@ def _parse_models(models_feed: dict, zdr_feed: dict, today: datetime.date) -> di
     for m in models_feed.get("data") or []:
         mid = m.get("id") if isinstance(m, dict) else None
         name = m.get("name") if isinstance(m, dict) else None
-        if not (isinstance(mid, str) and mid.isascii() and 1 <= len(mid) <= 128
-                and isinstance(name, str) and 1 <= len(name) <= 255
-                and _pos_int(m.get("context_length"))):
+        pricing = m.get("pricing") if isinstance(m, dict) else None
+        if not (isinstance(mid, str) and 1 <= len(mid) <= 128 and all(" " <= c <= "~" for c in mid)
+                and isinstance(name, str) and 1 <= len(name) <= 255 and _encodable(name)
+                and isinstance(pricing, dict) and _pos_int(m.get("context_length"))):
             logger.warning("platform_ai_catalog.item_skipped", extra={"item_id": str(mid)[:128]})
             continue
-        pricing = m.get("pricing") or {}
         out[mid] = {
             "name": name,
             "headline_prompt_micros_per_mtok": parse_price(pricing.get("prompt")),
@@ -205,16 +217,21 @@ async def fetch_feeds(*, transport: httpx.AsyncBaseTransport | None = None) -> t
     root = next(p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter")
 
     async def get(client: httpx.AsyncClient, path: str) -> dict:
-        r = await client.get(f"{root}{path}")
-        if r.status_code != 200:
-            raise CatalogFeedError(f"status {r.status_code}")
-        body = r.json()
+        async with client.stream("GET", f"{root}{path}") as r:
+            if r.status_code != 200:
+                raise CatalogFeedError(f"status {r.status_code}")
+            raw = b""
+            async for chunk in r.aiter_bytes():
+                raw += chunk
+                if len(raw) > MAX_BODY_BYTES:
+                    raise CatalogFeedError("body too large")
+        body = json.loads(raw)
         if not isinstance(body, dict) or not isinstance(body.get("data"), list) or not body["data"]:
             raise CatalogFeedError("empty or malformed data")
         return body
 
     async with asyncio.timeout(FETCH_DEADLINE_SECONDS):  # httpx's timeout is per phase
-        async with httpx.AsyncClient(timeout=30.0, transport=transport) as client:
+        async with httpx.AsyncClient(timeout=30.0, transport=transport, trust_env=False) as client:
             models = await get(client, "/models?supported_parameters=tools")
             # shortcut: refuses a paginated feed, follow links.next once OpenRouter paginates
             if models.get("total_count") != len(models["data"]) or (models.get("links") or {}).get("next"):
@@ -258,10 +275,8 @@ async def run_platform_ai_catalog_sync(
         async with session_factory() as db:
             rows = {r.openrouter_id: r for r in (await db.execute(select(PlatformAIModel))).scalars()}
             plan = plan_sync(rows, models_feed, zdr_feed, now.date())
-            if plan.refused:
-                refused = True
-            else:
-                refused = False
+            refused = plan.refused
+            if not refused:
                 # Attribute updates on loaded rows, never merge(): that would overwrite ``enabled``.
                 for mid, data in plan.upserts.items():
                     if mid in rows:
