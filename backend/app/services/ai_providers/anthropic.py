@@ -29,6 +29,7 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+    provider_reason,
     tool_call_id,
 )
 
@@ -239,6 +240,7 @@ class AnthropicAdapter:
             raise AIProviderError(
                 code=f"provider_status_{resp.status_code}",
                 status_code=resp.status_code,
+                provider_reason=provider_reason(resp),
             )
         try:
             payload = resp.json()
@@ -329,6 +331,7 @@ class AnthropicAdapter:
             raise AIProviderError(
                 code=f"provider_status_{resp.status_code}",
                 status_code=resp.status_code,
+                provider_reason=provider_reason(resp),
             )
         try:
             payload = resp.json()
@@ -401,6 +404,7 @@ class AnthropicAdapter:
             raise AIProviderError(
                 code=f"provider_status_{resp.status_code}",
                 status_code=resp.status_code,
+                provider_reason=provider_reason(resp),
             )
         try:
             payload = resp.json()

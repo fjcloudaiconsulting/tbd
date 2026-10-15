@@ -16,7 +16,9 @@ closes the session. :class:`TurnResponse` closes the generator and releases
 the lock however the response ends, including a generator that never started.
 
 Bounds per turn: 6 model rounds, no round started with less than one
-dispatch timeout left of the 90 seconds, one write. A write tool call becomes
+dispatch timeout left of the 90 seconds, one write, and an input budget per plan
+(TBD-613): history is trimmed once in the pre-flight, and the estimated prompt of
+every round counts against the budget. A write tool call becomes
 a preview (``registry.invoke`` stages it) and ends the turn; nothing is
 executed without the user's confirm. Auto mode never applies in-app
 (``channel="in_app"`` carries no token scope).
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -46,7 +49,7 @@ from app.agent.registry import ToolError
 from app.config import settings
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.user import User
-from app.services import ai_dispatch, usage_service
+from app.services import ai_dispatch, feature_service, usage_service
 from app.services.ai_providers import NativeNotAvailable
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,15 @@ TURN_SECONDS = 90.0
 KEEPALIVE_SECONDS = 15.0
 # Outlives a full turn plus the one dispatch the ``finally`` may wait for.
 LOCK_TTL_SECONDS = 180
+
+# A UX limit on the newest message (code points), not a spend bound: the spend
+# bound is the per-turn input budget.
+MAX_MESSAGE_CHARS = 7_000
+# One tool message. Far above a real org's categories_list (67 seeded = ~18k):
+# a cut there is unrecoverable, those tools take no paging arguments.
+MAX_TOOL_RESULT_CHARS = 40_000
+# Prior history may use 1/HISTORY_SHARE of the turn budget: it is re-billed every round.
+HISTORY_SHARE = 10
 
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal finance app. Answer questions about the user's "
@@ -112,16 +124,97 @@ async def tool_schemas(db: AsyncSession, user: User) -> list[dict[str, Any]]:
     return out
 
 
+def _estimate(transcript: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
+    """Conservative ESTIMATE of prompt tokens for a whole request (messages,
+    tool calls and schemas). Multi-byte text costs far more per char than ASCII
+    (emoji ~2.7 chars/token, CJK ~2), which the shared chars/3.5 estimator
+    ignores; this one only gates the chat loop. It is not the provider's count:
+    high-entropy ASCII (base64, hex) can cost ~2x the real tokens, so the budget
+    bounds estimated tokens. The turn log pairs est and actual for calibration."""
+    s = json.dumps([transcript, tools], ensure_ascii=False)
+    ascii_n = len(s.encode("ascii", "ignore"))
+    # surrogatepass: a lone surrogate in user text must not crash the estimator
+    return math.ceil(ascii_n / 3.5 + (len(s.encode("utf-8", "surrogatepass")) - ascii_n) / 1.5)
+
+
+def fit_history(messages: list[dict[str, str]], budget: int) -> list[dict[str, str]]:
+    """Drop the oldest PRIOR messages until the prior history fits a tenth of
+    the budget, then any leading non-user ones. The newest message is never a
+    candidate."""
+    *prior, current = messages
+    while prior and _estimate(prior, []) > budget // HISTORY_SHARE:
+        prior.pop(0)
+    while prior and prior[0]["role"] != "user":
+        prior.pop(0)
+    return [*prior, current]
+
+
+def _blank(text: str) -> bool:
+    # U+FEFF: JS ``trim()`` strips it, Python's ``strip()`` does not
+    return not text.replace("\ufeff", "").strip()
+
+
+def _cap_result(result: Any) -> Any:
+    """``result`` itself when its serialization fits, else whole trailing rows
+    dropped from its longest list (scalars kept, ``truncated`` says what was
+    cut). Never slices the string, so the model always gets valid JSON. Linear:
+    each row is sized once, never the whole result per dropped row."""
+    def size(x: Any) -> int:
+        return len(json.dumps(x, ensure_ascii=False))
+
+    if size(result) <= MAX_TOOL_RESULT_CHARS:
+        return result
+    if isinstance(result, list):
+        result = {"items": result}
+    lists = {k: v for k, v in result.items() if isinstance(v, list)} if isinstance(result, dict) else {}
+    if not lists:
+        return {"error": "result_too_large"}
+    key = max(lists, key=lambda k: size(lists[k]))
+    rows, offset = result[key], result.get("offset")
+    paged = isinstance(offset, int) and not isinstance(offset, bool)
+
+    def build(n: int, kept: list[Any]) -> dict[str, Any]:
+        out = {**result, key: kept, "truncated": {"key": key, "shown": n, "of": len(rows)}}
+        if paged:
+            out["next_offset"] = offset + n  # the model pages by ``offset += limit``
+        return out
+
+    room = MAX_TOOL_RESULT_CHARS - size(build(len(rows), []))  # widest marker digits
+    n = used = 0
+    for row_size in map(size, rows):
+        used += row_size + (2 if n else 0)  # ", " between rows
+        if used > room:
+            break
+        n += 1
+    out = build(n, rows[:n])
+    return out if size(out) <= MAX_TOOL_RESULT_CHARS else {"error": "result_too_large"}
+
+
+def _tool_message(call_id: str, result: Any) -> dict[str, str]:
+    """Every tool message goes through the cap, errors included: an oversized
+    ``detail`` must not end the turn on the budget."""
+    return {
+        "role": "tool", "tool_call_id": call_id,
+        "content": json.dumps(_cap_result(result), ensure_ascii=False),
+    }
+
+
 def opening(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
     return [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
 
 
 async def preflight(
     db: AsyncSession, user: User, messages: list[dict[str, str]], tools: list[dict[str, Any]],
-) -> str:
+) -> tuple[str, list[dict[str, str]], int]:
     """Refuse the turn with a real HTTP status, or admit it and return the
-    lock nonce. Commits ``db`` (``usage_service.admit``)."""
+    lock nonce, the trimmed history and the turn's input budget. Commits ``db``
+    (``usage_service.admit``)."""
     org_id = user.org_id
+    # First, before the lock: a refusal here takes and counts nothing.
+    budget = (await feature_service.get_entitlements(db, org_id)).turn_input_tokens
+    messages = fit_history(messages, budget)
+    if _estimate(opening(messages), tools) > budget:  # round 1 must be able to run
+        raise HTTPException(413, detail={"code": "input_budget_exceeded", "limit_tokens": budget})
     nonce = await acquire_lock(org_id)
     try:
         # The same routing, capability and projected-cap gate round 1 runs,
@@ -147,7 +240,7 @@ async def preflight(
     except BaseException:
         await release_lock(org_id, nonce)
         raise
-    return nonce
+    return nonce, messages, budget
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -192,12 +285,24 @@ async def stream_turn(
     nonce: str,
     messages: list[dict[str, str]],
     tools: list[dict[str, Any]],
+    budget: int,
+    history_trimmed: bool,
 ) -> AsyncIterator[str]:
     """One assistant turn as SSE. Owns its session and the org lock."""
     loop = asyncio.get_running_loop()
     started = loop.time()
     deadline = started + TURN_SECONDS
     rounds, outcome = 0, "running"
+    spent, input_tokens, ledger_ids, said = 0, 0, [], False
+    sse_code: str | None = None  # the code of the SSE error event actually sent
+    rd: dict[str, Any] | None = None  # the dispatched round not yet reported
+
+    async def emit(stop: str | None) -> None:
+        """One INFO event per DISPATCHED round, ids and counts only (never content)."""
+        nonlocal rd
+        if rd is not None:
+            logger.info("agent.turn.round", extra={**rd, "stop": stop})
+            rd = None
     db: AsyncSession | None = None
     pending: asyncio.Task | None = None
     try:
@@ -212,7 +317,16 @@ async def stream_turn(
             if deadline - loop.time() < settings.ai_dispatch_timeout_s:
                 outcome = "turn_timeout"
                 break
+            est = _estimate(transcript, tools)
+            if spent + est > budget:
+                outcome = "input_budget"
+                break
+            spent += est  # counted at start: a failed dispatch is spend too
             rounds += 1
+            rd = {
+                "round": rounds, "est_tokens": est, "prompt_tokens": None,
+                "completion_tokens": None, "ledger_id": None, "tools": [],
+            }
             pending = asyncio.ensure_future(ai_dispatch.call_llm_function(
                 db, org_id=org_id, feature_key=FEATURE_KEY, messages=transcript, tools=tools,
             ))
@@ -220,21 +334,32 @@ async def stream_turn(
                 yield ": keepalive\n\n"
             task, pending = pending, None
             try:
-                resp = task.result().response
+                dispatched = task.result()
+                resp = dispatched.response
             except ai_dispatch.AIDispatchError as exc:
                 outcome = exc.code
+                rd["ledger_id"] = getattr(exc, "ledger_id", None)  # set on a ledgered failure
+                await emit(outcome)
                 break
             except ai_dispatch.PlatformConsentRequired as exc:
                 outcome = exc.code  # same code as the pre-flight refusal
+                await emit(outcome)
                 break
             except NativeNotAvailable:
                 outcome = "ai_native_not_available"
+                await emit(outcome)
                 break
 
-            if resp.content.strip():
+            input_tokens += resp.prompt_tokens or 0
+            ledger_ids.append(dispatched.ledger_id)
+            rd.update(prompt_tokens=resp.prompt_tokens, completion_tokens=resp.completion_tokens,
+                      ledger_id=dispatched.ledger_id)
+            if not _blank(resp.content):
+                said = True
                 yield _sse("message", {"text": resp.content})
             if not resp.tool_calls:
-                outcome = "ok"
+                outcome = "ok" if said else "empty_reply"
+                await emit(outcome)
                 break
             transcript.append(
                 {"role": "assistant", "content": resp.content, "tool_calls": resp.tool_calls}
@@ -242,10 +367,7 @@ async def stream_turn(
             previewed = False
             for i, call in enumerate(resp.tool_calls):
                 if i >= MAX_CALLS_PER_ROUND:
-                    transcript.append({
-                        "role": "tool", "tool_call_id": call["id"],
-                        "content": json.dumps({"error": "too_many_calls"}),
-                    })
+                    transcript.append(_tool_message(call["id"], {"error": "too_many_calls"}))
                     continue
                 spec = registry.get_tool(call["name"])
                 # A model-chosen name is never echoed unless it is ours.
@@ -258,8 +380,10 @@ async def stream_turn(
                         outcome = "user_inactive"
                         break
                 yield _sse("tool_call", {"name": shown})
+                rd["tools"].append({"name": shown, "ok": False, "code": None, "rows": None})
                 if spec is None:
                     result: Any = {"error": "unknown_tool"}
+                    rd["tools"][-1]["code"] = "unknown_tool"
                     yield _sse("tool_result", {"name": shown, "ok": False, "code": "unknown_tool"})
                 else:
                     try:
@@ -268,6 +392,7 @@ async def stream_turn(
                         ))["data"]
                     except ToolError as exc:
                         result = {"error": exc.code, "detail": {"untrusted": exc.detail}}
+                        rd["tools"][-1]["code"] = exc.code
                         yield _sse("tool_result", {"name": shown, "ok": False, "code": exc.code})
                     else:
                         if spec.risk != "read":
@@ -275,26 +400,32 @@ async def stream_turn(
                             # confirms it; the model never runs it.
                             yield _sse("preview", {"action": data})
                             previewed = True
+                            rd["tools"][-1].update(ok=True)
                             break
-                        result = data
-                        yield _sse("tool_result", {"name": shown, "ok": True, "rows": _rows(data)})
-                transcript.append({
-                    "role": "tool", "tool_call_id": call["id"], "content": json.dumps(result),
-                })
+                        result = _cap_result(data)
+                        rd["tools"][-1].update(ok=True, rows=_rows(result))
+                        yield _sse("tool_result", {"name": shown, "ok": True, "rows": _rows(result)})
+                transcript.append(_tool_message(call["id"], result))
             if previewed:
                 outcome = "preview"
+                await emit(outcome)
                 break
             if outcome == "user_inactive":
+                await emit(outcome)
                 break
+            await emit(None)
         if outcome not in ("ok", "preview"):
             yield _sse("error", {"code": outcome})
+            sse_code = outcome
         # Free the org before ``done``: a client may send its next turn on it.
         await release_lock(org_id, nonce)
         yield _sse("done", {})
     except Exception:
         logger.exception("agent.turn.failed", extra={"org_id": org_id, "user_id": user_id})
         outcome = "internal_error"
+        await emit(outcome)
         yield _sse("error", {"code": outcome})
+        sse_code = outcome
         yield _sse("done", {})
     except BaseException:  # the client went away (cancel or close)
         if outcome == "running":
@@ -307,8 +438,15 @@ async def stream_turn(
                 # timeout) so its ledger row lands and no call outlives the lock.
                 # ``wait``, not ``gather``: never propagate a cancel into it.
                 await asyncio.wait({pending})
-                if not pending.cancelled():
-                    pending.exception()  # retrieved: no "never retrieved" noise
+                if not pending.cancelled() and pending.exception() is None:
+                    reaped = pending.result()  # its spend and ledger row still count
+                    input_tokens += reaped.response.prompt_tokens or 0
+                    ledger_ids.append(reaped.ledger_id)
+                    if rd is not None:
+                        rd.update(prompt_tokens=reaped.response.prompt_tokens,
+                                  completion_tokens=reaped.response.completion_tokens,
+                                  ledger_id=reaped.ledger_id)
+            await emit(outcome)  # the in-flight round of a disconnect
             await release_lock(org_id, nonce)
             if db is not None:
                 try:
@@ -328,5 +466,11 @@ async def stream_turn(
                     "rounds": rounds,
                     "outcome": outcome,
                     "latency_ms": int((loop.time() - started) * 1000),
+                    "input_tokens": input_tokens,
+                    "est_input_tokens": spent,
+                    "ledger_ids": ledger_ids,
+                    "budget": budget,
+                    "history_trimmed": history_trimmed,
+                    "sse_code": sse_code,
                 },
             )

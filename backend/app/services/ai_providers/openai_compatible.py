@@ -39,6 +39,7 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+    provider_reason,
     parse_openai_tool_calls,
     to_openai_messages,
 )
@@ -223,6 +224,7 @@ class OpenAICompatibleAdapter:
             raise AIProviderError(
                 code=f"provider_status_{resp.status_code}",
                 status_code=resp.status_code,
+                provider_reason=provider_reason(resp),
             )
         try:
             payload = resp.json()
@@ -271,6 +273,7 @@ class OpenAICompatibleAdapter:
             raise AIProviderError(
                 code=f"provider_status_{resp.status_code}",
                 status_code=resp.status_code,
+                provider_reason=provider_reason(resp),
             )
         try:
             payload = resp.json()
@@ -336,6 +339,7 @@ class OpenAICompatibleAdapter:
             raise AIProviderError(
                 code=f"provider_status_{resp.status_code}",
                 status_code=resp.status_code,
+                provider_reason=provider_reason(resp),
             )
         try:
             payload = resp.json()
@@ -394,6 +398,7 @@ class OpenAICompatibleAdapter:
             raise AIProviderError(
                 code=f"provider_status_{resp.status_code}",
                 status_code=resp.status_code,
+                provider_reason=provider_reason(resp),
             )
         try:
             payload = resp.json()

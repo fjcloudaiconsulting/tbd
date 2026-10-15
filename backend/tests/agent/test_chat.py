@@ -815,3 +815,404 @@ async def test_lock_is_free_when_done_arrives(factory, w, provider):
     }
     await app(scope, receive, send)
     assert held_at_done == [None]
+
+
+# ── input limits (TBD-613) ────────────────────────────────────────────────
+
+def _msg(role, content):
+    return {"role": role, "content": content}
+
+
+def _budget(monkeypatch, n):
+    from app.services import feature_service
+
+    real = feature_service.get_entitlements
+
+    async def patched(db, org_id, **k):
+        return dataclasses.replace(await real(db, org_id, **k), turn_input_tokens=n)
+
+    monkeypatch.setattr(feature_service, "get_entitlements", patched)
+
+
+class _Log:
+    def __init__(self):
+        self.done: list[dict] = []
+
+    def info(self, event, *, extra=None, **_):
+        if event == "agent.turn.completed":
+            self.done.append(extra)
+
+    def warning(self, *a, **k): ...
+    def exception(self, *a, **k): ...
+
+
+@pytest.fixture
+def turnlog(monkeypatch):
+    log = _Log()
+    monkeypatch.setattr(chat, "logger", log)
+    return log
+
+
+def _all_schemas():
+    return [{"type": "function", "function": {
+        "name": s.name, "description": s.description, "parameters": s.args.model_json_schema(),
+    }} for s in registry.all_tools()]
+
+
+async def test_message_cap_is_on_the_last_message_only(factory, w, client, provider, monkeypatch):
+    """FENCE F1. Wrong implementations: ``>=`` for ``>``; the check after
+    preflight/admit (turn counted, lock taken); capping every message."""
+    _as(factory, w["user"])
+    adapter = provider(lambda n: _resp(content="hi"))
+    ok = await client.post(URL, json={"messages": [_msg("user", "a" * 7000)]})
+    assert ok.status_code == 200 and len(adapter.seen) == 1
+    earlier = {"messages": [_msg("user", "b" * 10_000), _msg("assistant", "ok"), _msg("user", "hi")]}
+    assert (await client.post(URL, json=earlier)).status_code == 200
+    turns, calls = await _turns(factory, w["org"]), len(adapter.seen)
+    taken = []
+    real = state_db.acquire_lease
+
+    async def spy(name, ttl):
+        taken.append(name)
+        return await real(name, ttl)
+
+    monkeypatch.setattr(state_db, "acquire_lease", spy)
+    r = await client.post(URL, json={"messages": [_msg("user", "a" * 7001)]})
+    assert r.status_code == 413
+    assert r.json()["detail"] == {"code": "message_too_long", "limit_chars": 7000}
+    assert len(adapter.seen) == calls and await _turns(factory, w["org"]) == turns
+    assert taken == [] and _lease_holder(chat.lock_key(w["org"])) is None
+
+
+def _long_history():
+    h = []
+    for i in range(3):
+        h += [_msg("user", f"U{i}" + "x" * 2450), _msg("assistant", f"A{i}" + "y" * 2450)]
+    return h + [_msg("user", "current")]
+
+
+async def test_history_is_trimmed_oldest_first_and_starts_on_a_user(
+    factory, w, client, provider, turnlog,
+):
+    """FENCE F2. Wrong implementations: newest-first trimming; trimming the
+    system prompt, tools or the current message; an assistant-first transcript."""
+    _as(factory, w["user"])
+    adapter = provider(lambda n: _resp(content="hi"))
+    await client.post(URL, json=ASK)
+    hist = _long_history()
+    assert (await client.post(URL, json={"messages": hist})).status_code == 200
+    sent = adapter.seen[1]
+    assert sent[0] == {"role": "system", "content": chat.SYSTEM_PROMPT}
+    assert sent[-1] == hist[-1]
+    assert adapter.tools[1] == adapter.tools[0]
+    assert sent[1:] == hist[2:]  # U0 dropped, then the assistant it left first
+    assert sent[1]["role"] == "user" and hist[5] in sent
+    assert turnlog.done[-1]["history_trimmed"] is True
+
+
+async def test_trim_happens_before_the_projection(factory, w, client, provider, monkeypatch):
+    """FENCE F3. Wrong implementation: trimming only inside ``stream_turn``,
+    so the projected-spend gate sees the untrimmed history."""
+    from app.services import ai_dispatch
+
+    _as(factory, w["user"])
+    provider(lambda n: _resp(content="hi"))
+    real = ai_dispatch._prepare_dispatch
+    seen = []
+
+    async def spy(*a, **k):
+        seen.append(k["messages"])
+        return await real(*a, **k)
+
+    monkeypatch.setattr(ai_dispatch, "_prepare_dispatch", spy)
+    await client.post(URL, json={"messages": _long_history()})
+    assert seen and not any("U0" in str(m.get("content")) for m in seen[0])
+    assert any(m.get("content", "").startswith("U1") for m in seen[0])
+
+
+async def test_floor_over_budget_is_refused_before_anything_is_taken(
+    factory, w, client, provider, monkeypatch,
+):
+    """FENCE F4. Wrong implementations: dispatching anyway; truncating the
+    current message; an endless trim loop; the check after ``acquire_lock``."""
+    _as(factory, w["user"])
+    adapter = provider(lambda n: _resp(content="hi"))
+    _budget(monkeypatch, 100)
+    taken = []
+    real = state_db.acquire_lease
+
+    async def spy(name, ttl):
+        taken.append(name)
+        return await real(name, ttl)
+
+    monkeypatch.setattr(state_db, "acquire_lease", spy)
+    r = await client.post(URL, json=ASK)
+    assert r.status_code == 413
+    assert r.json()["detail"] == {"code": "input_budget_exceeded", "limit_tokens": 100}
+    assert adapter.seen == [] and taken == []
+    assert await _turns(factory, w["org"]) == 0
+
+
+def test_estimate_prices_multibyte_text():
+    """FENCE F5. Wrong implementation: reusing the shared chars/3.5 estimator
+    (~860 for this message)."""
+    got = chat._estimate(chat.opening([_msg("user", "\U0001F600" * 3000)]), [])
+    assert got >= 7000
+    assert chat._estimate([{"content": "\ud800" * 10}], []) > 0  # lone surrogate
+
+
+async def test_cumulative_stop(factory, w, client, provider, monkeypatch):
+    """FENCE F6. Wrong implementation: a per-round-only check (all six rounds run)."""
+    _as(factory, w["user"])
+    adapter = provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
+    await client.post(URL, json=ASK)
+    e = [chat._estimate(adapter.seen[i], adapter.tools[i]) for i in range(3)]
+    for budget, dispatches in ((e[0] + e[1] + e[2], 3), (e[0] + e[1] + e[2] - 1, 2)):
+        limiter.reset()
+        adapter = provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
+        _budget(monkeypatch, budget)
+        ev = _events((await client.post(URL, json=ASK)).text)
+        assert len(adapter.seen) == dispatches
+        assert ev[-2:] == [("error", {"code": "input_budget"}), ("done", {})]
+
+
+def _fake_accounts(monkeypatch, result):
+    spec = registry.get_tool("accounts_list")
+
+    async def run(ctx, args):
+        return result
+
+    monkeypatch.setitem(registry._TOOLS, "accounts_list", dataclasses.replace(spec, run=run))
+
+
+async def _tool_message(client, provider):
+    adapter = provider([_resp([_call("accounts_list")]), _resp(content="ok")])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    return adapter.seen[1][-1], ev
+
+
+async def test_tool_result_is_capped_by_whole_rows(factory, w, client, provider, monkeypatch):
+    """FENCE F7. Wrong implementations: no cap; slicing the serialized string;
+    capping only the SSE row count; capping after the append."""
+    _as(factory, w["user"])
+    rows = [{"id": i, "memo": "m" * 1200} for i in range(50)]
+    _fake_accounts(monkeypatch, {"items": rows, "total": 50, "limit": 50, "offset": 100})
+    msg, ev = await _tool_message(client, provider)
+    assert msg["role"] == "tool" and len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
+    out = json.loads(msg["content"])
+    n = len(out["items"])
+    assert 0 < n < 50 and [r["id"] for r in out["items"]] == list(range(n))  # whole rows
+    assert out["truncated"] == {"key": "items", "shown": n, "of": 50}
+    assert out["next_offset"] == 100 + n and out["total"] == 50
+    assert ("tool_result", {"name": "accounts_list", "ok": True, "rows": n}) in ev
+
+
+async def test_tool_result_trims_the_longest_list_and_keeps_scalars(
+    factory, w, client, provider, monkeypatch,
+):
+    """FENCE F8. Wrong implementation: trimming ``items`` only."""
+    _as(factory, w["user"])
+    _fake_accounts(monkeypatch, {
+        "tags": ["a", "b"],
+        "categories": [{"id": i, "n": "c" * 1200} for i in range(60)], "total": 123,
+    })
+    msg, _ = await _tool_message(client, provider)
+    out = json.loads(msg["content"])
+    assert len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
+    assert out["total"] == 123 and out["tags"] == ["a", "b"]
+    assert out["truncated"]["key"] == "categories"
+    assert out["truncated"]["of"] == 60 and "next_offset" not in out
+
+    limiter.reset()
+    _fake_accounts(monkeypatch, [{"id": i, "n": "c" * 1200} for i in range(60)])
+    msg, _ = await _tool_message(client, provider)  # a bare list is wrapped
+    assert json.loads(msg["content"])["truncated"]["key"] == "items"
+
+
+async def test_tool_result_without_a_list_is_an_error(factory, w, client, provider, monkeypatch):
+    """FENCE F9. Wrong implementation: an uncapped fallback."""
+    _as(factory, w["user"])
+    _fake_accounts(monkeypatch, {"blob": "z" * 50_000})
+    msg, _ = await _tool_message(client, provider)
+    assert json.loads(msg["content"]) == {"error": "result_too_large"}
+
+
+async def test_budget_resolves_per_plan(factory, w, client, provider, turnlog):
+    """FENCE F10. Wrong implementation: a constant that ignores the plan."""
+    from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS, TURN_INPUT_TOKENS_BY_PLAN_SLUG
+    from app.models.subscription import Plan, Subscription
+    from app.services import feature_service
+
+    assert (DEFAULT_TURN_INPUT_TOKENS, TURN_INPUT_TOKENS_BY_PLAN_SLUG) == (40_000, {"pro": 60_000})
+    async with factory._f() as db:
+        assert (await feature_service.get_entitlements(db, w["org"])).turn_input_tokens == 40_000
+        plan = Plan(name="Pro", slug="pro", features={}, usage_limits={})
+        db.add(plan)
+        await db.flush()
+        sub = Subscription(org_id=w["org"], plan_id=plan.id)
+        db.add(sub)
+        await db.commit()
+        assert (await feature_service.get_entitlements(db, w["org"])).turn_input_tokens == 60_000
+        plan.slug = "acme"
+        await db.commit()
+        assert (await feature_service.get_entitlements(db, w["org"])).turn_input_tokens == 40_000
+        plan.slug = "pro"
+        await db.commit()
+    _as(factory, w["user"])
+    provider([_resp(content="hi")])
+    assert (await client.post(URL, json=ASK)).status_code == 200
+    assert turnlog.done[-1]["budget"] == 60_000
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "﻿", " ﻿\n"])
+async def test_blank_reply_is_an_error(blank, factory, w, client, provider):
+    """FENCE F11. Wrong implementation: silent success on an empty reply."""
+    _as(factory, w["user"])
+    provider([_resp(content=blank)])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert ev == [("error", {"code": "empty_reply"}), ("done", {})]
+
+
+async def test_blank_final_round_after_text_is_fine(factory, w, client, provider):
+    _as(factory, w["user"])
+    provider([_resp([_call("accounts_list")], content="Checking."), _resp(content="")])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert ("error", {"code": "empty_reply"}) not in ev and ev[-1] == ("done", {})
+
+
+async def test_turn_log_records_actual_and_estimate(factory, w, client, provider, turnlog):
+    """FENCE F12 (normal turn). Wrong implementation: logging the estimate as
+    the actual, or dropping the ledger ids."""
+    _as(factory, w["user"])
+    adapter = provider([_resp([_call("accounts_list")], prompt_tokens=111),
+                        _resp(content="hi", prompt_tokens=222)])
+    await client.post(URL, json=ASK)
+    rec = turnlog.done[-1]
+    ids = [r.id for r in await _ledger(factory)]
+    assert rec["input_tokens"] == 333 and rec["ledger_ids"] == ids and len(ids) == 2
+    assert rec["est_input_tokens"] == sum(
+        chat._estimate(adapter.seen[i], adapter.tools[i]) for i in range(2))
+    assert rec["budget"] == 40_000 and rec["history_trimmed"] is False
+
+
+async def test_turn_log_includes_the_reaped_dispatch(factory, w, provider, monkeypatch, turnlog):
+    """FENCE F12 (disconnect). Wrong implementation: the reaped round missing."""
+    monkeypatch.setattr(chat, "KEEPALIVE_SECONDS", 0.05)
+    _as(factory, w["user"])
+
+    round2 = asyncio.Event()
+
+    async def late():
+        round2.set()
+        await asyncio.sleep(0.3)
+        return _resp(content="late", prompt_tokens=222)
+
+    provider(lambda n: _resp([_call("accounts_list")], prompt_tokens=111) if n == 1 else late())
+    body = json.dumps(ASK).encode()
+    parked = asyncio.Event()
+    msgs = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive():
+        if msgs:
+            return msgs.pop(0)
+        await parked.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        # a keepalive during round 1 (slow box) must not park the stream early
+        if b"keepalive" in message.get("body", b"") and round2.is_set():
+            parked.set()
+            await asyncio.sleep(10)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
+        "method": "POST", "scheme": "http", "path": URL, "raw_path": URL.encode(),
+        "query_string": b"", "root_path": "", "client": ("127.0.0.1", 1), "server": ("t", 80),
+        "headers": [(b"host", b"t"), (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode())],
+    }
+    await app(scope, receive, send)
+    rec = turnlog.done[-1]
+    assert rec["outcome"] == "client_disconnected" and rec["input_tokens"] == 333
+    assert rec["ledger_ids"] == [r.id for r in await _ledger(factory)] and len(rec["ledger_ids"]) == 2
+
+
+def test_limit_defaults_fit_every_plan():
+    """GUARD G1: pinned defaults, and a worst-case message fits every budget."""
+    from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS, TURN_INPUT_TOKENS_BY_PLAN_SLUG
+
+    assert (chat.MAX_MESSAGE_CHARS, chat.MAX_TOOL_RESULT_CHARS) == (7000, 40_000)
+    schemas = _all_schemas()
+    for budget in {DEFAULT_TURN_INPUT_TOKENS, *TURN_INPUT_TOKENS_BY_PLAN_SLUG.values()}:
+        ascii_ = chat._estimate(chat.opening([_msg("user", "a" * 7000)]), schemas)
+        emoji = chat._estimate(chat.opening([_msg("user", "\U0001F600" * 7000)]), schemas)
+        assert ascii_ <= budget // 3 and emoji + budget // chat.HISTORY_SHARE <= budget
+
+
+async def test_default_category_seed_fits_the_tool_cap(factory, w):
+    """GUARD G4: the default seed is far under the cap (a cut there is unrecoverable)."""
+    from app.services.org_bootstrap_service import seed_org_defaults
+
+    async with factory._f() as db:
+        await seed_org_defaults(db, org_id=w["org"])
+        await db.commit()
+        user = await db.get(User, w["user"])
+        data = (await registry.invoke(db, user, "categories_list", {}, channel="in_app"))["data"]
+    assert len(json.dumps(data, ensure_ascii=False)) < chat.MAX_TOOL_RESULT_CHARS // 2
+
+
+async def test_floor_counts_the_kept_history(factory, w, client, provider, monkeypatch):
+    """FENCE (review). Wrong implementation: a floor on the current message
+    alone, so a turn whose kept history pushes round 1 over budget is admitted
+    and counted, then stops at 0 dispatches."""
+    _as(factory, w["user"])
+    adapter = provider(lambda n: _resp(content="hi"))
+    await client.post(URL, json=ASK)
+    budget = 3000
+    base = chat._estimate(chat.opening([_msg("user", "")]), adapter.tools[0])
+    cur = _msg("user", "a" * int((budget - 60 - base) * 3.5))
+    hist = [_msg("user", "h" * 450), _msg("assistant", "k" * 450)]
+    assert chat._estimate(hist, []) <= budget // chat.HISTORY_SHARE
+    _budget(monkeypatch, budget)
+    assert (await client.post(URL, json={"messages": [cur]})).status_code == 200
+    calls, turns = len(adapter.seen), await _turns(factory, w["org"])
+    r = await client.post(URL, json={"messages": [*hist, cur]})
+    assert r.status_code == 413
+    assert r.json()["detail"] == {"code": "input_budget_exceeded", "limit_tokens": budget}
+    assert len(adapter.seen) == calls and await _turns(factory, w["org"]) == turns
+
+
+def test_cap_result_does_not_reserialize_per_row(monkeypatch):
+    """FENCE (review). Wrong implementation: re-serializing the whole result once
+    per dropped row (O(N^2); 5,000 rows blocked the event loop for ~14s)."""
+    real, big = json.dumps, []
+
+    def spy(obj, *a, **k):
+        out = real(obj, *a, **k)
+        if len(out) > chat.MAX_TOOL_RESULT_CHARS:
+            big.append(1)
+        return out
+
+    monkeypatch.setattr(chat.json, "dumps", spy)
+    rows = [{"id": i, "m": "m" * 60} for i in range(5000)]
+    out = chat._cap_result({"items": rows, "total": 5000, "offset": 0})
+    monkeypatch.undo()
+    assert len(big) <= 4
+    assert len(real(out, ensure_ascii=False)) <= chat.MAX_TOOL_RESULT_CHARS
+    assert out["items"] == rows[:len(out["items"])] and out["truncated"]["shown"] == len(out["items"])
+
+
+async def test_oversized_error_result_is_capped_too(factory, w, client, provider, monkeypatch):
+    """FENCE (review). Wrong implementation: capping read results only, so an
+    oversized ToolError detail goes to the model whole."""
+    _as(factory, w["user"])
+    spec = registry.get_tool("accounts_list")
+
+    async def boom(ctx, args):
+        raise registry.ToolError("not_found", "d" * 60_000)
+
+    monkeypatch.setitem(registry._TOOLS, "accounts_list", dataclasses.replace(spec, run=boom))
+    msg, ev = await _tool_message(client, provider)
+    assert len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
+    assert json.loads(msg["content"]) == {"error": "result_too_large"}
+    assert ev[-1] == ("done", {}) and ("error", {"code": "input_budget"}) not in ev

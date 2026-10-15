@@ -28,7 +28,8 @@ LOGGER_CALLS = LEVELS | {"a" + name for name in LEVELS}
 ALLOWED_KWARGS = {"exc_info", "extra", "stack_info", "stacklevel"}
 # The only attributes of a caught error that may reach a log line (each is a short identifier or
 # number, never free text from the failing party).
-SAFE_ATTRIBUTES = {"code", "status_code", "reason", "model"}
+# provider_reason: only ever a token-shaped provider error type/code (test_ai_provider_reason P2).
+SAFE_ATTRIBUTES = {"code", "status_code", "reason", "model", "provider_reason"}
 
 
 def _is_logger_factory(node: ast.AST) -> bool:

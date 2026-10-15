@@ -1,4 +1,5 @@
 import functools
+import json
 import logging
 import os
 import sys
@@ -549,3 +550,24 @@ def limits_hit_down(monkeypatch):
         raise OperationalError("INSERT", {}, Exception("limits db down"))
 
     monkeypatch.setattr(rate_limit_db, "hit", boom)
+
+
+class LogView:
+    """Named/text/clear conveniences over the ``log_lines`` fixture (TBD-617). ``msg`` is the event
+    name; a None field is absent from a line, so read optional fields with ``.get``."""
+
+    def __init__(self, log_lines) -> None:
+        self._lines, self._from = log_lines, 0
+
+    @property
+    def events(self) -> list[dict]:
+        return self._lines()[self._from :]
+
+    def clear(self) -> None:
+        self._from = len(self._lines())
+
+    def named(self, name: str) -> list[dict]:
+        return [e for e in self.events if e["msg"] == name]
+
+    def text(self) -> str:
+        return "\n".join(json.dumps(e, default=str) for e in self.events)

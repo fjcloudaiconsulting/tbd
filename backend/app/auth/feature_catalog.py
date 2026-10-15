@@ -15,6 +15,13 @@ the old canonical shape until then; the read path fills the default), an
 admission call at the surface it meters (app.services.usage_service.admit),
 and the regenerated fixture. A ``platform_ai.*`` meter spends platform money:
 its default is 0 and it can never be unlimited.
+
+Per-turn assistant input budget (TBD-613) is a plan-slug constant here, NOT a
+meter and NOT in ``plans.usage_limits`` (that stored contract is meters only).
+``feature_service.get_entitlements`` resolves it from the subscribed plan's slug;
+no subscription or an unknown/custom slug gets ``DEFAULT_TURN_INPUT_TOKENS``.
+A new plan slug that needs a different budget is one entry in
+``TURN_INPUT_TOKENS_BY_PLAN_SLUG``.
 """
 from __future__ import annotations
 
@@ -52,6 +59,11 @@ MeterKey = Literal[
 ]
 
 ALL_METER_KEYS: frozenset[str] = frozenset(get_args(MeterKey))
+
+# Estimated prompt tokens one assistant turn may spend across all its model
+# rounds (history is re-billed every round). Re-priced per plan slug, not stored.
+DEFAULT_TURN_INPUT_TOKENS = 40_000
+TURN_INPUT_TOKENS_BY_PLAN_SLUG: dict[str, int] = {"pro": 60_000}
 
 Period = Literal["day", "month"]
 

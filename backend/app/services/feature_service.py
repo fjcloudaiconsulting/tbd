@@ -17,6 +17,8 @@ from app._time import utcnow_naive
 from app.auth.feature_catalog import (
     ALL_FEATURE_KEYS,
     ALL_METER_KEYS,
+    DEFAULT_TURN_INPUT_TOKENS,
+    TURN_INPUT_TOKENS_BY_PLAN_SLUG,
     PlanFeatures,
     PlanUsageLimits,
 )
@@ -56,6 +58,7 @@ class Entitlements:
     plan_limits: dict[str, UsageLimit]
     has_plan: bool
     overridden: frozenset[str]
+    turn_input_tokens: int = DEFAULT_TURN_INPUT_TOKENS
 
 
 def _limits(model: PlanUsageLimits) -> dict[str, UsageLimit]:
@@ -77,7 +80,7 @@ async def get_entitlements(
     now = now or utcnow_naive()
     plan = (
         await db.execute(
-            select(Plan.features, Plan.usage_limits)
+            select(Plan.features, Plan.usage_limits, Plan.slug)
             .join(Subscription, Subscription.plan_id == Plan.id)
             .where(Subscription.org_id == org_id)
         )
@@ -118,6 +121,10 @@ async def get_entitlements(
         plan_limits=_limits(plan_limits),
         has_plan=plan is not None,
         overridden=frozenset(feature_ovr) | frozenset(limit_ovr),
+        turn_input_tokens=(
+            TURN_INPUT_TOKENS_BY_PLAN_SLUG.get(plan.slug, DEFAULT_TURN_INPUT_TOKENS)
+            if plan else DEFAULT_TURN_INPUT_TOKENS
+        ),
     )
 
 
