@@ -43,6 +43,9 @@ STREAM_TIMEOUT_S = 60.0
 # (the embed() method on this adapter raises NotImplementedError).
 DEFAULT_CAPABILITIES = ["chat", "structured_output", "function_call", "stream"]
 MODELS_URL = "https://api.anthropic.com/v1/models"
+# shortcut: one page of 1000 (Anthropic's max, default is 20), no has_more
+# follow-up; paginate via last_id if the catalog ever exceeds 1000.
+MODELS_PAGE_LIMIT = 1000
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 # Anthropic requires max_tokens on every messages call.
@@ -174,7 +177,11 @@ class AnthropicAdapter:
                 # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
                 # finding as ``captcha.py``, TBD-328).
                 async with asyncio.timeout(VALIDATE_TIMEOUT_S):
-                    resp = await client.get(MODELS_URL, headers=headers)
+                    resp = await client.get(
+                        MODELS_URL,
+                        headers=headers,
+                        params={"limit": MODELS_PAGE_LIMIT},
+                    )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             return ValidateResult(
                 ok=False, error=f"Network error: {type(exc).__name__}"

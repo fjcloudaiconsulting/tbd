@@ -52,7 +52,7 @@ _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL: dict[str, int] = {
     "claude-sonnet-5-5": 8192,
     "claude-sonnet-5": 8192,
     "claude-sonnet-4-6": 8192,
-    "claude-sonnet-4-7": 8192,
+    "claude-sonnet-4-7": 8192,  # priced for history only, not offerable
     "claude-haiku-5-5": 8192,
     "claude-haiku-4-5": 8192,
     "claude-haiku-4-5-20251001": 8192,

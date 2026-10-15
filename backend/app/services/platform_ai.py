@@ -42,7 +42,7 @@ PLATFORM_LABELS = {
 # and at dispatch. OpenRouter and Gemini get theirs with their pricing rows.
 PLATFORM_MODELS: dict[str, set[str]] = {
     "openai": {"gpt-4o", "gpt-4o-mini", "text-embedding-3-small", "text-embedding-3-large"},
-    "anthropic": {"claude-sonnet-4-7", "claude-haiku-4-5"},
+    "anthropic": {"claude-haiku-4-5"},
     "openrouter": set(),
     "gemini": set(),
 }
