@@ -13,7 +13,7 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { SWRConfig } from "swr";
-import { setAccessToken } from "@/lib/api";
+import { setAccessToken, signInWithAccessToken } from "@/lib/api";
 import { runSankeyQuery } from "@/lib/reports/api";
 import { useSankeyQuery } from "@/lib/reports/useSankeyQuery";
 import type { CanvasFilters, SankeyResponse, SankeyWidget } from "@/lib/reports/types";
@@ -74,7 +74,7 @@ describe("runSankeyQuery", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   it("POSTs to /api/v1/reports/query/sankey with the supplied body", async () => {
@@ -144,7 +144,7 @@ describe("useSankeyQuery", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   it("calls runSankeyQuery and returns data once resolved", async () => {

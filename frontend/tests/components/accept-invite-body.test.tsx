@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import AcceptInviteBody from "@/components/auth/AcceptInviteBody";
-import { ApiResponseError, apiFetch, setAccessToken } from "@/lib/api";
+import { ApiResponseError, apiFetch, signInWithAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, apiFetch: vi.fn(), setAccessToken: vi.fn() };
+  return { ...actual, apiFetch: vi.fn(), setAccessToken: vi.fn(), signInWithAccessToken: vi.fn() };
 });
 
 vi.mock("@/components/auth/AuthProvider", async () => {
@@ -25,7 +25,7 @@ vi.mock("next/navigation", () => ({
 
 describe("AcceptInviteBody", () => {
   const apiFetchMock = vi.mocked(apiFetch);
-  const setAccessTokenMock = vi.mocked(setAccessToken);
+  const setAccessTokenMock = vi.mocked(signInWithAccessToken);
   const useAuthMock = vi.mocked(useAuth);
   const refreshMeMock = vi.fn();
 

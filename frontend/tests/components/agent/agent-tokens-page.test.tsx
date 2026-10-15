@@ -9,7 +9,7 @@ import axe from "axe-core";
 
 import AgentTokensPage from "@/app/settings/agent-tokens/page";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { setAccessToken } from "@/lib/api";
+import { setAccessToken, signInWithAccessToken } from "@/lib/api";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import type { AgentActionRow, AgentToken } from "@/lib/agent/types";
 import type { AIStatus, User } from "@/lib/types";
@@ -88,7 +88,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  setAccessToken(null);
+  signInWithAccessToken(null);
   sessionStorage.clear();
 });
 

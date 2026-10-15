@@ -21,7 +21,8 @@ const refreshMeMock = vi.fn(async () => {});
 const replaceMock = vi.fn();
 
 vi.mock("@/lib/api", () => ({
-  setAccessToken: (...args: unknown[]) => setAccessTokenMock(...args),
+  setAccessToken: vi.fn(),
+  signInWithAccessToken: (...args: unknown[]) => setAccessTokenMock(...args),
 }));
 
 vi.mock("@/components/auth/AuthProvider", () => ({

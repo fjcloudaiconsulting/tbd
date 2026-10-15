@@ -378,6 +378,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     // Map the exit reason to the banner selector the /login page reads.
     if (authExitReason === "expired") params.set("reason", "expired");
     else if (authExitReason === "manual") params.set("reason", "logout");
+    else if (authExitReason === "account_changed") params.set("reason", "account_changed");
 
     const qs = params.toString();
     router.replace(qs ? `/login?${qs}` : "/login");

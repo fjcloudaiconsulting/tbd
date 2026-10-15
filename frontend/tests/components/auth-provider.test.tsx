@@ -7,6 +7,7 @@ import {
   ApiTimeoutError,
   apiFetch,
   setAccessToken,
+  signInWithAccessToken,
 } from "@/lib/api";
 import type { User } from "@/lib/types";
 
@@ -19,6 +20,7 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     apiFetch: vi.fn(),
     setAccessToken: vi.fn(),
+    signInWithAccessToken: vi.fn(),
   };
 });
 
@@ -88,10 +90,12 @@ function Harness() {
 describe("AuthProvider", () => {
   const apiFetchMock = vi.mocked(apiFetch);
   const setAccessTokenMock = vi.mocked(setAccessToken);
+  const signInMock = vi.mocked(signInWithAccessToken);
 
   beforeEach(() => {
     apiFetchMock.mockReset();
     setAccessTokenMock.mockReset();
+    signInMock.mockReset();
   });
 
   afterEach(() => {
@@ -174,7 +178,7 @@ describe("AuthProvider", () => {
       expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
     );
 
-    expect(setAccessTokenMock).toHaveBeenCalledWith("login-token");
+    expect(signInMock).toHaveBeenCalledWith("login-token");
     expect(apiFetchMock).toHaveBeenNthCalledWith(3, "/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify({ login: "alice", password: "secret" }),
@@ -238,8 +242,10 @@ describe("AuthProvider", () => {
     // then login /login → "login-token". fetchMe's persistent
     // transient handler does NOT call setAccessToken — the last
     // value must remain "login-token".
-    expect(setAccessTokenMock).toHaveBeenCalledTimes(2);
-    expect(setAccessTokenMock).toHaveBeenLastCalledWith("login-token");
+    expect(setAccessTokenMock).toHaveBeenCalledTimes(1);
+    expect(setAccessTokenMock).toHaveBeenLastCalledWith(null);
+    expect(signInMock).toHaveBeenCalledTimes(1);
+    expect(signInMock).toHaveBeenLastCalledWith("login-token");
   });
 
   it("login() rejects on terminal /auth/me 401 AND clears accessToken (real auth death)", async () => {
@@ -262,10 +268,14 @@ describe("AuthProvider", () => {
     expect(screen.getByTestId("user")).toHaveTextContent("none");
     // setAccessToken sequence: restore /refresh terminal → null,
     // login /login → "login-token", terminal /me → null.
-    expect(setAccessTokenMock).toHaveBeenCalledTimes(3);
+    expect(setAccessTokenMock).toHaveBeenCalledTimes(2);
     expect(setAccessTokenMock).toHaveBeenNthCalledWith(1, null);
-    expect(setAccessTokenMock).toHaveBeenNthCalledWith(2, "login-token");
-    expect(setAccessTokenMock).toHaveBeenNthCalledWith(3, null);
+    expect(setAccessTokenMock).toHaveBeenNthCalledWith(2, null);
+    expect(signInMock).toHaveBeenCalledWith("login-token");
+    // the terminal-/me clear came AFTER the sign-in, not before it
+    expect(setAccessTokenMock.mock.invocationCallOrder[1]).toBeGreaterThan(
+      signInMock.mock.invocationCallOrder[0],
+    );
   });
 
   it("surfaces MFA challenges to the caller", async () => {

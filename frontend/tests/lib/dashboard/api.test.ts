@@ -7,7 +7,7 @@
  * touching the network.
  */
 
-import { setAccessToken } from "@/lib/api";
+import { setAccessToken, signInWithAccessToken } from "@/lib/api";
 import { getDashboard, saveDashboard } from "@/lib/dashboard/api";
 import type { DashboardLayoutResponse } from "@/lib/dashboard/types";
 
@@ -45,7 +45,7 @@ describe("getDashboard", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   it("GETs /api/v1/dashboard", async () => {
@@ -96,7 +96,7 @@ describe("saveDashboard", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   it("PATCHes /api/v1/dashboard", async () => {
