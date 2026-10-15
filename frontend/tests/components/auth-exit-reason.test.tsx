@@ -33,7 +33,7 @@ const TEST_USER = {
 // Records every authExitReason value seen across React commits, so a test
 // can assert the reason never *transiently* passed through a forbidden state
 // (not just where it landed).
-const reasonLog: Array<"expired" | "manual" | "null"> = [];
+const reasonLog: Array<"expired" | "manual" | "account_changed" | "null"> = [];
 
 function Harness() {
   const { user, authExitReason, clearAuthExitReason, logout } = useAuth();

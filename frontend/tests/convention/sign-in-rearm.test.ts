@@ -77,6 +77,9 @@ describe("TBD-623 F11: the pin is re-armed only by the four sign-in sites", () =
       for (const f of walk(path.join(ROOT, dir))) {
         const rel = path.relative(ROOT, f).split(path.sep).join("/");
         if (rel === API) continue;
+        // Cheap pre-filter: parsing every source file blew the 5s budget under
+        // the full suite. A file without the name cannot reference it.
+        if (!readFileSync(f, "utf8").includes(NAME)) continue;
         const n = references(parse(f));
         if (n > 0) found[rel] = n;
       }
