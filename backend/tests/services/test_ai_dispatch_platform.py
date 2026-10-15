@@ -39,6 +39,7 @@ from app.models.usage_counter import UsageCounter
 from app.models.user import Organization
 from app.services import agent_chat, ai_consent_service, ai_dispatch, platform_ai, platform_reserve
 from app.services.ai_credential_crypto import encrypt
+from tests.factories.ai import ai_on_rows
 from app.services.ai_dispatch import (
     AICapabilityNotSupported,
     AIDispatchFailed,
@@ -344,6 +345,7 @@ async def test_byok_dispatch_never_reserves_and_is_org_key(db, sf, fake, spy):
     db.add(cred)
     await db.flush()
     db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
+    db.add(ai_on_rows(org)[0])  # TBD-627: AI switch on
     await db.commit()
     await _chat(db, org, None)
     assert spy == [] and await counters(sf, org) == {}
@@ -361,6 +363,7 @@ async def test_k13_byok_bodies_are_byte_identical_no_bound_no_extras(db, sf, fak
     db.add(cred)
     await db.flush()
     db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
+    db.add(ai_on_rows(org)[0])  # TBD-627: AI switch on
     await db.commit()
     await ENTRIES[entry](db, org, None)
     assert spy == [] and "max_tokens" not in fake.bodies[0] and "provider" not in fake.bodies[0]
@@ -490,6 +493,7 @@ async def test_f_q8_byok_still_pins_zero_and_dispatches(db, sf, fake, monkeypatc
     await db.flush()
     db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
     db.add(OrgAIDefaultCaps(org_id=org, hard_cap_cents=10**6))
+    db.add(ai_on_rows(org)[0])  # TBD-627: AI switch on
     await db.commit()
     monkeypatch.setattr(ai_dispatch, "estimate_prompt_tokens_from_messages",
                         lambda _m: (_ for _ in ()).throw(ValueError("x")))
@@ -596,6 +600,7 @@ async def test_k11_a_byok_row_never_receives_an_env_key(db, sf, fake):
     db.add(cred)
     await db.flush()
     db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="m"))
+    db.add(ai_on_rows(org)[0])  # TBD-627: AI switch on
     await db.commit()
     await _chat(db, org, None)
     auth = fake.reqs[0].headers["authorization"]
@@ -987,7 +992,7 @@ def test_k7_only_settle_can_decrement_a_counter():
 # ---- review round 1 -----------------------------------------------------------
 
 def _ent(tokens_limit, cents_limit=1000):
-    return SimpleNamespace(limits={
+    return SimpleNamespace(features={"ai.agent": True}, limits={
         "platform_ai.tokens": SimpleNamespace(period="month", limit=tokens_limit),
         "platform_ai.cents": SimpleNamespace(period="month", limit=cents_limit)})
 
@@ -1018,18 +1023,23 @@ def _validation_error():
 @pytest.mark.parametrize("make", [lambda: KeyError("x"), _validation_error,
                                   lambda: OperationalError("s", {}, Exception("d"))],
                          ids=["KeyError", "ValidationError", "OperationalError"])
-async def test_item9_entitlement_failures_are_typed_refusals(db, sf, fake, monkeypatch, make):
+async def test_item9_entitlement_read_failures_propagate_and_reserve_nothing(db, sf, fake, monkeypatch, make):
     org, _ = await setup(db)
 
     async def boom(*a, **k):
         raise make()
 
     monkeypatch.setattr(platform_reserve.feature_service, "get_entitlements", boom)
-    with pytest.raises(AIPlatformUnavailable):
+    # GUARD (TBD-627): dispatch reads the entitlement first, so the original
+    # error propagates (fail closed) before any reservation or request.
+    with pytest.raises(type(make())):
         await _chat(db, org)
+    assert fake.reqs == [] and await counters(sf, org) == {} and await spend(sf) == 0
+    # The typed-refusal property of the reserve path keeps its own fence.
     with pytest.raises(platform_reserve.PlatformAIUnavailable):
         await platform_reserve.reserve(db, org, SimpleNamespace(platform_provider="openai"), 1, 1, 100)
-    assert fake.reqs == []
+    with pytest.raises(platform_reserve.PlatformAIUnavailable):
+        await platform_reserve.check_headroom(db, org, 1, 1, 100)
 
 
 async def test_item10_settings_read_db_error_is_a_402_not_a_500(db, sf, fake, monkeypatch):
@@ -1115,21 +1125,22 @@ async def test_c1_platform_dispatch_rechecks_consent(db, sf, fake, spy, monkeypa
     assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
 
 
-async def test_r2_2_dark_platform_answers_not_available_before_consent(db, sf, fake, monkeypatch):
+async def test_r2_2_dark_platform_with_ai_off_answers_consent_required(db, sf, fake, spy, monkeypatch):
+    """P3 (TBD-627): consent is the org switch, checked before the platform
+    switch, so a dark platform with AI off is 412 ``ai_consent_required``."""
     org, _ = await setup(db)
     await _revoke(db, org)
     monkeypatch.setattr(app_settings, "ai_native_enabled", False)
-    with pytest.raises(NativeNotAvailable) as ei:
+    with pytest.raises(PlatformConsentRequired) as ei:
         await _chat(db, org)
-    assert not isinstance(ei.value, PlatformConsentRequired)
-    assert http_for_dispatch_error(ei.value).detail["code"] == "ai_native_not_available"
+    assert http_for_dispatch_error(ei.value).detail["code"] == "ai_consent_required"
+    assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
 
 
 async def test_b2a_a_model_outside_the_provider_is_refused_before_reserve(db, sf, fake, spy):
     await set_platform(db, models={"anthropic": ["gpt-4o"]})
     org = await mk_org(db)
     await mk_platform(db, org, "anthropic", "gpt-4o")
-    await _revoke(db, org)  # the model refusal answers before the consent read
     with pytest.raises(NativeNotAvailable) as ei:
         await _chat(db, org)
     assert ei.value.code == "platform_model_not_allowed"
@@ -1137,14 +1148,16 @@ async def test_b2a_a_model_outside_the_provider_is_refused_before_reserve(db, sf
 
 
 
-async def test_consent_read_db_error_is_platform_unavailable(db, sf, fake, spy, monkeypatch):
+async def test_consent_read_db_error_propagates_and_dispatches_nothing(db, sf, fake, spy, monkeypatch):
+    """GUARD (TBD-627): the consent read is no longer platform-only, so its
+    error is not mapped to ``AIPlatformUnavailable``; it fails closed."""
     org, _ = await setup(db)
 
     async def boom(*a, **k):
         raise OperationalError("select", {}, Exception("db down"))
 
     monkeypatch.setattr(ai_consent_service, "has_current_consent", boom)
-    with pytest.raises(AIPlatformUnavailable):
+    with pytest.raises(OperationalError):
         await _chat(db, org)
     assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
 
@@ -1161,3 +1174,32 @@ async def test_r2_3_mid_chat_consent_refusal_reports_its_own_code(db, sf, fake, 
     await agent_chat.preflight(db, SimpleNamespace(org_id=org), MSGS, TOOLS)
     body = "".join([ev async for ev in agent_chat.stream_turn(lambda: db, 1, org, "n", MSGS, TOOLS, 40_000, False)])
     assert '"code":"ai_consent_required"' in body and "ai_native_not_available" not in body
+
+
+async def test_f13_chat_preflight_on_a_byok_org_with_ai_off_is_412_and_counts_nothing(db, sf, fake, chat_env, monkeypatch):
+    """GUARD TBD-627 F13: the agent-chat preflight reuses ``_prepare_dispatch``,
+    so a BYOK org with no current consent is refused 412 ``ai_consent_required``
+    with the turn lock released and ``assistant.turns`` not admitted."""
+    org = await mk_org(db, extra={"assistant.turns": {"period": "day", "limit": 5}})
+    cred = OrgAICredential(
+        org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-x"),
+        key_fingerprint="0123456789abcdef", last_four="2345", label="p",
+        discovered_capabilities=["chat", "function_call"])
+    db.add(cred)
+    await db.flush()
+    db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
+    await db.commit()
+    released = []
+    real = agent_chat.release_lock
+
+    async def spy(*a, **k):
+        released.append(a)
+        return await real(*a, **k)
+
+    monkeypatch.setattr(agent_chat, "release_lock", spy)
+    with pytest.raises(HTTPException) as ei:
+        await agent_chat.preflight(db, SimpleNamespace(org_id=org), MSGS, TOOLS)
+    assert (ei.value.status_code, ei.value.detail["code"]) == (412, "ai_consent_required")
+    assert len(released) == 1 and fake.reqs == []
+    async with sf() as s:
+        assert await s.scalar(select(UsageCounter).where(UsageCounter.meter == "assistant.turns")) is None

@@ -454,3 +454,32 @@ async def test_list_unknown_sort_is_400(session_factory):
     client = TestClient(app)
     resp = client.get("/api/v1/settings/ai-providers?sort_by=encrypted_api_key")
     assert resp.status_code == 400
+
+
+async def test_f12_config_writes_do_not_need_the_ai_switch(session_factory):
+    """FENCE TBD-627 F12 (C4): the org has NO consent row, and credential
+    create, validate (refresh models), rotate and a routing write all work.
+    Kills: the master switch spread onto configuration writes."""
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with _patch_adapter(_ok_validate()):
+        created = client.post(
+            "/api/v1/settings/ai-providers",
+            json={"provider": "openai", "api_key": "sk-test-f12-aaaa"},
+        )
+    assert created.status_code == 201, created.text
+    cred_id = created.json()["id"]
+    with _patch_adapter(_ok_validate(["gpt-5"])):
+        assert client.post(f"/api/v1/settings/ai-providers/{cred_id}/validate").status_code == 200
+        assert client.post(
+            f"/api/v1/settings/ai-providers/{cred_id}/rotate", json={"api_key": "sk-test-f12-bbbb"}
+        ).status_code == 200
+    put = client.put(
+        "/api/v1/settings/ai-providers/routing/default",
+        json={"credential_id": cred_id, "model": "gpt-4o-mini"},
+    )
+    assert put.status_code == 200, put.text

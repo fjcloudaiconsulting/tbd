@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from tests.factories.ai import AI_ALL, ai_on_rows
 from app.config import settings as app_settings
 from app.models import Base
 from app.models.ai_usage_ledger import AIUsageLedger
@@ -81,6 +82,8 @@ async def seeded_org(db_session: AsyncSession) -> Organization:
     """Minimal org with a user + routing so the service can resolve a model."""
     org = Organization(name="TestOrg", billing_cycle_day=1)
     db_session.add(org)
+    await db_session.flush()
+    db_session.add_all(ai_on_rows(org.id, *AI_ALL))
     await db_session.commit()
 
     user = User(
@@ -622,3 +625,33 @@ async def test_refine_35_day_prompt_payload_is_unmodified(
     assert payload["baseline_forecast"]["period_end"] == baseline["period_end"]
     assert payload["baseline_forecast"]["forecast_expense"] == baseline["forecast_expense"]
     assert "baseline monthly forecast" in system_msg["content"]
+
+
+@pytest.mark.asyncio
+async def test_refine_entitlement_off_falls_back_with_its_own_code(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """FENCE TBD-627: ``AIFeatureNotEntitled`` is a ``NativeNotAvailable``; the
+    explicit except-tuple must name it or the reason reads
+    ``ai_native_not_available``."""
+    async def fake_compute_forecast(db, org_id, period_start=None):
+        return _FAKE_BASELINE
+
+    async def fake_build_history(db, *, org_id, period_start, months=12, currency_scope=None):
+        return _FAKE_HISTORY
+
+    async def fake_category_index(db, *, org_id):
+        return {1: "Rent", 2: "Food"}
+
+    async def fake_structured(db, **kw):
+        raise ai_dispatch.AIFeatureNotEntitled("ai.forecast")
+
+    monkeypatch.setattr(svc.forecast_service, "compute_forecast", fake_compute_forecast)
+    monkeypatch.setattr(svc, "_build_category_history", fake_build_history)
+    monkeypatch.setattr(svc, "_category_index", fake_category_index)
+    monkeypatch.setattr(ai_dispatch, "call_llm_structured", fake_structured)
+    resp = await svc.refine_forecast(
+        db_session, org_id=seeded_org.id, scope=Scope.TOP_20, timeframe_months=6
+    )
+    assert resp.provenance.ai_applied is False
+    assert resp.provenance.fallback_reason == "feature_not_enabled"

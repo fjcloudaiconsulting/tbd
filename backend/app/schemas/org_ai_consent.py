@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,9 +19,11 @@ class ConsentCreate(BaseModel):
     consent_version: str = Field(
         min_length=1, max_length=CONSENT_VERSION_MAX_LENGTH
     )
-    allow_training: bool = False
-    allow_rag: bool = False
-    allow_telemetry: bool = False
+    # TBD-627: nothing consumes these, so a stored ``true`` would be a false
+    # promise. Only ``false`` (or omitted) is accepted.
+    allow_training: Literal[False] = False
+    allow_rag: Literal[False] = False
+    allow_telemetry: Literal[False] = False
     revoked: bool = False
 
 

@@ -6,6 +6,7 @@
 
 import { apiFetch } from "@/lib/api";
 import { readSse, type SseEvent } from "./sse";
+import { AI_OFF_MESSAGE } from "@/lib/ai-off";
 import type { StagedAction } from "./types";
 
 export const MAX_MESSAGES = 40;
@@ -90,7 +91,7 @@ const ERRORS: Record<string, string> = {
   user_inactive: "Your account is no longer active.",
   ai_routing_not_configured: "The assistant needs an AI provider. An admin can set one up in Settings, AI providers.",
   ai_capability_not_supported: "The configured AI model cannot use tools. An admin can pick another in Settings, AI providers.",
-  ai_consent_required: "An admin needs to accept the AI provider terms in Settings, AI providers.",
+  ai_consent_required: AI_OFF_MESSAGE,
   ai_hard_cap_exceeded: "Your organization's AI spending limit is reached for now.",
   message_too_long: "Your message is over 7,000 characters. Shorten it and try again.",
   input_budget_exceeded: "Your message is too long for the assistant. Shorten it and try again.",

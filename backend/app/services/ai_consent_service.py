@@ -90,9 +90,16 @@ async def get_current_consents(
     )
 
 
+# The one sentence for "AI is off", shared by every refusal (dispatch 412, MCP
+# door, mint and OAuth consent) so the UI shows the same words everywhere.
+AI_OFF_MESSAGE = (
+    "AI is off for your organization. An admin can turn it on in Settings, AI providers."
+)
+
+
 async def has_current_consent(db: AsyncSession, *, org_id: int) -> bool:
-    """Platform AI's consent rule: the latest row is not revoked AND carries
-    the current ToS version (a version bump pauses platform AI until the org
+    """The org AI master switch (TBD-627): the latest row is not revoked AND
+    carries the current ToS version (a version bump turns AI off until the org
     re-consents)."""
     snap = await get_current_consents(db, org_id=org_id)
     return (

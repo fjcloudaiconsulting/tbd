@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from tests.factories.ai import AI_ALL, ai_on_rows
 from app.config import settings
 from app.models import Base
 from app.models.api_token import ApiToken
@@ -199,6 +200,7 @@ async def superadmin(factory) -> User:
         # ai.agent so the agent-token mint's feature gate admits the session
         # (its interactive-session guard runs first either way).
         s.add(OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True))
+        s.add(ai_on_rows(org.id)[0])  # TBD-627: AI switch on
         await s.commit()
         u = User(
             org_id=org.id,

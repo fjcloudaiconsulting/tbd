@@ -176,7 +176,7 @@ export default function PrivacyPolicyPage() {
                 Google Analytics 4 receives aggregate, anonymized visitor
                 traffic data, as described in section 1.
               </li>
-              <li>
+              <li id="ai-providers">
                 <strong>Your organization&rsquo;s AI provider</strong> (only
                 if your organization configures its own AI provider with its
                 own key): we send the content you submit to that AI feature

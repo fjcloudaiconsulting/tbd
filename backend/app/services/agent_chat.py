@@ -327,6 +327,12 @@ async def stream_turn(
                 "round": rounds, "est_tokens": est, "prompt_tokens": None,
                 "completion_tokens": None, "ledger_id": None, "tools": [],
             }
+            # End the tool phase's transaction before every round: on MySQL
+            # REPEATABLE READ its snapshot would predate a concurrent consent
+            # revoke, and this round's consent check could read a stale "on"
+            # and send one more round. Only reads are pending here (dispatch
+            # and ``invoke`` commit their own writes), so rollback is safe.
+            await db.rollback()
             pending = asyncio.ensure_future(ai_dispatch.call_llm_function(
                 db, org_id=org_id, feature_key=FEATURE_KEY, messages=transcript, tools=tools,
             ))
@@ -341,7 +347,7 @@ async def stream_turn(
                 rd["ledger_id"] = getattr(exc, "ledger_id", None)  # set on a ledgered failure
                 await emit(outcome)
                 break
-            except ai_dispatch.PlatformConsentRequired as exc:
+            except (ai_dispatch.PlatformConsentRequired, ai_dispatch.AIFeatureNotEntitled) as exc:
                 outcome = exc.code  # same code as the pre-flight refusal
                 await emit(outcome)
                 break

@@ -45,6 +45,7 @@ from app.rate_limit import limiter
 from app.services import feature_service, notification_service
 from tests.agent.test_agent_tokens import (
     PASSWORD,
+    _ai_off,
     _audits,
     _auth,
     _jwt,
@@ -1279,3 +1280,109 @@ async def test_flag_off_every_oauth_route_is_an_unknown_path(factory, client, mo
     await _same_as_unknown(client, "POST", REG, json={"redirect_uris": [CB], "client_name": "C"})
     async with factory() as s:
         assert (await s.scalar(select(func.count()).select_from(OAuthClient))) == 0
+
+
+# ── TBD-627: the org AI switch ──────────────────────────────────────────────
+
+
+async def _ai_on(factory, org_id: int) -> None:
+    from app.models.org_ai_consent import OrgAIConsent
+
+    async with factory() as s:
+        s.add(OrgAIConsent(org_id=org_id, consent_version=settings.ai_native_current_consent_version))
+        await s.commit()
+
+
+async def test_f9_consent_screen_and_approve_refuse_while_ai_is_off_but_deny_still_redirects(factory, client):
+    """FENCE TBD-627 F9. Wrong implementations: gating the context route only;
+    a dependency-level gate on POST (Deny would 403 instead of redirecting
+    ``access_denied``); ``assert_ai_on`` placed after the mint bucket
+    (``actions._hit``) or after ``consume_stepup``."""
+    org = await _org(factory, "A")
+    uid = await _user(factory, org, "m")
+    h = await _jwt(factory, uid)
+    cid = await _cid(client)
+    await _ai_off(factory, org)
+    _, challenge = _pkce()
+    r = await client.get(CTX, params=_params(cid, challenge), headers=h)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "ai_off"
+    stepup = AsyncMock(return_value=True)
+    from unittest.mock import patch
+    # An SSO-style proof (sso_proof True), so consume_stepup WOULD be awaited
+    # if the gate came after it.
+    with patch("app.routers.oauth.consume_stepup", stepup), \
+            patch("app.routers.oauth._verify_step_up", return_value=True):
+        r, _ = await _consent(client, h, cid)
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == {
+            "code": "ai_off",
+            "message": "AI is off for your organization. An admin can turn it on in Settings, AI providers.",
+        }
+    assert not stepup.await_count
+    assert await _rows(factory, uid) == []
+    assert rate_limit_db.get(f"agent:mint:usr:{uid}") == 0
+    r, _ = await _consent(client, h, cid, approve=False)
+    assert r.status_code == 200, r.text
+    assert _q(r.json()["redirect_to"])["error"] == "access_denied"
+
+
+async def test_f10_refresh_and_code_exchange_refuse_while_ai_is_off_and_resume_after(factory, client):
+    """FENCE TBD-627 F10. AI off: refresh is ``invalid_grant`` and CHANGES
+    NOTHING (grant not revoked, refresh hash unchanged); after re-consent the
+    SAME refresh token rotates. Same for an unredeemed authorization code.
+    Wrong implementations: no check; revoking the grant on AI off."""
+    g = await _connected(factory, client)
+    g2 = await _grant(factory, client, uid=g["uid"], cid=g["cid"])
+    before = (await _rows(factory, g["uid"]))[0]
+    await _ai_off(factory, g["org"])
+    assert _err(await _refresh(client, g["refresh_token"])) == (400, "invalid_grant")
+    assert _err(await _exchange(client, g2)) == (400, "invalid_grant")
+    after = (await _rows(factory, g["uid"]))[0]
+    assert (after.revoked_at, after.refresh_hash) == (None, before.refresh_hash)
+    await _ai_on(factory, g["org"])
+    r = await _refresh(client, g["refresh_token"])
+    assert r.status_code == 200, r.text
+    assert (await _exchange(client, g2)).status_code == 200
+
+
+async def test_f11_a_consent_version_bump_pauses_dispatch_mcp_and_refresh_together(factory, client, monkeypatch):
+    """FENCE TBD-627 F11. One version bump: a BYOK dispatch is 412
+    ``ai_consent_required``, the MCP door is 403 ``ai_off``, a refresh is
+    ``invalid_grant``. Wrong implementation: any surface keyed on "a consent
+    row exists" instead of ``has_current_consent``."""
+    import base64
+    import os
+    from app import mcp_main
+    from app.models.org_ai_consent import OrgAIConsent
+    from app.models.org_ai_credential import AiProvider, OrgAICredential
+    from app.models.org_ai_routing import OrgAIDefaultRouting
+    from app.services import ai_dispatch
+    from app.services.ai_credential_crypto import encrypt
+
+    monkeypatch.setattr(settings, "ai_credential_encryption_key",
+                        base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"))
+    monkeypatch.setattr(settings, "ai_credential_encryption_key_prev", "")
+    monkeypatch.setattr(mcp_main, "session_factory", factory)
+    g = await _connected(factory, client)
+    async with factory() as s:
+        cred = OrgAICredential(
+            org_id=g["org"], provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-x"),
+            key_fingerprint="0123456789abcdef", last_four="2345", label="p",
+            discovered_capabilities=["chat"])
+        s.add(cred)
+        await s.flush()
+        s.add(OrgAIDefaultRouting(org_id=g["org"], credential_id=cred.id, model="gpt-4o-mini"))
+        s.add(OrgAIConsent(org_id=g["org"], consent_version="a-newer-version-than-the-row"))
+        await s.commit()
+    async with factory() as s:
+        # The latest row now carries a version that is not the configured one.
+        with pytest.raises(ai_dispatch.PlatformConsentRequired) as ei:
+            await ai_dispatch.call_llm(s, org_id=g["org"], feature_key="chat",
+                                       request_payload={"messages": [{"role": "user", "content": "hi"}]})
+        assert ai_dispatch.http_for_dispatch_error(ei.value).status_code == 412
+    async with AsyncClient(transport=ASGITransport(app=mcp_main.app), base_url="http://t") as mc:
+        r = await mc.post("/mcp", content='{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers={
+            "content-type": "application/json", "authorization": f"Bearer {g['access_token']}",
+            "x-forwarded-for": "203.0.113.7"})
+    assert r.status_code == 403 and r.json()["error"]["data"] == {"code": "ai_off"}
+    assert _err(await _refresh(client, g["refresh_token"])) == (400, "invalid_grant")

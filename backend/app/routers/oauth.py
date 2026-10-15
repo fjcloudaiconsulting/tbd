@@ -26,7 +26,7 @@ from starlette.routing import Match
 
 from app.agent import actions
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
-from app.auth.feature_deps import require_feature, require_meter_open
+from app.auth.feature_deps import assert_ai_on, require_feature, require_meter_open
 from app.auth.pat import require_interactive_session
 from app.auth.stepup import consume_stepup
 from app.config import settings
@@ -159,6 +159,9 @@ async def authorize_context(
     db: AsyncSession = Depends(get_db),
 ):
     """What the consent page shows. Never stamps the client as used."""
+    # In the body, not a route dependency: those run before the interactive
+    # check, so a non-interactive caller would learn the switch state.
+    await assert_ai_on(db, current_user.org_id)
     client, redirect, requested = await _validated(db, {
         "client_id": client_id, "redirect_uri": redirect_uri, "response_type": response_type,
         "code_challenge": code_challenge, "code_challenge_method": code_challenge_method,
@@ -198,6 +201,9 @@ async def authorize_decision(
     response.headers.update(NO_STORE)
     if not body.approve:
         return {"redirect_to": oauth_service.build_redirect(redirect, {"error": "access_denied"}, state)}
+    # TBD-627: only Approve is refused while AI is off (Deny above always
+    # redirects), and before the mint bucket and the step-up proof below.
+    await assert_ai_on(db, actor[2])
     granted = body.granted_scope
     if granted not in oauth_service.OAUTH_SCOPES or AGENT_SCOPE_RANK[granted] > AGENT_SCOPE_RANK[requested]:
         raise _consent_400(ConsentError(

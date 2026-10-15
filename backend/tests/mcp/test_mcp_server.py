@@ -37,10 +37,12 @@ from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
 from app.models.limit_override import OrgLimitOverride
+from app.models.org_ai_consent import OrgAIConsent
 from app.models.usage_counter import UsageCounter
 from app.models.user import Role, User
 from app.config import settings
 from app.security import hash_password
+from tests.factories.ai import ai_on_rows
 from app.services.api_token_service import hash_api_token
 from app.services.feature_gate import Feature
 
@@ -110,6 +112,7 @@ async def w(factory):
         db.add_all([
             BillingPeriod(org_id=org.id, start_date=P_START), budget,
             OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True),
+            *ai_on_rows(org.id)[:1],  # TBD-627: the org's AI switch is on
         ])
         await db.commit()
         return {"org": org.id, "user": user.id, "budget": budget.id,
@@ -251,19 +254,25 @@ async def test_fm4_every_method_401s_without_a_valid_agent_bearer(client, w, fac
 # ── F-E4: the entitlement door on every method ───────────────────────────
 
 @pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("off", ["feature", "meter"])
+@pytest.mark.parametrize("off", ["feature", "meter", "consent_revoked", "version_bump"])
 async def test_fe4_door_refuses_every_method(client, w, factory, method, off):
-    """FENCE F-E4. Wrong implementations: gating on the ``ai.agent`` key
-    alone (a 0 ``mcp.calls`` limit still serves), or checking only inside
-    tools/call (initialize, ping and tools/list still answer)."""
+    """FENCE F-E4 (+ TBD-627 F7). Wrong implementations: gating on the
+    ``ai.agent`` key alone (a 0 ``mcp.calls`` limit still serves), checking
+    only inside tools/call (initialize, ping and tools/list still answer), or
+    gating the org's AI switch only in ``check_gates``/tools/call."""
     async with factory() as db:
         if off == "feature":
             row = await db.scalar(select(OrgFeatureOverride).where(
                 OrgFeatureOverride.org_id == w["org"]))
             row.value = False
-        else:
+        elif off == "meter":
             db.add(OrgLimitOverride(org_id=w["org"], meter="mcp.calls", period="month",
                                     limit_value=0))
+        elif off == "consent_revoked":
+            db.add(OrgAIConsent(org_id=w["org"], consent_version=settings.ai_native_current_consent_version,
+                                revoked_at=utcnow_naive()))
+        else:
+            db.add(OrgAIConsent(org_id=w["org"], consent_version="older-version"))
         await db.commit()
     r = await _post(client, _msg(method))
     assert r.status_code == 403
@@ -271,8 +280,38 @@ async def test_fe4_door_refuses_every_method(client, w, factory, method, off):
     # Nothing is parsed before the door: a malformed body is refused the same.
     assert (await _post(client, None, raw="{not json")).status_code == 403
     err = r.json()["error"]["data"]
-    assert err == {"code": "feature_not_enabled", "feature_key": "ai.agent", "meter": "mcp.calls"}
+    if off in ("feature", "meter"):
+        assert err == {"code": "feature_not_enabled", "feature_key": "ai.agent", "meter": "mcp.calls"}
+    else:
+        assert err == {"code": "ai_off"}
+        assert r.json()["error"]["message"] == (
+            "AI is off for your organization. An admin can turn it on in Settings, AI providers.")
+        # The door precedes the protocol-version check (no header dependence).
+        h = {"content-type": "application/json", "authorization": f"Bearer {_tok('write')}",
+             "mcp-protocol-version": "1999-01-01", "x-forwarded-for": "203.0.113.7"}
+        bad = await client.post("/mcp", content=json.dumps(_msg(method)), headers=h)
+        assert bad.status_code == 403 and bad.json()["error"]["data"] == {"code": "ai_off"}
+        # Re-consent and the same token is served again.
+        async with factory() as db:
+            db.add(OrgAIConsent(org_id=w["org"], consent_version=settings.ai_native_current_consent_version))
+            await db.commit()
+        assert (await _post(client, _msg("tools/list"))).status_code == 200
     assert await _count(factory, w) == 0
+
+
+async def test_f7_consent_read_failure_is_a_503_never_an_auth_error(client, w, monkeypatch):
+    """FENCE TBD-627 F7. Wrong implementation: the consent read outside its
+    own SQLAlchemyError wrapper (a 500) or mapped to 401/403."""
+    from sqlalchemy.exc import OperationalError
+    from app.services import ai_consent_service
+
+    async def boom(*a, **k):
+        raise OperationalError("select", {}, Exception("db down"))
+
+    monkeypatch.setattr(ai_consent_service, "has_current_consent", boom)
+    r = await _post(client, _msg("tools/list"))
+    assert r.status_code == 503
+    assert "www-authenticate" not in r.headers
 
 
 # ── F-R8: scope filters list AND call ────────────────────────────────────
