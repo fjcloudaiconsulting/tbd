@@ -38,6 +38,7 @@ from sqlalchemy.pool import StaticPool
 from app.config import settings
 from app.models import Base
 from app.models.api_token import ApiToken
+from app.models.org_ai_credential import AiProvider
 from app.models.feature_override import OrgFeatureOverride
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
@@ -345,7 +346,7 @@ def test_every_ai_provider_write_route_is_interactive_only():
     ungated = [
         f"{sorted(r.methods)} {r.path}"
         for r in writes
-        if not any((m, r.path) in allowed for m in r.methods)
+        if not (r.methods <= {"DELETE"} and ("DELETE", r.path) in allowed)
         and require_interactive_session not in set(deps(r.dependant))
     ]
     assert not ungated, f"write routes missing require_interactive_session: {ungated}"
@@ -354,8 +355,23 @@ def test_every_ai_provider_write_route_is_interactive_only():
 async def test_write_pat_can_still_disable_platform_provider(app, factory, superadmin):
     """TBD-586: turning platform AI off must stay reachable with a write PAT."""
     from fastapi.testclient import TestClient
+    from sqlalchemy import select
 
+    from app.models.org_ai_credential import OrgAICredential
+
+    async with factory() as s:
+        s.add(
+            OrgAICredential(
+                org_id=superadmin.org_id,
+                provider=AiProvider.OPENAI,
+                platform_provider="openai",
+                discovered_capabilities=["chat"],
+            )
+        )
+        await s.commit()
     pat = await _mint_write_pat(factory, superadmin)
     with TestClient(app) as client:
         r = _call(client, "DELETE", "/api/v1/settings/ai-providers/platform/openai", pat)
-    assert r.status_code != 403, "platform disable must not require an interactive session"
+    assert r.status_code == 204, r.text
+    async with factory() as s:
+        assert (await s.scalars(select(OrgAICredential))).all() == []

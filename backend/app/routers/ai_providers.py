@@ -321,7 +321,8 @@ async def get_routing(
 
 
 @router.put(
-    f"{ROUTING_PREFIX}/default", response_model=DefaultRoutingResponse,
+    f"{ROUTING_PREFIX}/default",
+    response_model=DefaultRoutingResponse,
     dependencies=[Depends(require_interactive_session)],
 )
 async def put_default_routing(
@@ -451,7 +452,11 @@ async def get_caps(
     )
 
 
-@router.put(f"{CAPS_PREFIX}/default", response_model=DefaultCapsResponse, dependencies=[Depends(require_interactive_session)])
+@router.put(
+    f"{CAPS_PREFIX}/default",
+    response_model=DefaultCapsResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def put_default_caps(
     payload: CapsWrite,
     request: Request,
@@ -618,7 +623,11 @@ async def get_credential(
     return OrgAICredentialResponse.model_validate(row)
 
 
-@router.patch("/{credential_id}", response_model=OrgAICredentialResponse, dependencies=[Depends(require_interactive_session)])
+@router.patch(
+    "/{credential_id}",
+    response_model=OrgAICredentialResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def update_credential(
     credential_id: int,
     payload: OrgAICredentialUpdate,
@@ -651,7 +660,8 @@ async def update_credential(
 
 
 @router.post(
-    "/{credential_id}/rotate", response_model=OrgAICredentialResponse,
+    "/{credential_id}/rotate",
+    response_model=OrgAICredentialResponse,
     dependencies=[Depends(require_interactive_session)],
 )
 async def rotate_credential(
@@ -687,7 +697,8 @@ async def rotate_credential(
 
 
 @router.post(
-    "/{credential_id}/validate", response_model=OrgAICredentialResponse,
+    "/{credential_id}/validate",
+    response_model=OrgAICredentialResponse,
     dependencies=[Depends(require_interactive_session)],
 )
 async def validate_credential(
