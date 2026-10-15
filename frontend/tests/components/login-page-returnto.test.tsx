@@ -150,6 +150,14 @@ describe("LoginPageBody — re-auth reason banner", () => {
     expect(banner.textContent).toMatch(/session expired/i);
   });
 
+  it("F10: shows the account-changed banner for reason=account_changed", () => {
+    searchParamsMock.mockReturnValue(new URLSearchParams("reason=account_changed"));
+    render(<LoginPageBody />);
+    expect(screen.getByTestId("auth-reason-banner").textContent).toBe(
+      "Another account signed in on this browser, so this page was signed out to keep the two accounts apart. Signing in here signs the other account out.",
+    );
+  });
+
   it("shows the signed-out banner for reason=logout", () => {
     searchParamsMock.mockReturnValue(new URLSearchParams("reason=logout"));
     render(<LoginPageBody />);

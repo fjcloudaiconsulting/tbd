@@ -59,7 +59,7 @@ describe("AppShell — graceful re-auth redirect", () => {
     currentPathname = "/transactions";
   });
 
-  function mockSignedOut(authExitReason: "expired" | "manual" | null) {
+  function mockSignedOut(authExitReason: "expired" | "manual" | "account_changed" | null) {
     useAuthMock.mockReturnValue({
       user: null,
       loading: false,
@@ -86,6 +86,17 @@ describe("AppShell — graceful re-auth redirect", () => {
     );
     // Consumed once so it can't leak into a later redirect.
     expect(clearAuthExitReason).toHaveBeenCalledTimes(1);
+  });
+
+  it("F10: ACCOUNT CHANGED: redirects with returnTo kept AND reason=account_changed", async () => {
+    currentPathname = "/transactions";
+    mockSignedOut("account_changed");
+
+    await renderShell();
+
+    expect(replaceMock).toHaveBeenCalledWith(
+      "/login?returnTo=%2Ftransactions&reason=account_changed",
+    );
   });
 
   it("manual LOGOUT: redirects with reason=logout and NO returnTo", async () => {

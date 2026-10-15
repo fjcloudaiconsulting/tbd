@@ -13,7 +13,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import axe from "axe-core";
 
 import AssistantChat from "@/components/agent/AssistantChat";
-import { setAccessToken } from "@/lib/api";
+import { setAccessToken, signInWithAccessToken } from "@/lib/api";
 import { setBalancesHidden } from "@/lib/format";
 import type { StagedAction } from "@/lib/agent/types";
 
@@ -75,7 +75,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  setAccessToken(null);
+  signInWithAccessToken(null);
 });
 
 async function ask(text: string) {

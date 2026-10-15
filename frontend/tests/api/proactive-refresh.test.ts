@@ -35,6 +35,7 @@ import {
   ensureFreshAccessToken,
   isAccessTokenNearExpiry,
   setAccessToken,
+  signInWithAccessToken,
 } from "@/lib/api";
 
 function base64UrlEncode(s: string): string {
@@ -68,12 +69,12 @@ describe("apiFetch proactive refresh", () => {
   beforeEach(() => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   // ── Spec #1: near-expiry token preflights before sending ─────────────────
@@ -328,7 +329,7 @@ describe("apiFetch proactive refresh", () => {
   // ── Bonus: null token has no preflight effect ────────────────────────────
 
   it("null access token: apiFetch sends without bearer, no preflight", async () => {
-    setAccessToken(null);
+    signInWithAccessToken(null);
     fetchMock.mockResolvedValueOnce(jsonResponse({ accounts: [] }));
     await apiFetch("/api/v1/accounts");
 

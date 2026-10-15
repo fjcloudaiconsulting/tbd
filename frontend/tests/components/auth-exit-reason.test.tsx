@@ -6,7 +6,7 @@ import type { User } from "@/lib/types";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, apiFetch: vi.fn(), setAccessToken: vi.fn() };
+  return { ...actual, apiFetch: vi.fn(), setAccessToken: vi.fn(), signInWithAccessToken: vi.fn() };
 });
 
 const TEST_USER = {
@@ -91,6 +91,23 @@ describe("AuthProvider — authExitReason", () => {
       expect(screen.getByTestId("reason")).toHaveTextContent("expired"),
     );
     expect(screen.getByTestId("user")).toHaveTextContent("none");
+  });
+
+  it("F10: maps an auth:unauthenticated event with reason=account_changed to authExitReason account_changed", async () => {
+    mountRestored();
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("auth:unauthenticated", { detail: { reason: "account_changed" } }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("reason")).toHaveTextContent("account_changed"),
+    );
   });
 
   it("sets reason=manual on user-initiated logout (and never emits the expired signal)", async () => {

@@ -10,7 +10,7 @@
 //
 // Non-recovery paths are unaffected and still abort at 10s.
 
-import { ApiResponseError, apiFetch, setAccessToken } from "@/lib/api";
+import { ApiResponseError, apiFetch, setAccessToken, signInWithAccessToken } from "@/lib/api";
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -28,12 +28,12 @@ describe("apiFetch recovery-path timeout", () => {
     fetchMock.mockReset();
     dispatchEventSpy.mockClear();
     vi.stubGlobal("fetch", fetchMock);
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   afterAll(() => {
