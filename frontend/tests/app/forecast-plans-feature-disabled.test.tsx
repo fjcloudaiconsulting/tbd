@@ -4,12 +4,11 @@
  * When the org has switched Forecast off, /forecast-plans replaces its body
  * with the one-line notice instead of rendering a page whose every fetch 404s.
  *
- * Mounted through the CLIENT ISLAND, which is the whole point: spec §9 claims
- * `app/forecast-plans/page.tsx` needs ZERO changes because `serverFetch`'s null
- * contract turns the gated 404 into `initialPlan = null` and the island mounts
- * normally. The first test below feeds exactly that shape —
- * `initialPlan={null}`, empty periods, empty categories — and asserts the
- * island still renders the notice rather than a spinner or a crash.
+ * Mounted through the CLIENT ISLAND, which is the whole point: the server page
+ * seeds nothing (TBD-624), so the island always mounts with `initialPlan={null}`,
+ * empty periods and empty categories. The first test below feeds exactly that
+ * shape and asserts the island renders the notice rather than a spinner or a
+ * crash.
  *
  * The notice carries NO btnPrimary: docs/design/DESIGN.md's One Brass Rule reserves brass
  * for a page's primary action, and a page whose message is absence has none.
