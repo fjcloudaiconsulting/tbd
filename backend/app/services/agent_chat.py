@@ -294,6 +294,15 @@ async def stream_turn(
     deadline = started + TURN_SECONDS
     rounds, outcome = 0, "running"
     spent, input_tokens, ledger_ids, said = 0, 0, [], False
+    sse_code: str | None = None  # the code of the SSE error event actually sent
+    rd: dict[str, Any] | None = None  # the dispatched round not yet reported
+
+    async def emit(stop: str | None) -> None:
+        """One INFO event per DISPATCHED round, ids and counts only (never content)."""
+        nonlocal rd
+        if rd is not None:
+            logger.info("agent.turn.round", extra={**rd, "stop": stop})
+            rd = None
     db: AsyncSession | None = None
     pending: asyncio.Task | None = None
     try:
@@ -314,6 +323,10 @@ async def stream_turn(
                 break
             spent += est  # counted at start: a failed dispatch is spend too
             rounds += 1
+            rd = {
+                "round": rounds, "est_tokens": est, "prompt_tokens": None,
+                "completion_tokens": None, "ledger_id": None, "tools": [],
+            }
             pending = asyncio.ensure_future(ai_dispatch.call_llm_function(
                 db, org_id=org_id, feature_key=FEATURE_KEY, messages=transcript, tools=tools,
             ))
@@ -325,21 +338,28 @@ async def stream_turn(
                 resp = dispatched.response
             except ai_dispatch.AIDispatchError as exc:
                 outcome = exc.code
+                rd["ledger_id"] = getattr(exc, "ledger_id", None)  # set on a ledgered failure
+                await emit(outcome)
                 break
             except ai_dispatch.PlatformConsentRequired as exc:
                 outcome = exc.code  # same code as the pre-flight refusal
+                await emit(outcome)
                 break
             except NativeNotAvailable:
                 outcome = "ai_native_not_available"
+                await emit(outcome)
                 break
 
             input_tokens += resp.prompt_tokens or 0
             ledger_ids.append(dispatched.ledger_id)
+            rd.update(prompt_tokens=resp.prompt_tokens, completion_tokens=resp.completion_tokens,
+                      ledger_id=dispatched.ledger_id)
             if not _blank(resp.content):
                 said = True
                 yield _sse("message", {"text": resp.content})
             if not resp.tool_calls:
                 outcome = "ok" if said else "empty_reply"
+                await emit(outcome)
                 break
             transcript.append(
                 {"role": "assistant", "content": resp.content, "tool_calls": resp.tool_calls}
@@ -360,8 +380,10 @@ async def stream_turn(
                         outcome = "user_inactive"
                         break
                 yield _sse("tool_call", {"name": shown})
+                rd["tools"].append({"name": shown, "ok": False, "code": None, "rows": None})
                 if spec is None:
                     result: Any = {"error": "unknown_tool"}
+                    rd["tools"][-1]["code"] = "unknown_tool"
                     yield _sse("tool_result", {"name": shown, "ok": False, "code": "unknown_tool"})
                 else:
                     try:
@@ -370,6 +392,7 @@ async def stream_turn(
                         ))["data"]
                     except ToolError as exc:
                         result = {"error": exc.code, "detail": {"untrusted": exc.detail}}
+                        rd["tools"][-1]["code"] = exc.code
                         yield _sse("tool_result", {"name": shown, "ok": False, "code": exc.code})
                     else:
                         if spec.risk != "read":
@@ -377,24 +400,32 @@ async def stream_turn(
                             # confirms it; the model never runs it.
                             yield _sse("preview", {"action": data})
                             previewed = True
+                            rd["tools"][-1].update(ok=True)
                             break
                         result = _cap_result(data)
+                        rd["tools"][-1].update(ok=True, rows=_rows(result))
                         yield _sse("tool_result", {"name": shown, "ok": True, "rows": _rows(result)})
                 transcript.append(_tool_message(call["id"], result))
             if previewed:
                 outcome = "preview"
+                await emit(outcome)
                 break
             if outcome == "user_inactive":
+                await emit(outcome)
                 break
+            await emit(None)
         if outcome not in ("ok", "preview"):
             yield _sse("error", {"code": outcome})
+            sse_code = outcome
         # Free the org before ``done``: a client may send its next turn on it.
         await release_lock(org_id, nonce)
         yield _sse("done", {})
     except Exception:
         logger.exception("agent.turn.failed", extra={"org_id": org_id, "user_id": user_id})
         outcome = "internal_error"
+        await emit(outcome)
         yield _sse("error", {"code": outcome})
+        sse_code = outcome
         yield _sse("done", {})
     except BaseException:  # the client went away (cancel or close)
         if outcome == "running":
@@ -411,6 +442,11 @@ async def stream_turn(
                     reaped = pending.result()  # its spend and ledger row still count
                     input_tokens += reaped.response.prompt_tokens or 0
                     ledger_ids.append(reaped.ledger_id)
+                    if rd is not None:
+                        rd.update(prompt_tokens=reaped.response.prompt_tokens,
+                                  completion_tokens=reaped.response.completion_tokens,
+                                  ledger_id=reaped.ledger_id)
+            await emit(outcome)  # the in-flight round of a disconnect
             await release_lock(org_id, nonce)
             if db is not None:
                 try:
@@ -435,5 +471,6 @@ async def stream_turn(
                     "ledger_ids": ledger_ids,
                     "budget": budget,
                     "history_trimmed": history_trimmed,
+                    "sse_code": sse_code,
                 },
             )

@@ -1,14 +1,17 @@
 import asyncio
 import os
+import re
 import subprocess
 from contextlib import asynccontextmanager
 
 import logging
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import tracing
 from app.middleware.request_context import RequestContextMiddleware
@@ -355,7 +358,16 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# RateLimitExceeded is an HTTPException subclass, so this handler (not the one
+# below) wins by MRO: it must log the 429 itself.
+async def _rate_limited(request, exc: RateLimitExceeded):
+    _log_client_error(request, 429, exc.detail)
+    return _rate_limit_exceeded_handler(request, exc)
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limited)
 
 app.add_middleware(
     CORSMiddleware,
@@ -408,11 +420,13 @@ app.add_middleware(RequestContextMiddleware)
 
 @app.exception_handler(NotFoundError)
 async def not_found_handler(request, exc: NotFoundError):
+    _log_client_error(request, 404, str(exc))
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
 @app.exception_handler(ValidationError)
 async def validation_handler(request, exc: ValidationError):
+    _log_client_error(request, 400, exc.detail)
     return JSONResponse(status_code=400, content={"detail": exc.detail})
 
 
@@ -420,6 +434,7 @@ async def validation_handler(request, exc: ValidationError):
 async def plan_limit_handler(request, exc: PlanLimitReached):
     # TBD-585: same envelope as the AI cap refusal (ai_dispatch), plus the
     # facts a client needs to say when the meter resets.
+    _log_client_error(request, 402, {"code": "plan_limit_reached"})
     return JSONResponse(
         status_code=402,
         content={"detail": {
@@ -440,6 +455,7 @@ async def conflict_handler(request, exc: ConflictError):
     # parsing English.
     if getattr(exc, "code", None):
         content["code"] = exc.code
+    _log_client_error(request, 409, {"code": exc.code} if getattr(exc, "code", None) else exc.detail)
     return JSONResponse(status_code=409, content=content)
 
 
@@ -519,6 +535,39 @@ def _loc_targets_sensitive_field(loc) -> bool:
     )
 
 
+_FIELD_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+
+
+def _log_client_error(request, status: int, detail) -> None:
+    """Log WHY a 4xx happened. ``code`` only from a dict detail's string
+    ``code``: any other detail can echo user input, so only its kind is logged.
+    Route template, never the URL."""
+    if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+        fields = {"code": detail["code"]}
+    else:
+        fields = {"detail_kind": (
+            "text" if isinstance(detail, str) else "list" if isinstance(detail, list)
+            else "none" if detail is None else "other"
+        )}
+    route = request.scope.get("route")
+    logger.info(
+        "http.client_error",
+        extra={
+            "status": status,
+            "method": request.method,
+            "route": getattr(route, "path", None),
+            **fields,
+        },
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_logged(request, exc: StarletteHTTPException):
+    if 400 <= exc.status_code < 500:
+        _log_client_error(request, exc.status_code, exc.detail)
+    return await http_exception_handler(request, exc)
+
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_handler(request, exc: RequestValidationError):
     """Sanitize FastAPI's default 422 response so we don't echo
@@ -533,6 +582,22 @@ async def request_validation_handler(request, exc: RequestValidationError):
          failing field, identified through `loc` (e.g. ["body",
          "password"]). The whole `input` is replaced with '<redacted>'.
     """
+    errors = exc.errors()
+    # Field names only (a loc key can be user-typed, so gate its shape); never input.
+    fields = sorted({
+        ".".join(p if isinstance(p, str) and _FIELD_RE.fullmatch(p) else "?" for p in e["loc"][:2])
+        for e in errors
+    })
+    route = request.scope.get("route")
+    logger.info(
+        "http.validation_error",
+        extra={
+            "count": len(errors),
+            "fields": fields,
+            "method": request.method,
+            "route": getattr(route, "path", None),
+        },
+    )
     redacted_errors = []
     for err in exc.errors():
         new_err = dict(err)

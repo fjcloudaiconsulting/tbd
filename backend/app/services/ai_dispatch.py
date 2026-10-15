@@ -855,6 +855,19 @@ async def _write_ledger_row(
     db.add(row)
     await db.commit()
     await db.refresh(row)
+    # The join key between a request's logs and the ledger (no column for it).
+    logger.info(
+        "ai.ledger.recorded",
+        extra={
+            "ledger_id": row.id,
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "success": success,
+            "error_class": error_class,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        },
+    )
     return row
 
 
@@ -972,6 +985,7 @@ async def call_llm(
                 "org_id": org_id,
                 "feature_key": feature_key,
                 "error_class": exc.code,
+                "provider_reason": exc.provider_reason,
                 "latency_ms": latency_ms,
             },
         )
@@ -1629,6 +1643,9 @@ async def call_llm_structured(
                 if isinstance(exc, AIProviderError)
                 else "capability_not_supported"
             )
+            provider_reason = (
+                exc.provider_reason if isinstance(exc, AIProviderError) else None
+            )
             # Bill any tokens already consumed by previous attempts
             # before the adapter raised; first-attempt failures
             # naturally land at zero because no successful response
@@ -1659,6 +1676,7 @@ async def call_llm_structured(
                     "org_id": org_id,
                     "feature_key": feature_key,
                     "error_class": error_code,
+                    "provider_reason": provider_reason,
                     "latency_ms": latency_ms,
                 },
             )
@@ -2023,7 +2041,7 @@ async def call_llm_function(
         ) from None
     except AIProviderError as exc:
         latency_ms = int((time.perf_counter() - start) * 1000)
-        await _write_ledger_row(
+        row = await _write_ledger_row(
             db,
             billing_source=prepared.billing_source,
             org_id=org_id,
@@ -2037,7 +2055,19 @@ async def call_llm_function(
             success=False,
             error_class=exc.code,
         )
-        raise AIDispatchFailed(exc.code) from None
+        logger.info(
+            "ai.dispatch.function_call.failed",
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "error_class": exc.code,
+                "provider_reason": exc.provider_reason,
+                "latency_ms": latency_ms,
+            },
+        )
+        failed = AIDispatchFailed(exc.code)
+        failed.ledger_id = row.id  # lets the chat loop report which ledger row it was
+        raise failed from None
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     cost = estimate_cost_cents(

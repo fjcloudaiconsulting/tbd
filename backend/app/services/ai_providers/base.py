@@ -34,6 +34,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional, Protocol, runtime_checkable
 
+import httpx
+
 from app.models.org_ai_credential import AiProvider
 
 
@@ -182,10 +184,34 @@ class AIProviderError(Exception):
     process. Same posture as PR1's ``validate`` paths.
     """
 
-    def __init__(self, *, code: str, status_code: Optional[int] = None) -> None:
+    def __init__(
+        self, *, code: str, status_code: Optional[int] = None,
+        provider_reason: Optional[str] = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+        # The provider's own error type/code (token-shaped only, never its message).
+        self.provider_reason = provider_reason
+
+
+_REASON_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
+
+
+def provider_reason(resp: httpx.Response) -> Optional[str]:
+    """``error.type`` / ``error.code`` of a non-200 provider body, only when it
+    is token-shaped: the value is provider-controlled text, and the message
+    field (which can echo the prompt) is never read."""
+    try:
+        err = resp.json().get("error")
+    except Exception:  # noqa: BLE001  (non-JSON body, or a stream not yet read)
+        return None
+    if not isinstance(err, dict):
+        return None
+    for v in (err.get("type"), err.get("code")):
+        if isinstance(v, str) and _REASON_RE.fullmatch(v):
+            return v
+    return None
 
 
 class StructuredOutputError(Exception):

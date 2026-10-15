@@ -244,6 +244,10 @@ def test_period_boundaries():
     assert resets_at("month", datetime(2026, 1, 31)) == datetime(2026, 2, 1, tzinfo=timezone.utc)
 
 
+from starlette.requests import Request as _Request
+
+_REQ = _Request({"type": "http", "method": "GET", "headers": []})  # the handler logs the route
+
 # ── 402 ───────────────────────────────────────────────────────────────────
 
 async def test_402_the_real_app_handler_maps_plan_limit_reached():
@@ -256,7 +260,7 @@ async def test_402_the_real_app_handler_maps_plan_limit_reached():
 
     handler = app.exception_handlers[PlanLimitReached]
     exc = PlanLimitReached("mcp.calls", 5, "day", datetime(2026, 10, 1, tzinfo=timezone.utc))
-    resp = await handler(None, exc)
+    resp = await handler(_REQ, exc)
     assert resp.status_code == 402
     assert json.loads(resp.body) == {"detail": {
         "code": "plan_limit_reached", "meter": "mcp.calls", "limit": 5, "period": "day",
@@ -270,7 +274,7 @@ async def test_402_handler_carries_null_resets_at_for_a_zero_limit():
     from app.main import app
 
     resp = await app.exception_handlers[PlanLimitReached](
-        None, PlanLimitReached("mcp.calls", 0, "day", None))
+        _REQ, PlanLimitReached("mcp.calls", 0, "day", None))
     assert json.loads(resp.body)["detail"]["resets_at"] is None
 
 
