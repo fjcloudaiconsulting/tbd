@@ -1317,9 +1317,12 @@ async def test_c2_tool_results_are_scrubbed_before_the_cap(factory, w, client, p
 
 
 async def test_c3_error_detail_is_scrubbed(factory, w, client, provider, monkeypatch):
-    """FENCE C3. Wrong implementation: no scrub in ``_tool_message`` (the wrapper hides it in the
-    provider request only for success paths; this error path has no other kill)."""
+    """FENCE C3. Wrong implementation: no scrub in ``_tool_message``. The provider request is
+    scrubbed again by the wrapper, so the kill reads the transcript ``_estimate`` measures."""
     _as(factory, w["user"])
+    est = []
+    real_est = chat._estimate
+    monkeypatch.setattr(chat, "_estimate", lambda t, tools: (est.append(copy.deepcopy(t)), real_est(t, tools))[1])
     spec = registry.get_tool("accounts_list")
 
     async def run(ctx, args):
@@ -1328,6 +1331,7 @@ async def test_c3_error_detail_is_scrubbed(factory, w, client, provider, monkeyp
     monkeypatch.setitem(registry._TOOLS, "accounts_list", dataclasses.replace(spec, run=run))
     msg, _ = await _tool_message(client, provider)
     assert json.loads(msg["content"]) == {"error": "not_found", "detail": {"untrusted": "no account [EMAIL]"}}
+    assert "a@b.co" not in json.dumps(est)
 
 
 async def test_c4_the_browser_keeps_the_original_text(factory, w, client, provider):
