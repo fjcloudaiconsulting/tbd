@@ -223,12 +223,13 @@ async def enable_platform(
     return OrgAICredentialResponse.model_validate(row)
 
 
-# Deliberately no interactive-session requirement: an org can always turn platform AI off.
+# Deliberately no interactive-session requirement (TBD-586): turning platform
+# AI OFF is the fail-safe direction and must stay PAT-reachable for incident
+# response. Fenced by test_write_pat_can_still_disable_platform_provider.
 @router.delete(
     "/platform/{platform_provider}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    dependencies=[Depends(require_interactive_session)],
 )
 async def disable_platform(
     platform_provider: PlatformProvider,

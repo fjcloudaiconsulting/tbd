@@ -139,13 +139,15 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
     ("DELETE", "/api/v1/admin/broadcasts/1"),        # delete_broadcast (draft-only)
     # TBD-586. Platform AI spends platform money: the operator settings and an
-    # org turning a provider on. Turning it off stays PAT-reachable on purpose.
+    # org turning a provider on. Turning it OFF (DELETE .../platform/{p}) is the
+    # fail-safe direction and stays PAT-reachable on purpose; see the allowlist
+    # in test_every_ai_provider_write_route_is_interactive_only.
     ("PUT", "/api/v1/admin/platform-ai"),            # set_platform_ai
     ("POST", "/api/v1/settings/ai-providers/platform/openai"),  # enable_platform
     # TBD-626. A write PAT must not be able to point the org's AI at another
     # host (credential create/rotate/patch, routing) or loosen caps/consent.
+    # (Every ai-providers write route except the platform disable is listed.)
     ("POST", "/api/v1/settings/ai-providers"),
-    ("DELETE", "/api/v1/settings/ai-providers/platform/openai"),
     ("PUT", "/api/v1/settings/ai-providers/routing/default"),
     ("PUT", "/api/v1/settings/ai-providers/routing/features/x"),
     ("DELETE", "/api/v1/settings/ai-providers/routing/features/x"),
@@ -330,6 +332,9 @@ def test_every_ai_provider_write_route_is_interactive_only():
             yield from deps(d)
 
     prefix = "/api/v1/settings/ai-providers"
+    # TBD-586: the ONLY write route allowed to stay PAT-reachable (incident
+    # response: switching platform AI off is fail-safe). Add nothing else.
+    allowed = {("DELETE", f"{prefix}/platform/{{platform_provider}}")}
     writes = [
         r
         for r in effective_routes(real_app)
@@ -340,6 +345,17 @@ def test_every_ai_provider_write_route_is_interactive_only():
     ungated = [
         f"{sorted(r.methods)} {r.path}"
         for r in writes
-        if require_interactive_session not in set(deps(r.dependant))
+        if not any((m, r.path) in allowed for m in r.methods)
+        and require_interactive_session not in set(deps(r.dependant))
     ]
     assert not ungated, f"write routes missing require_interactive_session: {ungated}"
+
+
+async def test_write_pat_can_still_disable_platform_provider(app, factory, superadmin):
+    """TBD-586: turning platform AI off must stay reachable with a write PAT."""
+    from fastapi.testclient import TestClient
+
+    pat = await _mint_write_pat(factory, superadmin)
+    with TestClient(app) as client:
+        r = _call(client, "DELETE", "/api/v1/settings/ai-providers/platform/openai", pat)
+    assert r.status_code != 403, "platform disable must not require an interactive session"
