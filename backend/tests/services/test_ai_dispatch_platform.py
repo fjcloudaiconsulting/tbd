@@ -1242,16 +1242,18 @@ async def test_fence_global_ceiling_is_converted_at_both_sites(db, sf, fake, mon
             db, org_id=org, cred=cred, capability="chat", routed_model="vendor/model-a",
             model_override=None, messages=MSGS, max_tokens=100, retry_multiplier=1)
 
+    # 10,000 passes the REAL pre-flight (a ceiling left in cents would refuse it).
+    _, _, req_ok = await prepare(10_000)
     with pytest.raises(AIPlatformUnavailable):
         await prepare(10_001)
     monkeypatch.setattr(platform_reserve, "check_headroom", lambda *a, **k: asyncio.sleep(0))
-    _, _, req = await prepare(10_001)
-    assert req.micros == 10_001 and req.ceiling_micros == 10_000
+    _, _, req_bad = await prepare(10_001)
+    assert req_bad.micros == 10_001 and req_bad.ceiling_micros == 10_000
     with pytest.raises(AIPlatformUnavailable):
-        await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req, adapter=None))
+        await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req_bad, adapter=None))
     assert await spend(sf) == 0
 
+    # ... and the SAME ceiling on the request admits it at ``reserve``.
     await db.refresh(cred)  # a refused reserve rolls back and expires ORM objects
-    _, _, req = await prepare(10_000)
-    await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req, adapter=None))
+    await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req_ok, adapter=None))
     assert await spend(sf) == 10_000
