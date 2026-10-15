@@ -11,8 +11,10 @@ A CIMD row (client_id = the document's https URL) has a deterministic shape:
 sha256_hex("cimd:" + id)``. DCR ids are random hex and DCR keys hash a JSON
 array (preimage starts with ``[``), so the two never collide.
 ``oauth_service.is_cimd_row`` tells them apart by exactly that key shape; do
-not change either derivation without migrating the rows. A grant is an ``api_tokens`` row pointing here (RESTRICT);
-the purge job deletes clients with no row that have been idle for 30 days.
+not change either derivation without migrating the rows.
+
+A grant is an ``api_tokens`` row pointing here (RESTRICT); the purge job
+deletes clients with no row that have been idle for 30 days.
 """
 from __future__ import annotations
 
