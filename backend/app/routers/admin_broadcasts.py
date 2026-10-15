@@ -636,8 +636,9 @@ async def resume_broadcast(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Re-launch the drain for any ``pending``/retryable rows left by a
-    restart or partial run. Idempotent (the in-process registry no-ops a
-    second concurrent launch). Audit ``broadcast.resume``."""
+    restart or partial run. Safe to repeat: the in-process registry no-ops a
+    second launch on this pod, and the per-batch claim keeps any recipient from
+    being sent twice across pods. Audit ``broadcast.resume``."""
     actor_user_id = current_user.id
     actor_email = current_user.email
 

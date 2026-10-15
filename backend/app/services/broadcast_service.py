@@ -345,19 +345,24 @@ async def materialize_recipients(db: AsyncSession, broadcast: EmailBroadcast) ->
 # Reconciliation, if ever needed, is via the per-batch ``broadcast_batch_sent`` /
 # ``broadcast_batch_failed`` log (MA5).
 #
-# Why no per-row compare-and-swap is needed (R2): two guards make the SELECT set
-# equal to the claim set on this deployment —
-#   1. the in-process ``_ACTIVE_DRAINS`` registry (below) — ``instance_count: 1``
-#      means at most one event loop ever drains a given broadcast id, and BOTH
-#      ``launch_drain`` and ``launch_resume`` share that registry, so a second
-#      concurrent launch (send-vs-send, resume-vs-resume, send-vs-resume) is an
-#      idempotent no-op; and
-#   2. the ``draft → sending`` CAS in the router (Ruling 3a) gates entry.
-# Because only one drain touches an id at a time, the rows this drain SELECTed
-# are exactly the rows it claims — no other writer can advance them underneath
-# it — so the claim UPDATE is guarded only by the batch's id set + the expected
-# status(es), and the broadcast counters are recomputed from the authoritative
-# row states (never bumped incrementally) so retries can never inflate them.
+# Never double-send (R2), with several backend replicas (INFRA-177: production
+# runs two). The guard that holds ACROSS processes is the per-batch claim in
+# ``_drain`` (step 3): one UPDATE moves the batch's rows from the expected
+# status(es) (pending, or pending/failed on resume) to ``sent`` and its rowcount
+# must equal the batch size. A concurrent drain on another pod that SELECTed an
+# overlapping batch blocks on InnoDB's row locks, re-reads those rows as
+# ``sent``, matches fewer, rolls back and skips the batch, so no recipient is
+# mailed twice. Two further guards only cut down wasted work:
+#   1. the in-process ``_ACTIVE_DRAINS`` registry (below), shared by
+#      ``launch_drain`` and ``launch_resume``, so a second launch for the same
+#      id IN THIS PROCESS is a no-op (another replica is not seen); and
+#   2. the ``draft → sending`` CAS in the router (Ruling 3a) gates the SEND
+#      entry only; resume has no status gate, so a resume can overlap a live
+#      send on another pod (still safe, by the claim above).
+# The broadcast counters are recomputed from the authoritative row states
+# (never bumped incrementally), so retries and overlaps cannot inflate them;
+# with two pods draining one id, the stored counters can briefly lag (last
+# writer wins) until the next recompute.
 
 # Broadcast ids with a live in-process drain (Ruling 3b). A second launch for
 # an id already draining is a no-op.
@@ -376,9 +381,10 @@ def _launch(
 
     Shared machinery behind both ``launch_drain`` (fresh send) and
     ``launch_resume`` (retry). No-op if a drain for this id is already live in
-    this process (Ruling 3b): the ``_ACTIVE_DRAINS`` registry is the primary
-    mutual-exclusion guard, so the send path and the resume path share ONE
-    registry and can never both run the same id concurrently (no double-send).
+    this process (Ruling 3b): the send path and the resume path share ONE
+    ``_ACTIVE_DRAINS`` registry, so they never run the same id twice in one
+    process. Another replica can still start one; never-double-send across
+    processes rests on the per-batch claim in ``_drain``, not on this registry.
     Otherwise a tracked ``asyncio.Task`` is created (strong ref held in
     ``_DRAIN_TASKS``) with a done-callback that logs any exception in the logs
     and discards the task from both module sets, so a failure is observed rather
@@ -439,9 +445,10 @@ def launch_resume(
 
     Mirrors ``launch_drain`` and is the ONLY guarded public entry point for a
     resume — the router (Task 5) calls this, never the bare ``resume_pending``
-    coroutine, so two concurrent resume requests can never both send the same
-    recipient (the shared ``_ACTIVE_DRAINS`` registry makes the second launch a
-    no-op). Retries interrupted ``pending`` rows and ``failed`` rows still below
+    coroutine. Within one process the shared ``_ACTIVE_DRAINS`` registry makes a
+    second concurrent launch a no-op; across replicas the per-batch claim in
+    ``_drain`` keeps a recipient from being sent twice. Retries interrupted
+    ``pending`` rows and ``failed`` rows still below
     ``broadcast_max_attempts`` (Ruling 12).
     """
     _launch(session_factory, broadcast_id, resume_pending)
@@ -601,10 +608,11 @@ async def _run_drain_loop(
     batches, never after the last. When no eligible rows remain the broadcast is
     ``completed`` (even with some ``failed``/``skipped``).
 
-    Because a single instance drains an id at a time (the ``_ACTIVE_DRAINS``
-    registry + the ``draft → sending`` CAS), the SELECT set equals the claim
-    set, so no per-row compare-and-swap is needed — the claim is guarded only by
-    the batch's id set and the expected status(es).
+    Another replica may drain the same id concurrently (production runs two), so
+    the SELECT set can differ from what this drain is able to claim. The claim
+    UPDATE (batch ids + expected status(es)) and its rowcount check are what
+    keep a recipient from being mailed twice: a short count rolls the batch
+    back and skips it.
     """
     broadcast = (
         await db.execute(
@@ -807,8 +815,8 @@ async def _run_drain_loop(
             )
         )
         # The claim MUST cover exactly the set we are about to hand Mailgun.
-        # Single-instance drains make that the normal case, but if the counts
-        # disagree then some row moved underneath us and this batch's ``to``
+        # This check is THE cross-replica double-send guard: if another pod's
+        # drain (or a late webhook) moved a row underneath us, this batch's ``to``
         # list no longer equals the set we own — sending it would mail someone
         # we did not claim (the double-send hazard R2 exists to prevent).
         # Roll the partial claim back and skip the batch entirely; the rows
