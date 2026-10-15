@@ -356,9 +356,13 @@ async def materialize_recipients(db: AsyncSession, broadcast: EmailBroadcast) ->
 #   1. the in-process ``_ACTIVE_DRAINS`` registry (below), shared by
 #      ``launch_drain`` and ``launch_resume``, so a second launch for the same
 #      id IN THIS PROCESS is a no-op (another replica is not seen); and
-#   2. the ``draft → sending`` CAS in the router (Ruling 3a) gates entry.
+#   2. the ``draft → sending`` CAS in the router (Ruling 3a) gates the SEND
+#      entry only; resume has no status gate, so a resume can overlap a live
+#      send on another pod (still safe, by the claim above).
 # The broadcast counters are recomputed from the authoritative row states
-# (never bumped incrementally), so retries and overlaps cannot inflate them.
+# (never bumped incrementally), so retries and overlaps cannot inflate them;
+# with two pods draining one id, the stored counters can briefly lag (last
+# writer wins) until the next recompute.
 
 # Broadcast ids with a live in-process drain (Ruling 3b). A second launch for
 # an id already draining is a no-op.
@@ -441,9 +445,10 @@ def launch_resume(
 
     Mirrors ``launch_drain`` and is the ONLY guarded public entry point for a
     resume — the router (Task 5) calls this, never the bare ``resume_pending``
-    coroutine, so two concurrent resume requests can never both send the same
-    recipient (the shared ``_ACTIVE_DRAINS`` registry makes the second launch a
-    no-op). Retries interrupted ``pending`` rows and ``failed`` rows still below
+    coroutine. Within one process the shared ``_ACTIVE_DRAINS`` registry makes a
+    second concurrent launch a no-op; across replicas the per-batch claim in
+    ``_drain`` keeps a recipient from being sent twice. Retries interrupted
+    ``pending`` rows and ``failed`` rows still below
     ``broadcast_max_attempts`` (Ruling 12).
     """
     _launch(session_factory, broadcast_id, resume_pending)
