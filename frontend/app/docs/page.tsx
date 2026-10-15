@@ -704,8 +704,8 @@ export default async function DocsPage() {
             <p>
               An org admin opens Settings, then AI providers, and adds a key for OpenAI,
               Anthropic, Ollama, or an OpenAI-compatible endpoint. Keys are encrypted at rest
-              and never shown again after you save them. Then turn AI on in the AI for this
-              organization card at the top of the same page. Until a provider is connected, each AI
+              and never shown again after you save them. Then turn AI on in the &#34;AI for this
+              organization&#34; card at the top of the same page. Until a provider is connected, each AI
               action shows a &#34;Set up AI&#34; prompt instead of running.
             </p>
             <h3>Auto-categorize (Transactions)</h3>

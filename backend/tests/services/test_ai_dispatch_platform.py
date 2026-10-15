@@ -1023,7 +1023,7 @@ def _validation_error():
 @pytest.mark.parametrize("make", [lambda: KeyError("x"), _validation_error,
                                   lambda: OperationalError("s", {}, Exception("d"))],
                          ids=["KeyError", "ValidationError", "OperationalError"])
-async def test_item9_entitlement_failures_are_typed_refusals(db, sf, fake, monkeypatch, make):
+async def test_item9_entitlement_read_failures_propagate_and_reserve_nothing(db, sf, fake, monkeypatch, make):
     org, _ = await setup(db)
 
     async def boom(*a, **k):

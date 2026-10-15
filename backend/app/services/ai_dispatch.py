@@ -397,7 +397,6 @@ def http_for_dispatch_error(exc: AIDispatchError) -> HTTPException:
             status_code=status.HTTP_412_PRECONDITION_FAILED,
             detail={
                 "code": exc.code,
-                "current_consent_version": settings.ai_native_current_consent_version,
                 "message": ai_consent_service.AI_OFF_MESSAGE,
             },
         )
@@ -1362,8 +1361,9 @@ async def _prepare_dispatch(
     the caller routes to a different provider.
 
     Raises ``AIFeatureNotEntitled`` (no ``ai.*`` entitlement, or an unmapped
-    feature key) and ``PlatformConsentRequired`` (the org's AI is off) before
-    anything else.
+    feature key) FIRST, then, after routing and the credential resolve,
+    ``PlatformConsentRequired`` (the org's AI is off). Both come before the
+    capability check, ``decrypt`` and any reservation.
 
     PURE with respect to platform spend (the agent-chat pre-flight calls it
     as a dry gate): a platform row is checked (switch, key, allowlist,

@@ -90,7 +90,7 @@ export default function AiMasterSwitchCard() {
             <label className="flex items-start gap-2">
               <input
                 type="checkbox"
-                className="mt-1"
+                className="mt-0.5 h-4 w-4 accent-accent"
                 checked={agreed}
                 onChange={(e) => setAgreed(e.target.checked)}
               />

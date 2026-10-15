@@ -26,7 +26,7 @@ from starlette.routing import Match
 
 from app.agent import actions
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
-from app.auth.feature_deps import assert_ai_on, require_ai_on, require_feature, require_meter_open
+from app.auth.feature_deps import assert_ai_on, require_feature, require_meter_open
 from app.auth.pat import require_interactive_session
 from app.auth.stepup import consume_stepup
 from app.config import settings
@@ -145,7 +145,7 @@ class AuthorizeRequest(BaseModel):
     mfa_code: Optional[str] = None
 
 
-@router.get("/api/v1/oauth/authorize/context", dependencies=[*_CONSENT_GATES, Depends(require_ai_on)])
+@router.get("/api/v1/oauth/authorize/context", dependencies=_CONSENT_GATES)
 async def authorize_context(
     client_id: Optional[str] = None,
     redirect_uri: Optional[str] = None,
@@ -159,6 +159,9 @@ async def authorize_context(
     db: AsyncSession = Depends(get_db),
 ):
     """What the consent page shows. Never stamps the client as used."""
+    # In the body, not a route dependency: those run before the interactive
+    # check, so a non-interactive caller would learn the switch state.
+    await assert_ai_on(db, current_user.org_id)
     client, redirect, requested = await _validated(db, {
         "client_id": client_id, "redirect_uri": redirect_uri, "response_type": response_type,
         "code_challenge": code_challenge, "code_challenge_method": code_challenge_method,

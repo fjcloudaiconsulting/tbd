@@ -702,7 +702,10 @@ async def test_f8_mint_refused_while_ai_is_off_and_member_mints_when_on(factory,
         reached.append(a)
 
     stepup = AsyncMock(return_value=True)
-    with patch.object(actions, "_hit", spy), patch("app.routers.agent_tokens.consume_stepup", stepup):
+    # An SSO-style proof (sso_proof True), so consume_stepup WOULD be awaited
+    # if the gate came after it.
+    with patch.object(actions, "_hit", spy), patch("app.routers.agent_tokens.consume_stepup", stepup), \
+            patch("app.routers.agent_tokens._verify_step_up", return_value=True):
         r = await client.post(BASE, json=_mint_body(), headers=h)
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == {

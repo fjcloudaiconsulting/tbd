@@ -152,7 +152,7 @@ async def test_f1_byok_org_without_current_consent_is_refused_before_decrypt(db,
     assert await _ledger(db) == []
     detail = http_for_dispatch_error(ei.value).detail
     assert detail["code"] == "ai_consent_required"
-    assert detail["current_consent_version"] == app_settings.ai_native_current_consent_version
+    assert "current_consent_version" not in detail  # members see this body
     assert detail["message"] == (
         "AI is off for your organization. An admin can turn it on in Settings, AI providers."
     )

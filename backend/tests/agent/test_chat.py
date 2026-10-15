@@ -1218,3 +1218,47 @@ async def test_oversized_error_result_is_capped_too(factory, w, client, provider
     assert len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
     assert json.loads(msg["content"]) == {"error": "result_too_large"}
     assert ev[-1] == ("done", {}) and ("error", {"code": "input_budget"}) not in ev
+
+
+async def test_transaction_is_ended_before_every_round(factory, w, client, provider, monkeypatch):
+    """GUARD TBD-627. On MySQL REPEATABLE READ the tool phase's transaction
+    snapshot predates a concurrent consent revoke, so the next round's consent
+    check could read a stale "on". The turn's session must have NO open
+    transaction when each round dispatches. SQLite cannot show the stale read,
+    so this spies on ``in_transaction()``. Wrong implementation: no rollback
+    between rounds (round 2 starts inside the tool phase's transaction)."""
+    _as(factory, w["user"])
+    states = []
+    real = chat.ai_dispatch.call_llm_function
+
+    async def spy(db, **kw):
+        states.append(db.in_transaction())
+        return await real(db, **kw)
+
+    monkeypatch.setattr("app.services.ai_dispatch.call_llm_function", spy)
+    provider([_resp([_call("accounts_list", cid="c1")]), _resp(content="done")])
+    r = await client.post(URL, json=ASK)
+    assert r.status_code == 200, r.text
+    assert states == [False, False]
+
+
+async def test_entitlement_lost_mid_turn_reports_its_own_code(factory, w, client, provider, monkeypatch):
+    """FENCE TBD-627. Round 2 is refused with ``AIFeatureNotEntitled`` (a
+    ``NativeNotAvailable``). Wrong implementation: the except-tuple not naming
+    it, so the turn ends ``ai_native_not_available``."""
+    _as(factory, w["user"])
+    real = chat.ai_dispatch.call_llm_function
+    calls = []
+
+    async def flaky(db, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise chat.ai_dispatch.AIFeatureNotEntitled("ai.agent")
+        return await real(db, **kw)
+
+    monkeypatch.setattr("app.services.ai_dispatch.call_llm_function", flaky)
+    provider([_resp([_call("accounts_list", cid="c1")]), _resp(content="never")])
+    r = await client.post(URL, json=ASK)
+    ev = _events(r.text)
+    assert ("error", {"code": "feature_not_enabled"}) in ev
+    assert "ai_native_not_available" not in r.text

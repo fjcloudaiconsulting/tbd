@@ -1308,7 +1308,10 @@ async def test_f9_consent_screen_and_approve_refuse_while_ai_is_off_but_deny_sti
     assert r.status_code == 403 and r.json()["detail"]["code"] == "ai_off"
     stepup = AsyncMock(return_value=True)
     from unittest.mock import patch
-    with patch("app.routers.oauth.consume_stepup", stepup):
+    # An SSO-style proof (sso_proof True), so consume_stepup WOULD be awaited
+    # if the gate came after it.
+    with patch("app.routers.oauth.consume_stepup", stepup), \
+            patch("app.routers.oauth._verify_step_up", return_value=True):
         r, _ = await _consent(client, h, cid)
         assert r.status_code == 403, r.text
         assert r.json()["detail"] == {
