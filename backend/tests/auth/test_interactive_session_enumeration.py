@@ -322,6 +322,7 @@ def test_every_ai_provider_write_route_is_interactive_only():
     write route added without the gate fails here."""
     from app.auth.pat import require_interactive_session
     from app.main import app as real_app
+    from tests.app_routes import effective_routes
 
     def deps(dep):
         yield dep.call
@@ -331,7 +332,7 @@ def test_every_ai_provider_write_route_is_interactive_only():
     prefix = "/api/v1/settings/ai-providers"
     writes = [
         r
-        for r in real_app.routes
+        for r in effective_routes(real_app)
         if getattr(r, "path", "").startswith(prefix)
         and (r.methods or set()) - {"GET", "HEAD", "OPTIONS"}
     ]
