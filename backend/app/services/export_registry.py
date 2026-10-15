@@ -313,6 +313,7 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     "org_settings": Include(OrgColumn(), "settings the subject chose"),
     "organizations": Include(OrgColumn("id"), "the org record itself"),
     "plans": Exclude("platform-global price list"),
+    "platform_ai_models": Exclude("platform-global catalog, no org data"),
     "platform_ai_spend": Exclude("platform-global operational counter, no org data"),
     "rate_limits": Exclude("operational counters, no org data"),
     "auth_session_families": Exclude("operational state, no org data"),

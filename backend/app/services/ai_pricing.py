@@ -14,6 +14,9 @@ row is a conservative high cost so an unknown model never silently
 under-meters (better to refuse a legitimate call after a polite
 warning than to accidentally let an org rack up unmetered spend).
 
+This code table is BYOK prices plus human words (``label``); platform prices
+live in the ``platform_ai_models`` table, synced daily from OpenRouter.
+
 ``estimate_cost_cents`` rounds **up** to the nearest cent — the cap
 is a ceiling, not a budget, and the rounding direction must match.
 
@@ -24,6 +27,7 @@ PR3 adds embedding-model rows. Embeddings only charge on the input
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,9 @@ class ModelPricing:
 
     prompt_per_1m_cents: int
     completion_per_1m_cents: int
+    label: str | None = None
+    # Customer-facing hint copy: written with the model picker (TBD-631 keeps the slot only).
+    hint: str | None = None
 
 
 # Models pinned for the ledger. Ids match EXACTLY (no prefix or date-suffix
@@ -95,36 +102,36 @@ class ModelPricing:
 MODEL_PRICING: dict[str, ModelPricing] = {
     "gpt-4o": ModelPricing(prompt_per_1m_cents=250, completion_per_1m_cents=1000),
     "gpt-4o-mini": ModelPricing(prompt_per_1m_cents=15, completion_per_1m_cents=60),
-    "gpt-6-astra": ModelPricing(2000, 7500),
-    "gpt-6.1-sol": ModelPricing(400, 1500),
-    "gpt-6-sol": ModelPricing(400, 1500),
-    "gpt-6-luna": ModelPricing(20, 75),
-    "gpt-5.6-sol": ModelPricing(800, 3000),
-    "gpt-5.6-terra": ModelPricing(400, 1800),
-    "gpt-5.6-luna": ModelPricing(40, 180),
-    "claude-fable-5-1": ModelPricing(1000, 5000),
-    "claude-fable-5": ModelPricing(1000, 5000),
-    "claude-opus-5-5": ModelPricing(400, 2000),
-    "claude-opus-5": ModelPricing(500, 2500),
-    "claude-opus-4-8": ModelPricing(500, 2500),
-    "claude-opus-4-7": ModelPricing(500, 2500),
-    "claude-opus-4-6": ModelPricing(500, 2500),
-    "claude-sonnet-5-5": ModelPricing(200, 1000),
-    "claude-sonnet-5": ModelPricing(200, 1000),
-    "claude-sonnet-4-6": ModelPricing(300, 1500),
+    "gpt-6-astra": ModelPricing(2000, 7500, label="GPT-6 Astra"),
+    "gpt-6.1-sol": ModelPricing(400, 1500, label="GPT-6.1 Sol"),
+    "gpt-6-sol": ModelPricing(400, 1500, label="GPT-6 Sol"),
+    "gpt-6-luna": ModelPricing(20, 75, label="GPT-6 Luna"),
+    "gpt-5.6-sol": ModelPricing(800, 3000, label="GPT-5.6 Sol"),
+    "gpt-5.6-terra": ModelPricing(400, 1800, label="GPT-5.6 Terra"),
+    "gpt-5.6-luna": ModelPricing(40, 180, label="GPT-5.6 Luna"),
+    "claude-fable-5-1": ModelPricing(1000, 5000, label="Claude Fable 5.1"),
+    "claude-fable-5": ModelPricing(1000, 5000, label="Claude Fable 5"),
+    "claude-opus-5-5": ModelPricing(400, 2000, label="Claude Opus 5.5"),
+    "claude-opus-5": ModelPricing(500, 2500, label="Claude Opus 5"),
+    "claude-opus-4-8": ModelPricing(500, 2500, label="Claude Opus 4.8"),
+    "claude-opus-4-7": ModelPricing(500, 2500, label="Claude Opus 4.7"),
+    "claude-opus-4-6": ModelPricing(500, 2500, label="Claude Opus 4.6"),
+    "claude-sonnet-5-5": ModelPricing(200, 1000, label="Claude Sonnet 5.5"),
+    "claude-sonnet-5": ModelPricing(200, 1000, label="Claude Sonnet 5"),
+    "claude-sonnet-4-6": ModelPricing(300, 1500, label="Claude Sonnet 4.6"),
     "claude-sonnet-4-7": ModelPricing(
         prompt_per_1m_cents=300, completion_per_1m_cents=1500
     ),
-    "claude-haiku-5-5": ModelPricing(50, 250),
-    "claude-haiku-4-5": ModelPricing(100, 500),
+    "claude-haiku-5-5": ModelPricing(50, 250, label="Claude Haiku 5.5"),
+    "claude-haiku-4-5": ModelPricing(100, 500, label="Claude Haiku 4.5"),
     # The dated id Anthropic's /v1/models lists for Haiku 4.5.
     "claude-haiku-4-5-20251001": ModelPricing(100, 500),
-    "gemini-3.8-flash": ModelPricing(150, 750),
-    "gemini-3.6-flash": ModelPricing(150, 750),
-    "gemini-3.5-flash": ModelPricing(150, 900),
-    "gemini-3.5-flash-lite": ModelPricing(30, 250),
-    "gemini-3.1-pro-preview": ModelPricing(400, 1800),
-    "gemini-3.1-flash-lite": ModelPricing(25, 150),
+    "gemini-3.8-flash": ModelPricing(150, 750, label="Gemini 3.8 Flash"),
+    "gemini-3.6-flash": ModelPricing(150, 750, label="Gemini 3.6 Flash"),
+    "gemini-3.5-flash": ModelPricing(150, 900, label="Gemini 3.5 Flash"),
+    "gemini-3.5-flash-lite": ModelPricing(30, 250, label="Gemini 3.5 Flash-Lite"),
+    "gemini-3.1-pro-preview": ModelPricing(400, 1800, label="Gemini 3.1 Pro Preview"),
+    "gemini-3.1-flash-lite": ModelPricing(25, 150, label="Gemini 3.1 Flash-Lite"),
     # Embedding models — input-only pricing. Completion column held at
     # zero so a future call site that accidentally passes
     # completion_tokens still doesn't double-bill an embedding row.
@@ -173,6 +180,20 @@ OPENROUTER_IDS: dict[str, str] = {
     "google/gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
 }
 MODEL_PRICING.update({k: MODEL_PRICING[v] for k, v in OPENROUTER_IDS.items()})
+
+
+CostTier = Literal["budget", "standard", "frontier"]
+# Blended 3:1 (prompt:completion) micro-USD per Mtok; boundaries belong to "standard".
+BUDGET_BELOW_MICROS = 500_000
+FRONTIER_ABOVE_MICROS = 5_000_000
+
+
+def cost_tier(prompt_micros_per_mtok: int, completion_micros_per_mtok: int) -> CostTier:
+    """Integer-only tier of a model's blended price (BYOK passes ``cents x 10_000``)."""
+    blend4 = 3 * prompt_micros_per_mtok + completion_micros_per_mtok  # blend x 4
+    if blend4 < 4 * BUDGET_BELOW_MICROS:
+        return "budget"
+    return "standard" if blend4 <= 4 * FRONTIER_ABOVE_MICROS else "frontier"
 
 
 def get_pricing(model: str) -> ModelPricing:
