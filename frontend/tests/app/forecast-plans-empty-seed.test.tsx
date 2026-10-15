@@ -1,7 +1,6 @@
 import React from "react";
 import { renderWithSWR, waitFor, screen, fireEvent, within } from "../utils/render-with-swr";
 import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
-import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 
