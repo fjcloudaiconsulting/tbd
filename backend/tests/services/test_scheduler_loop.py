@@ -10,6 +10,7 @@ async def _patch_platform_job(monkeypatch):
     async def _noop(*a, **k):
         return 0
     monkeypatch.setattr(L, "run_api_token_expiry_reminders", _noop)
+    monkeypatch.setattr(L, "run_platform_ai_catalog_sync", _noop)
 
 
 async def test_tick_runs_when_lock_acquired(monkeypatch):
@@ -65,3 +66,18 @@ async def test_tick_runs_again_once_the_lease_expires(monkeypatch):
     expire_lease(L.LOCK_KEY)
     assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is True
     assert ran["n"] == 2
+
+
+async def test_catalog_sync_runs_once_under_the_tick_lock(monkeypatch):
+    async def _sweep(today, **k): pass
+    monkeypatch.setattr(L, "run_all_due", _sweep)
+    await _patch_platform_job(monkeypatch)
+    calls = {"n": 0}
+    async def _job(*a, **k):
+        calls["n"] += 1
+        return "synced"
+    monkeypatch.setattr(L, "run_platform_ai_catalog_sync", _job)
+    assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is True
+    assert calls["n"] == 1
+    assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is False
+    assert calls["n"] == 1

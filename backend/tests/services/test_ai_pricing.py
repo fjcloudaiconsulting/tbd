@@ -16,6 +16,7 @@ import pytest
 from app.services.ai_pricing import (
     MODEL_PRICING,
     OPENROUTER_IDS,
+    cost_tier,
     estimate_cost_cents,
     get_pricing,
 )
@@ -177,3 +178,18 @@ def test_openrouter_ids_share_the_row_of_the_same_model():
             name.replace(".", "-") if vendor == "anthropic" else name
         ), or_id
         assert MODEL_PRICING[or_id] is MODEL_PRICING[first_party], or_id
+
+
+@pytest.mark.parametrize("prompt,completion,want", [
+    (0, 1_999_999, "budget"),  # 3:1 blend is $0.49999975; a plain average would say standard
+    (500_000, 500_000, "standard"),
+    (5_000_000, 5_000_000, "standard"),
+    (5_000_000, 5_000_001, "frontier"),
+])
+def test_cost_tier_boundaries(prompt, completion, want):
+    assert cost_tier(prompt, completion) == want
+
+
+def test_every_openrouter_id_has_a_label():
+    for or_id in OPENROUTER_IDS:
+        assert MODEL_PRICING[or_id].label, or_id

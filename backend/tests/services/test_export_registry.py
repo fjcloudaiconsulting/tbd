@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 59
-    assert len(EXPORT_DISPOSITION) == 59
+    assert len(Base.metadata.tables) == 60
+    assert len(EXPORT_DISPOSITION) == 60
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════
@@ -831,6 +831,7 @@ RULED_EXCLUDED: frozenset[str] = frozenset(
         "leases",
         "merchant_dictionary",
         "oauth_clients",
+        "platform_ai_models",
         "org_data_reset_locks",
         "org_feature_overrides",
         "org_limit_overrides",
