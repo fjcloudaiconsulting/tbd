@@ -1262,3 +1262,94 @@ async def test_entitlement_lost_mid_turn_reports_its_own_code(factory, w, client
     ev = _events(r.text)
     assert ("error", {"code": "feature_not_enabled"}) in ev
     assert "ai_native_not_available" not in r.text
+
+
+# ── PII scrub (TBD-628) ───────────────────────────────────────────────────
+
+_PII = "is NL91ABNA0417164300 mine? mail a@b.co"
+
+
+async def test_c1_typed_text_is_scrubbed_before_every_estimate_and_gate(
+    factory, w, client, provider, monkeypatch,
+):
+    """FENCE C1. Wrong implementation: relying on the wrapper alone (the
+    pre-flight dry gate and the TBD-613 estimates would see the originals)."""
+    _as(factory, w["user"])
+    est, prep = [], []
+    real_est, real_prep = chat._estimate, chat.ai_dispatch._prepare_dispatch
+
+    def spy_est(transcript, tools):
+        est.append(copy.deepcopy(transcript))
+        return real_est(transcript, tools)
+
+    async def spy_prep(*a, **k):
+        prep.append(copy.deepcopy(k["messages"]))
+        return await real_prep(*a, **k)
+
+    monkeypatch.setattr(chat, "_estimate", spy_est)
+    monkeypatch.setattr(chat.ai_dispatch, "_prepare_dispatch", spy_prep)
+    adapter = provider([_resp(content="ok")])
+    r = await client.post(URL, json={"messages": [{"role": "user", "content": _PII}]})
+    assert r.status_code == 200, r.text
+    assert len(est) >= 1 and len(prep) >= 2  # the dry gate, then round 1
+    for rec in (*est, *prep, *adapter.seen):
+        blob = json.dumps(rec)
+        assert "NL91ABNA0417164300" not in blob and "a@b.co" not in blob
+    assert "[IBAN]" in json.dumps(prep[0]) and "[EMAIL]" in json.dumps(adapter.seen[0])
+
+
+async def test_c2_tool_results_are_scrubbed_before_the_cap(factory, w, client, provider, monkeypatch):
+    """FENCE C2. Wrong implementations: scrubbing the serialized text after
+    ``_cap_result`` (``[EMAIL]`` is longer than ``a@b.co``: the 40k cap breaks);
+    not scrubbing tool results."""
+    _as(factory, w["user"])
+    rows = [{"id": 0, "d": "NL91ABNA0417164300 call +31 6 12345678"}]
+    rows += [{"id": i, "d": "a@b.co " * 560} for i in range(1, 11)]
+    assert 39_000 < len(json.dumps({"items": rows})) < chat.MAX_TOOL_RESULT_CHARS
+    _fake_accounts(monkeypatch, {"items": rows, "total": 11})
+    msg, ev = await _tool_message(client, provider)
+    assert len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
+    out = json.loads(msg["content"])
+    assert ("tool_result", {"name": "accounts_list", "ok": True, "rows": len(out["items"])}) in ev
+    assert out["items"][0]["d"] == "[IBAN] call [PHONE]"
+    assert "a@b.co" not in msg["content"] and "NL91ABNA0417164300" not in msg["content"]
+    assert "[EMAIL]" in msg["content"]
+
+
+async def test_c3_error_detail_is_scrubbed(factory, w, client, provider, monkeypatch):
+    """FENCE C3. Wrong implementation: no scrub in ``_tool_message``. The provider request is
+    scrubbed again by the wrapper, so the kill reads the transcript ``_estimate`` measures."""
+    _as(factory, w["user"])
+    est = []
+    real_est = chat._estimate
+    monkeypatch.setattr(chat, "_estimate", lambda t, tools: (est.append(copy.deepcopy(t)), real_est(t, tools))[1])
+    spec = registry.get_tool("accounts_list")
+
+    async def run(ctx, args):
+        raise registry.ToolError("not_found", "no account a@b.co")
+
+    monkeypatch.setitem(registry._TOOLS, "accounts_list", dataclasses.replace(spec, run=run))
+    msg, _ = await _tool_message(client, provider)
+    assert json.loads(msg["content"]) == {"error": "not_found", "detail": {"untrusted": "no account [EMAIL]"}}
+    assert "a@b.co" not in json.dumps(est)
+
+
+async def test_c4_the_browser_keeps_the_original_text(factory, w, client, provider):
+    """GUARD C4. Wrong implementation: scrubbing inside ``registry.wrap_untrusted``
+    or ``registry.invoke`` (the member's own preview would read ``[IBAN]``)."""
+    _as(factory, w["user"])
+    async with factory._f() as db:
+        cat = (await db.scalars(select(Category).where(Category.org_id == w["org"]))).one()
+        cat.name = "Food NL91ABNA0417164300"
+        await db.commit()
+    provider([_resp([_call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"})])])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    preview = next(d for e, d in ev if e == "preview")
+    assert "NL91ABNA0417164300" in json.dumps(preview)
+    listed = await client.get("/api/v1/agent/actions")
+    assert listed.status_code == 200 and "NL91ABNA0417164300" in listed.text
+
+
+def test_c5_system_prompt_explains_the_placeholders():
+    """GUARD C5."""
+    assert "[IBAN]" in chat.SYSTEM_PROMPT

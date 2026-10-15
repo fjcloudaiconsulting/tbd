@@ -688,3 +688,64 @@ async def test_db_outage_at_the_door_is_503(client, w, monkeypatch):
 async def test_deeply_nested_body_is_a_parse_error_not_a_500(client, w):
     r = await _post(client, None, raw="[" * 60_000)
     assert r.status_code == 400 and r.json()["error"]["code"] == -32700
+
+
+# ── PII scrub at the single egress (TBD-628) ──────────────────────────────
+
+_ORIG = ["NL91ABNA0417164300", "jan@example.nl", "+31 6 12345678"]
+
+
+async def test_m1_transactions_search_is_scrubbed_but_numbers_survive(factory, client, w):
+    """FENCE M1. Wrong implementation: no scrub at the MCP door."""
+    from app.models import Account, AccountType
+    from app.models.transaction import Transaction, TransactionStatus, TransactionType
+
+    async with factory() as db:
+        cat = (await db.scalars(select(Category).where(Category.org_id == w["org"]))).one()
+        at = AccountType(org_id=w["org"], name="Checking", slug="chk", is_system=False)
+        db.add(at)
+        await db.flush()
+        acct = Account(org_id=w["org"], name="Main", account_type_id=at.id, balance=Decimal("0"),
+                       currency="EUR", is_default=True)
+        db.add(acct)
+        await db.flush()
+        db.add(Transaction(
+            org_id=w["org"], account_id=acct.id, category_id=cat.id,
+            description="Terugbetaling NL91ABNA0417164300 jan@example.nl +31 6 12345678",
+            amount=Decimal("-1234.56"), type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+            date=datetime.date(2026, 10, 15), settled_date=datetime.date(2026, 10, 15)))
+        await db.commit()
+    r = await _call(client, "transactions_search", {
+        "date_from": "2026-10-01", "date_to": "2026-10-31", "category_match": "subtree"})
+    res = r.json()["result"]
+    assert res["isError"] is False, res
+    for blob in (res["content"][0]["text"], json.dumps(res["structuredContent"])):
+        assert "Terugbetaling [IBAN] [EMAIL] [PHONE]" in blob
+        assert "-1234.56" in blob and "2026-10-15" in blob
+        assert not any(o in blob for o in _ORIG)
+
+
+async def test_m2_free_text_outside_untrusted_keys_and_errors_are_scrubbed(client, w, monkeypatch):
+    """FENCE M2. Wrong implementation: scrubbing inside ``wrap_untrusted``
+    (only ``UNTRUSTED_KEYS`` strings; a ``ToolError.detail`` would leak)."""
+    async def ok(*a, **k):
+        return {"data": {"x_free_text": "mail a@b.co", "id": 7}}
+
+    monkeypatch.setattr(registry, "invoke", ok)
+    res = (await _call(client, "accounts_list", {})).json()["result"]
+    assert "mail [EMAIL]" in res["content"][0]["text"] and res["structuredContent"]["data"]["id"] == 7
+    assert "a@b.co" not in res["content"][0]["text"]
+
+    async def bad(*a, **k):
+        raise registry.ToolError("invalid_arguments", "bad a@b.co")
+
+    monkeypatch.setattr(registry, "invoke", bad)
+    res = (await _call(client, "accounts_list", {})).json()["result"]
+    assert res["isError"] is True and "bad [EMAIL]" in res["content"][0]["text"]
+    assert "a@b.co" not in json.dumps(res)
+
+
+def test_m3_a_bare_card_int_stays_valid_json():
+    """GUARD M3."""
+    out = mcp_main._content({"n": 4111111111111111}, False)
+    assert json.loads(out["content"][0]["text"]) == {"n": "[CARD]"} == out["structuredContent"]

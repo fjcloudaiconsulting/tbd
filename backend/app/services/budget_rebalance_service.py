@@ -49,7 +49,7 @@ from app.schemas.budget_rebalance import (
     BudgetDeltaSuggestion,
     BudgetRebalanceResponse,
 )
-from app.services import currency_service
+from app.services import ai_scrub, currency_service
 from app.services.ai_dispatch import (
     AICapabilityNotSupported,
     AICapExceeded,
@@ -464,11 +464,12 @@ def _build_messages(
     # system prompt's "output JSON" instruction is paired with valid
     # JSON input — sort_keys keeps the payload stable across runs and
     # makes it easy for tests to parse with json.loads.
+    # Scrub the object before json.dumps: ASCII escapes would glue identifiers to \n / \u00e9.
     user = (
         "Given the per-category aggregates below (including each category's "
         "projected end-of-period spend and surplus), rank which overspending "
         "categories matter most to cover.\n\n"
-        f"AGGREGATES:\n{json.dumps(user_payload, sort_keys=True)}"
+        f"AGGREGATES:\n{json.dumps(ai_scrub.scrub_value(user_payload), sort_keys=True)}"
     )
     return [
         {"role": "system", "content": system},

@@ -54,7 +54,7 @@ from app.schemas.ai_forecast import (
     RefinedForecastProvenance,
     RefinedForecastResponse,
 )
-from app.services import ai_consent_service, ai_dispatch, ai_routing_service, forecast_service
+from app.services import ai_consent_service, ai_dispatch, ai_routing_service, ai_scrub, forecast_service
 from app.services.ai_forecast_refine_token_estimate import (
     Scope,
     _duration_band,
@@ -304,7 +304,8 @@ def _build_refine_prompt(
     }
     messages = [
         {"role": "system", "content": _system_instructions(timeframe_months)},
-        {"role": "user", "content": json.dumps(user_payload, default=str)},
+        # Scrub the object before json.dumps: ASCII escapes would glue identifiers to \n / \u00e9.
+        {"role": "user", "content": json.dumps(ai_scrub.scrub_value(user_payload), default=str)},
     ]
     n_in_scope = len(in_scope)
     return messages, estimate_output_tokens(category_count=n_in_scope), n_in_scope
