@@ -77,8 +77,10 @@ export default function AiMasterSwitchCard() {
       <div className="space-y-4 px-6 py-4 text-sm text-text-secondary">
         <p>
           AI is off until you turn it on. When it is on, the data an AI feature needs is sent to
-          an AI provider. When it is off, none of your organization&rsquo;s data is sent to any
-          AI provider, and connected AI apps cannot read your data.
+          the AI provider your organization uses: your own provider key, or platform AI if you
+          turn that on separately. Turning AI on does not start any charges by itself. When it is
+          off, none of your organization&rsquo;s data is sent to any AI provider, and connected AI
+          apps cannot read your data.
         </p>
         {err && <div className={errorCls}>{err}</div>}
         {on ? (
