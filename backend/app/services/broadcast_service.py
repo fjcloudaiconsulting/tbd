@@ -781,6 +781,10 @@ async def _run_drain_loop(
                 EmailBroadcastRecipient.id.in_(survivor_ids),
                 EmailBroadcastRecipient.status.in_(expected_statuses),
                 EmailBroadcastRecipient.delivery_status.is_(None),
+                # Resume only: re-check the cap at claim time, a concurrent
+                # resume may have taken the row to max since the SELECT.
+                # Fresh-send rows are PENDING (attempts 0), always below it.
+                EmailBroadcastRecipient.attempts < max_attempts,
             )
             .values(
                 status=RecipientStatus.SENT,

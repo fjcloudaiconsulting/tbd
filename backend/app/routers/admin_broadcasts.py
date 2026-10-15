@@ -643,6 +643,14 @@ async def resume_broadcast(
 
     row = await _get_broadcast_or_404(db, broadcast_id)
 
+    # A draft has no recipient rows; resuming it would mark it COMPLETED and
+    # the send CAS (requires draft) could never run again.
+    if row.status == BroadcastStatus.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "broadcast_not_started"},
+        )
+
     launch_resume(session_factory, broadcast_id)
 
     await audit_service.record_audit_event(
