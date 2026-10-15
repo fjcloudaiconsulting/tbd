@@ -39,6 +39,7 @@ export default function AiMasterSwitchCard() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: load() writes the consent snapshot into state
     void load();
   }, [load]);
 
