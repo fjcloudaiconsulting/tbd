@@ -51,7 +51,7 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 # Egress DNS runs here, never on the loop's default executor: a hung lookup
 # must not starve ``asyncio.to_thread`` callers (the limits buckets).
-_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="egress-dns")
+_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="egress-dns")
 
 # User-facing validation_error text for a refused connect. Safe to
 # surface (carries no resolved-address detail — the reachability oracle

@@ -17,7 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from datetime import timedelta
+
+from sqlalchemy import select, update
 
 from app.models.oauth_client import OAuthClient
 from app.services import oauth_service
@@ -25,7 +27,7 @@ from app.services.ai_providers import egress_guard
 from app.services.oauth_service import CimdError, cimd_id, cimd_key, fetch_cimd
 from tests.agent.test_agent_tokens import _jwt, _org, _user
 from tests.agent.test_oauth import (  # noqa: F401 -- fixtures + helpers
-    CB, CTX, RESOURCE, _consent, _env, _err, _exchange, _grant, _params, _pkce, _q,
+    CB, _naive_now, CTX, RESOURCE, _consent, _env, _err, _exchange, _grant, _params, _pkce, _q,
     _refresh, _register, client, factory,
 )
 
@@ -271,6 +273,41 @@ async def test_12_approve_creates_row_with_cimd_id_and_grant(factory, client, we
     assert row.last_used_at is not None
 
 
+async def test_12_approve_refreshes_last_used_of_an_aged_row(factory, client, web, monkeypatch):
+    """FENCE (F4). Wrong implementation: the upsert never sets last_used_at
+    (the purge could reap the row before the grant lands)."""
+    _, h = await _login(factory)
+    assert (await _consent(client, h, URL))[0].status_code == 200
+    async with factory() as s:
+        await s.execute(update(OAuthClient).values(last_used_at=_naive_now() - timedelta(days=40)))
+        await s.commit()
+
+    async def noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(oauth_service, "stamp_client_used", noop)
+    assert (await _consent(client, h, URL))[0].status_code == 200
+    [row] = await _rows(factory)
+    assert row.last_used_at > _naive_now() - timedelta(minutes=5)
+
+
+async def test_12_host_bucket_charged_on_new_rows_only(factory, client, web, monkeypatch):
+    """FENCE. Wrong implementation: the host bucket charged on updates too, or never."""
+    _, h = await _login(factory)
+    real, charged = oauth_service._bucket, []
+
+    async def spy(key, limit, window):
+        if key.startswith("oauth:cimd:host:"):
+            charged.append(key)
+        return await real(key, limit, window)
+
+    monkeypatch.setattr(oauth_service, "_bucket", spy)
+    assert (await _consent(client, h, URL))[0].status_code == 200
+    assert charged == ["oauth:cimd:host:claude.ai"]
+    assert (await _consent(client, h, URL))[0].status_code == 200
+    assert len(charged) == 1
+
+
 async def test_13_doc_change_updates_row_same_id(factory, client, web):
     """FENCE 13. Wrong implementation: insert-only (stale), or a new row per change."""
     _, h = await _login(factory)
@@ -353,12 +390,22 @@ async def test_18_fetch_failures_share_one_code(factory, client, web):
         "404": lambda: _resp(404),
         "json": lambda: _resp(body=b"{"),
         "deep": lambda: _resp(body=b"[" * 3000),
-        "length": raising(ValueError("Content-Length")),
+        "length": lambda: _resp(headers={"Content-Length": "abc"}),
     }
     for name, route in cases.items():
         web.routes[URL] = route
         r = await _ctx(client, h)
         assert (r.status_code, r.json()) == (400, BAD), name
+
+
+async def test_19_decision_fetch_is_metered(factory, client, web):
+    """FENCE 19. Wrong implementation: no fetch bucket on the decision path."""
+    _, h = await _login(factory)
+    for _ in range(30):
+        assert (await _ctx(client, h)).status_code == 200
+    r, _ = await _consent(client, h, URL)
+    assert (r.status_code, r.json()) == (429, {"detail": {"code": "rate_limited"}})
+    assert len(web.calls) == 30
 
 
 async def test_19_fetch_bucket_429(factory, client, web):
@@ -412,7 +459,7 @@ async def test_23_hung_dns_does_not_starve_other_pools(monkeypatch):
     pool = ThreadPoolExecutor(max_workers=2)
     asyncio.get_running_loop().set_default_executor(pool)
     try:
-        out = await asyncio.gather(*[fetch_cimd(URL) for _ in range(8)], return_exceptions=True)
+        out = await asyncio.gather(*[fetch_cimd(URL) for _ in range(20)], return_exceptions=True)  # > the shared 16-worker pool
         assert all(isinstance(e, CimdError) for e in out), out
         assert await asyncio.wait_for(asyncio.to_thread(lambda: 1), 1) == 1
         assert await asyncio.wait_for(egress_guard.resolve_host("provider.example", 443), 1)

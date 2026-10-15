@@ -77,7 +77,7 @@ CIMD_TIMEOUT_S, MAX_CIMD_BYTES = 5.0, 5120
 VERIFIED_CIMD = frozenset({"https://claude.ai/oauth/mcp-oauth-client-metadata"})
 # CIMD resolves DNS on its own small pool: a hung lookup starves neither the
 # default executor (limits buckets) nor the AI providers' egress pool.
-_CIMD_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cimd-dns")
+_CIMD_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cimd-dns")
 
 
 class OAuthError(Exception):
@@ -452,14 +452,14 @@ async def upsert_cimd_client(
     to NEW rows only)."""
     now = _naive_utc_now().replace(microsecond=0)
 
-    def refresh():
-        return update(OAuthClient).where(OAuthClient.id == client.id).values(
-            client_name=client.client_name, redirect_uris=list(client.redirect_uris),
-            last_used_at=now,  # a purge cannot reap it before the grant lands
-        )
-
     async with session_factory() as s:
-        if not (await s.execute(refresh())).rowcount:
+        async def current():  # plain non-locking read: no gap lock to deadlock on
+            return (await s.execute(select(
+                OAuthClient.client_name, OAuthClient.redirect_uris, OAuthClient.last_used_at,
+            ).where(OAuthClient.id == client.id))).first()
+
+        row = await current()
+        if row is None:
             if await s.scalar(select(func.count()).select_from(OAuthClient)) >= MAX_CLIENTS:
                 raise OAuthError("rate_limited", status=429)
             await _bucket(f"oauth:cimd:host:{host}", 50, DAY)
@@ -473,8 +473,19 @@ async def upsert_cimd_client(
             except IntegrityError:
                 # A concurrent first approval won the insert: refresh its row.
                 await s.rollback()
-                await s.execute(refresh())
-        await s.commit()
+                row = await current()
+        # Skip the write on a hot shared row; the purge idles clients for 30 days.
+        if row is not None and (
+            (row.client_name, list(row.redirect_uris)) != (client.client_name, list(client.redirect_uris))
+            or row.last_used_at is None or row.last_used_at < now - timedelta(days=1)
+        ):
+            await s.execute(
+                update(OAuthClient).where(OAuthClient.id == client.id).values(
+                    client_name=client.client_name, redirect_uris=list(client.redirect_uris),
+                    last_used_at=now,  # a purge cannot reap it before the grant lands
+                )
+            )
+            await s.commit()
 
 
 # ── consent ────────────────────────────────────────────────────────────────
@@ -499,7 +510,10 @@ async def validate_consent(
         try:
             name, uris = await fetch_cimd(cid)
         except CimdError as exc:
-            logger.warning("oauth.cimd.fetch_failed", extra={"host": urlsplit(cid).hostname, "reason": exc.reason})
+            logger.warning(
+                "oauth.cimd.fetch_failed",
+                extra={"host": urlsplit(cid).hostname, "reason": exc.reason},
+            )
             raise ConsentError("invalid_client") from None
         rid = cimd_id(cid)
         client = OAuthClient(id=rid, client_name=name, redirect_uris=uris, metadata_key=cimd_key(rid))
