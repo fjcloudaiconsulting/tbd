@@ -688,12 +688,12 @@ async def _exchange(db, session_factory, form, ip, audit_ip) -> dict[str, Any]:
         await _bucket(f"oauth:codefail:ip:{ip}", 60, MINUTE)
         raise _invalid_grant()
     verifier = form.get("code_verifier") or ""
-    if await _hex_of_cimd_row(db, client_id, row) or not (
+    if not (
         client_ref(client_id) == row.oauth_client_id
         and secrets.compare_digest(sha256_hex(redirect_uri), row.code_redirect_hash or "")
         and VERIFIER_RE.fullmatch(verifier)
         and secrets.compare_digest(_s256(verifier), row.code_challenge or "")
-    ):
+    ) or await _hex_of_cimd_row(db, client_id, row):
         raise _invalid_grant()  # no state change: the right client can still redeem
     snap = _snap(row)
     if row.refresh_hash is not None:
