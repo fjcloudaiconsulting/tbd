@@ -26,7 +26,10 @@ function walk(dir: string): string[] {
 }
 
 function offences(file: string): string[] {
-  const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const text = readFileSync(file, "utf8");
+  // Cheap prefilter only (it can over-select, never decide): parsing ~600 files is slow under load.
+  if (!text.includes("next/headers") && !text.includes("auth-server")) return [];
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const hits: string[] = [];
   const check = (spec: string, names: string[]) => {
     if (/(^|\/)auth-server$/.test(spec)) hits.push(`imports ${spec}`);
