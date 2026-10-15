@@ -2,7 +2,7 @@
  * TBD-627: the org AI master switch card, and the "AI is off" copy on the
  * surfaces that have a code map.
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axe from "axe-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -97,7 +97,6 @@ describe("AiMasterSwitchCard", () => {
     const { container } = render(<AiMasterSwitchCard />);
     const link = await screen.findByRole("link", { name: "How AI uses your data" });
     expect(link).toHaveAttribute("href", "/privacy#ai-providers");
-    await act(async () => {}); // let next/link settle its own state update
     const result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
     expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
   });

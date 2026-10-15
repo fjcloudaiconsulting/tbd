@@ -101,7 +101,13 @@ export default function AiMasterSwitchCard() {
                 provider, as described above.
               </span>
             </label>
-            <Link href="/privacy#ai-providers" className="block underline underline-offset-2">
+            {/* No prefetch: a rarely-followed legal link, and the viewport prefetch's own
+                state update escapes act() in tests. */}
+            <Link
+              href="/privacy#ai-providers"
+              prefetch={false}
+              className="block underline underline-offset-2"
+            >
               How AI uses your data
             </Link>
             <button
