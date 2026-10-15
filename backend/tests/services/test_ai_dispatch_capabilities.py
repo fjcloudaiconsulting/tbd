@@ -1511,14 +1511,12 @@ async def test_structured_retry_multiplier_blocks_when_single_would_fit(
     """
     # gpt-4o-mini completion = 60 cents / 1M tokens; prompt "x" adds ~1
     # token at 15 cents / 1M. estimate_cost_micros sums prompt+completion
-    # raw cost and ceils ONCE: max_tokens=200_000 → 12_000_000 + 15 raw
-    # = 13 cents single (not 12, because of the prompt cent).
-    # retries+1 = STRUCTURED_OUTPUT_MAX_RETRIES + 1 = 3 → 13 x 3 = 39
-    # cents (not 36).
+    # raw cost and ceils ONCE: max_tokens=200_000 → 12_000_015 raw
+    # = 120_001 micros single; retries+1 = 3 → 360_003 micros.
     assert STRUCTURED_OUTPUT_MAX_RETRIES + 1 == 3
     big_max_tokens = 200_000
-    # hard=120, spent=100 → remaining=20.
-    # single 13 fits (100+13=113 <= 120); x3 = 39 → 100+39=139 > 120 block.
+    # hard=120 cents, spent=100 cents → remaining=200_000 micros.
+    # single 120_001 fits; x3 = 360_003 > 200_000 → block.
     await _seed_cap_and_spend(
         db, org, credential, hard_cap_cents=120, spent_cents=100
     )

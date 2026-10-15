@@ -131,6 +131,10 @@ class OpenAICompatibleAdapter:
         has no defined unit, so only the OpenRouter root is trusted (TBD-630)."""
         if self.api_root != _OPENROUTER_ROOT:
             return None
+        # Routed through the key holder's own upstream key: ``cost`` is then only
+        # OpenRouter's fee, so fail safe and let the estimate be charged.
+        if usage.get("is_byok"):
+            return None
         return usd_to_micros(usage.get("cost"))
 
     def _headers(self) -> dict[str, str]:

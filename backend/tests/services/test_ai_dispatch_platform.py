@@ -135,6 +135,7 @@ class Fake:
         self.stream_done = True
         self.embed_tokens = 15
         self.cost = None  # OpenRouter's usage.cost (USD)
+        self.is_byok = False
 
     @property
     def bodies(self):
@@ -176,7 +177,8 @@ class Fake:
             "usage": {"prompt_tokens": p, "completion_tokens": c, **self._cost()}})
 
     def _cost(self):
-        return {} if self.cost is None else {"cost": self.cost}
+        out = {} if self.cost is None else {"cost": self.cost}
+        return out | ({"is_byok": True} if self.is_byok else {})
 
 
 @pytest.fixture
@@ -1257,3 +1259,17 @@ async def test_fence_global_ceiling_is_converted_at_both_sites(db, sf, fake, mon
     await db.refresh(cred)  # a refused reserve rolls back and expires ORM objects
     await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req_ok, adapter=None))
     assert await spend(sf) == 10_000
+
+
+async def test_fence_openrouter_byok_usage_cost_is_not_the_spend(db, sf, fake):
+    """FENCE (review): with ``usage.is_byok`` true, ``usage.cost`` is only
+    OpenRouter's fee; the upstream spend is elsewhere. The estimate is charged,
+    never the ~0 fee. Kills ignoring ``is_byok``."""
+    await set_platform(db)
+    org = await mk_org(db)
+    await mk_platform(db, org, "openrouter")
+    fake.cost, fake.is_byok = 0.0001, True
+    await _chat(db, org)
+    want = estimate_cost_micros(model="vendor/model-a", prompt_tokens=20, completion_tokens=7)
+    assert want != 100
+    assert [r.cost_micros for r in await ledger(sf)] == [want]

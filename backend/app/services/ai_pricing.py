@@ -231,8 +231,6 @@ def estimate_cost_micros(
 
 def usd_to_micros(value) -> int | None:
     """A provider-reported USD amount -> micro-USD, rounded up; None if unusable."""
-    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        return None
     try:
         d = Decimal(str(value))  # str() of the JSON float keeps it exact
     except InvalidOperation:

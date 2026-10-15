@@ -81,6 +81,8 @@ def test_fence_check_preconditions(conn):
     """FENCE 15. Kills converting while a reservation could be in flight, and
     writing a limit every entitlement read would reject."""
     _plan(conn, 1, {CENTS: {"period": "month", "limit": 0}})
+    # A BYOK credential (platform_provider NULL) must not trip the refusal.
+    conn.execute(text("INSERT INTO org_ai_credentials (platform_provider) VALUES (NULL)"))
     assert m091.check_preconditions(conn) == [(1, {MICROS: {"period": "month", "limit": 0}})]
 
     big = 2**53 // 10_000 + 1
@@ -171,8 +173,10 @@ def _col(conn, table, name):
 
 def test_fence_whole_migration_up_and_down(conn):
     """FENCE 18. Kills ``upgrade()`` not calling ``convert_rows``, a plain
-    ``alter_column(type_=)``, a rename that drops NOT NULL or the default, and
-    a downgrade that renames before dividing."""
+    ``alter_column(type_=)``, and a downgrade that renames before dividing. SQLite batch reflection keeps
+    NOT NULL and the default even when ``existing_*`` is omitted, so a rename
+    that drops them is NOT visible here; the MySQL ``SHOW CREATE TABLE``
+    transcript in the PR is the proof for that."""
     conn.execute(text("INSERT INTO ai_usage_ledger (id, est_cost_cents) VALUES (1, 5000)"))
     conn.execute(text("INSERT INTO platform_ai_spend (id, cents) VALUES (1, 3)"))
     _plan(conn, 1, {CENTS: {"period": "month", "limit": 5}})

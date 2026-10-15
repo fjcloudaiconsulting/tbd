@@ -1602,7 +1602,7 @@ async def test_fence_hard_cap_admits_the_calls_the_headroom_buys(
 ):
     """FENCE 6 (Jira): $1 hard cap, a call whose projection equals its actual
     cost c. Prior spend leaves headroom for exactly 3.5 calls, so exactly 3 are
-    admitted. Kills per-call cent rounding (0 admitted), the cap left in cents
+    admitted. Kills per-call cent rounding (0 admitted; fence 2 kills it in pricing too), the cap left in cents
     against a micro sum (0), and the cap converted twice (10 admitted)."""
     from app.services.ai_pricing import estimate_cost_micros
     from app.services.ai_token_estimate import estimate_prompt_tokens_from_messages
@@ -1681,6 +1681,19 @@ async def test_fence_reported_cost_beats_the_estimate(
     assert rows[-1].cost_micros == estimate_cost_micros(
         model="gpt-4o-mini", prompt_tokens=1500, completion_tokens=300
     ) == 405
+
+    # A reported 0 is a real 0 (free model), not "missing".
+    free = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300,
+        model="gpt-4o-mini", cost_micros=0,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=_make_adapter(free)
+    ):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": [], "max_tokens": 1})
+    rows = (await db.execute(select(AIUsageLedger).order_by(AIUsageLedger.id))).scalars().all()
+    assert rows[-1].cost_micros == 0
 
 
 @pytest.mark.asyncio

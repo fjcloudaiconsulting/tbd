@@ -494,6 +494,8 @@ async def _resolve_caps(
     ``hard_cap_cents=300`` (default soft still wins) must produce
     ``soft_from_feature_override=False`` so the warning dedupe stays
     org-wide via the ``__default__`` marker.
+
+    The cap columns are cents; the resolved values are micros.
     """
     default_row = (
         await db.execute(

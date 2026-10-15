@@ -348,3 +348,25 @@ async def test_fence_chat_reports_usage_cost_on_openrouter_only(
         model="m", messages=[{"role": "user", "content": "x"}]
     )
     assert resp.cost_micros == want
+
+
+@pytest.mark.asyncio
+async def test_fence_chat_openrouter_byok_cost_is_not_trusted(monkeypatch):
+    """FENCE (review): ``usage.is_byok`` true -> ``usage.cost`` is only
+    OpenRouter's fee -> no reported cost. Kills ignoring ``is_byok``."""
+    _install_transport(
+        monkeypatch,
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "model": "m",
+                "choices": [{"message": {"role": "assistant", "content": "x"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1,
+                          "cost": 0.0001, "is_byok": True},
+            },
+        ),
+    )
+    resp = await _compat(OPENROUTER_ROOT).chat(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    assert resp.cost_micros is None

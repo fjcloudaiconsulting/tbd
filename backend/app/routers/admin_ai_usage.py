@@ -91,7 +91,7 @@ async def get_usage(
           "period": "2026-05",
           "total_prompt_tokens": 1234,
           "total_completion_tokens": 567,
-          "total_cost_micros": 89,
+          "total_cost_micros": 890000,
           "by_feature": [
             {
               "feature_key": "chat",
