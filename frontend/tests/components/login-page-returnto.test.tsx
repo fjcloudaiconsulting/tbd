@@ -165,6 +165,15 @@ describe("LoginPageBody — re-auth reason banner", () => {
     expect(banner.textContent).toMatch(/signed out/i);
   });
 
+  it.each(["__proto__", "constructor", "toString"])(
+    "reason=%s (an Object.prototype name) renders the page with no banner",
+    (reason) => {
+      searchParamsMock.mockReturnValue(new URLSearchParams(`reason=${reason}`));
+      render(<LoginPageBody />);
+      expect(screen.queryByTestId("auth-reason-banner")).toBeNull();
+    },
+  );
+
   it("shows no reason banner when reason is absent", () => {
     searchParamsMock.mockReturnValue(new URLSearchParams());
     render(<LoginPageBody />);
