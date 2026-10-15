@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+from concurrent.futures import Executor, ThreadPoolExecutor
 from ipaddress import IPv4Address, IPv6Address
 
 import httpx
@@ -47,6 +48,10 @@ METADATA_IPS = frozenset(
 )
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+# Egress DNS runs here, never on the loop's default executor: a hung lookup
+# must not starve ``asyncio.to_thread`` callers (the limits buckets).
+_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="egress-dns")
 
 # User-facing validation_error text for a refused connect. Safe to
 # surface (carries no resolved-address detail — the reachability oracle
@@ -148,15 +153,16 @@ def check_ip(
 
 
 async def resolve_host(
-    host: str, port: int
+    host: str, port: int, executor: Executor | None = None
 ) -> list[IPv4Address | IPv6Address]:
-    """Resolve ``host`` to every A/AAAA record via the event loop's
-    executor-backed getaddrinfo (async-safe; no blocking DNS on the
-    loop)."""
+    """Resolve ``host`` to every A/AAAA record on a dedicated executor
+    (``_DNS_EXECUTOR`` unless one is given): async-safe, no blocking DNS
+    on the loop or the default executor."""
     loop = asyncio.get_running_loop()
     try:
-        infos = await loop.getaddrinfo(
-            host, port, type=socket.SOCK_STREAM
+        infos = await loop.run_in_executor(
+            executor or _DNS_EXECUTOR, socket.getaddrinfo,
+            host, port, 0, socket.SOCK_STREAM,
         )
     except socket.gaierror:
         raise httpx.ConnectError(
@@ -194,9 +200,12 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
       re-resolution window after validation.
     """
 
-    def __init__(self, *, allow_private: bool = False, **kwargs) -> None:
+    def __init__(
+        self, *, allow_private: bool = False, executor: Executor | None = None, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self._allow_private = allow_private
+        self._executor = executor
         self._pinned: dict[tuple[str, int], str] = {}
 
     async def handle_async_request(
@@ -214,7 +223,7 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
         key = (host, port)
         pinned = self._pinned.get(key)
         if pinned is None:
-            addresses = await resolve_host(host, port)
+            addresses = await resolve_host(host, port, self._executor)
             if not addresses:
                 raise httpx.ConnectError(
                     f"DNS resolution for {host!r} returned no addresses"
@@ -237,12 +246,12 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
 
 
 def guarded_async_client(
-    *, timeout: float, allow_private: bool = False
+    *, timeout: float, allow_private: bool = False, executor: Executor | None = None
 ) -> httpx.AsyncClient:
     """AsyncClient factory for org-configured AI endpoints: pinned
     transport + no redirect following."""
     return httpx.AsyncClient(
         timeout=timeout,
-        transport=GuardedTransport(allow_private=allow_private),
+        transport=GuardedTransport(allow_private=allow_private, executor=executor),
         follow_redirects=False,
     )
