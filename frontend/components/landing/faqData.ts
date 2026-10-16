@@ -28,7 +28,7 @@ export const faqEntries: ReadonlyArray<FaqEntry> = [
   },
   {
     q: "Do you use my data to train AI?",
-    a: "No. Personal financial data is never used to train models. The optional AI assistant runs against a provider you choose, and you can disable it at any time.",
+    a: "No. We never use your personal financial data to train models. The optional AI assistant runs against a provider you choose, and you can disable it at any time.",
   },
   {
     q: "Can I delete my account?",

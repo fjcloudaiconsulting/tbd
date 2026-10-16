@@ -52,8 +52,9 @@ export default function AiTermsPage() {
             <p>
               These terms apply when your organization turns on AI in The
               Better Decision. That covers the assistant, category
-              suggestions, forecast refinement, budget rebalance, and AI apps
-              you connect to your data. They add to our{" "}
+              suggestions, forecast refinement, budget rebalance, Plans smart
+              suggestions (when available), and AI apps you connect to your
+              data. They add to our{" "}
               <Link href="/terms" className="underline hover:text-accent">Terms of Service</Link>{" "}
               and{" "}
               <Link href="/privacy" className="underline hover:text-accent">Privacy Policy</Link>.
@@ -106,8 +107,9 @@ export default function AiTermsPage() {
             <p>
               We never send your profile: your name, email address, phone
               number, username, or sign-in details. Before sending, we replace
-              IBANs, card numbers, email addresses and phone numbers with
-              placeholders. Names of people or businesses in descriptions, and
+              the IBANs, card numbers, email addresses and phone numbers that
+              we recognize with placeholders. An unusual format can slip
+              through. Names of people or businesses in descriptions, and
               what you type, are sent as written. Each feature sends only the
               data it needs; the{" "}
               <Link href="/privacy#ai-providers" className="underline hover:text-accent">Privacy Policy</Link>{" "}
@@ -119,11 +121,15 @@ export default function AiTermsPage() {
             <h2>5. AI output is a suggestion</h2>
             <p>
               AI can be wrong. Suggestions, forecasts and answers are not
-              financial, tax, or legal advice. The assistant and connected
-              apps cannot change your data on their own: every change is a
-              preview that you confirm in the app. A preview you do not
-              confirm within 10 minutes expires, and we delete each proposal
-              record 48 hours after it was made.
+              financial, tax, or legal advice. A connection with read-only
+              access only reads your data. With change access, each change is
+              staged as a proposal that must be confirmed, in the app or by
+              the AI app you connected. A token you create with automatic
+              access applies changes without a proposal, and you accept that
+              when you create it. Apps connected through sign-in never get
+              automatic access. A proposal you do not confirm within 10
+              minutes expires, and we delete each proposal record 48 hours
+              after it was made.
             </p>
           </section>
 

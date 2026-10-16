@@ -239,8 +239,9 @@ export default function PrivacyPolicyPage() {
             <p>
               <strong>What we remove first.</strong> Before any text leaves our
               servers for an AI provider or a connected AI app, we replace
-              IBANs, card numbers, email addresses and phone numbers with
-              placeholders such as [IBAN] and [CARD].
+              the IBANs, card numbers, email addresses and phone numbers that
+              we recognize with placeholders such as [IBAN] and [CARD]. An
+              unusual format can slip through.
             </p>
             <p>
               <strong>What is sent as written.</strong> Names of people or
@@ -254,9 +255,10 @@ export default function PrivacyPolicyPage() {
               <li>
                 Assistant: what you type, and the data it looks up to answer
                 you. That can be account names, balances and currencies,
-                categories, budgets, transactions (description, amount, date,
-                category, account and tags), and spending and forecast
-                figures.
+                credit limits, interest rates, payment days, and loan
+                amounts, rates and terms; categories; budgets; transactions
+                (description, amount, date, status, category, account and
+                tags); and spending and forecast figures.
               </li>
               <li>
                 Suggest a category: one transaction&rsquo;s description, amount
@@ -271,6 +273,11 @@ export default function PrivacyPolicyPage() {
                 Budget rebalance: budget amounts, spending and projections for
                 each category, plus category names.
               </li>
+              <li>
+                Plans smart suggestions, when available: the plan type and
+                length, the plan&rsquo;s numeric assumptions, and the average
+                monthly net of each account, without account names.
+              </li>
             </ul>
             <p>
               <strong>Assistant conversations.</strong> What you send to the
@@ -280,9 +287,14 @@ export default function PrivacyPolicyPage() {
               browser tab and is gone when you close it.
             </p>
             <p>
-              <strong>Changes the assistant proposes.</strong> When the
-              assistant or a connected AI app proposes a change, nothing
-              changes until you confirm it in the app. A proposal you do not
+              <strong>Changes the assistant proposes.</strong> The
+              assistant stages each change as a proposal that you confirm in
+              the app. A connected AI app with read-only access only reads.
+              With change access, its changes are staged the same way and
+              must be confirmed, in the app or by the AI app. A token you
+              create with automatic access applies changes without a
+              proposal; apps connected through sign-in never get automatic
+              access. A proposal you do not
               confirm within 10 minutes expires. We delete each proposal
               record (what was asked, the preview, and what happened) 48 hours
               after the proposal was made. When a proposal is carried out, our
@@ -297,7 +309,7 @@ export default function PrivacyPolicyPage() {
               first. The app then sends that data to the AI model it uses,
               under your agreement with the app&rsquo;s maker. We do not
               control that step. You can revoke an app&rsquo;s access in
-              Settings, Agent tokens, and an org admin can revoke any
+              Settings, Agent access, and an org admin can revoke any
               member&rsquo;s token.
             </p>
             <p>

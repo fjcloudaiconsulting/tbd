@@ -30,7 +30,7 @@ const faq = [
   },
   {
     q: "Where is my data stored?",
-    a: "In the EU, processed under EU law. Monarch is US-based.",
+    a: "In the EU, processed under EU law, except content you send through AI features, when on. Monarch is US-based.",
   },
 ];
 

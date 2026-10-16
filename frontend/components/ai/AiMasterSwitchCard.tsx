@@ -79,8 +79,8 @@ export default function AiMasterSwitchCard() {
         <p>
           AI is off until you turn it on. When it is on, each AI feature sends the data it needs to
           your organization&rsquo;s AI provider, which may process it outside the EU under its own
-          terms. We never send names, emails or phone numbers from your profile, and we remove
-          IBANs, card numbers, emails and phone numbers from the text first. Turning AI on does not
+          terms. We never send names, emails or phone numbers from your profile, and we remove the
+          IBANs, card numbers, emails and phone numbers we recognize from the text first. Turning AI on does not
           start any charges by itself. When AI is off, nothing goes to any AI provider and
           connected AI apps cannot read your data.
         </p>

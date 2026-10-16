@@ -35,7 +35,7 @@ const shippedFeatures = [
   "CSV and OFX import with a preview before anything is saved",
   "Reports by category",
   "Shared household organization with roles",
-  "EU-hosted, CSV export from any report, never used to train AI",
+  "EU-hosted, CSV export from any report, never used by us to train AI",
   "Optional AI: bring your own key or run it locally with Ollama, with spend caps and an audit trail",
 ];
 
@@ -77,7 +77,7 @@ const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   },
   {
     q: "Is my financial data private?",
-    a: `Yes. Your data is hosted in the EU and processed under EU law, except content you send through AI features, when on, which goes to your AI provider. You can export any report to CSV or ask us for a full machine-readable copy at ${PRIVACY_CONTACT_EMAIL}, and it is never sold and never used to train AI.`,
+    a: `Yes. Your data is hosted in the EU and processed under EU law, except content you send through AI features, when on, which goes to your AI provider. You can export any report to CSV or ask us for a full machine-readable copy at ${PRIVACY_CONTACT_EMAIL}, and it is never sold and never used by us to train AI.`,
   },
   {
     q: "Is The Better Decision free?",
@@ -132,7 +132,7 @@ const groups = [
     title: "Yours",
     points: [
       "EU-hosted and processed under EU law, except content you send through AI features, when on.",
-      "Export any report to CSV, and ask us for a full machine-readable copy whenever you want. It is never sold and never used to train AI.",
+      "Export any report to CSV, and ask us for a full machine-readable copy whenever you want. It is never sold and never used by us to train AI.",
       `Ask us to delete your account and all of its data, and it is gone within ${DATA_DELETION_WINDOW_DAYS} days.`,
     ],
   },

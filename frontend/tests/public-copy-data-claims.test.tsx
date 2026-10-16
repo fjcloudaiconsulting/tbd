@@ -31,7 +31,7 @@
 
 import React from "react";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -239,6 +239,32 @@ describe("public copy — data export and deletion claims (TBD-343)", () => {
     const llms = readLlmsTxt();
     const private_ = llms.slice(llms.indexOf("### Is my financial data private?"));
     expect(private_.split("\n\n")[1]).toMatch(AI);
+  });
+
+  it("fence 7 (TBD-592): no file in the tree makes an EU claim without the AI exception", () => {
+    // Wrong implementation: any one surface (FAQ, comparison page or table, landing tile, llms.txt)
+    // reverting to an unqualified "processed under EU law" or "moved across borders".
+    const root = path.resolve(__dirname, "..");
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(tsx?|txt)$/.test(e.name)) files.push(p);
+      }
+    };
+    for (const d of ["app", "components", "lib", "public"]) walk(path.join(root, d));
+    const CLAIM = /processed under EU law|stays in the EU|across borders/g;
+    let seen = 0;
+    for (const f of files) {
+      const src = readFileSync(f, "utf-8");
+      for (const m of src.matchAll(CLAIM)) {
+        seen++;
+        const near = src.slice(Math.max(0, m.index - 150), m.index + 250);
+        expect(near, `${path.relative(root, f)}: "${m[0]}" needs the AI exception nearby`).toMatch(/AI feature|AI provider/);
+      }
+    }
+    expect(seen, "the scan must find the claims it guards").toBeGreaterThan(8);
   });
 
   it("guard: no em dashes in the FAQ answers (customer-facing copy)", async () => {

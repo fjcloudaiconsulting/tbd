@@ -74,7 +74,13 @@ describe("AiMasterSwitchCard", () => {
     const stale = render(<AiMasterSwitchCard />);
     expect(await stale.findByText(PAUSED)).toBeInTheDocument();
     stale.unmount();
-    for (const s of [snapshot(), snapshot({ has_consent: true, consent_version: "v2" })]) {
+    // A revoked consent recorded under an old version is Off by choice, not paused (mutant: `consent_version != null && !on`).
+    const cases = [
+      snapshot(),
+      snapshot({ has_consent: true, consent_version: "v2" }),
+      snapshot({ has_consent: false, consent_version: "v1" }),
+    ];
+    for (const s of cases) {
       fetchMock.mockResolvedValue(s);
       const view = render(<AiMasterSwitchCard />);
       await view.findByText(/AI is off until you turn it on/);
