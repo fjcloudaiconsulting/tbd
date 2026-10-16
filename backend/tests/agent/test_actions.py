@@ -980,3 +980,50 @@ async def test_error_data_is_wrapped_untrusted(factory, w):
     await _confirm(factory, a["member"], out["action_id"])
     err = await _refused(_confirm(factory, a["member"], out["action_id"]))
     assert err.data["result"]["category_name"] == {"untrusted": "Food A"}
+
+
+# ── TBD-640: the 48-hour retention purge ─────────────────────────────────────
+
+async def test_purge_deletes_every_row_created_more_than_48_hours_ago(factory, w):
+    """FENCE. Wrong implementations: purging on ``expires_at`` (every row is
+    gone ten minutes after it was staged), a window other than 48 hours (the
+    47h row goes, or the 49h rows stay), filtering on status (a 49h pending,
+    executing or done row survives), scoping to one org (org B's row stays)."""
+    from app.services.scheduler.jobs.agent_action_purge import run_agent_action_purge
+
+    a, b = w["A"], w["B"]
+    now = datetime.datetime(2026, 10, 16, 12, 0, 0)
+    old, recent = now - datetime.timedelta(hours=49), now - datetime.timedelta(hours=47)
+    statuses = ("pending", "executing", "done", "failed", "stale", "cancelled")
+    rows = _seed_pending(a["org"], a["member"], len(statuses) + 1) + _seed_pending(b["org"], b["member"], 1)
+    for row, status in zip(rows, statuses + ("done", "pending")):
+        row.status = status
+        row.created_at = recent if row is rows[-2] else old
+        row.expires_at = row.created_at + datetime.timedelta(minutes=10)
+    keep = rows[-2].id
+    async with factory() as db:
+        db.add_all(rows)
+        await db.commit()
+    assert await run_agent_action_purge(factory, now=now) == len(rows) - 1
+    async with factory() as db:
+        assert set((await db.execute(select(AgentPendingAction.id))).scalars()) == {keep}
+
+
+async def test_purge_never_raises_and_logs_only_the_error_class(monkeypatch, log_lines):
+    """FENCE: the ticker must not die, and ``str(exc)`` (which quotes bound
+    values) never reaches the log."""
+    import json
+
+    from sqlalchemy.exc import OperationalError
+
+    from app.services.scheduler.jobs import agent_action_purge as purge_module
+
+    secret = "f00d" * 8
+
+    def broken():
+        raise OperationalError("DELETE FROM agent_pending_actions", (secret,), Exception(secret))
+
+    assert await purge_module.run_agent_action_purge(broken) == 0
+    lines = [ln for ln in log_lines() if ln["msg"] == "scheduler.agent_action_purge.failed"]
+    assert len(lines) == 1 and lines[0]["error"] == "OperationalError"
+    assert secret not in json.dumps(log_lines())

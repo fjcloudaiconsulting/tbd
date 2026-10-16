@@ -7,6 +7,7 @@ import logging
 from opentelemetry.trace import SpanKind
 
 from app import state_db, tracing
+from app.services.scheduler.jobs.agent_action_purge import run_agent_action_purge
 from app.services.scheduler.jobs.api_token_expiry import run_api_token_expiry_reminders
 from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
 from app.services.scheduler.jobs.platform_ai_catalog import run_platform_ai_catalog_sync
@@ -37,6 +38,9 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # TBD-587: expired OAuth codes, then idle OAuth clients. Never raises.
     with tracing.span("job oauth_client_purge", SpanKind.INTERNAL, {"job.kind": "oauth_client_purge"}):
         await run_oauth_client_purge()
+    # TBD-640: agent proposals older than 48 hours. Never raises.
+    with tracing.span("job agent_action_purge", SpanKind.INTERNAL, {"job.kind": "agent_action_purge"}):
+        await run_agent_action_purge()
     # TBD-631: daily OpenRouter catalog sync. Never raises.
     with tracing.span("job platform_ai_catalog", SpanKind.INTERNAL, {"job.kind": "platform_ai_catalog"}):
         await run_platform_ai_catalog_sync()
