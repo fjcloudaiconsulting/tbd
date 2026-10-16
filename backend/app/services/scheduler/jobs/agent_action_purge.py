@@ -32,6 +32,8 @@ async def run_agent_action_purge(
         now = now.astimezone(datetime.timezone.utc).replace(tzinfo=None)
     try:
         async with session_factory() as db:
+            # shortcut: the only index is (org_id, created_at), so this scans the table; fine
+            # while it holds at most 48h of rows. Add a created_at index if it grows.
             result = await db.execute(delete(AgentPendingAction).where(
                 AgentPendingAction.created_at < now - datetime.timedelta(hours=RETENTION_HOURS)
             ))

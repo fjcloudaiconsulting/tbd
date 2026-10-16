@@ -984,17 +984,23 @@ async def test_error_data_is_wrapped_untrusted(factory, w):
 
 # ── TBD-640: the 48-hour retention purge ─────────────────────────────────────
 
-async def test_purge_deletes_every_row_created_more_than_48_hours_ago(factory, w):
+@pytest.mark.parametrize("clock", [
+    datetime.datetime(2026, 10, 16, 12, 0, 0),
+    # The same instant as an aware non-UTC clock: dropping the UTC conversion shifts the cutoff 2h.
+    datetime.datetime(2026, 10, 16, 14, 0, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=2))),
+])
+async def test_purge_deletes_every_row_created_more_than_48_hours_ago(factory, w, clock):
     """FENCE. Wrong implementations: purging on ``expires_at`` (every row is
     gone ten minutes after it was staged), a window other than 48 hours (the
-    47h row goes, or the 48h05m rows stay), filtering on status (an old
-    pending, executing or done row survives), scoping to one org (org B's row stays)."""
+    47h55m row goes, or the 48h05m rows stay), filtering on status (an old
+    pending, executing or done row survives), scoping to one org (org B's row
+    stays), skipping the aware-to-naive UTC conversion (the aware case shifts)."""
     from app.services.scheduler.jobs.agent_action_purge import run_agent_action_purge
 
     a, b = w["A"], w["B"]
     now = datetime.datetime(2026, 10, 16, 12, 0, 0)
     # 48h05m: past retention, yet its ten-minute expiry is still inside the window.
-    old, recent = now - datetime.timedelta(hours=48, minutes=5), now - datetime.timedelta(hours=47)
+    old, recent = now - datetime.timedelta(hours=48, minutes=5), now - datetime.timedelta(hours=47, minutes=55)
     statuses = ("pending", "executing", "done", "failed", "stale", "cancelled")
     rows = _seed_pending(a["org"], a["member"], len(statuses) + 1) + _seed_pending(b["org"], b["member"], 1)
     for row, status in zip(rows, statuses + ("done", "pending")):
@@ -1005,7 +1011,7 @@ async def test_purge_deletes_every_row_created_more_than_48_hours_ago(factory, w
     async with factory() as db:
         db.add_all(rows)
         await db.commit()
-    assert await run_agent_action_purge(factory, now=now) == len(rows) - 1
+    assert await run_agent_action_purge(factory, now=clock) == len(rows) - 1
     async with factory() as db:
         assert set((await db.execute(select(AgentPendingAction.id))).scalars()) == {keep}
 

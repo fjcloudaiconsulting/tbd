@@ -28,6 +28,10 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
         logger.info("scheduler.tick.skip_locked")
         return False
     logger.info("scheduler.tick.start")
+    # TBD-640: agent proposals older than 48 hours. Never raises, and runs
+    # first so a failing org sweep cannot starve the 48h retention promise.
+    with tracing.span("job agent_action_purge", SpanKind.INTERNAL, {"job.kind": "agent_action_purge"}):
+        await run_agent_action_purge()
     await run_all_due(today, max_orgs=max_orgs)
     # Platform-level PAT expiry reminders run once per tick under this same lock.
     # They are NOT part of the per-org registry (PAT tokens have no org
@@ -38,9 +42,6 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # TBD-587: expired OAuth codes, then idle OAuth clients. Never raises.
     with tracing.span("job oauth_client_purge", SpanKind.INTERNAL, {"job.kind": "oauth_client_purge"}):
         await run_oauth_client_purge()
-    # TBD-640: agent proposals older than 48 hours. Never raises.
-    with tracing.span("job agent_action_purge", SpanKind.INTERNAL, {"job.kind": "agent_action_purge"}):
-        await run_agent_action_purge()
     # TBD-631: daily OpenRouter catalog sync. Never raises.
     with tracing.span("job platform_ai_catalog", SpanKind.INTERNAL, {"job.kind": "platform_ai_catalog"}):
         await run_platform_ai_catalog_sync()
