@@ -73,3 +73,7 @@ mcp = [
 [tool.uv]
 package = false
 default-groups = ["app", "dev"]
+
+# pytest-cov 7 dropped its own subprocess measurement; the OFX parser runs in a child process.
+[tool.coverage.run]
+patch = ["subprocess"]
