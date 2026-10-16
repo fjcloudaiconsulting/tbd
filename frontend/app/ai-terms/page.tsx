@@ -123,8 +123,8 @@ export default function AiTermsPage() {
               AI can be wrong. Suggestions, forecasts and answers are not
               financial, tax, or legal advice. A connection with read-only
               access only reads your data. With change access, each change is
-              staged as a proposal that must be confirmed, in the app or by
-              the AI app you connected. A token you create with automatic
+              staged as a proposal that only the AI app you connected can
+              confirm, using the same token. A token you create with automatic
               access applies changes without a proposal, and you accept that
               when you create it. Apps connected through sign-in never get
               automatic access. A proposal you do not confirm within 10

@@ -254,8 +254,8 @@ export default function PrivacyPolicyPage() {
             <ul>
               <li>
                 Assistant: what you type, and the data it looks up to answer
-                you. That can be account names, balances and currencies,
-                credit limits, interest rates, payment days, and loan
+                you. That can be account names and types, balances
+                (including opening balances) and currencies, credit limits, interest rates, payment days, and loan
                 amounts, rates and terms; categories; budgets; transactions
                 (description, amount, date, status, category, account and
                 tags); and spending and forecast figures.
@@ -290,8 +290,8 @@ export default function PrivacyPolicyPage() {
               <strong>Changes the assistant proposes.</strong> The
               assistant stages each change as a proposal that you confirm in
               the app. A connected AI app with read-only access only reads.
-              With change access, its changes are staged the same way and
-              must be confirmed, in the app or by the AI app. A token you
+              With change access, its changes are staged as proposals that
+              only that AI app can confirm, using the same token. A token you
               create with automatic access applies changes without a
               proposal; apps connected through sign-in never get automatic
               access. A proposal you do not

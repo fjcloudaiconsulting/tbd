@@ -254,7 +254,7 @@ describe("public copy — data export and deletion claims (TBD-343)", () => {
       }
     };
     for (const d of ["app", "components", "lib", "public"]) walk(path.join(root, d));
-    const CLAIM = /processed under EU law|stays in the EU|across borders/g;
+    const CLAIM = /processed under EU law|stays in the EU|never leaves the EU|across borders/gi;
     let seen = 0;
     for (const f of files) {
       const src = readFileSync(f, "utf-8");
