@@ -275,7 +275,7 @@ export default function PrivacyPolicyPage() {
             <p>
               <strong>Assistant conversations.</strong> What you send to the
               assistant goes to your organization&rsquo;s AI provider, which is
-              a cloud service unless your organization runs its own Ollama
+              a cloud service unless your organization runs its own AI
               server. We do not store your conversations with the assistant. A conversation lives in your
               browser tab and is gone when you close it.
             </p>

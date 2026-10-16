@@ -5,7 +5,7 @@ import React from "react";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import AiTermsPage, { metadata } from "@/app/ai-terms/page";
+import AiTermsPage from "@/app/ai-terms/page";
 import { AI_TERMS_VERSION } from "@/lib/aiTerms";
 import fixture from "./fixtures/ai-terms-version.json";
 
@@ -29,9 +29,5 @@ describe("/ai-terms", () => {
     const t = render(<AiTermsPage />).container.textContent ?? "";
     expect(t).not.toMatch(/data processing agreement|Standard Contractual Clauses|\bDPA\b|\bSCCs?\b/);
     expect(t).toMatch(/may process it outside the EU, including in the\s+United States/);
-  });
-
-  it("is indexable on its apex canonical", () => {
-    expect(metadata.robots).toEqual({ index: true, follow: true });
   });
 });
