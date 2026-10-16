@@ -6,6 +6,7 @@ import { metadata as loginMetadata } from "@/app/login/page";
 import { metadata as registerMetadata } from "@/app/register/page";
 import { metadata as privacyMetadata } from "@/app/privacy/page";
 import { metadata as termsMetadata } from "@/app/terms/page";
+import { metadata as aiTermsMetadata } from "@/app/ai-terms/page";
 import { metadata as docsMetadata } from "@/app/docs/page";
 import { metadata as docsPlansMetadata } from "@/app/docs/plans/page";
 import { metadata as featuresMetadata } from "@/app/features/page";
@@ -20,6 +21,7 @@ const indexableMetadatas: ReadonlyArray<[string, Metadata]> = [
   ["/register", registerMetadata],
   ["/privacy", privacyMetadata],
   ["/terms", termsMetadata],
+  ["/ai-terms", aiTermsMetadata],
   ["/docs", docsMetadata],
   ["/docs/plans", docsPlansMetadata],
   ["/features", featuresMetadata],

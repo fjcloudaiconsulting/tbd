@@ -361,7 +361,8 @@ export default function BudgetRebalanceModal({
               Rebalance budgets
             </h2>
             <p className="mt-1 text-xs text-text-muted">
-              Move amounts between budgets. The total must stay the same.
+              Move amounts between budgets. The total must stay the same. When AI is on,
+              suggestions send each category&rsquo;s budget and spending figures to your AI provider.
             </p>
           </div>
         </div>

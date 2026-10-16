@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "October 5, 2026";
-const LAST_UPDATED = "October 15, 2026";
+const LAST_UPDATED = "October 16, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -125,6 +125,9 @@ export default function PrivacyPolicyPage() {
                 To store and present the financial data you explicitly enter.
               </li>
               <li>
+                To run the AI features your organization turns on (section 4).
+              </li>
+              <li>
                 To send transactional emails: account verification, password
                 reset, MFA codes, and trial/billing notices.
               </li>
@@ -176,12 +179,12 @@ export default function PrivacyPolicyPage() {
                 Google Analytics 4 receives aggregate, anonymized visitor
                 traffic data, as described in section 1.
               </li>
-              <li id="ai-providers">
-                <strong>Your organization&rsquo;s AI provider</strong> (only
-                if your organization configures its own AI provider with its
-                own key): we send the content you submit to that AI feature
-                to that provider, under your organization&rsquo;s own
-                agreement with it.
+              <li>
+                <strong>AI providers</strong> (only while AI is on for your
+                organization): the provider your organization sets up with its
+                own key, under your organization&rsquo;s agreement with it, and
+                platform AI once we offer it. Section 4 explains what is sent
+                and where it is processed.
               </li>
               <li>
                 <strong>Grafana Labs</strong> (Grafana Cloud, EU region,
@@ -195,8 +198,126 @@ export default function PrivacyPolicyPage() {
             </ul>
           </section>
 
+          <section id="ai-providers">
+            <h2>4. AI features</h2>
+            <p>
+              <strong>AI is off until you turn it on.</strong> An admin of
+              your organization turns AI on in Settings, AI providers, after
+              accepting our <Link href="/ai-terms" className="underline hover:text-accent">AI Terms</Link>.
+              An admin can turn it off at any time.
+            </p>
+            <p>
+              <strong>Where AI data is processed.</strong> The data stored in
+              The Better Decision stays in the EU (section 8). What you send
+              through an AI feature is the exception: it goes to an AI
+              provider, which may process it outside the EU, including in the
+              United States, under that provider&rsquo;s own terms.
+            </p>
+            <ul>
+              <li>
+                With your organization&rsquo;s own key, the provider is the one
+                it chose: OpenAI, Anthropic, an OpenAI-compatible service such
+                as OpenRouter, or an Ollama server your organization runs. Your
+                organization&rsquo;s agreement with that provider applies.
+              </li>
+              <li>
+                Platform AI, where we supply the AI provider, is not offered
+                yet. When we offer it, requests will go through OpenRouter,
+                Inc. (United States), which passes each request to the company
+                whose AI model answers it.
+              </li>
+              <li>
+                A connected AI app sends the data it reads to the AI model it
+                uses, wherever its maker processes it.
+              </li>
+            </ul>
+            <p>
+              <strong>What we never send.</strong> We never send your profile
+              to an AI provider: your name, email address, phone number,
+              username, and sign-in details.
+            </p>
+            <p>
+              <strong>What we remove first.</strong> Before any text leaves our
+              servers for an AI provider or a connected AI app, we replace
+              IBANs, card numbers, email addresses and phone numbers with
+              placeholders such as [IBAN] and [CARD].
+            </p>
+            <p>
+              <strong>What is sent as written.</strong> Names of people or
+              businesses in your transaction descriptions, account and
+              category names, and everything else you type to the assistant
+              are sent as you wrote them. If you do not want a name to reach
+              an AI provider, leave it out of what you type.
+            </p>
+            <p><strong>What each feature sends:</strong></p>
+            <ul>
+              <li>
+                Assistant: what you type, and the data it looks up to answer
+                you. That can be account names, balances and currencies,
+                categories, budgets, transactions (description, amount, date,
+                category, account and tags), and spending and forecast
+                figures.
+              </li>
+              <li>
+                Suggest a category: one transaction&rsquo;s description, amount
+                and type, plus your category names and descriptions.
+              </li>
+              <li>
+                Forecast refinement: monthly spending totals per category,
+                category names, and the forecast figures. No transaction
+                descriptions.
+              </li>
+              <li>
+                Budget rebalance: budget amounts, spending and projections for
+                each category, plus category names.
+              </li>
+            </ul>
+            <p>
+              <strong>Assistant conversations.</strong> What you send to the
+              assistant goes to your organization&rsquo;s AI provider, which is
+              a cloud service unless your organization runs its own Ollama
+              server. We do not store your conversations with the assistant. A conversation lives in your
+              browser tab and is gone when you close it.
+            </p>
+            <p>
+              <strong>Changes the assistant proposes.</strong> When the
+              assistant or a connected AI app proposes a change, nothing
+              changes until you confirm it in the app. A proposal you do not
+              confirm within 10 minutes expires. We delete each proposal
+              record (what was asked, the preview, and what happened) 48 hours
+              after the proposal was made. When a proposal is carried out, our
+              security log keeps a short entry: the kind of change, when it
+              happened, and whether it succeeded, without its details.
+            </p>
+            <p>
+              <strong>Connected AI apps.</strong> You can connect an AI app,
+              such as Claude Desktop or another MCP client, with an agent
+              token or by approving it at sign-in. That app reads your data
+              through our tools, and we remove the identifiers listed above
+              first. The app then sends that data to the AI model it uses,
+              under your agreement with the app&rsquo;s maker. We do not
+              control that step. You can revoke an app&rsquo;s access in
+              Settings, Agent tokens, and an org admin can revoke any
+              member&rsquo;s token.
+            </p>
+            <p>
+              <strong>When AI is off.</strong> When AI is off, none of your
+              data is sent to any AI provider. No connected AI app can read
+              your data either: its requests are refused, and it cannot get
+              new access. If an admin turns AI back on, apps that were already
+              connected work again. While AI is on but no AI provider is set
+              up, AI features send nothing, though a connected AI app can
+              still read your data.
+            </p>
+            <p>
+              <strong>Usage records.</strong> For each AI request we keep the
+              feature, model, token counts, cost and time, so we can apply
+              spend caps. We never keep the text.
+            </p>
+          </section>
+
           <section>
-            <h2>4. How long we keep your data</h2>
+            <h2>5. How long we keep your data</h2>
             <ul>
               <li>
                 Account and financial data are kept for the lifetime of your
@@ -220,11 +341,27 @@ export default function PrivacyPolicyPage() {
                 Metrics and traces at Grafana Cloud follow its retention
                 policy.
               </li>
+              <li>
+                Records of changes proposed by the assistant or a connected AI
+                app are deleted 48 hours after the proposal was made.
+              </li>
+              <li>
+                We do not store assistant conversations.
+              </li>
+              <li>
+                AI usage records (feature, model, token counts, cost, time;
+                never the text) are kept for the lifetime of your account.
+              </li>
+              <li>
+                What an AI provider keeps follows that provider&rsquo;s terms.
+                With your own key, your organization&rsquo;s agreement with the
+                provider applies.
+              </li>
             </ul>
           </section>
 
           <section>
-            <h2>5. Your rights (GDPR)</h2>
+            <h2>6. Your rights (GDPR)</h2>
             <p>
               If you are in the EU/EEA, you have the following rights under
               the GDPR:
@@ -268,7 +405,7 @@ export default function PrivacyPolicyPage() {
           </section>
 
           <section>
-            <h2>6. Security</h2>
+            <h2>7. Security</h2>
             <p>
               Passwords are stored as bcrypt hashes. TOTP secrets are
               encrypted at rest. All traffic is served over HTTPS with HSTS.
@@ -291,7 +428,7 @@ export default function PrivacyPolicyPage() {
           </section>
 
           <section>
-            <h2>7. International transfers</h2>
+            <h2>8. International transfers</h2>
             <p>
               Your data is stored in the EU: the service runs at Hetzner in
               Nuremberg, Germany, and our backups are kept at Amazon Web
@@ -300,10 +437,17 @@ export default function PrivacyPolicyPage() {
               Cloudflare may process requests at edge nodes globally as part
               of delivering the service. Mailgun operates in the EU region.
             </p>
+            <p>
+              AI features are the exception. While AI is on, what you send
+              through an AI feature goes to an AI provider that may process it
+              outside the EU, including in the United States, under that
+              provider&rsquo;s own terms. Section 4 explains which provider
+              that is.
+            </p>
           </section>
 
           <section>
-            <h2>8. Children</h2>
+            <h2>9. Children</h2>
             <p>
               The Better Decision is not intended for children under 16. We do not knowingly
               collect personal data from children.
@@ -311,7 +455,7 @@ export default function PrivacyPolicyPage() {
           </section>
 
           <section>
-            <h2>9. Changes to this policy</h2>
+            <h2>10. Changes to this policy</h2>
             <p>
               When we make material changes we update the effective date and
               notify you by email before the changes take effect. The
@@ -320,7 +464,7 @@ export default function PrivacyPolicyPage() {
           </section>
 
           <section>
-            <h2>10. Contact</h2>
+            <h2>11. Contact</h2>
             <p>
               Privacy questions or requests:{" "}
               <a
@@ -344,6 +488,8 @@ export default function PrivacyPolicyPage() {
         <footer className="mt-12 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-6 text-xs text-text-muted">
           <span>
             See also: <Link href="/terms" className="underline hover:text-text-primary">Terms of Service</Link>
+            {" · "}
+            <Link href="/ai-terms" className="underline hover:text-text-primary">AI Terms</Link>
           </span>
           <CookiePreferencesButton />
         </footer>

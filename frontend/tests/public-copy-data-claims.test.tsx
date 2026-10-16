@@ -219,6 +219,28 @@ describe("public copy — data export and deletion claims (TBD-343)", () => {
     expect(llms).toContain(PRIVACY_CONTACT_EMAIL);
   });
 
+  it("fence 6 (TBD-592): every EU-residency answer carries the AI exception", async () => {
+    // Wrong implementation: any one surface reverting to an unqualified "stays in the
+    // EU" / "processed under EU law", which is false for what AI features send.
+    const AI = /except content you send through AI features|exception is content you send through AI features/;
+    expect(answerTo(await landingFaqJsonLd(), "Is my data secure?")).toMatch(AI);
+
+    const ui = await FeaturesPage();
+    const { container } = render(ui as React.ReactElement);
+    const faq = Array.from(container.querySelectorAll('script[type="application/ld+json"]'))
+      .map((el) => JSON.parse(el.textContent ?? "{}"))
+      .find((b) => b["@type"] === "FAQPage");
+    expect(answerTo(faq.mainEntity, "Is my financial data private?")).toMatch(AI);
+    const bullets = Array.from(container.querySelectorAll("li")).map((li) => li.textContent ?? "");
+    const eu = bullets.filter((b) => /processed under EU law/.test(b));
+    expect(eu.length).toBeGreaterThan(0);
+    for (const b of eu) expect(b).toMatch(AI);
+
+    const llms = readLlmsTxt();
+    const private_ = llms.slice(llms.indexOf("### Is my financial data private?"));
+    expect(private_.split("\n\n")[1]).toMatch(AI);
+  });
+
   it("guard: no em dashes in the FAQ answers (customer-facing copy)", async () => {
     for (const entry of await landingFaqJsonLd()) {
       expect(entry.acceptedAnswer.text).not.toMatch(/—/);

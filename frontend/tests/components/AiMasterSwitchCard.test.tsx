@@ -66,6 +66,30 @@ describe("AiMasterSwitchCard", () => {
     expect(btn).toBeEnabled();
   });
 
+  it("a stale version says the terms changed; a never-accepted or current one does not", async () => {
+    // FENCE (TBD-592). Wrong implementations: keying the line on !on (it then shows
+    // on a fresh org that never accepted), or dropping it (a stale org reads only "Off").
+    const PAUSED = /Our AI terms changed, so AI is paused\./;
+    fetchMock.mockResolvedValue(snapshot({ has_consent: true, consent_version: "v1" }));
+    const stale = render(<AiMasterSwitchCard />);
+    expect(await stale.findByText(PAUSED)).toBeInTheDocument();
+    stale.unmount();
+    for (const s of [snapshot(), snapshot({ has_consent: true, consent_version: "v2" })]) {
+      fetchMock.mockResolvedValue(s);
+      const view = render(<AiMasterSwitchCard />);
+      await view.findByText(/AI is off until you turn it on/);
+      expect(view.queryByText(PAUSED)).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it("the consent box accepts the AI Terms and links to them", async () => {
+    fetchMock.mockResolvedValue(snapshot());
+    render(<AiMasterSwitchCard />);
+    expect(await screen.findByRole("checkbox", { name: /^I accept the AI Terms\s*\.$/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "AI Terms" })).toHaveAttribute("href", "/ai-terms");
+  });
+
   it("On posts the current version and NO allow_* keys", async () => {
     fetchMock.mockResolvedValueOnce(snapshot({ allow_training: false }));
     render(<AiMasterSwitchCard />);
