@@ -13,7 +13,7 @@ app = [
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.14.1",
     "pydantic-settings==2.16.0",
-    "sqlalchemy==2.0.54",
+    "sqlalchemy[asyncio]==2.1.4",
     "aiomysql==0.3.2",
     # PyMySQL is a transitive dep of aiomysql; pin explicitly because
     # SQLAlchemy's mysql dialect inspects PyMySQL's ``connect.__doc__`` to
@@ -54,7 +54,7 @@ mcp = [
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.14.1",
     "pydantic-settings==2.16.0",
-    "sqlalchemy==2.0.54",
+    "sqlalchemy[asyncio]==2.1.4",
     "aiomysql==0.3.2",
     "PyMySQL==1.2.3",
     "PyJWT[crypto]==2.15.1",
