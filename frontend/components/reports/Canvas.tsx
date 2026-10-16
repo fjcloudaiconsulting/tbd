@@ -21,7 +21,7 @@ import { useMemo, useRef } from "react";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 
-import { Responsive, WidthProvider, type Layout } from "react-grid-layout";
+import { Responsive, WidthProvider, type Layout, type LayoutItem } from "react-grid-layout/legacy";
 
 import type { LayoutJson, Widget } from "@/lib/reports/types";
 import { widgetsFromLayout, gridChanged } from "@/lib/reports/layout";
@@ -78,7 +78,7 @@ export default function Canvas({
   // the same width-change cycle — a ref reads fresh within that tick
   // where state would still be stale.
   const colsRef = useRef<number>(COLS.lg);
-  const rgLayout = useMemo<Layout[]>(
+  const rgLayout = useMemo<LayoutItem[]>(
     () =>
       items.map((w) => ({
         i: w.id,
@@ -92,7 +92,7 @@ export default function Canvas({
     [items],
   );
 
-  function handleLayoutChange(next: Layout[]) {
+  function handleLayoutChange(next: Layout) {
     if (!editMode) return;
     // Only persist edits made at a full-width (12-col) breakpoint; a
     // narrower breakpoint's clamped layout is a view, not an edit.
