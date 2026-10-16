@@ -480,9 +480,12 @@ wheels = [
 
 [[package]]
 name = "ofxtools"
-version = "0.9.5"
+version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ce/37/d224428cbb44b8d36b9458c2c9b11eb54ece95bc455ef6f7ada583809b13/ofxtools-0.9.5.tar.gz", hash = "sha256:682a516bfa5ccad0f9551c17cc2cf155422f9f5f85a341cfb4911b324de46045", size = 114090, upload-time = "2022-01-13T14:18:16.584Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/15/12ce2de32fbdeb26ef20510f9d8dba1c5a408c3061e0a4cd20d28140ecb9/ofxtools-1.1.1.tar.gz", hash = "sha256:b55803e622539e59d04209ec0a289338557973c331d86031e9868d84592912a6", size = 196023, upload-time = "2026-06-12T18:51:39.777Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/12/2033cdcf76d05cd4cdab318074428e74c2be4536377bb62832148b034609/ofxtools-1.1.1-py3-none-any.whl", hash = "sha256:4c6a80cfd08d8a6ce7e791ce3bc317e203f36359a0961b20df667cf91a9560e9", size = 236779, upload-time = "2026-06-12T18:51:38.343Z" },
+]
 
 [[package]]
 name = "opentelemetry-api"
@@ -1030,7 +1033,7 @@ app = [
     { name = "cryptography", specifier = "==50.0.2" },
     { name = "fastapi", specifier = "==0.143.1" },
     { name = "httpx", specifier = "==0.28.1" },
-    { name = "ofxtools", specifier = "~=0.9.5" },
+    { name = "ofxtools", specifier = "~=1.1.1" },
     { name = "opentelemetry-api", specifier = "==1.45.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.45.1" },
     { name = "opentelemetry-sdk", specifier = "==1.45.1" },
