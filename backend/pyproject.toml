@@ -44,7 +44,7 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-split==0.11.0",
     "pytest-xdist==3.8.0",
-    "pytest-cov==6.3.0",
+    "pytest-cov==7.1.0",
     "aiosqlite==0.22.1",
 ]
 # MCP server component (backend/Dockerfile.mcp): a subset of `app`, SAME pins.
