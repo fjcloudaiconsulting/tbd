@@ -820,6 +820,7 @@ async def test_f_o14_branch_origin_everywhere(factory, client, monkeypatch):
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": ["agent:read", "agent:write"],
         "authorization_response_iss_parameter_supported": True,
+        "client_id_metadata_document_supported": True,
     }
     org = await _org(factory, "A")
     h = await _jwt(factory, await _user(factory, org, "m"))

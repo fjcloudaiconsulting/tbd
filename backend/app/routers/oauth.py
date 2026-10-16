@@ -87,11 +87,13 @@ def _consent_400(exc: ConsentError) -> HTTPException:
     return HTTPException(status_code=400, detail=detail)
 
 
-async def _validated(db: AsyncSession, params: dict):
+async def _validated(db: AsyncSession, params: dict, user_id: int):
     try:
-        return await oauth_service.validate_consent(db, params)
+        return await oauth_service.validate_consent(db, params, user_id=user_id)
     except ConsentError as exc:
         raise _consent_400(exc) from None
+    except OAuthError as exc:  # the CIMD fetch bucket
+        raise HTTPException(status_code=exc.status, detail={"code": exc.error}) from None
 
 
 # ── discovery ──────────────────────────────────────────────────────────────
@@ -166,11 +168,11 @@ async def authorize_context(
         "client_id": client_id, "redirect_uri": redirect_uri, "response_type": response_type,
         "code_challenge": code_challenge, "code_challenge_method": code_challenge_method,
         "scope": scope, "resource": resource, "state": state,
-    })
+    }, current_user.id)
     return {
-        "client_id": client.id,
+        "client_id": client_id,  # as presented: the URL for CIMD, the hex id for DCR
         "client_name": client.client_name,
-        "client_name_verified": False,
+        "client_name_verified": oauth_service.client_verified(client_id, redirect),
         "redirect_uri": redirect,
         "redirect_host": oauth_service.redirect_host(redirect),
         "requested_scope": requested,
@@ -196,7 +198,7 @@ async def authorize_decision(
     # session back, which expires every ORM attribute.
     actor = (current_user.id, current_user.email, current_user.org_id)
     cutoff_seen = token_cutoff(current_user)
-    client, redirect, requested = await _validated(db, body.model_dump())
+    client, redirect, requested = await _validated(db, body.model_dump(), actor[0])
     cid, cname, state = client.id, client.client_name, body.state
     response.headers.update(NO_STORE)
     if not body.approve:
@@ -222,10 +224,15 @@ async def authorize_decision(
         sso_proof = _verify_step_up(current_user, body, "oauth_consent")
         if sso_proof and not await consume_stepup(db, current_user):
             raise _step_up_401()
+        if oauth_service.is_cimd(body.client_id):
+            await oauth_service.upsert_cimd_client(
+                session_factory, client, oauth_service.redirect_host(body.client_id))
         code, row = await svc.create_oauth_grant(
             db, user=current_user, cutoff_seen=cutoff_seen, client_id=cid, client_name=cname,
             scope=granted, code_challenge=body.code_challenge, redirect_uri=redirect,
         )
+    except OAuthError as exc:  # the CIMD pool or host cap on a NEW row
+        raise _err(exc.status, exc.error, exc.description or exc.error) from None
     except IntegrityError:
         # The purge deleted the client between validation and the insert.
         await db.rollback()

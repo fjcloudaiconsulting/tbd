@@ -159,7 +159,7 @@ def _patch_resolve(monkeypatch, mapping: dict[str, list[str]]) -> list:
     """Replace egress_guard.resolve_host with a table-driven fake."""
     calls: list[tuple[str, int]] = []
 
-    async def fake_resolve(host: str, port: int):
+    async def fake_resolve(host: str, port: int, executor=None):
         calls.append((host, port))
         return [ipaddress.ip_address(a) for a in mapping[host]]
 

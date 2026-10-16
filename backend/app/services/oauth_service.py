@@ -18,12 +18,14 @@ Every limits bucket fails closed (``temporarily_unavailable``, 503).
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import re
 import secrets
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -40,6 +42,7 @@ from app.models.api_token import ApiToken
 from app.models.oauth_client import OAuthClient
 from app.models.user import User
 from app.security import token_cutoff
+from app.services.ai_providers.egress_guard import guarded_async_client, ip_literal_or_none
 from app.services import ai_consent_service, audit_service, feature_service
 from app.services.api_token_service import (
     AGENT_SCOPE_RANK,
@@ -68,6 +71,13 @@ REFRESH_TTL, REFRESH_MAX = timedelta(days=30), timedelta(days=90)
 MINUTE, HOUR, DAY = 60, 3600, 86_400
 CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 VERIFIER_RE = re.compile(r"[A-Za-z0-9._~-]{43,128}")
+# TBD-634 CIMD: the document fetch budget and size (module constants, read at call time).
+CIMD_TIMEOUT_S, MAX_CIMD_BYTES = 5.0, 5120
+# Pinned to exact MEASURED documents, not hosts; ChatGPT joins once its document is measured.
+VERIFIED_CIMD = frozenset({"https://claude.ai/oauth/mcp-oauth-client-metadata"})
+# CIMD resolves DNS on its own small pool: a hung lookup starves neither the
+# default executor (limits buckets) nor the AI providers' egress pool.
+_CIMD_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cimd-dns")
 
 
 class OAuthError(Exception):
@@ -76,6 +86,15 @@ class OAuthError(Exception):
     def __init__(self, error: str, description: str = "", status: int = 400) -> None:
         super().__init__(error)
         self.error, self.description, self.status = error, description, status
+
+
+class CimdError(Exception):
+    """A metadata document that cannot be fetched or is not acceptable.
+    ``reason`` is an exception class name or a short tag, never document text."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class ConsentError(Exception):
@@ -117,6 +136,7 @@ def authorization_server_metadata() -> dict[str, Any]:
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": list(OAUTH_SCOPES),
         "authorization_response_iss_parameter_supported": True,
+        "client_id_metadata_document_supported": True,
     }
 
 
@@ -259,14 +279,7 @@ async def _client_by_key(db: AsyncSession, key: str) -> Optional[OAuthClient]:
     )).scalar_one_or_none()
 
 
-async def register(db: AsyncSession, body: Any, ip: str) -> OAuthClient:
-    """Register (or return) a public client. Extra fields are ignored."""
-    if not isinstance(body, dict):
-        raise OAuthError("invalid_client_metadata", "a JSON object is required")
-    uris = body.get("redirect_uris")
-    if not isinstance(uris, list) or not 1 <= len(uris) <= MAX_REDIRECT_URIS:
-        raise OAuthError("invalid_redirect_uri", f"1 to {MAX_REDIRECT_URIS} redirect_uris required")
-    kinds = {classify_redirect(u) for u in uris}
+def _client_name(body: Mapping[str, Any]) -> str:
     name = body.get("client_name", DEFAULT_CLIENT_NAME)
     if name is None:
         name = DEFAULT_CLIENT_NAME
@@ -277,7 +290,18 @@ async def register(db: AsyncSession, body: Any, ip: str) -> OAuthClient:
     if any(unicodedata.category(c) in ("Zl", "Zp") or unicodedata.category(c)[0] == "C"
            for c in name):
         raise OAuthError("invalid_client_metadata", "client_name has control or format characters")
-    name = name.strip() or DEFAULT_CLIENT_NAME
+    return name.strip() or DEFAULT_CLIENT_NAME
+
+
+async def register(db: AsyncSession, body: Any, ip: str) -> OAuthClient:
+    """Register (or return) a public client. Extra fields are ignored."""
+    if not isinstance(body, dict):
+        raise OAuthError("invalid_client_metadata", "a JSON object is required")
+    uris = body.get("redirect_uris")
+    if not isinstance(uris, list) or not 1 <= len(uris) <= MAX_REDIRECT_URIS:
+        raise OAuthError("invalid_redirect_uri", f"1 to {MAX_REDIRECT_URIS} redirect_uris required")
+    kinds = {classify_redirect(u) for u in uris}
+    name = _client_name(body)
     key = metadata_key(name, uris)
     existing = await _client_by_key(db, key)
     if existing is not None:
@@ -311,21 +335,193 @@ async def register(db: AsyncSession, body: Any, ip: str) -> OAuthClient:
     return row
 
 
+# ── client ID metadata documents (TBD-634) ──────────────────────────────────
+
+
+def is_cimd(cid: Any) -> bool:
+    return isinstance(cid, str) and cid.startswith("https://")
+
+
+def cimd_id(url: str) -> str:
+    return sha256_hex("cimd-id:" + url)[:32]
+
+
+def cimd_key(row_id: str) -> str:
+    # DCR keys hash a JSON array (preimage starts with ``[``): disjoint.
+    return sha256_hex("cimd:" + row_id)
+
+
+def client_ref(cid: str) -> str:
+    """The stored ``oauth_client_id`` for a presented client_id."""
+    return cimd_id(cid) if is_cimd(cid) else cid
+
+
+def is_cimd_row(client: OAuthClient) -> bool:
+    return client.metadata_key == cimd_key(client.id)
+
+
+def _cimd_url_ok(url: str) -> bool:
+    """Pure URL shape check, before any I/O."""
+    if (
+        not url.isascii() or not url.isprintable() or " " in url or len(url) > MAX_URI_LEN
+        or any(c in url for c in "#%\\@?")
+    ):
+        return False
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        parts.port  # noqa: B018 -- raises ValueError on a malformed port
+    except ValueError:
+        return False
+    return bool(
+        parts.scheme == "https" and host and parts.netloc == host  # no port, userinfo, brackets, upper case
+        and "." in host and not host.endswith(".") and ip_literal_or_none(host) is None
+        and parts.path not in ("", "/") and not {".", ".."} & set(parts.path.split("/"))
+    )
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise CimdError("duplicate_key")
+        out[k] = v
+    return out
+
+
+def _parse_cimd(url: str, raw: bytes) -> tuple[str, list[str]]:
+    doc = json.loads(raw.decode(), object_pairs_hook=_no_duplicate_keys)
+    if not isinstance(doc, dict) or doc.get("client_id") != url or "client_secret" in doc:
+        raise CimdError("bad_document")
+    if "token_endpoint_auth_method" in doc and doc["token_endpoint_auth_method"] != "none":
+        raise CimdError("bad_auth_method")
+    uris = doc.get("redirect_uris")
+    if not isinstance(uris, list) or not 1 <= len(uris) <= MAX_REDIRECT_URIS:
+        raise CimdError("bad_redirect_uris")
+    for u in uris:
+        classify_redirect(u)
+    return _client_name(doc), uris
+
+
+async def fetch_cimd(url: str) -> tuple[str, list[str]]:
+    """Fetch and validate the client's metadata document. Raises ``CimdError``
+    for EVERYTHING that goes wrong (the conversion boundary wraps the whole
+    body, timeout and connect included), so no failure is distinguishable."""
+    try:
+        async with asyncio.timeout(CIMD_TIMEOUT_S):  # httpx per-phase timeouts do not bound a slow body
+            async with guarded_async_client(
+                timeout=CIMD_TIMEOUT_S, executor=_CIMD_DNS_EXECUTOR
+            ) as client, client.stream(
+                "GET", url, headers={"Accept": "application/json", "Accept-Encoding": "identity"},
+            ) as resp:
+                enc = resp.headers.get("content-encoding", "identity").strip().lower()
+                ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                if resp.status_code != 200 or enc != "identity" or ctype != "application/json":
+                    raise CimdError("bad_response")
+                if int(resp.headers.get("content-length", 0)) > MAX_CIMD_BYTES:
+                    raise CimdError("too_large")
+                body = bytearray()
+                async for chunk in resp.aiter_raw():  # raw: a decoded count is a gzip bomb
+                    body += chunk
+                    if len(body) > MAX_CIMD_BYTES:
+                        raise CimdError("too_large")
+        return _parse_cimd(url, bytes(body))
+    except CimdError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- one boundary, class name only
+        raise CimdError(type(exc).__name__) from None
+
+
+def client_verified(cid: Any, redirect: Any) -> bool:
+    """Only the measured documents, redirecting to their own origin over https.
+    Never derived from stored rows or the client's name."""
+    if cid not in VERIFIED_CIMD:
+        return False
+    try:
+        kind, _ = classify_redirect(redirect)
+    except OAuthError:
+        return False
+    return kind == "https" and urlsplit(redirect).netloc == urlsplit(cid).netloc
+
+
+async def upsert_cimd_client(
+    session_factory: async_sessionmaker[AsyncSession], client: OAuthClient, host: str
+) -> None:
+    """After an APPROVED consent, in its own short session: refresh the row
+    from the document just fetched, or insert it (pool + per-host caps apply
+    to NEW rows only)."""
+    now = _naive_utc_now().replace(microsecond=0)
+
+    async with session_factory() as s:
+        async def current():  # plain non-locking read: no gap lock to deadlock on
+            return (await s.execute(select(
+                OAuthClient.client_name, OAuthClient.redirect_uris, OAuthClient.last_used_at,
+            ).where(OAuthClient.id == client.id))).first()
+
+        row = await current()
+        if row is None:
+            if await s.scalar(select(func.count()).select_from(OAuthClient)) >= MAX_CLIENTS:
+                raise OAuthError("rate_limited", status=429)
+            await _bucket(f"oauth:cimd:host:{host}", 50, DAY)
+            s.add(OAuthClient(
+                id=client.id, client_name=client.client_name, redirect_uris=list(client.redirect_uris),
+                metadata_key=client.metadata_key, last_used_at=now,
+            ))
+            try:
+                await s.commit()
+                return
+            except IntegrityError:
+                # A concurrent first approval won the insert: refresh its row.
+                await s.rollback()
+                row = await current()
+        # Skip the write on a hot shared row; the purge idles clients for 30 days.
+        if row is not None and (
+            (row.client_name, list(row.redirect_uris)) != (client.client_name, list(client.redirect_uris))
+            or row.last_used_at is None or row.last_used_at < now - timedelta(days=1)
+        ):
+            await s.execute(
+                update(OAuthClient).where(OAuthClient.id == client.id).values(
+                    client_name=client.client_name, redirect_uris=list(client.redirect_uris),
+                    last_used_at=now,  # a purge cannot reap it before the grant lands
+                )
+            )
+            await s.commit()
+
+
 # ── consent ────────────────────────────────────────────────────────────────
 
 
 async def validate_consent(
-    db: AsyncSession, p: Mapping[str, Any]
+    db: AsyncSession, p: Mapping[str, Any], *, user_id: int
 ) -> tuple[OAuthClient, str, str]:
     """Shared by ``/authorize/context`` and ``/authorize``: returns
-    ``(client, redirect_uri as presented, requested scope)``.
+    ``(client, redirect_uri as presented, requested scope)``. Never writes:
+    a CIMD client comes back as a TRANSIENT row (``upsert_cimd_client``
+    persists it on an approved decision).
 
     The client and its redirect come first and never redirect; every later
     error is the error redirect (RFC 6749 4.1.2.1)."""
     cid = p.get("client_id")
-    client = await db.get(OAuthClient, cid) if isinstance(cid, str) and cid else None
-    if client is None:
-        raise ConsentError("invalid_client")
+    if is_cimd(cid):
+        if not _cimd_url_ok(cid):
+            raise ConsentError("invalid_client")
+        await _bucket(f"oauth:cimd:fetch:usr:{user_id}", 30, HOUR)
+        await db.commit()  # no pooled connection held across the fetch (never rollback: expires current_user)
+        try:
+            name, uris = await fetch_cimd(cid)
+        except CimdError as exc:
+            logger.warning(
+                "oauth.cimd.fetch_failed",
+                extra={"host": urlsplit(cid).hostname, "reason": exc.reason},
+            )
+            raise ConsentError("invalid_client") from None
+        rid = cimd_id(cid)
+        client = OAuthClient(id=rid, client_name=name, redirect_uris=uris, metadata_key=cimd_key(rid))
+    else:
+        client = await db.get(OAuthClient, cid) if isinstance(cid, str) and cid else None
+        # A CIMD row by its hex id would validate against stale stored URIs, no fetch.
+        if client is None or is_cimd_row(client):
+            raise ConsentError("invalid_client")
     redirect = p.get("redirect_uri")
     if not _redirect_registered(client, redirect):
         raise ConsentError("invalid_redirect_uri")
@@ -466,6 +662,15 @@ def _snap(row: ApiToken) -> dict[str, Any]:
     }
 
 
+async def _hex_of_cimd_row(db: AsyncSession, client_id: str, row: ApiToken) -> bool:
+    """A CIMD grant is presented by its URL only: its hex row id must not pass
+    the ``client_ref`` comparison just because it equals the stored id."""
+    if is_cimd(client_id) or not row.oauth_client_id:
+        return False
+    stored = await db.get(OAuthClient, row.oauth_client_id)
+    return stored is not None and is_cimd_row(stored)
+
+
 async def _exchange(db, session_factory, form, ip, audit_ip) -> dict[str, Any]:
     code, client_id, redirect_uri = form.get("code"), form.get("client_id"), form.get("redirect_uri")
     if not code or not client_id or not redirect_uri:
@@ -479,16 +684,16 @@ async def _exchange(db, session_factory, form, ip, audit_ip) -> dict[str, Any]:
     if row is None:
         # Only a code that does not exist is counted: junk sent under a hosted
         # client's shared public id never blocks that client's real codes.
-        await _bucket(f"oauth:codefail:cli:{client_id}", 1000, MINUTE)
+        await _bucket(f"oauth:codefail:cli:{client_ref(client_id)}", 1000, MINUTE)
         await _bucket(f"oauth:codefail:ip:{ip}", 60, MINUTE)
         raise _invalid_grant()
     verifier = form.get("code_verifier") or ""
     if not (
-        client_id == row.oauth_client_id
+        client_ref(client_id) == row.oauth_client_id
         and secrets.compare_digest(sha256_hex(redirect_uri), row.code_redirect_hash or "")
         and VERIFIER_RE.fullmatch(verifier)
         and secrets.compare_digest(_s256(verifier), row.code_challenge or "")
-    ):
+    ) or await _hex_of_cimd_row(db, client_id, row):
         raise _invalid_grant()  # no state change: the right client can still redeem
     snap = _snap(row)
     if row.refresh_hash is not None:
@@ -551,7 +756,9 @@ async def _refresh(db, session_factory, form, ip, audit_ip) -> dict[str, Any]:
     else:
         raise _invalid_grant()  # rotated twice since our plain read
     client_id = form.get("client_id")
-    if client_id is not None and client_id != row.oauth_client_id:
+    if client_id is not None and (
+        client_ref(client_id) != row.oauth_client_id or await _hex_of_cimd_row(db, client_id, row)
+    ):
         raise _invalid_grant()
     now = _naive_utc_now()
     if row.revoked_at is not None or row.refresh_expires_at is None or row.refresh_expires_at <= now:
