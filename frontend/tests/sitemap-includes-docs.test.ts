@@ -14,6 +14,7 @@ describe("sitemap.ts", () => {
     expect(urls).toContain("/register");
     expect(urls).toContain("/privacy");
     expect(urls).toContain("/terms");
+    expect(urls).toContain("/ai-terms");
   });
 
   it("omits /login (noindex, see app/login/page.tsx)", () => {

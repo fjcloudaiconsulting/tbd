@@ -34,7 +34,7 @@ const faqEntries: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   },
   {
     q: "Which budgeting apps host data in the EU?",
-    a: "The Better Decision is EU-hosted and processed under EU law. PocketSmith is based in New Zealand, which has an EU adequacy decision. YNAB and Monarch are US-based.",
+    a: "The Better Decision is EU-hosted and processed under EU law, except content you send through AI features, when on. PocketSmith is based in New Zealand, which has an EU adequacy decision. YNAB and Monarch are US-based.",
   },
 ];
 

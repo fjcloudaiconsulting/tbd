@@ -142,6 +142,11 @@ export default function AgentMintForm({ onSubmit, submitting = false }: Props) {
           </p>
         </div>
 
+        <p className="text-xs text-text-secondary">
+          The app you connect can read your organization&rsquo;s data and send it to the AI model it
+          uses. We remove the IBANs, card numbers, emails and phone numbers we recognize first.
+        </p>
+
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end">
           {blocked && (
             <p id="agent-mint-blocked" className="text-xs text-text-secondary">

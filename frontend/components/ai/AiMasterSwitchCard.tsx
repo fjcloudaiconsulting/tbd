@@ -47,6 +47,7 @@ export default function AiMasterSwitchCard() {
 
   // A stale version reads as Off: the backend refuses until the org re-consents.
   const on = snap.has_consent && snap.consent_version === snap.current_consent_version;
+  const stale = snap.has_consent && !on;
 
   async function post(revoked: boolean) {
     if (!snap) return;
@@ -76,12 +77,19 @@ export default function AiMasterSwitchCard() {
       </div>
       <div className="space-y-4 px-6 py-4 text-sm text-text-secondary">
         <p>
-          AI is off until you turn it on. When it is on, the data an AI feature needs is sent to
-          the AI provider your organization uses: your own provider key, or platform AI if you
-          turn that on separately. Turning AI on does not start any charges by itself. When it is
-          off, none of your organization&rsquo;s data is sent to any AI provider, and connected AI
-          apps cannot read your data.
+          AI is off until you turn it on. When it is on, each AI feature sends the data it needs to
+          your organization&rsquo;s AI provider, which may process it outside the EU under its own
+          terms. We never send names, emails or phone numbers from your profile, and we remove the
+          IBANs, card numbers, emails and phone numbers we recognize from the text first. Turning AI on does not
+          start any charges by itself. When AI is off, nothing goes to any AI provider and
+          connected AI apps cannot read your data.
         </p>
+        {stale && (
+          <p>
+            Our AI terms changed, so AI is paused. Read the new AI Terms and turn AI on again to
+            resume.
+          </p>
+        )}
         {err && <div className={errorCls}>{err}</div>}
         {on ? (
           <button type="button" className={btnSecondary} disabled={busy} onClick={() => post(true)}>
@@ -97,8 +105,11 @@ export default function AiMasterSwitchCard() {
                 onChange={(e) => setAgreed(e.target.checked)}
               />
               <span>
-                I agree that, while AI is on, the data each AI feature needs is sent to an AI
-                provider, as described above.
+                I accept the{" "}
+                <Link href="/ai-terms" className="underline underline-offset-2">
+                  AI Terms
+                </Link>
+                .
               </span>
             </label>
             <Link href="/privacy#ai-providers" className="block underline underline-offset-2">

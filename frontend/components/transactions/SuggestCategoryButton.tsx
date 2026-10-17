@@ -102,6 +102,7 @@ export default function SuggestCategoryButton({
         className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-xs text-text-secondary transition hover:bg-surface-raised hover:text-text-primary disabled:opacity-50"
         data-testid={`${testIdPrefix}-button`}
         aria-label="Suggest a category using AI"
+        title="Sends this transaction's description, amount and type to your AI provider."
       >
         {busy ? (
           <>

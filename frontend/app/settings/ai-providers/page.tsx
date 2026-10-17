@@ -551,6 +551,10 @@ function AddCredentialModal({
           Add AI credential
         </h2>
         <form onSubmit={handleSubmit} className="space-y-3">
+          <p className="text-xs text-text-muted">
+            When AI is on, AI features send the data they need to this provider, under your
+            organization&rsquo;s agreement with it.
+          </p>
           <div>
             <label className={labelCls} htmlFor="ai-provider">
               Provider

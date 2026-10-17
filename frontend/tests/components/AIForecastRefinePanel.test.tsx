@@ -71,7 +71,7 @@ describe("AIForecastRefinePanel", () => {
       expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled(),
     );
     // friendly reason copy mentions "provider"
-    expect(screen.getByText(/provider/i)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/provider/i);
     // cost/token line must NOT be shown when can_proceed is false
     expect(screen.queryByText(/tokens/)).toBeNull();
   });

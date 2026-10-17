@@ -134,7 +134,7 @@ async def test_post_consent_then_get_reflects_latest(session_factory):
     resp = client.post(
         "/api/v1/settings/ai-providers/consent",
         json={
-            "consent_version": "ai-tos-2026-05-22",
+            "consent_version": app_settings.ai_native_current_consent_version,
             "allow_training": False,
         },
     )
@@ -146,7 +146,7 @@ async def test_post_consent_then_get_reflects_latest(session_factory):
     assert body["allow_training"] is False
     assert body["allow_rag"] is False
     assert body["allow_telemetry"] is False
-    assert body["consent_version"] == "ai-tos-2026-05-22"
+    assert body["consent_version"] == app_settings.ai_native_current_consent_version
 
 
 async def test_revocation_row_flips_snapshot(session_factory):
@@ -159,13 +159,13 @@ async def test_revocation_row_flips_snapshot(session_factory):
     client.post(
         "/api/v1/settings/ai-providers/consent",
         json={
-            "consent_version": "ai-tos-2026-05-22",
+            "consent_version": app_settings.ai_native_current_consent_version,
         },
     )
     client.post(
         "/api/v1/settings/ai-providers/consent",
         json={
-            "consent_version": "ai-tos-2026-05-22",
+            "consent_version": app_settings.ai_native_current_consent_version,
             "revoked": True,
         },
     )
