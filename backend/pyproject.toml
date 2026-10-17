@@ -32,7 +32,7 @@ app = [
     "pyotp==2.10.0",
     "qrcode[pil]==8.2",
     "cryptography==50.0.2",
-    "ofxtools~=0.9.5",
+    "ofxtools~=1.1.1",
     # INFRA-105: own spans (app/tracing.py) and the MeterProvider FastAPI's native HTTP
     # metrics record on. Same pins as Ziftbook; no contrib instrumentation packages.
     "opentelemetry-api==1.45.1",
