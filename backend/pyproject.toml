@@ -1,7 +1,7 @@
 [project]
 name = "tbd-backend"
 version = "0.0.0"
-requires-python = "==3.12.*"
+requires-python = "==3.15.*"
 # Runtime deps live in dependency groups, not here, so the MCP image can install
 # its subset (group `mcp`) without the rest. tests/mcp/test_mcp_image.py fences
 # `mcp` as a same-pin subset of `app`.
