@@ -193,7 +193,7 @@ async def merge_users(
         target.email_verified = True
 
     # agent_pending_actions is NOT reassigned: the source user's rows are dropped
-    # by ON DELETE CASCADE on purpose (ephemeral previews, 10 minute TTL).
+    # by ON DELETE CASCADE on purpose (proposals: 10 minute confirm window, purged after 48h).
     #
     # Finally delete the source row. With all references reassigned,
     # the delete succeeds without tripping any FK constraint or

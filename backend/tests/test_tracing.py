@@ -537,6 +537,33 @@ async def test_each_tick_is_its_own_trace_and_a_failed_one_is_an_error(spans, mo
     _assert_absent([first, second], SECRET)
 
 
+async def _quiet_purge():
+    return 0
+
+
+async def test_the_agent_action_purge_is_a_job_span(spans, monkeypatch):
+    inside = []
+
+    async def acquire(ttl):
+        return True
+
+    async def nothing(*a, **k):
+        return None
+
+    async def purge():
+        inside.append(tracing.trace.get_current_span().get_span_context().span_id)
+
+    monkeypatch.setattr(scheduler_loop_module, "acquire_tick_lock", acquire)
+    monkeypatch.setattr(scheduler_loop_module, "run_all_due", nothing)
+    monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", nothing)
+    monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", nothing)
+    monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", purge)
+    await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 16), lock_ttl=1)
+    (job,) = [s for s in spans() if s.name == "job agent_action_purge"]
+    assert dict(job.attributes) == {"job.kind": "agent_action_purge"}
+    assert inside == [job.context.span_id]
+
+
 async def test_the_api_token_expiry_reminder_is_a_job_span(spans, monkeypatch):
     calls = []
 
@@ -556,6 +583,7 @@ async def test_the_api_token_expiry_reminder_is_a_job_span(spans, monkeypatch):
     monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
     monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
+    monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", _quiet_purge)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     assert len(calls) == 1
     (job,) = [s for s in spans() if s.name == "job api_token_expiry"]
@@ -581,6 +609,7 @@ async def test_the_oauth_client_purge_is_a_job_span(spans, monkeypatch):
     monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
     monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
+    monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", _quiet_purge)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     (job,) = [s for s in spans() if s.name == "job oauth_client_purge"]
     assert dict(job.attributes) == {"job.kind": "oauth_client_purge"}
@@ -613,6 +642,7 @@ async def test_a_swallowed_oauth_client_purge_failure_ends_its_job_span_as_an_er
     monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
     monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
+    monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", _quiet_purge)
     try:
         assert await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     finally:
