@@ -295,6 +295,7 @@ describe("transport and accessibility", () => {
       result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
     });
     expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
+    expect(document.activeElement).toBe(screen.getByTestId("preview-card")); // nothing took focus back
     getReader.mockRestore();
   });
 

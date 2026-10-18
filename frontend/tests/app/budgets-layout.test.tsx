@@ -150,5 +150,5 @@ describe("Budgets page — proportional layout", () => {
     fireEvent.click(bar);
 
     expect(push).toHaveBeenCalledWith("/transactions?category_id=10");
-  });
+  }, 10_000); // above the bar wait, so a slow runner gets the DOM dump, not a bare test timeout
 });
