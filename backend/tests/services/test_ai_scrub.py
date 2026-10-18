@@ -183,7 +183,7 @@ T7 = [
     "3782 822463 " * 3300, "AB12 " * 8000, "AB12 CDEF " * 4000, "NL91 " * 8000,
     "NL91ABNA0417164301 " * 2100, "4111 1111 1111 1112 " * 2000, "a" * 40000, "0 " * 20000,
     "a@" * 20000, "a." * 20000, "+1 " * 13333, "1-" * 20000, "1234567890" * 4000,
-    "a.b" * 13333 + "@", "(0" * 20000, "a" * 39990 + "@x",
+    "a.b" * 13333 + "@", "(0" * 20000, "a" * 39990 + "@x", "a@" + "a" * 40000,
 ]
 
 
@@ -192,7 +192,8 @@ def test_t7_time_budget():
     for s in T7:
         t = time.perf_counter()
         scrub_text(s)
-        if (dt := time.perf_counter() - t) >= 0.25:
+        # Catastrophic backtracking on 40k chars costs seconds; local max is ~45ms, CI saw 258ms.
+        if (dt := time.perf_counter() - t) >= 1.0:
             slow[f"{s[:14]!r}x{len(s)}"] = round(dt, 3)
     assert not slow, slow
 
@@ -200,7 +201,7 @@ def test_t7_time_budget():
 def test_t7_preflight_size_input():
     t = time.perf_counter()
     scrub_text("AB12 " * 13000)
-    assert time.perf_counter() - t < 0.5
+    assert time.perf_counter() - t < 1.0
 
 
 def test_t8_scrub_value():
