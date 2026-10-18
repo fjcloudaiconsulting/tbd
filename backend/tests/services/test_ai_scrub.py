@@ -192,7 +192,8 @@ def test_t7_time_budget():
     for s in T7:
         t = time.perf_counter()
         scrub_text(s)
-        if (dt := time.perf_counter() - t) >= 0.25:
+        # Catastrophic backtracking on 40k chars costs seconds; local max is ~45ms, CI saw 258ms.
+        if (dt := time.perf_counter() - t) >= 1.0:
             slow[f"{s[:14]!r}x{len(s)}"] = round(dt, 3)
     assert not slow, slow
 
@@ -200,7 +201,7 @@ def test_t7_time_budget():
 def test_t7_preflight_size_input():
     t = time.perf_counter()
     scrub_text("AB12 " * 13000)
-    assert time.perf_counter() - t < 0.5
+    assert time.perf_counter() - t < 1.0
 
 
 def test_t8_scrub_value():
