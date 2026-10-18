@@ -31,7 +31,7 @@
 
 import React from "react";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -217,6 +217,54 @@ describe("public copy — data export and deletion claims (TBD-343)", () => {
 
     // Positive leg: the privacy answer must carry the real mechanism.
     expect(llms).toContain(PRIVACY_CONTACT_EMAIL);
+  });
+
+  it("fence 6 (TBD-592): every EU-residency answer carries the AI exception", async () => {
+    // Wrong implementation: any one surface reverting to an unqualified "stays in the
+    // EU" / "processed under EU law", which is false for what AI features send.
+    const AI = /except content you send through AI features|exception is content you send through AI features/;
+    expect(answerTo(await landingFaqJsonLd(), "Is my data secure?")).toMatch(AI);
+
+    const ui = await FeaturesPage();
+    const { container } = render(ui as React.ReactElement);
+    const faq = Array.from(container.querySelectorAll('script[type="application/ld+json"]'))
+      .map((el) => JSON.parse(el.textContent ?? "{}"))
+      .find((b) => b["@type"] === "FAQPage");
+    expect(answerTo(faq.mainEntity, "Is my financial data private?")).toMatch(AI);
+    const bullets = Array.from(container.querySelectorAll("li")).map((li) => li.textContent ?? "");
+    const eu = bullets.filter((b) => /processed under EU law/.test(b));
+    expect(eu.length).toBeGreaterThan(0);
+    for (const b of eu) expect(b).toMatch(AI);
+
+    const llms = readLlmsTxt();
+    const private_ = llms.slice(llms.indexOf("### Is my financial data private?"));
+    expect(private_.split("\n\n")[1]).toMatch(AI);
+  });
+
+  it("fence 7 (TBD-592): no file in the tree makes an EU claim without the AI exception", () => {
+    // Wrong implementation: any one surface (FAQ, comparison page or table, landing tile, llms.txt)
+    // reverting to an unqualified "processed under EU law" or "moved across borders".
+    const root = path.resolve(__dirname, "..");
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(tsx?|txt)$/.test(e.name)) files.push(p);
+      }
+    };
+    for (const d of ["app", "components", "lib", "public"]) walk(path.join(root, d));
+    const CLAIM = /processed under EU law|stays in the EU|never leaves the EU|across borders/gi;
+    let seen = 0;
+    for (const f of files) {
+      const src = readFileSync(f, "utf-8");
+      for (const m of src.matchAll(CLAIM)) {
+        seen++;
+        const near = src.slice(Math.max(0, m.index - 150), m.index + 250);
+        expect(near, `${path.relative(root, f)}: "${m[0]}" needs the AI exception nearby`).toMatch(/AI feature|AI provider/);
+      }
+    }
+    expect(seen, "the scan must find the claims it guards").toBeGreaterThan(8);
   });
 
   it("guard: no em dashes in the FAQ answers (customer-facing copy)", async () => {

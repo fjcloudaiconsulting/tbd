@@ -174,6 +174,10 @@ export function AIForecastRefinePanel({
           </div>
         </div>
 
+        <p className="text-xs text-text-muted">
+          Sends monthly category totals to your AI provider. No transaction descriptions.
+        </p>
+
         <div className="text-xs text-text-secondary" aria-live="polite">
           {estimating ? (
             <span className="inline-flex items-center gap-1">

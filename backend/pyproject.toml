@@ -13,7 +13,7 @@ app = [
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.14.1",
     "pydantic-settings==2.16.0",
-    "sqlalchemy==2.0.54",
+    "sqlalchemy[asyncio]==2.1.4",
     "aiomysql==0.3.2",
     # PyMySQL is a transitive dep of aiomysql; pin explicitly because
     # SQLAlchemy's mysql dialect inspects PyMySQL's ``connect.__doc__`` to
@@ -32,7 +32,7 @@ app = [
     "pyotp==2.10.0",
     "qrcode[pil]==8.2",
     "cryptography==50.0.2",
-    "ofxtools~=0.9.5",
+    "ofxtools~=1.1.1",
     # INFRA-105: own spans (app/tracing.py) and the MeterProvider FastAPI's native HTTP
     # metrics record on. Same pins as Ziftbook; no contrib instrumentation packages.
     "opentelemetry-api==1.45.1",
@@ -44,7 +44,7 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-split==0.11.0",
     "pytest-xdist==3.8.0",
-    "pytest-cov==6.3.0",
+    "pytest-cov==7.1.0",
     "aiosqlite==0.22.1",
 ]
 # MCP server component (backend/Dockerfile.mcp): a subset of `app`, SAME pins.
@@ -54,7 +54,7 @@ mcp = [
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.14.1",
     "pydantic-settings==2.16.0",
-    "sqlalchemy==2.0.54",
+    "sqlalchemy[asyncio]==2.1.4",
     "aiomysql==0.3.2",
     "PyMySQL==1.2.3",
     "PyJWT[crypto]==2.15.1",
@@ -73,3 +73,7 @@ mcp = [
 [tool.uv]
 package = false
 default-groups = ["app", "dev"]
+
+# pytest-cov 7 dropped its own subprocess measurement; the OFX parser runs in a child process.
+[tool.coverage.run]
+patch = ["subprocess"]

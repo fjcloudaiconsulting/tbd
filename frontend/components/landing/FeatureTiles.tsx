@@ -16,7 +16,7 @@ const tiles = [
   },
   {
     title: "Your data stays yours",
-    sub: "EU-hosted today. Never sold, never shared, never moved across borders without asking. More regions coming.",
+    sub: "EU-hosted today, and never sold. The exception is content you send through AI features, when on, which goes to your AI provider. More regions coming.",
   },
 ];
 

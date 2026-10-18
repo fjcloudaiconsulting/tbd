@@ -29,7 +29,7 @@ const faq = [
   },
   {
     q: "Is The Better Decision more private than PocketSmith?",
-    a: "Both treat your data seriously. The Better Decision is EU-hosted and processed under EU law; PocketSmith is based in New Zealand, which has an EU adequacy decision. The difference is locality preference, not safety.",
+    a: "Both treat your data seriously. The Better Decision is EU-hosted and processed under EU law, except content you send through AI features, when on; PocketSmith is based in New Zealand, which has an EU adequacy decision. The difference is locality preference, not safety.",
   },
   {
     q: "Which is simpler to use?",
