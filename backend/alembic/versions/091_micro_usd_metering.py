@@ -19,12 +19,23 @@ InnoDB DML that follows commits together with the ``alembic_version`` stamp.
 under-stated), limits are FLOORed (a limit is never widened). It divides BEFORE
 the DDL so the values fit INT again first.
 
-Partial failure (init container dies after a rename, before the commit): the
-DML rolled back with the stamp, so the schema shows a renamed column with
-UNCONVERTED values. Rename back by hand and restart the rollout; never run a
-x10,000 UPDATE by hand. A downgrade that fails after its first rename has
+Partial failure: MySQL commits implicitly BEFORE each DDL, so if ANY rename
+fails, including the FIRST one, the data changes before it are already committed
+and the version stamp may not match. Never re-run downgrade or upgrade after a
+partial failure; recover by hand with the documented rename-back (rename the
+renamed columns back, then restore the stamp to match the schema). An upgrade
+that dies after a rename shows a renamed column with UNCONVERTED values: never
+run a x10,000 UPDATE by hand. A downgrade that fails after its first rename has
 already committed the division: finish it by hand (rename the rest, stamp
 ``090_platform_ai_models``); do NOT re-run upgrade over rounded values.
+
+Never ``alembic stamp 091`` to clear a crash-loop on "Unknown column
+est_cost_cents": that leaves every value 10,000x too small and caps stop binding.
+
+Pre-check: ``SELECT value FROM system_settings WHERE key='platform_ai.global_monthly_cents'``
+must be <= 900719925474. Record ``SUM(est_cost_cents)`` together with its
+timestamp T0; post-check ``SUM(cost_micros) WHERE dispatched_at < T0`` equals the
+recorded sum x 10000.
 """
 from __future__ import annotations
 
