@@ -19,22 +19,37 @@ InnoDB DML that follows commits together with the ``alembic_version`` stamp.
 under-stated), limits are FLOORed (a limit is never widened). It divides BEFORE
 the DDL so the values fit INT again first.
 
-Partial failure: MySQL commits implicitly BEFORE each DDL, so if ANY rename
-fails, including the FIRST one, the data changes before it are already committed
-and the version stamp may not match. Never re-run downgrade or upgrade after a
-partial failure; recover by hand with the documented rename-back (rename the
-renamed columns back, then restore the stamp to match the schema). An upgrade
-that dies after a rename shows a renamed column with UNCONVERTED values: never
-run a x10,000 UPDATE by hand. A downgrade that fails after its first rename has
-already committed the division: finish it by hand (rename the rest, stamp
-``090_platform_ai_models``); do NOT re-run upgrade over rounded values.
+Partial failure. MySQL commits implicitly before each DDL. What that leaves
+behind depends on the direction:
+
+- upgrade writes nothing before its first rename, and its DML commits together
+  with the stamp after the last rename. A failure leaves UNCONVERTED values,
+  ``alembic_version`` still ``090_platform_ai_models``, and possibly a renamed
+  ledger and/or spend column. The init container retries and crash-loops on
+  "Unknown column est_cost_cents". Recover: rename whatever was renamed back,
+  with its 090 type, then let the rollout retry upgrade (the stamp is already
+  right, so do not touch it). usage_counters, org_limit_overrides and
+  plans.usage_limits need nothing: their DML rolled back. system_settings is
+  never written.
+    ALTER TABLE ai_usage_ledger CHANGE cost_micros est_cost_cents INT NOT NULL DEFAULT 0;
+    ALTER TABLE platform_ai_spend CHANGE micros cents BIGINT NOT NULL DEFAULT 0;
+  Confirm first: ``SUM`` of the ledger column equals the pre-check sum
+  (unconverted). Never run a x10,000 UPDATE by hand.
+- downgrade divides BEFORE its first rename, so the division commits at the
+  start of that rename. A failure AT or after it leaves the data divided and
+  rounded, ``alembic_version`` still ``091``, and columns not yet renamed back.
+  Finish by hand: run whichever of the two CHANGE statements above has not
+  happened yet, then ``alembic stamp 090_platform_ai_models``. Never re-run
+  downgrade (it divides again) or upgrade (the sub-cent precision is gone).
 
 Never ``alembic stamp 091`` to clear a crash-loop on "Unknown column
 est_cost_cents": that leaves every value 10,000x too small and caps stop binding.
 
-Pre-check: ``SELECT value FROM system_settings WHERE key='platform_ai.global_monthly_cents'``
-must be <= 900719925474. Record ``SUM(est_cost_cents)`` together with its
-timestamp T0; post-check ``SUM(cost_micros) WHERE dispatched_at < T0`` equals the
+Pre-checks (prod, before merging): ``SELECT value FROM system_settings WHERE
+`key` = 'platform_ai.global_monthly_cents'`` must be <= 900719925474. Take
+T0 = ``UTC_TIMESTAMP()`` a few minutes in the past and record
+``SUM(est_cost_cents) WHERE dispatched_at < T0`` (``dispatched_at`` is naive
+UTC). Post-check: ``SUM(cost_micros) WHERE dispatched_at < T0`` equals the
 recorded sum x 10000.
 """
 from __future__ import annotations
