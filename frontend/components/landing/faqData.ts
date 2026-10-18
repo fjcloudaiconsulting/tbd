@@ -20,7 +20,7 @@ export type FaqEntry = { readonly q: string; readonly a: string };
 export const faqEntries: ReadonlyArray<FaqEntry> = [
   {
     q: "Is my data secure?",
-    a: "Yes. All data stays in the EU: the service and its database run in Germany, and our nightly backups are encrypted. Account credentials are stored as bcrypt hashes. We use HTTPS everywhere and never store your bank login credentials.",
+    a: "Yes. All data we store stays in the EU: the service and its database run in Germany, and our nightly backups are encrypted. The exception is content you send through AI features, when on, which goes to your AI provider. Account credentials are stored as bcrypt hashes. We use HTTPS everywhere and never store your bank login credentials.",
   },
   {
     q: "Can I export my data?",
@@ -28,7 +28,7 @@ export const faqEntries: ReadonlyArray<FaqEntry> = [
   },
   {
     q: "Do you use my data to train AI?",
-    a: "No. Personal financial data is never used to train models. The optional AI assistant runs against a provider you choose, and you can disable it at any time.",
+    a: "No. We never use your personal financial data to train models. The optional AI assistant runs against a provider you choose, and you can disable it at any time.",
   },
   {
     q: "Can I delete my account?",

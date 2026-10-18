@@ -320,6 +320,8 @@ export default function AssistantChat() {
         </div>
         <p className="mt-1.5 text-xs text-text-muted">
           Enter sends, Shift+Enter starts a new line. The conversation is not saved when you leave this page.
+          What you send goes to your organization&rsquo;s AI provider. We remove the IBANs, card numbers,
+          emails and phone numbers we recognize first; names are sent as you type them.
         </p>
       </form>
     </div>

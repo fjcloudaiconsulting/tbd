@@ -47,6 +47,7 @@ cd "${FRONTEND_DIR}"
 ALLOWED_ROUTE_DIRS=(
   "privacy"
   "terms"
+  "ai-terms"
   "docs"
   "features"
   "compare"
@@ -82,6 +83,7 @@ ALLOWED_OUTPUT_GLOBS=(
   "_not-found"
   "privacy"
   "terms"
+  "ai-terms"
   "docs"
   "features"
   "compare"
@@ -303,6 +305,7 @@ cat > "${FRONTEND_DIR}/out-apex/sitemap.xml" <<EOF
   <url><loc>${APEX_URL}/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/privacy/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/terms/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/ai-terms/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/docs/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/docs/plans/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/features/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>

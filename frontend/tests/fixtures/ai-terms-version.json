@@ -1,0 +1,4 @@
+{
+  "_comment": "The AI Terms version. Must equal the backend Settings default ai_native_current_consent_version and frontend/lib/aiTerms.ts. Edited by hand on a deliberate terms change; both contract tests fail rather than regenerate.",
+  "version": "ai-terms-2026-10"
+}

@@ -109,7 +109,7 @@ const softwareApplicationLd = {
     "CSV and OFX import",
     "Reports by category",
     "Shared household organization with roles",
-    "EU-hosted, never used to train AI",
+    "EU-hosted, never used by us to train AI",
     "Optional bring-your-own or local AI with spend caps",
   ],
   offers: {
