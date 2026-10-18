@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.299.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.299.0...v0.299.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **deps:** revert react-grid-layout to v1; v2 made dashboard drag stick (TBD-644) ([#970](https://github.com/fjcloudaiconsulting/tbd/issues/970)) ([f4e9dc9](https://github.com/fjcloudaiconsulting/tbd/commit/f4e9dc9188d96539a42d9d8b3c06108a8f178094))
+
 ## [0.299.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.298.0...v0.299.0) (2026-10-18)
 
 
