@@ -312,7 +312,7 @@ async def _seed_embed_cap_and_spend(
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
-                est_cost_cents=spent_cents,
+                cost_micros=spent_cents * 10_000,
                 latency_ms=1,
                 success=True,
                 error_class=None,
@@ -357,7 +357,7 @@ async def test_embed_exhausted_block_no_adapter_no_ledger(
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 12
+    assert rows[0].cost_micros == 120_000
 
 
 @pytest.mark.asyncio
@@ -409,7 +409,7 @@ async def test_embed_projected_overspend_blocks_under_cap_no_adapter_no_ledger(
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 70
+    assert rows[0].cost_micros == 700_000
 
 
 @pytest.mark.asyncio
@@ -805,7 +805,7 @@ async def test_function_tool_schema_tips_projection_over_cap_no_adapter_no_ledge
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 90
+    assert rows[0].cost_micros == 900_000
 
 
 @pytest.mark.asyncio
@@ -1098,7 +1098,7 @@ async def test_call_llm_stream_gate_blocks_before_first_chunk(
         )
     ).scalars().all()
     assert len(rows) == 1
-    assert rows[0].est_cost_cents == 12
+    assert rows[0].cost_micros == 120_000
 
 
 # ---------- Structured-output token aggregation ---------------------
@@ -1339,7 +1339,7 @@ async def _seed_cap_and_spend(
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
-                est_cost_cents=spent_cents,
+                cost_micros=spent_cents * 10_000,
                 latency_ms=1,
                 success=True,
                 error_class=None,
@@ -1375,8 +1375,8 @@ async def test_structured_projected_overspend_blocks_no_adapter_no_ledger(
 ):
     """Structured dispatch: under cap but projected (x retries) tips it
     over → AICapExceeded, adapter never called, no ledger row."""
-    # hard=100, spent=99; a tiny unpinned gpt-4o-mini structured call
-    # projects ~1 cent single, x3 = 3 cents → 99 + 3 > 100 → block.
+    # hard=100, spent=99 -> 10_000 micros of headroom; max_tokens=10_000 on
+    # gpt-4o-mini projects ~6_000 micros single (fits), x3 = ~18_000 → block.
     await _seed_cap_and_spend(
         db, org, credential, hard_cap_cents=100, spent_cents=99
     )
@@ -1391,6 +1391,7 @@ async def test_structured_projected_overspend_blocks_no_adapter_no_ledger(
                 feature_key="chat",
                 messages=[{"role": "user", "content": "x"}],
                 response_schema=_STRUCT_SCHEMA,
+                max_tokens=10_000,
             )
     assert exc_info.value.code == "ai_hard_cap_exceeded"
     adapter.chat_structured.assert_not_awaited()
@@ -1400,7 +1401,7 @@ async def test_structured_projected_overspend_blocks_no_adapter_no_ledger(
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 99
+    assert rows[0].cost_micros == 990_000
 
 
 @pytest.mark.asyncio
@@ -1482,7 +1483,7 @@ async def test_structured_projection_failure_fails_closed(
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
     ), patch(
-        "app.services.ai_dispatch._projected_cost_cents",
+        "app.services.ai_dispatch._projected_cost_micros",
         side_effect=RuntimeError("boom"),
     ):
         result = await call_llm_structured(
@@ -1509,15 +1510,13 @@ async def test_structured_retry_multiplier_blocks_when_single_would_fit(
     the multiplier as the cause of the structured block.
     """
     # gpt-4o-mini completion = 60 cents / 1M tokens; prompt "x" adds ~1
-    # token at 15 cents / 1M. estimate_cost_cents sums prompt+completion
-    # raw cost and ceils ONCE: max_tokens=200_000 → 12_000_000 + 15 raw
-    # = 13 cents single (not 12, because of the prompt cent).
-    # retries+1 = STRUCTURED_OUTPUT_MAX_RETRIES + 1 = 3 → 13 x 3 = 39
-    # cents (not 36).
+    # token at 15 cents / 1M. estimate_cost_micros sums prompt+completion
+    # raw cost and ceils ONCE: max_tokens=200_000 → 12_000_015 raw
+    # = 120_001 micros single; retries+1 = 3 → 360_003 micros.
     assert STRUCTURED_OUTPUT_MAX_RETRIES + 1 == 3
     big_max_tokens = 200_000
-    # hard=120, spent=100 → remaining=20.
-    # single 13 fits (100+13=113 <= 120); x3 = 39 → 100+39=139 > 120 block.
+    # hard=120 cents, spent=100 cents → remaining=200_000 micros.
+    # single 120_001 fits; x3 = 360_003 > 200_000 → block.
     await _seed_cap_and_spend(
         db, org, credential, hard_cap_cents=120, spent_cents=100
     )
@@ -1683,3 +1682,42 @@ async def test_prepared_dispatch_uses_the_rows_api_root_flag(
     )
 
     assert urls == [expected]
+
+
+# ---------- TBD-630 fence 8 ------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_reported,want", [(200, 300), (None, "est")])
+async def test_fence_structured_sums_per_attempt_cost(
+    db, org, admin_user, credential, default_routing, second_reported, want
+):
+    """FENCE 8: attempt 1 schema-invalid reporting 100, attempt 2 valid.
+    Reported 200 -> ledger 300; unreported -> 100 + the estimate of attempt 2's
+    own tokens. Kills re-estimating from summed tokens (drops reported costs)
+    and last-attempt-only billing."""
+    from app.services.ai_pricing import estimate_cost_micros
+
+    adapter = MagicMock()
+    adapter.chat_structured = AsyncMock(
+        side_effect=[
+            LLMResponse(content="not json", prompt_tokens=4, completion_tokens=2,
+                        model="gpt-4o-mini", cost_micros=100),
+            LLMResponse(content='{"category": "rent"}', prompt_tokens=400,
+                        completion_tokens=300, model="gpt-4o-mini",
+                        cost_micros=second_reported),
+        ]
+    )
+    with patch("app.services.ai_dispatch.get_adapter", return_value=adapter):
+        await call_llm_structured(
+            db, org_id=org.id, feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            response_schema={"type": "object", "required": ["category"],
+                             "properties": {"category": {"type": "string"}}},
+        )
+    if want == "est":
+        want = 100 + estimate_cost_micros(
+            model="gpt-4o-mini", prompt_tokens=400, completion_tokens=300
+        )
+    row = (await db.execute(select(AIUsageLedger))).scalars().one()
+    assert row.cost_micros == want

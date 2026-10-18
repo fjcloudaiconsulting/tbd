@@ -10,7 +10,7 @@ Anyone deploying, operating, or running pfv locally:
 
 - Local developers (`docker compose` + `./tbd`)
 - CI maintainers (GitHub Actions secrets, smoke tests)
-- Production operators (cloud-infra `clusters/platform/tbd-prod/`)
+- Production operators (cloud-infra `clusters/hetzner/tbd-prod/`)
 
 ## Table of contents
 
@@ -41,7 +41,7 @@ The rest of `.env.example` is pre-populated with safe local-dev defaults.
 
 ### Production
 
-Production env vars live in cloud-infra `clusters/platform/tbd-prod/` (plain
+Production env vars live in cloud-infra `clusters/hetzner/tbd-prod/` (plain
 env in the manifests, secrets in SOPS-encrypted `*.secret.yaml`); see
 [Secrets vs non-secrets](#secrets-vs-non-secrets). Merging a change there is
 the deploy.
@@ -135,7 +135,7 @@ the Python backend. They must match the credentials embedded in
 
 Production MySQL runs in-cluster (namespace `data`); credentials live in
 `DATABASE_URL` (a SOPS secret) and not in any per-mysql-container env. See
-[cloud-infra `clusters/platform/data/`](https://github.com/fjcloudaiconsulting/cloud-infra/tree/main/clusters/platform/data).
+[cloud-infra `clusters/hetzner/data/`](https://github.com/fjcloudaiconsulting/cloud-infra/tree/main/clusters/hetzner/data).
 
 #### Backend seed helpers (`./tbd seed`)
 
@@ -212,7 +212,7 @@ deploy contract.
 
 ## Secrets vs non-secrets
 
-Production values live in cloud-infra `clusters/platform/tbd-prod/`: plain env
+Production values live in cloud-infra `clusters/hetzner/tbd-prod/`: plain env
 in the manifests, secrets in SOPS-encrypted `*.secret.yaml` (see the cloud-infra
 [runbook](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md),
 "Write or rotate a Kubernetes Secret").
@@ -267,7 +267,7 @@ runs `scripts/smoke-test.sh` and reads the credentials from the cluster Secret
 
 ### Production
 
-Production env and secrets live in cloud-infra `clusters/platform/tbd-prod/`.
+Production env and secrets live in cloud-infra `clusters/hetzner/tbd-prod/`.
 Merging a change there is the deploy (Flux applies it); see
 [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
@@ -283,7 +283,7 @@ image with the new env, with no rebuild.
 Symptom: `/login` and `/register` render without the "Sign in with
 Google" button. Cause: `TBD_GOOGLE_SSO_ENABLED` is not set (or not exactly the
 string `"true"`) in the running frontend. Fix: confirm the variable is in the
-`frontend` env of cloud-infra `clusters/platform/tbd-prod/frontend.yaml` with
+`frontend` env of cloud-infra `clusters/hetzner/tbd-prod/frontend.yaml` with
 value `"true"`, and on the running pod
 (`kubectl -n tbd-prod exec deploy/frontend -- printenv TBD_GOOGLE_SSO_ENABLED`),
 then merge the fix there. No rebuild is needed. Also check the manifest has
@@ -346,7 +346,7 @@ switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
 
 - `.env.example` — copy-paste template with placeholder values and inline
   comments matching the Purpose column in this doc.
-- cloud-infra `clusters/platform/tbd-prod/` — authoritative production env
+- cloud-infra `clusters/hetzner/tbd-prod/` — authoritative production env
   (manifests plus SOPS `*.secret.yaml`).
 - `docker-compose.yml` — local-dev stack. Frontend env is inline; backend
   pulls from `.env` via `env_file`.

@@ -465,7 +465,7 @@ Three execution paths, picked by environment:
 
 - **Local dev (`./tbd start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
 - **Local prod simulation (`./tbd prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
-- **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `APP_ENV=production`) is set in cloud-infra `clusters/platform/tbd-prod/backend.yaml`.
+- **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `APP_ENV=production`) is set in cloud-infra `clusters/hetzner/tbd-prod/backend.yaml`.
 
 The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a failed migration blocks the rollout.
 

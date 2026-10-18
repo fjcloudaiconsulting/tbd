@@ -84,14 +84,14 @@ async def consent(sf, org_id, *, version=None, revoked=False):
         await s.commit()
 
 
-async def mk_org(sf, name, *, tokens=100_000, cents=1000, with_consent=True):
+async def mk_org(sf, name, *, tokens=100_000, micros=1000, with_consent=True):
     async with sf() as s:
         org = Organization(name=name, billing_cycle_day=1)
         s.add(org)
         await s.flush()
         limits = PlanUsageLimits().model_dump(by_alias=True)
         limits["platform_ai.tokens"] = {"period": "month", "limit": tokens}
-        limits["platform_ai.cents"] = {"period": "month", "limit": cents}
+        limits["platform_ai.micros"] = {"period": "month", "limit": micros}
         plan = Plan(slug=f"p{org.id}", name="P", features={}, usage_limits=limits)
         s.add(plan)
         await s.flush()
@@ -189,10 +189,10 @@ async def test_p1_not_offered_is_412(sf, org, monkeypatch, off):
     assert await platform_rows(sf) == []
 
 
-@pytest.mark.parametrize("tokens,cents,meter", [(0, 500, "platform_ai.tokens"), (500, 0, "platform_ai.cents")])
-async def test_p1_each_meter_zero_is_402(sf, monkeypatch, tokens, cents, meter):
+@pytest.mark.parametrize("tokens,micros,meter", [(0, 500, "platform_ai.tokens"), (500, 0, "platform_ai.micros")])
+async def test_p1_each_meter_zero_is_402(sf, monkeypatch, tokens, micros, meter):
     await set_platform(sf)
-    _, uid = await mk_org(sf, "Zero", tokens=tokens, cents=cents)
+    _, uid = await mk_org(sf, "Zero", tokens=tokens, micros=micros)
     r = client(sf, uid).post(f"{BASE}/platform/openai")
     assert r.status_code == 402, r.text
     d = r.json()["detail"]
@@ -210,14 +210,14 @@ async def _override(sf, org_id, meter, value):
 
 async def test_p1_entitlements_include_overrides(sf):
     await set_platform(sf)
-    oid, uid = await mk_org(sf, "Plan0", tokens=0, cents=0)
+    oid, uid = await mk_org(sf, "Plan0", tokens=0, micros=0)
     await _override(sf, oid, "platform_ai.tokens", 100)
-    await _override(sf, oid, "platform_ai.cents", 100)
+    await _override(sf, oid, "platform_ai.micros", 100)
     assert client(sf, uid).post(f"{BASE}/platform/openai").status_code == 201
     oid2, uid2 = await mk_org(sf, "Over0")
-    await _override(sf, oid2, "platform_ai.cents", 0)
+    await _override(sf, oid2, "platform_ai.micros", 0)
     r = client(sf, uid2).post(f"{BASE}/platform/openai")
-    assert r.status_code == 402 and r.json()["detail"]["meter"] == "platform_ai.cents"
+    assert r.status_code == 402 and r.json()["detail"]["meter"] == "platform_ai.micros"
     assert [c.org_id for c in await platform_rows(sf)] == [oid]
 
 

@@ -55,7 +55,7 @@ MeterKey = Literal[
     "assistant.turns",
     "mcp.calls",
     "platform_ai.tokens",
-    "platform_ai.cents",
+    "platform_ai.micros",
 ]
 
 ALL_METER_KEYS: frozenset[str] = frozenset(get_args(MeterKey))
@@ -73,7 +73,7 @@ METER_MODULES: dict[str, str] = {
     "assistant.turns": "ai",
     "mcp.calls": "ai",
     "platform_ai.tokens": "ai",
-    "platform_ai.cents": "ai",
+    "platform_ai.micros": "ai",
 }
 
 
@@ -122,7 +122,7 @@ class PlanUsageLimits(BaseModel):
     assistant_turns:    MeterLimit = Field(default_factory=_unlimited, alias="assistant.turns")
     mcp_calls:          MeterLimit = Field(default_factory=_unlimited, alias="mcp.calls")
     platform_ai_tokens: MeterLimit = Field(default_factory=_none_at_all, alias="platform_ai.tokens")
-    platform_ai_cents:  MeterLimit = Field(default_factory=_none_at_all, alias="platform_ai.cents")
+    platform_ai_micros: MeterLimit = Field(default_factory=_none_at_all, alias="platform_ai.micros")
 
     @model_validator(mode="after")
     def _platform_meters_are_bounded(self) -> "PlanUsageLimits":

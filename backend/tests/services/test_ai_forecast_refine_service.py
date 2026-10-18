@@ -272,10 +272,10 @@ async def test_estimate_refine_no_history_returns_insufficient_history(
 # budget, so the UI never offers Confirm when Confirm would hard-fail.
 
 
-def _patch_estimate_internals(monkeypatch, *, est_cost_cents: int):
+def _patch_estimate_internals(monkeypatch, *, est_cost_micros: int):
     """Stub the no-DB estimate inputs so the cap pre-check is the only
     variable under test. compute_forecast / history / index are faked, and
-    estimate_cost_cents is pinned to a deterministic projected cost.
+    estimate_cost_micros is pinned to a deterministic projected cost.
     """
     async def fake_compute_forecast(db, org_id, period_start=None):
         return _FAKE_BASELINE
@@ -291,7 +291,7 @@ def _patch_estimate_internals(monkeypatch, *, est_cost_cents: int):
     monkeypatch.setattr(svc.forecast_service, "compute_forecast", fake_compute_forecast)
     monkeypatch.setattr(svc, "_build_category_history", fake_build_history)
     monkeypatch.setattr(svc, "_category_index", fake_category_index)
-    monkeypatch.setattr(svc, "estimate_cost_cents", lambda **kw: est_cost_cents)
+    monkeypatch.setattr(svc, "estimate_cost_micros", lambda **kw: est_cost_micros)
 
 
 async def _seed_cap_and_spend(
@@ -299,15 +299,15 @@ async def _seed_cap_and_spend(
     *,
     org_id: int,
     hard_cap_cents: int,
-    spent_cents: int,
+    spent_micros: int,
 ):
-    """Create an org hard cap and a settled ledger row of ``spent_cents``."""
+    """Create an org hard cap (cents) and a settled ledger row of ``spent_micros``."""
     db_session.add(
         OrgAIDefaultCaps(
             org_id=org_id, soft_cap_cents=None, hard_cap_cents=hard_cap_cents
         )
     )
-    if spent_cents > 0:
+    if spent_micros > 0:
         db_session.add(
             AIUsageLedger(
                 org_id=org_id,
@@ -317,7 +317,7 @@ async def _seed_cap_and_spend(
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
-                est_cost_cents=spent_cents,
+                cost_micros=spent_micros,
                 latency_ms=0,
                 success=True,
             )
@@ -333,9 +333,9 @@ async def test_estimate_refine_at_hard_cap_refuses(
     if the projected cost is tiny. Boundary mirrors dispatch's
     ``cost_so_far >= hard_cap`` (remaining == 0).
     """
-    _patch_estimate_internals(monkeypatch, est_cost_cents=1)
+    _patch_estimate_internals(monkeypatch, est_cost_micros=10_000)
     await _seed_cap_and_spend(
-        db_session, org_id=seeded_org.id, hard_cap_cents=500, spent_cents=500
+        db_session, org_id=seeded_org.id, hard_cap_cents=500, spent_micros=5_000_000
     )
 
     est = await svc.estimate_refine(
@@ -356,11 +356,11 @@ async def test_estimate_refine_projected_cost_over_remaining_refuses(
     """Org has headroom, but the projected cost is larger than what's left
     before the hard cap. Confirm would hard-fail, so the estimate refuses.
 
-    remaining = 500 - 450 = 50; projected = 80 > 50 -> refuse.
+    remaining = 500 - 450 = 50 cents; projected = 80 cents > 50 -> refuse.
     """
-    _patch_estimate_internals(monkeypatch, est_cost_cents=80)
+    _patch_estimate_internals(monkeypatch, est_cost_micros=800_000)
     await _seed_cap_and_spend(
-        db_session, org_id=seeded_org.id, hard_cap_cents=500, spent_cents=450
+        db_session, org_id=seeded_org.id, hard_cap_cents=500, spent_micros=4_500_000
     )
 
     est = await svc.estimate_refine(
@@ -382,9 +382,9 @@ async def test_estimate_refine_ample_budget_allows(
 
     remaining = 5000 - 100 = 4900; projected = 80 << 4900 -> allow.
     """
-    _patch_estimate_internals(monkeypatch, est_cost_cents=80)
+    _patch_estimate_internals(monkeypatch, est_cost_micros=800_000)
     await _seed_cap_and_spend(
-        db_session, org_id=seeded_org.id, hard_cap_cents=5000, spent_cents=100
+        db_session, org_id=seeded_org.id, hard_cap_cents=5000, spent_micros=1_000_000
     )
 
     est = await svc.estimate_refine(
@@ -397,6 +397,28 @@ async def test_estimate_refine_ample_budget_allows(
     assert est.can_proceed is True
     assert est.reason is None
     assert est.est_cost_cents == 80
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spent,proceed", [(9_700, False), (9_500, True)])
+async def test_fence_estimate_compares_micros_and_reports_ceil_cents(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization, spent, proceed
+):
+    """FENCE 12 (TBD-630): hard cap 1 cent, an estimate of exactly 405 micros.
+    300 micros left refuses, 500 left proceeds, and both report
+    ``est_cost_cents == 1`` (ceil). Kills comparing a cent estimate to micro
+    headroom, and flooring the reported figure."""
+    _patch_estimate_internals(monkeypatch, est_cost_micros=405)
+    await _seed_cap_and_spend(
+        db_session, org_id=seeded_org.id, hard_cap_cents=1, spent_micros=spent
+    )
+    est = await svc.estimate_refine(
+        db_session, org_id=seeded_org.id, period_start=None,
+        timeframe_months=6, scope=Scope.TOP_20,
+    )
+    assert est.can_proceed is proceed
+    assert (est.reason == "ai_cap_exceeded") is (not proceed)
+    assert est.est_cost_cents == 1
 
 
 # ---------- TBD-261: refuse a non-monthly baseline window --------------

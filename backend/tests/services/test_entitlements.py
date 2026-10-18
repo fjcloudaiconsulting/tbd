@@ -27,7 +27,7 @@ CANONICAL = {
     "assistant.turns": UsageLimit("month", None),
     "mcp.calls": UsageLimit("month", None),
     "platform_ai.tokens": UsageLimit("month", 0),
-    "platform_ai.cents": UsageLimit("month", 0),
+    "platform_ai.micros": UsageLimit("month", 0),
 }
 
 
@@ -148,7 +148,7 @@ async def test_fe1_tampered_null_platform_override_raises(factory):
     NULL ``platform_ai.*`` row written around the API is unlimited platform
     spend."""
     org = await _org(factory)
-    await _add(factory, OrgLimitOverride(org_id=org, meter="platform_ai.cents", period="month",
+    await _add(factory, OrgLimitOverride(org_id=org, meter="platform_ai.micros", period="month",
                                          limit_value=None))
     with pytest.raises(PydanticValidationError):
         await _ent(factory, org)

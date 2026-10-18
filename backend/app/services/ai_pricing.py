@@ -17,16 +17,20 @@ warning than to accidentally let an org rack up unmetered spend).
 This code table is BYOK prices plus human words (``label``); platform prices
 live in the ``platform_ai_models`` table, synced daily from OpenRouter.
 
-``estimate_cost_cents`` rounds **up** to the nearest cent — the cap
-is a ceiling, not a budget, and the rounding direction must match.
+``estimate_cost_micros`` rounds **up** to the nearest micro-USD (1e-6 USD) —
+the cap is a ceiling, not a budget, and the rounding direction must match.
+The table stays in cents per Mtok (every row is a whole cent); the cost is
+reached by the same x10,000 ``cost_tier`` documents (TBD-630).
 
 PR3 adds embedding-model rows. Embeddings only charge on the input
 (``completion_per_1m_cents=0``) — feature surfaces hand
-``completion_tokens=0`` to ``estimate_cost_cents``.
+``completion_tokens=0`` to ``estimate_cost_micros``.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 
@@ -35,8 +39,8 @@ class ModelPricing:
     """Per-1M-token cost in USD cents.
 
     Both ``prompt_per_1m_cents`` and ``completion_per_1m_cents`` are
-    integers in *cents* (not dollars), to match the rest of the cap /
-    ledger stack which is INT-cents end to end.
+    integers in *cents* (not dollars). ``estimate_cost_micros`` converts
+    them (x10,000) to the micro-USD the ledger and meters count in.
     """
 
     prompt_per_1m_cents: int
@@ -201,17 +205,19 @@ def get_pricing(model: str) -> ModelPricing:
     return MODEL_PRICING.get(model, MODEL_PRICING["_default"])
 
 
-def estimate_cost_cents(
+MICROS_PER_CENT = 10_000
+# One call above $10,000 is a bug or a hostile server; far under BIGINT, so a
+# garbage ``usage.cost`` can never overflow a counter and 500 a billed call.
+COST_CAP_USD = Decimal(10_000)
+
+
+def estimate_cost_micros(
     *, model: str, prompt_tokens: int, completion_tokens: int
 ) -> int:
-    """Compute the integer-cent cost estimate for a single call.
+    """Integer micro-USD cost estimate for a single call, rounded **up**.
 
-    Cost = (prompt_tokens * prompt_per_1m / 1_000_000)
-         + (completion_tokens * completion_per_1m / 1_000_000)
-
-    Rounded **up** to the nearest cent (math.ceil). The cap is a
-    ceiling, so under-rounding would defeat the guardrail. Zero
-    tokens => zero cents.
+    cents-per-Mtok x tokens = raw; raw x 10,000 / 1,000,000 micros = raw / 100,
+    ceil'd with floor-negation (no float). Zero tokens => zero.
     """
     if prompt_tokens <= 0 and completion_tokens <= 0:
         return 0
@@ -220,9 +226,15 @@ def estimate_cost_cents(
         prompt_tokens * pricing.prompt_per_1m_cents
         + completion_tokens * pricing.completion_per_1m_cents
     )
-    # math.ceil on a fraction; integer-only arithmetic so we don't
-    # round through a float.
-    cents, remainder = divmod(raw, 1_000_000)
-    if remainder > 0:
-        cents += 1
-    return cents
+    return -(-raw // 100)
+
+
+def usd_to_micros(value) -> int | None:
+    """A provider-reported USD amount -> micro-USD, rounded up; None if unusable."""
+    try:
+        d = Decimal(str(value))  # str() of the JSON float keeps it exact
+    except InvalidOperation:
+        return None
+    if not d.is_finite() or d < 0 or d > COST_CAP_USD:
+        return None
+    return math.ceil(d * 1_000_000)

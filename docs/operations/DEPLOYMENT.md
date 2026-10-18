@@ -114,7 +114,7 @@ Source: the `release` job of `.github/workflows/ci.yml`, which calls the shared 
 
 The `release` job in `ci.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main`, after the `Backend Checks` and `Frontend Checks` gates, by calling the shared `fjcloudaiconsulting/.github` `release.yml@v1` workflow (environment `release`, `secrets: inherit`). That workflow skips if `main` has moved past this commit, fails if a merged `autorelease: pending` release PR's own `Backend Checks`/`Frontend Checks` are not green yet (it never waits: re-run the job once they finish), then runs **release-please** with the Release GitHub App token: an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR, which tags `vX.Y.Z` on the release commit and publishes the GitHub Release. Only then do promote (retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations,mcp}` built by `ci.yml` on that commit as `vX.Y.Z`) and smoke (boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision) run.
 
-**Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/cloud-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/platform/tbd-prod/`, and merging it is the deploy (Flux applies it). cloud-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
+**Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/cloud-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/hetzner/tbd-prod/`, and merging it is the deploy (Flux applies it). cloud-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
 
 ### Trigger
 
@@ -146,7 +146,7 @@ sequenceDiagram
     SR->>GH: tag vX.Y.Z, GitHub Release
     GH->>GHCR: promote: retag sha-<7> images as vX.Y.Z
     GH->>GH: release-smoke: boot the images (compose.smoke.yaml)
-    RN->>RN: open PR bumping tags in clusters/platform/tbd-prod/
+    RN->>RN: open PR bumping tags in clusters/hetzner/tbd-prod/
     Owner->>RN: merge the bump PR
     RN->>K: Flux applies; migrate init container runs, then backend and frontend roll
   else ordinary merge
@@ -160,7 +160,7 @@ Inside the shared workflow, `promote` and `smoke` are gated on `needs.release.ou
 
 ### Production rollout (cloud-infra)
 
-The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/platform/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/platform/tbd-prod/backend.yaml` and Section 5. Following a rollout: [cloud-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md).
+The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/hetzner/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/hetzner/tbd-prod/backend.yaml` and Section 5. Following a rollout: [cloud-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md).
 
 ### Smoke tests
 
@@ -290,7 +290,7 @@ sequenceDiagram
 
 1. **Local dev (backend lifespan)**: `./tbd start | restart | rebuild` boots the backend. Its FastAPI lifespan calls `_run_migrations()` against the shared MySQL volume in dev. The lifespan reads `/app/.git/HEAD` and **refuses to migrate when the host checkout is on a non-main branch** (or is detached / unreadable). Override with `PFV_MIGRATE_OK_OFF_MAIN=1` in `.env` or the shell.
 2. **`./tbd migrate` (local CLI)**: same branch guard. Runs inside the local backend container. Never invoke from an agent worktree (it has no `-p` flag and targets the checkout's default compose project, `tbd` in the main checkout). See `reference_shared_mysql_volume_trap.md`.
-3. **Production (`migrate` init container)**: the `migrations` image runs `python /app/scripts/migrate.py` as an init container of the backend pod in cloud-infra (`clusters/platform/tbd-prod/backend.yaml`), so the backend does not start until it exits 0. A MySQL `GET_LOCK` in alembic's `env.py` serializes concurrent migrators. The same wrapper is also used by the `migrate` service in `docker-compose.prod.yml`.
+3. **Production (`migrate` init container)**: the `migrations` image runs `python /app/scripts/migrate.py` as an init container of the backend pod in cloud-infra (`clusters/hetzner/tbd-prod/backend.yaml`), so the backend does not start until it exits 0. A MySQL `GET_LOCK` in alembic's `env.py` serializes concurrent migrators. The same wrapper is also used by the `migrate` service in `docker-compose.prod.yml`.
 
 ### What the wrapper guarantees
 
@@ -396,7 +396,7 @@ Forward-only. **Never `alembic downgrade` in production.** The path to a safe ro
 
 If a migration **partially applies** and the container exits non-zero, the backend pod never starts and, since the Deployment uses `strategy: Recreate`, the old pod is already gone: the API is down until a fix-up revision or an image revert is rolled out. Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
 - Schema state matches a known earlier revision: stamp it (`alembic stamp <rev>`) via a one-shot ops session and ship a new revision that completes the work. Only the operator should do this; agents must not (`feedback_agent_destructive_db_ops`).
-- Data corruption: write a fix-up migration; ship that. Database restore: [`clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/platform/data/RESTORE.md) in cloud-infra.
+- Data corruption: write a fix-up migration; ship that. Database restore: [`clusters/hetzner/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/hetzner/data/RESTORE.md) in cloud-infra.
 
 ## 8. Where to look when something breaks
 
@@ -407,7 +407,7 @@ If a migration **partially applies** and the container exits non-zero, the backe
 | `apex-deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml` |
 | `ci.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml` |
 | Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [cloud-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
-| MySQL (namespace `data`), backups and restore | [cloud-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/platform/data/RESTORE.md) |
+| MySQL (namespace `data`), backups and restore | [cloud-infra `clusters/hetzner/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/hetzner/data/RESTORE.md) |
 | Release published but not on the cluster | The `release-drift-probe` issue in cloud-infra |
 | Apex Worker logs and versions | Cloudflare dashboard -> Workers & Pages -> `tbd-landing` |
 | Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `fjcloudaiconsulting/tbd` |
@@ -425,6 +425,6 @@ Triage shortcuts:
 | `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm the `deploy-worker` job of `apex-deploy.yml` ran for the SHA (it skips green while `CLOUDFLARE_API_TOKEN` is unset in the `landing` environment); `curl https://thebetterdecision.com/_meta.json` |
 | App can't reach MySQL | Check the `data` namespace pods and the `DATABASE_URL` key in the `tbd-prod` secret (cloud-infra) |
-| Secret env var missing or wrong after a rollout | `clusters/platform/tbd-prod/*.secret.yaml` in cloud-infra; the runbook's "Write or rotate a Kubernetes Secret" |
+| Secret env var missing or wrong after a rollout | `clusters/hetzner/tbd-prod/*.secret.yaml` in cloud-infra; the runbook's "Write or rotate a Kubernetes Secret" |
 
 For the env var matrix and common per-variable failures (Google SSO button missing, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".

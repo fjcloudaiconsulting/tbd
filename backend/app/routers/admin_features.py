@@ -94,7 +94,8 @@ class PlatformAIBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: StrictBool
-    global_monthly_cents: StrictInt = Field(ge=0, le=2**53 - 1)
+    # x10,000 at the dispatch gate must still fit a BIGINT bind value
+    global_monthly_cents: StrictInt = Field(ge=0, le=(2**53 - 1) // 10_000)
     models: dict[
         platform_ai.PlatformProvider,
         Annotated[list[_ModelId], Field(max_length=50)],

@@ -96,8 +96,10 @@ class AIUsageLedger(Base):
     total_tokens: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
-    est_cost_cents: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0"
+    # Micro-USD (1e-6 USD): the provider's billed cost when it reports one,
+    # else the table estimate (TBD-630).
+    cost_micros: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
     )
     dispatched_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

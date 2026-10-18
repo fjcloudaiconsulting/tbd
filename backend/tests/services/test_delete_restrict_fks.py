@@ -99,7 +99,7 @@ def _ledger_row(org):
     return AIUsageLedger(
         org_id=org.id, feature_key="forecast.refine", model="gpt-x",
         prompt_tokens=1, completion_tokens=1, total_tokens=2,
-        est_cost_cents=1, dispatched_at=datetime.now(timezone.utc),
+        cost_micros=1, dispatched_at=datetime.now(timezone.utc),
         latency_ms=1, success=True, retries_used=0,
     )
 

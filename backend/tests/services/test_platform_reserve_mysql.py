@@ -65,10 +65,10 @@ async def factory():
         await eng.dispose()
 
 
-def _limits(tokens=1000, cents=1000, tperiod="month", cperiod="month") -> dict:
+def _limits(tokens=1000, micros=1000, tperiod="month", cperiod="month") -> dict:
     return {
         "platform_ai.tokens": {"period": tperiod, "limit": tokens},
-        "platform_ai.cents": {"period": cperiod, "limit": cents},
+        "platform_ai.micros": {"period": cperiod, "limit": micros},
     }
 
 
@@ -94,13 +94,13 @@ async def _state(f, org_id=None):
             q = q.where(UsageCounter.org_id == org_id)
         counters = {(r.org_id, r.meter, r.period, r.period_start): r.value
                     for r in (await db.scalars(q)).all()}
-        spend = {r.period_start: r.cents for r in (await db.scalars(select(PlatformAISpend))).all()}
+        spend = {r.period_start: r.micros for r in (await db.scalars(select(PlatformAISpend))).all()}
         return counters, spend
 
 
-async def _set_spend(f, start: date, cents: int):
+async def _set_spend(f, start: date, micros: int):
     async with f() as db:
-        await db.merge(PlatformAISpend(period_start=start, cents=cents))
+        await db.merge(PlatformAISpend(period_start=start, micros=micros))
         await db.commit()
 
 
@@ -133,17 +133,17 @@ async def test_k2_ceiling_refusal_leaves_org_meters_unchanged(factory):
 
 
 async def test_k2_org_meter_refusal_reserves_nothing(factory):
-    org = await _org(factory, _limits(cents=5))
+    org = await _org(factory, _limits(micros=5))
     async with factory() as db:
         with pytest.raises(PlanLimitReached) as ei:
             await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW)
-    assert ei.value.meter == "platform_ai.cents"
+    assert ei.value.meter == "platform_ai.micros"
     counters, spend = await _state(factory, org)
     assert set(counters.values()) == {0} and spend == {OCT: 0}
     assert _Adapter.calls == 0
 
 
-@pytest.mark.parametrize("nth", [1, 2, 3], ids=["tokens", "cents", "global"])
+@pytest.mark.parametrize("nth", [1, 2, 3], ids=["tokens", "micros", "global"])
 async def test_k2_db_error_on_any_update_reserves_nothing(factory, nth):
     org = await _org(factory, _limits())
     seen = [0]
@@ -166,7 +166,7 @@ async def test_k2_db_error_on_any_update_reserves_nothing(factory, nth):
 
 async def test_k2_refusal_rollback_expires_callers_orm_objects(factory):
     """Probe, not a fence: what a refusal does to the CALLER's session."""
-    org = await _org(factory, _limits(cents=5))
+    org = await _org(factory, _limits(micros=5))
     async with factory() as db:
         o = await db.get(Organization, org)
         with pytest.raises(PlanLimitReached):
@@ -204,7 +204,7 @@ async def test_k3_two_orgs_race_at_ceiling_minus_one_exactly_one_admitted(factor
     # R16: only this test's two orgs; the refused org's meters were rolled
     # back with the ceiling miss
     assert sorted(v for (o, m, *_), v in counters.items()
-                  if m == "platform_ai.cents" and o in (a, b)) == [0, 1]
+                  if m == "platform_ai.micros" and o in (a, b)) == [0, 1]
 
 
 # ── K4 ────────────────────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ async def test_k4_settle_after_midnight_moves_only_the_reserved_period(factory, 
     counters, spend = await _state(factory, org)
     assert counters == {
         (org, "platform_ai.tokens", "day", date(2026, 10, 31)): 40,
-        (org, "platform_ai.cents", "month", OCT): 4,
+        (org, "platform_ai.micros", "month", OCT): 4,
     }
     assert spend == {OCT: 4}
 
@@ -230,14 +230,14 @@ async def test_k4_settle_after_midnight_moves_only_the_reserved_period(factory, 
 # ── K5 ────────────────────────────────────────────────────────────────────
 
 async def test_k5_actual_above_reserved_lands_even_above_the_limit(factory):
-    org = await _org(factory, _limits(tokens=150, cents=15))
+    org = await _org(factory, _limits(tokens=150, micros=15))
     async with factory() as db:
         r = await pr.reserve(db, org, _CRED, 100, 10, 20, now=NOW)
         await pr.settle(db, r.handle, 400, 40)
     counters, spend = await _state(factory, org)
     assert counters == {
         (org, "platform_ai.tokens", "month", OCT): 400,
-        (org, "platform_ai.cents", "month", OCT): 40,
+        (org, "platform_ai.micros", "month", OCT): 40,
     }
     assert spend == {OCT: 40}
 
@@ -360,6 +360,6 @@ def test_each_reserve_update_carries_its_limit_predicate():
           if isinstance(n, ast.Compare) and isinstance(n.ops[0], ast.LtE)}
     assert le == {
         "UsageCounter.value + tokens <= lt.limit",        # tokens UPDATE, tokens limit
-        "UsageCounter.value + cents <= lc.limit",         # cents UPDATE, cents limit
-        "PlatformAISpend.cents + cents <= ceiling_cents",  # global UPDATE, ceiling
+        "UsageCounter.value + micros <= lc.limit",         # micros UPDATE, micros limit
+        "PlatformAISpend.micros + micros <= ceiling_micros",  # global UPDATE, ceiling
     }

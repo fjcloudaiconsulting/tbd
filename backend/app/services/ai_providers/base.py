@@ -52,8 +52,9 @@ class LLMResponse:
     """Provider-neutral chat response.
 
     ``content`` is the assistant message text. ``prompt_tokens`` /
-    ``completion_tokens`` feed the cap accounting (``est_cost_cents``
-    is computed downstream by ``ai_pricing.estimate_cost_cents``).
+    ``completion_tokens`` feed the cap accounting (the cost is computed
+    downstream by ``ai_pricing.estimate_cost_micros``). ``cost_micros`` is the
+    provider's own billed cost (micro-USD) when it reports one, else None.
     ``model`` echoes the model the adapter actually called — useful
     in the ledger for ops debugging when an adapter falls back to a
     different model than the routing requested (e.g. Ollama with a
@@ -64,6 +65,7 @@ class LLMResponse:
     prompt_tokens: int
     completion_tokens: int
     model: str
+    cost_micros: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,7 @@ class FunctionCallResponse:
     prompt_tokens: int
     completion_tokens: int
     model: str
+    cost_micros: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,7 @@ class TokenUsage:
 
     prompt_tokens: int
     completion_tokens: int
+    cost_micros: Optional[int] = None
 
 
 @dataclass(frozen=True)

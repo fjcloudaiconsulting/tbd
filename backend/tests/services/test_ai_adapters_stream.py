@@ -182,3 +182,45 @@ async def test_openai_compatible_stream_yields_chunks(monkeypatch):
         chunks.append(c)
     assert [c.delta_text for c in chunks if not c.done] == ["yo"]
     assert chunks[-1].done is True
+
+
+# ---------- TBD-630: usage.cost (OpenRouter only) ---------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "root,want",
+    [
+        ("https://openrouter.ai/api/v1", 405),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", None),
+        ("https://llm.example.com/v1", None),
+    ],
+)
+async def test_fence_stream_final_usage_reports_cost_on_openrouter_only(
+    monkeypatch, root, want
+):
+    """FENCE 4/5 (final stream chunk)."""
+    sse_body = (
+        'data: {"choices":[{"delta":{"content":"yo"}}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,'
+        '"cost":0.000405}}\n\n'
+        "data: [DONE]\n\n"
+    )
+    _install_streaming_transport(
+        monkeypatch,
+        httpx.Response(
+            200,
+            content=sse_body.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+        ),
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key="sk-compat", base_url=root, base_url_is_api_root=True
+    )
+    chunks = [
+        c
+        async for c in adapter.stream(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+    ]
+    assert chunks[-1].final_usage.cost_micros == want

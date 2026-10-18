@@ -43,6 +43,7 @@ from app.services.ai_providers.base import (
     parse_openai_tool_calls,
     to_openai_messages,
 )
+from app.services.ai_pricing import usd_to_micros
 from app.services.ai_providers.egress_guard import (
     BLOCKED_ADDRESS_VALIDATION_ERROR,
     BlockedAddressError,
@@ -88,6 +89,10 @@ OPENAI_COMPATIBLE_PRESETS: tuple[dict[str, str], ...] = (
     },
 )
 
+_OPENROUTER_ROOT = next(
+    p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter"
+)
+
 _VERSION_SEGMENT = re.compile(r"^v\d+(?:(?:alpha|beta)\d*)?$", re.IGNORECASE)
 UNVERSIONED_ROOT_404_ERROR = (
     "Provider rejected the request (404). "
@@ -120,6 +125,17 @@ class OpenAICompatibleAdapter:
         self.api_root = (
             self.base_url if base_url_is_api_root else f"{self.base_url}/v1"
         )
+
+    def _cost_micros(self, usage: dict) -> Optional[int]:
+        """``usage.cost`` is OpenRouter's billed USD; another host's ``cost``
+        has no defined unit, so only the OpenRouter root is trusted (TBD-630)."""
+        if self.api_root != _OPENROUTER_ROOT:
+            return None
+        # Routed through the key holder's own upstream key: ``cost`` is then only
+        # OpenRouter's fee, so fail safe and let the estimate be charged.
+        if usage.get("is_byok"):
+            return None
+        return usd_to_micros(usage.get("cost"))
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -242,6 +258,7 @@ class OpenAICompatibleAdapter:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             model=payload.get("model", model) or model,
+            cost_micros=self._cost_micros(usage),
         )
 
     async def embed(
@@ -357,6 +374,7 @@ class OpenAICompatibleAdapter:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             model=payload.get("model", model) or model,
+            cost_micros=self._cost_micros(usage),
         )
 
     async def function_call(
@@ -428,6 +446,7 @@ class OpenAICompatibleAdapter:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             model=payload.get("model", model) or model,
+            cost_micros=self._cost_micros(usage),
         )
 
     async def stream(
@@ -497,6 +516,7 @@ class OpenAICompatibleAdapter:
                                 completion_tokens=int(
                                     usage.get("completion_tokens", 0) or 0
                                 ),
+                                cost_micros=self._cost_micros(usage),
                             )
         except AIProviderError:
             raise

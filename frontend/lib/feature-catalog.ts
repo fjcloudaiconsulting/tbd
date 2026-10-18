@@ -40,5 +40,5 @@ export const METER_MODULES: Record<string, string> = {
   "assistant.turns": "ai",
   "mcp.calls": "ai",
   "platform_ai.tokens": "ai",
-  "platform_ai.cents": "ai",
+  "platform_ai.micros": "ai",
 };

@@ -78,7 +78,7 @@ const SAMPLE_DETAIL = {
       "assistant.turns": { period: "month", limit: null },
       "mcp.calls": { period: "month", limit: null },
       "platform_ai.tokens": { period: "month", limit: 0 },
-      "platform_ai.cents": { period: "month", limit: 0 },
+      "platform_ai.micros": { period: "month", limit: 0 },
     },
     is_custom: false,
     is_active: true,

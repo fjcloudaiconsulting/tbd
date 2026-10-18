@@ -4,16 +4,23 @@
 // The text carries the meaning; the bar only repeats it.
 
 import { METER_LABELS } from "@/lib/agent/present";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, isBalancesHidden } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import type { MeterUsage } from "@/lib/types";
 import { badgeWarning, card, cardHeader, cardTitle } from "@/lib/styles";
 
 const count = (n: number) => n.toLocaleString();
 
-// Platform AI spend is metered in USD cents whatever the org's currency.
+// Platform AI spend is metered in micro-USD whatever the org's currency. A real
+// sub-cent spend must not read "$0.00"; with balances hidden the "< " is
+// dropped too, so the mask never leaks "under a cent".
+const usd = (n: number) =>
+  !isBalancesHidden() && n > 0 && n < 10_000
+    ? `< ${formatMoney(0.01, "USD")}`
+    : formatMoney(n / 1e6, "USD");
+
 function amount(meter: string, n: number): string {
-  return meter === "platform_ai.cents" ? formatMoney(n / 100, "USD") : count(n);
+  return meter === "platform_ai.micros" ? usd(n) : count(n);
 }
 
 // Boundaries are UTC midnights; showing them in local time would read as the

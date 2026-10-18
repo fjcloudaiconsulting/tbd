@@ -91,13 +91,13 @@ async def get_usage(
           "period": "2026-05",
           "total_prompt_tokens": 1234,
           "total_completion_tokens": 567,
-          "total_cost_cents": 89,
+          "total_cost_micros": 890000,
           "by_feature": [
             {
               "feature_key": "chat",
               "prompt_tokens": ...,
               "completion_tokens": ...,
-              "cost_cents": ...,
+              "cost_micros": ...,
               "calls": 3,
               "failed_calls": 0
             },
@@ -115,7 +115,7 @@ async def get_usage(
             select(
                 func.coalesce(func.sum(AIUsageLedger.prompt_tokens), 0),
                 func.coalesce(func.sum(AIUsageLedger.completion_tokens), 0),
-                func.coalesce(func.sum(AIUsageLedger.est_cost_cents), 0),
+                func.coalesce(func.sum(AIUsageLedger.cost_micros), 0),
                 func.count(),
             ).where(
                 AIUsageLedger.org_id == org_id,
@@ -132,7 +132,7 @@ async def get_usage(
                 AIUsageLedger.feature_key,
                 func.coalesce(func.sum(AIUsageLedger.prompt_tokens), 0),
                 func.coalesce(func.sum(AIUsageLedger.completion_tokens), 0),
-                func.coalesce(func.sum(AIUsageLedger.est_cost_cents), 0),
+                func.coalesce(func.sum(AIUsageLedger.cost_micros), 0),
                 func.count(),
                 func.coalesce(
                     func.sum(
@@ -159,7 +159,7 @@ async def get_usage(
             "feature_key": row[0],
             "prompt_tokens": int(row[1] or 0),
             "completion_tokens": int(row[2] or 0),
-            "cost_cents": int(row[3] or 0),
+            "cost_micros": int(row[3] or 0),
             "calls": int(row[4] or 0),
             "failed_calls": int(row[5] or 0),
         }
@@ -171,7 +171,7 @@ async def get_usage(
         "period": period,
         "total_prompt_tokens": int(total_prompt or 0),
         "total_completion_tokens": int(total_completion or 0),
-        "total_cost_cents": int(total_cost or 0),
+        "total_cost_micros": int(total_cost or 0),
         "total_calls": int(total_calls or 0),
         "by_feature": by_feature,
     }

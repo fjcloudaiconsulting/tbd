@@ -14,4 +14,4 @@ class PlatformAISpend(Base):
     __tablename__ = "platform_ai_spend"
 
     period_start: Mapped[date] = mapped_column(Date, primary_key=True)
-    cents: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    micros: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
