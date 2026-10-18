@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.298.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.297.0...v0.298.0) (2026-10-18)
+
+
+### Features
+
+* **agent:** delete agent proposals 48 hours after they are staged (TBD-640) ([#956](https://github.com/fjcloudaiconsulting/tbd/issues/956)) ([2ed220f](https://github.com/fjcloudaiconsulting/tbd/commit/2ed220f4e0c3631d49d63120e3c2e55db274e153))
+* **ai:** daily OpenRouter model catalog for platform AI, landing dark (TBD-631) ([#949](https://github.com/fjcloudaiconsulting/tbd/issues/949)) ([5015fa3](https://github.com/fjcloudaiconsulting/tbd/commit/5015fa32c814eef72ac5a4b17c5848b7c4308395))
+* **ai:** one AI on/off switch per org for own-key AI, platform AI and connected apps (TBD-627) ([#950](https://github.com/fjcloudaiconsulting/tbd/issues/950)) ([1cf9c4c](https://github.com/fjcloudaiconsulting/tbd/commit/1cf9c4c96dfb78e99133be9d705336f2b0f69efb))
+* **ai:** publish AI Terms and say where AI data goes (TBD-592) ([#957](https://github.com/fjcloudaiconsulting/tbd/issues/957)) ([6bd2948](https://github.com/fjcloudaiconsulting/tbd/commit/6bd29489d68dbdb53f7bec1fbf6cbb9412fb0039))
+* **ai:** strip IBANs, card numbers, emails and phone numbers before anything reaches an AI (TBD-628) ([#953](https://github.com/fjcloudaiconsulting/tbd/issues/953)) ([88d7057](https://github.com/fjcloudaiconsulting/tbd/commit/88d70577a2d2c7820ba1ee2e27fb74b372c7b3f3))
+* **oauth:** accept client ID metadata documents so Claude can connect without registering (TBD-634) ([#955](https://github.com/fjcloudaiconsulting/tbd/issues/955)) ([a3675f6](https://github.com/fjcloudaiconsulting/tbd/commit/a3675f679e20840f406a943ce22c270d3c7f4f3c))
+* **settings:** org admins list and revoke members' agent tokens (TBD-619) ([#942](https://github.com/fjcloudaiconsulting/tbd/issues/942)) ([f7d5924](https://github.com/fjcloudaiconsulting/tbd/commit/f7d5924df49f582c1a9194462ce4a3938ed60c45))
+
+
+### Bug Fixes
+
+* **ai:** require an interactive session for AI provider writes (TBD-626) ([#945](https://github.com/fjcloudaiconsulting/tbd/issues/945)) ([d28b5bc](https://github.com/fjcloudaiconsulting/tbd/commit/d28b5bc3e33adf16784929bea605da4c54a5480a))
+* **ai:** show every Anthropic model and stop offering claude-sonnet-4-7 (TBD-629) ([#948](https://github.com/fjcloudaiconsulting/tbd/issues/948)) ([51a8eb8](https://github.com/fjcloudaiconsulting/tbd/commit/51a8eb8aa5c764645a35f1c4d31f68379ff30bde))
+* **auth:** never render a page as the shared cookie's identity on the server (TBD-624) ([#946](https://github.com/fjcloudaiconsulting/tbd/issues/946)) ([52af5f3](https://github.com/fjcloudaiconsulting/tbd/commit/52af5f3fe922ca225075f9f72ebdad83a4cb0407))
+* **auth:** pin each tab's identity so a refresh cannot swap it to another user (TBD-623) ([#944](https://github.com/fjcloudaiconsulting/tbd/issues/944)) ([c156c44](https://github.com/fjcloudaiconsulting/tbd/commit/c156c4479e632e8c2de8de143341fa9dc8721973))
+* **auth:** truncate passwords to bcrypt's 72 bytes so bcrypt 5 cannot 500 (TBD-635) ([#951](https://github.com/fjcloudaiconsulting/tbd/issues/951)) ([fe61092](https://github.com/fjcloudaiconsulting/tbd/commit/fe61092c022c4c123e76251463ee67248499eb6d))
+* **broadcast:** refuse resuming a draft and keep resumes under the retry cap (TBD-637) ([#954](https://github.com/fjcloudaiconsulting/tbd/issues/954)) ([cb19c69](https://github.com/fjcloudaiconsulting/tbd/commit/cb19c6907cc7df589d7f4f13766e34ed4abf33ff))
+* **deps:** repair the frontend lockfile after [#908](https://github.com/fjcloudaiconsulting/tbd/issues/908) and [#930](https://github.com/fjcloudaiconsulting/tbd/issues/930) (TBD-641) ([#963](https://github.com/fjcloudaiconsulting/tbd/issues/963)) ([e7bd218](https://github.com/fjcloudaiconsulting/tbd/commit/e7bd218d775cff4f8560674b127e160c9103a0ba))
+* **deps:** update npm non-major ([#908](https://github.com/fjcloudaiconsulting/tbd/issues/908)) ([5597fd3](https://github.com/fjcloudaiconsulting/tbd/commit/5597fd3f49f0a4ab4d7944fe3a2efb9c7367122f))
+
 ## [0.297.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.296.1...v0.297.0) (2026-10-15)
 
 
