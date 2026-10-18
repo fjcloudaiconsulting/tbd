@@ -287,13 +287,15 @@ describe("transport and accessibility", () => {
     expect(getReader).toHaveBeenCalled();
     expect(es).not.toHaveBeenCalled();
     expect(screen.getByRole("log").getAttribute("aria-live")).toBe("polite");
-    expect(document.activeElement).toBe(screen.getByTestId("preview-card"));
+    // The card focuses itself in an effect; `ask` only waits for Send to come back.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("preview-card")));
 
     let result!: axe.AxeResults;
     await act(async () => {
       result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
     });
     expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
+    expect(document.activeElement).toBe(screen.getByTestId("preview-card")); // nothing took focus back
     getReader.mockRestore();
   });
 

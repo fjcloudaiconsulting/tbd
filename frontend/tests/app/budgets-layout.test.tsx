@@ -146,9 +146,9 @@ describe("Budgets page — proportional layout", () => {
       const el = container.querySelector(".recharts-bar .recharts-bar-rectangle");
       expect(el).not.toBeNull();
       return el!;
-    });
+    }, { timeout: 5000 }); // recharts draws the bar asynchronously; the 1s default times out on a loaded runner
     fireEvent.click(bar);
 
     expect(push).toHaveBeenCalledWith("/transactions?category_id=10");
-  });
+  }, 10_000); // above the bar wait, so a slow runner gets the DOM dump, not a bare test timeout
 });
