@@ -22,7 +22,7 @@ interface CapturedProps {
 // `props.onLayoutChange` / `props.onBreakpointChange` manually to
 // unit-test the guard logic in isolation.
 let captured: CapturedProps | null = null;
-vi.mock("react-grid-layout", () => ({
+vi.mock("react-grid-layout/legacy", () => ({
   Responsive: (props: CapturedProps) => {
     captured = props;
     return <div data-testid="rgl">{props.children}</div>;
