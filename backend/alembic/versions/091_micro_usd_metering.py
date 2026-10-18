@@ -25,7 +25,7 @@ behind depends on the direction:
 - upgrade writes nothing before its first rename, and its DML commits together
   with the stamp after the last rename. A failure leaves UNCONVERTED values,
   ``alembic_version`` still ``090_platform_ai_models``, and possibly a renamed
-  ledger and/or spend column. The init container retries and crash-loops on
+  ledger column (and the spend column, if the second rename ran). The init container retries and crash-loops on
   "Unknown column est_cost_cents". Recover: rename whatever was renamed back,
   with its 090 type, then let the rollout retry upgrade (the stamp is already
   right, so do not touch it). usage_counters, org_limit_overrides and
@@ -33,14 +33,15 @@ behind depends on the direction:
   never written.
     ALTER TABLE ai_usage_ledger CHANGE cost_micros est_cost_cents INT NOT NULL DEFAULT 0;
     ALTER TABLE platform_ai_spend CHANGE micros cents BIGINT NOT NULL DEFAULT 0;
-  Confirm first: ``SUM`` of the ledger column equals the pre-check sum
-  (unconverted). Never run a x10,000 UPDATE by hand.
+  Confirm first: the same ``SUM ... WHERE dispatched_at < T0`` equals the
+  recorded pre-check sum (unconverted). Never run a x10,000 UPDATE by hand.
 - downgrade divides BEFORE its first rename, so the division commits at the
   start of that rename. A failure AT or after it leaves the data divided and
   rounded, ``alembic_version`` still ``091``, and columns not yet renamed back.
   Finish by hand: run whichever of the two CHANGE statements above has not
   happened yet, then ``alembic stamp 090_platform_ai_models``. Never re-run
-  downgrade (it divides again) or upgrade (the sub-cent precision is gone).
+  downgrade (it divides again), and do not run upgrade to undo a half-failed
+  downgrade (the sub-cent precision is gone).
 
 Never ``alembic stamp 091`` to clear a crash-loop on "Unknown column
 est_cost_cents": that leaves every value 10,000x too small and caps stop binding.
