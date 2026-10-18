@@ -10,7 +10,7 @@
   "meters": {
     "assistant.turns": "ai",
     "mcp.calls": "ai",
-    "platform_ai.cents": "ai",
+    "platform_ai.micros": "ai",
     "platform_ai.tokens": "ai"
   },
   "modules": {

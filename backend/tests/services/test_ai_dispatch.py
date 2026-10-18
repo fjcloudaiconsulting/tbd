@@ -223,7 +223,7 @@ async def test_happy_path_writes_ledger_row(
     assert rows[0].feature_key == "chat"
     assert rows[0].model == "gpt-4o-mini"
     assert rows[0].error_class is None
-    assert rows[0].est_cost_cents >= 1  # nonzero from pricing table
+    assert rows[0].cost_micros >= 1  # nonzero from pricing table
 
 
 @pytest.mark.asyncio
@@ -239,7 +239,7 @@ async def test_fq6_byok_dispatch_never_touches_the_platform_meters(
     from app.services.feature_service import get_entitlements
 
     ent = await get_entitlements(db, org.id)
-    assert ent.limits["platform_ai.tokens"].limit == 0 == ent.limits["platform_ai.cents"].limit
+    assert ent.limits["platform_ai.tokens"].limit == 0 == ent.limits["platform_ai.micros"].limit
     with patch("app.services.ai_dispatch.get_adapter", return_value=_make_adapter()):
         await call_llm(
             db, org_id=org.id, feature_key="chat",
@@ -290,7 +290,7 @@ async def test_hard_cap_blocks_dispatch_no_adapter_call_no_ledger_row(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=12,
+            cost_micros=120_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -319,7 +319,7 @@ async def test_hard_cap_blocks_dispatch_no_adapter_call_no_ledger_row(
         await db.execute(select(AIUsageLedger).where(AIUsageLedger.org_id == org.id))
     ).scalars().all()
     assert len(rows) == 1
-    assert rows[0].est_cost_cents == 12
+    assert rows[0].cost_micros == 120_000
 
 
 # ---------- projected-overspend gate (call_llm entry point) ----------
@@ -352,7 +352,7 @@ async def _seed_cap_and_spend(
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
-                est_cost_cents=spent_cents,
+                cost_micros=spent_cents * 10_000,
                 latency_ms=1,
                 success=True,
                 error_class=None,
@@ -370,9 +370,9 @@ async def test_projected_overspend_blocks_under_cap_no_adapter_no_ledger(
     AICapExceeded, adapter never called, no ledger row for the call.
     """
     # hard=100, spent=97. gpt-4o-mini completion = 60 cents/1M; prompt
-    # "hi" adds ~1 token at 15 cents/1M. estimate_cost_cents sums the
+    # "hi" adds ~1 token at 15 cents/1M. estimate_cost_micros sums the
     # prompt and completion raw cost, then ceils ONCE: max_tokens=100_000
-    # → 6_000_000 + 15 raw = 7 cents (not 6) → 97 + 7 = 104 > 100 →
+    # → 6_000_000 + 15 raw = 60_001 micros → 970_000 + 60_001 > 1_000_000 →
     # block, even though spent (97) is still strictly under the cap.
     await _seed_cap_and_spend(
         db, org, credential, hard_cap_cents=100, spent_cents=97
@@ -400,7 +400,7 @@ async def test_projected_overspend_blocks_under_cap_no_adapter_no_ledger(
     ).scalars().all()
     # Only the seeded prior-spend row; no row for the blocked call.
     assert len(rows) == 1
-    assert rows[0].est_cost_cents == 97
+    assert rows[0].cost_micros == 970_000
 
 
 @pytest.mark.asyncio
@@ -501,7 +501,7 @@ async def test_projection_failure_fails_closed_to_exhausted_only(
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
     ), patch(
-        "app.services.ai_dispatch._projected_cost_cents",
+        "app.services.ai_dispatch._projected_cost_micros",
         side_effect=RuntimeError("boom"),
     ):
         # spent=10 < hard=100, projected forced to 0 → not blocked.
@@ -530,7 +530,7 @@ async def test_projection_failure_still_blocks_when_exhausted(
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
     ), patch(
-        "app.services.ai_dispatch._projected_cost_cents",
+        "app.services.ai_dispatch._projected_cost_micros",
         side_effect=RuntimeError("boom"),
     ):
         with pytest.raises(AICapExceeded):
@@ -610,7 +610,7 @@ async def test_adapter_failure_writes_failed_ledger_row_and_reraises(
     assert rows[0].error_class == "provider_status_500"
     assert rows[0].prompt_tokens == 0
     assert rows[0].completion_tokens == 0
-    assert rows[0].est_cost_cents == 0
+    assert rows[0].cost_micros == 0
 
 
 # ---------- dispatch timeout (wall-clock bound) ----------------------
@@ -673,7 +673,7 @@ async def test_slow_provider_times_out_cleanly(
     assert rows[0].success is False
     assert rows[0].error_class == "provider_timeout"
     assert rows[0].prompt_tokens == 0
-    assert rows[0].est_cost_cents == 0
+    assert rows[0].cost_micros == 0
 
 
 # ---------- soft cap notification + used_tokens dedupe ---------------------
@@ -699,7 +699,7 @@ async def test_soft_cap_dispatches_notification_once_per_period(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=6,
+            cost_micros=60_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -767,7 +767,7 @@ async def test_soft_cap_notification_failure_does_not_break_dispatch(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=6,
+            cost_micros=60_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -834,7 +834,7 @@ async def test_soft_cap_crossing_warns_on_boundary_call(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=90,
+            cost_micros=900_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -854,8 +854,8 @@ async def test_soft_cap_crossing_warns_on_boundary_call(
     # Pin the cost-estimate function so this call costs exactly 20 cents
     # (cost_before=90, cost_after=110, crosses soft_cap=100).
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 20,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 200_000,
     )
 
     adapter = _make_adapter()
@@ -877,8 +877,8 @@ async def test_soft_cap_crossing_warns_on_boundary_call(
     # cost_after=115, both >= soft_cap). Pre-call check would fire,
     # but the marker is already set so notification is NOT re-dispatched.
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 5,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 50_000,
     )
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
@@ -921,7 +921,7 @@ async def test_soft_cap_not_crossed_no_warn(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=50,
+            cost_micros=500_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -939,8 +939,8 @@ async def test_soft_cap_not_crossed_no_warn(
     )
 
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 30,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 300_000,
     )
 
     adapter = _make_adapter()
@@ -989,7 +989,7 @@ async def test_already_above_soft_cap_no_dupe_warn(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=150,
+            cost_micros=1_500_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -1007,8 +1007,8 @@ async def test_already_above_soft_cap_no_dupe_warn(
     )
 
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 10,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 100_000,
     )
 
     adapter = _make_adapter()
@@ -1058,7 +1058,7 @@ async def test_feature_cap_tighter_than_default_wins(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=15,
+            cost_micros=150_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -1109,7 +1109,7 @@ async def test_default_cap_tighter_than_feature_cap_wins(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=15,
+            cost_micros=150_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -1240,7 +1240,7 @@ async def test_soft_warning_marker_is_default_when_only_hard_cap_is_feature_spec
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=90,
+            cost_micros=900_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -1258,8 +1258,8 @@ async def test_soft_warning_marker_is_default_when_only_hard_cap_is_feature_spec
     )
 
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 20,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 200_000,
     )
 
     adapter = _make_adapter()
@@ -1293,8 +1293,8 @@ async def test_soft_warning_marker_is_default_when_only_hard_cap_is_feature_spec
     # Ledger now totals 110 cents; another 5-cent call keeps it above
     # the 100-cent default soft cap.
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 5,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 50_000,
     )
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
@@ -1359,7 +1359,7 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            est_cost_cents=45,
+            cost_micros=450_000,
             latency_ms=1,
             success=True,
             error_class=None,
@@ -1377,8 +1377,8 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
     )
 
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 10,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 100_000,
     )
 
     adapter = _make_adapter()
@@ -1407,8 +1407,8 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
 
     # Same-feature follow-up call past the cap -> no dupe notification.
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 5,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 50_000,
     )
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
@@ -1426,8 +1426,8 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
     # previous calls; we need a smart_forecast call that crosses 100.
     # Use a 50-cent call: cost_before=60, cost_after=110 -> crosses.
     monkeypatch.setattr(
-        "app.services.ai_dispatch.estimate_cost_cents",
-        lambda *, model, prompt_tokens, completion_tokens: 50,
+        "app.services.ai_dispatch.estimate_cost_micros",
+        lambda *, model, prompt_tokens, completion_tokens: 500_000,
     )
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
@@ -1443,7 +1443,7 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
     assert default_marker in markers
 
 
-# ---------- remaining_hard_cap_cents helper ---------------------------
+# ---------- remaining_hard_cap_micros helper ---------------------------
 
 
 def _ledger_row(org_id: int, *, cents: int, feature_key: str = "chat"):
@@ -1455,7 +1455,7 @@ def _ledger_row(org_id: int, *, cents: int, feature_key: str = "chat"):
         prompt_tokens=0,
         completion_tokens=0,
         total_tokens=0,
-        est_cost_cents=cents,
+        cost_micros=cents * 10_000,
         latency_ms=0,
         success=True,
         error_class=None,
@@ -1471,7 +1471,7 @@ async def test_remaining_hard_cap_none_when_no_cap_configured(
     db.add(_ledger_row(org.id, cents=50))
     await db.commit()
 
-    remaining = await ai_dispatch.remaining_hard_cap_cents(
+    remaining = await ai_dispatch.remaining_hard_cap_micros(
         db, org_id=org.id, feature_key="chat"
     )
     assert remaining is None
@@ -1494,10 +1494,10 @@ async def test_remaining_hard_cap_subtracts_period_spend(
     db.add(_ledger_row(org.id, cents=80))
     await db.commit()
 
-    remaining = await ai_dispatch.remaining_hard_cap_cents(
+    remaining = await ai_dispatch.remaining_hard_cap_micros(
         db, org_id=org.id, feature_key="chat"
     )
-    assert remaining == 300
+    assert remaining == 3_000_000
 
 
 @pytest.mark.asyncio
@@ -1516,7 +1516,7 @@ async def test_remaining_hard_cap_zero_at_boundary(
     db.add(_ledger_row(org.id, cents=500))
     await db.commit()
 
-    remaining = await ai_dispatch.remaining_hard_cap_cents(
+    remaining = await ai_dispatch.remaining_hard_cap_micros(
         db, org_id=org.id, feature_key="chat"
     )
     assert remaining == 0
@@ -1538,10 +1538,10 @@ async def test_remaining_hard_cap_negative_when_over(
     db.add(_ledger_row(org.id, cents=180))
     await db.commit()
 
-    remaining = await ai_dispatch.remaining_hard_cap_cents(
+    remaining = await ai_dispatch.remaining_hard_cap_micros(
         db, org_id=org.id, feature_key="chat"
     )
-    assert remaining == -80
+    assert remaining == -800_000
 
 
 @pytest.mark.asyncio
@@ -1569,8 +1569,166 @@ async def test_remaining_hard_cap_feature_cap_tighter_wins(
     db.add(_ledger_row(org.id, cents=50))
     await db.commit()
 
-    remaining = await ai_dispatch.remaining_hard_cap_cents(
+    remaining = await ai_dispatch.remaining_hard_cap_micros(
         db, org_id=org.id, feature_key="chat"
     )
     # 200 (feature wins) - 50 spent = 150
-    assert remaining == 150
+    assert remaining == 1_500_000
+
+
+# ---------- TBD-630: micro-USD metering fences -------------------------
+
+
+def _row_micros(org_id: int, credential_id: int, micros: int) -> AIUsageLedger:
+    return AIUsageLedger(
+        org_id=org_id,
+        credential_id=credential_id,
+        feature_key="chat",
+        model="gpt-4o-mini",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        cost_micros=micros,
+        latency_ms=1,
+        success=True,
+        error_class=None,
+        dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fence_hard_cap_admits_the_calls_the_headroom_buys(
+    db, org, admin_user, credential, default_routing
+):
+    """FENCE 6 (Jira): $1 hard cap, a call whose projection equals its actual
+    cost c. Prior spend leaves headroom for exactly 3.5 calls, so exactly 3 are
+    admitted. Kills per-call cent rounding (0 admitted; fence 2 kills it in pricing too), the cap left in cents
+    against a micro sum (0), and the cap converted twice (10 admitted)."""
+    from app.services.ai_pricing import estimate_cost_micros
+    from app.services.ai_token_estimate import estimate_prompt_tokens_from_messages
+
+    msgs = [{"role": "user", "content": "categorize this"}]
+    pt = estimate_prompt_tokens_from_messages(msgs)
+    c = estimate_cost_micros(
+        model="gpt-4o-mini", prompt_tokens=pt, completion_tokens=300
+    )
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=None, hard_cap_cents=100, period="monthly"
+        )
+    )
+    db.add(_row_micros(org.id, credential.id, 1_000_000 - 3 * c - c // 2))
+    await db.commit()
+    adapter = _make_adapter(
+        LLMResponse(
+            content="x", prompt_tokens=pt, completion_tokens=300, model="gpt-4o-mini"
+        )
+    )
+    admitted = 0
+    with patch("app.services.ai_dispatch.get_adapter", return_value=adapter):
+        for _ in range(10):
+            try:
+                await call_llm(
+                    db,
+                    org_id=org.id,
+                    feature_key="chat",
+                    request_payload={"messages": msgs, "max_tokens": 300},
+                )
+            except AICapExceeded:
+                break
+            admitted += 1
+    assert admitted == 3
+
+
+@pytest.mark.asyncio
+async def test_fence_reported_cost_beats_the_estimate(
+    db, org, admin_user, credential, default_routing
+):
+    """FENCE 7 (Jira): a reported cost lands in the ledger and in the next
+    call's cost_so_far; None falls back to the table estimate."""
+    from app.services.ai_pricing import estimate_cost_micros
+
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=None, hard_cap_cents=1, period="monthly"
+        )
+    )
+    await db.commit()
+    reported = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300,
+        model="gpt-4o-mini", cost_micros=777,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=_make_adapter(reported)
+    ):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": [], "max_tokens": 1})
+    rows = (await db.execute(select(AIUsageLedger).order_by(AIUsageLedger.id))).scalars().all()
+    assert rows[-1].cost_micros == 777
+    assert await ai_dispatch.remaining_hard_cap_micros(
+        db, org_id=org.id, feature_key="chat"
+    ) == 10_000 - 777
+
+    unreported = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300, model="gpt-4o-mini"
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=_make_adapter(unreported)
+    ):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": [], "max_tokens": 1})
+    rows = (await db.execute(select(AIUsageLedger).order_by(AIUsageLedger.id))).scalars().all()
+    assert rows[-1].cost_micros == estimate_cost_micros(
+        model="gpt-4o-mini", prompt_tokens=1500, completion_tokens=300
+    ) == 405
+
+    # A reported 0 is a real 0 (free model), not "missing".
+    free = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300,
+        model="gpt-4o-mini", cost_micros=0,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=_make_adapter(free)
+    ):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": [], "max_tokens": 1})
+    rows = (await db.execute(select(AIUsageLedger).order_by(AIUsageLedger.id))).scalars().all()
+    assert rows[-1].cost_micros == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior,fires,before", [(9_800, True, 10_205), (9_500, False, None)])
+async def test_fence_soft_cap_is_compared_in_micros(
+    db, org, admin_user, credential, default_routing, monkeypatch,
+    prior, fires, before,
+):
+    """FENCE 9: a 1-cent soft cap against a 405-micro call. 9,800 -> 10,205
+    warns once, from the post-write crossing; 9,500 -> 9,905 never warns.
+    Kills comparing the cent cap to the micro sum (fires pre-call at 9,800 >= 1)
+    and a crossing computed in cents."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=1, hard_cap_cents=None, period="monthly"
+        )
+    )
+    db.add(_row_micros(org.id, credential.id, prior))
+    await db.commit()
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.notification_service.dispatch_notification",
+        AsyncMock(),
+    )
+    fired: list[int] = []
+    real = ai_dispatch._maybe_warn_soft_cap
+
+    async def spy(*a, **k):
+        if await real(*a, **k):
+            fired.append(k["cost_before_call"])
+
+    monkeypatch.setattr(ai_dispatch, "_maybe_warn_soft_cap", spy)
+    resp = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300, model="gpt-4o-mini"
+    )
+    with patch("app.services.ai_dispatch.get_adapter", return_value=_make_adapter(resp)):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": []})
+    assert fired == ([before] if fires else [])

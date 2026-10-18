@@ -201,7 +201,8 @@ describe("tokens", () => {
     const dialog = screen.getByRole("dialog");
     const options = within(dialog).getAllByRole("radio").map((r) => (r as HTMLInputElement).value);
     expect(options).toEqual(["agent:read", "agent:write"]);
-    fireEvent.click(within(dialog).getByRole("radio", { name: /^Read Reads/ }));
+    // jsdom 30 treats the label's spans as inline (no CSS), so their text joins without a space.
+    fireEvent.click(within(dialog).getByRole("radio", { name: /^Read ?Reads/ }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Lower access" }));
     await waitFor(() => expect(body("PATCH /api/v1/agent/tokens/5")).toEqual({ scope: "agent:read" }));
   });

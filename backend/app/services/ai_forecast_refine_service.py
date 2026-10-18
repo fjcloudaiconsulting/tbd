@@ -63,7 +63,7 @@ from app.services.ai_forecast_refine_token_estimate import (
     max_tokens_for_output_estimate,
     select_categories_by_scope,
 )
-from app.services.ai_pricing import estimate_cost_cents
+from app.services.ai_pricing import MICROS_PER_CENT, estimate_cost_micros
 from app.services.ai_providers.base import NativeNotAvailable, StructuredOutputError
 from app.services.transaction_filters import (
     org_currency_filter,
@@ -757,7 +757,7 @@ async def estimate_refine(
     would still proceed. The estimate refuses on that same
     ``cost_so_far >= hard_cap`` boundary AND additionally when this call's
     *projected* cost would push the period total past the hard cap
-    (``cost_so_far + est_cost > hard_cap``), i.e. there isn't enough
+    (``cost_so_far + est_micros > hard_cap``), i.e. there isn't enough
     remaining budget to run it without overspending. The goal is to stop
     the UI offering Confirm for a call that would overspend.
 
@@ -835,10 +835,12 @@ async def estimate_refine(
             reason="ai_consent_required",
         )
 
-    cost = estimate_cost_cents(
+    est_micros = estimate_cost_micros(
         model=model, prompt_tokens=est_prompt, completion_tokens=est_out
     )
-    est_cost = int(cost)
+    # The public field stays in cents (v1); ceil, as the confirm screen shows
+    # an "at most" figure. The cap compare below is micros vs micros.
+    est_cost = -(-est_micros // MICROS_PER_CENT)
 
     # Spend-cap pre-check. Read the remaining hard-cap headroom through the
     # SAME helper the dispatcher uses (same ROUTING_KEY feature key, same
@@ -848,14 +850,14 @@ async def estimate_refine(
     # (``remaining <= 0``, i.e. ``cost_so_far >= hard_cap``; no
     # projected-cost gate today), so we refuse on that same boundary AND
     # when this call's projected cost would not fit in the remaining
-    # headroom (``est_cost > remaining``), which dispatch would otherwise
+    # headroom (``est_micros > remaining``), which dispatch would otherwise
     # run, overspending. Best-effort: spend can shift between here and
     # dispatch (concurrent calls, ledger writes), so the dispatch
     # chokepoint stays the authority.
-    remaining = await ai_dispatch.remaining_hard_cap_cents(
+    remaining = await ai_dispatch.remaining_hard_cap_micros(
         db, org_id=org_id, feature_key=ROUTING_KEY
     )
-    if remaining is not None and (remaining <= 0 or est_cost > remaining):
+    if remaining is not None and (remaining <= 0 or est_micros > remaining):
         return ForecastRefineEstimate(
             est_prompt_tokens=est_prompt,
             est_output_tokens=est_out,

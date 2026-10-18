@@ -529,7 +529,7 @@ export type MeterKey =
   | "assistant.turns"
   | "mcp.calls"
   | "platform_ai.tokens"
-  | "platform_ai.cents";
+  | "platform_ai.micros";
 
 export type UsagePeriod = "day" | "month";
 

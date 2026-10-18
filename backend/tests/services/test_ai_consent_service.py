@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app.config import settings
 from app.models import Base
 from app.models.org_ai_consent import OrgAIConsent
 from app.models.user import Organization, Role, User
@@ -104,7 +105,7 @@ async def test_grant_then_snapshot_reflects_latest(
     await ai_consent_service.write_consent_row(
         db,
         org_id=org.id,
-        consent_version="ai-tos-2026-05-22",
+        consent_version=settings.ai_native_current_consent_version,
         allow_training=True,
         allow_rag=True,
         allow_telemetry=True,
@@ -118,7 +119,7 @@ async def test_grant_then_snapshot_reflects_latest(
     assert snap.allow_training is True
     assert snap.allow_rag is True
     assert snap.allow_telemetry is True
-    assert snap.consent_version == "ai-tos-2026-05-22"
+    assert snap.consent_version == settings.ai_native_current_consent_version
 
 
 async def test_append_only_two_grants_produce_two_rows(
@@ -128,7 +129,7 @@ async def test_append_only_two_grants_produce_two_rows(
     await ai_consent_service.write_consent_row(
         db,
         org_id=org.id,
-        consent_version="ai-tos-2026-05-22",
+        consent_version=settings.ai_native_current_consent_version,
         allow_training=False,
         allow_rag=False,
         allow_telemetry=True,
@@ -140,7 +141,7 @@ async def test_append_only_two_grants_produce_two_rows(
     await ai_consent_service.write_consent_row(
         db,
         org_id=org.id,
-        consent_version="ai-tos-2026-05-22",
+        consent_version=settings.ai_native_current_consent_version,
         allow_training=True,
         allow_rag=True,
         allow_telemetry=True,
@@ -166,7 +167,7 @@ async def test_revoked_row_flips_snapshot_to_no_consent(
     await ai_consent_service.write_consent_row(
         db,
         org_id=org.id,
-        consent_version="ai-tos-2026-05-22",
+        consent_version=settings.ai_native_current_consent_version,
         allow_training=True,
         allow_rag=True,
         allow_telemetry=True,
@@ -179,7 +180,7 @@ async def test_revoked_row_flips_snapshot_to_no_consent(
     await ai_consent_service.write_consent_row(
         db,
         org_id=org.id,
-        consent_version="ai-tos-2026-05-22",
+        consent_version=settings.ai_native_current_consent_version,
         allow_training=False,
         allow_rag=False,
         allow_telemetry=False,

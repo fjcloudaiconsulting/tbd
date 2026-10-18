@@ -8,8 +8,9 @@ for (``args_json``), what the server computed it would do (``preview_json``,
 * ``channel`` + ``api_token_id`` are the PRINCIPAL that staged the row and the
   only principal that may confirm or cancel it. In-app rows carry a NULL
   token, so every comparison on it must be NULL-safe.
-* No ``expired`` status and no sweep: expiry is ``expires_at <= now`` on a
-  ``pending`` row. Timestamps are naive UTC, written app-side so SQLite and
+* No ``expired`` status: expiry is ``expires_at <= now`` on a ``pending``
+  row. Retention is separate: ``jobs/agent_action_purge`` deletes every row
+  48 hours after ``created_at`` (TBD-640). Timestamps are naive UTC, written app-side so SQLite and
   MySQL compare alike.
 * ``api_token_id`` is ``ON DELETE SET NULL`` and is redacted from the data
   export for the reason ``audit_events.api_token_id`` is (it points into a

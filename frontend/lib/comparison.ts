@@ -141,7 +141,7 @@ export const comparisonMatrix: Record<Dimension, Record<Competitor, Cell>> = {
     monarch: { supported: "yes", value: "Shared households" },
   },
   euResidency: {
-    tbd: { supported: "yes", value: "EU-hosted, processed under EU law" },
+    tbd: { supported: "yes", value: "EU-hosted, except content you send through AI features, when on" },
     spreadsheets: { supported: "partial", value: "Wherever you keep the file" },
     ynab: { supported: "no", value: "US-based" },
     pocketsmith: { supported: "partial", value: "New Zealand, with EU adequacy" },

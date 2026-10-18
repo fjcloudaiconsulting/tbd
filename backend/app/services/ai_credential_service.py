@@ -36,7 +36,7 @@ from app.services.ai_credential_crypto import (
 )
 from app.services.ai_providers import ValidateResult, get_adapter
 from app.services.list_query import resolve_order_by
-from app.services.platform_reserve import CENTS, TOKENS
+from app.services.platform_reserve import MICROS, TOKENS
 from app.services.usage_service import PlanLimitReached
 
 
@@ -466,7 +466,7 @@ async def create_platform_credential(
     # be open, the reservation needs both.
     try:
         ent = await feature_service.get_entitlements(db, org_id)
-        lims = [(m, ent.limits[m]) for m in (TOKENS, CENTS)]
+        lims = [(m, ent.limits[m]) for m in (TOKENS, MICROS)]
     except (SQLAlchemyError, ValidationError, KeyError):
         await db.rollback()
         raise HTTPException(

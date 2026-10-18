@@ -206,11 +206,21 @@ async def test_a5_round_trip_and_audit(sf, users):
     assert SECRET not in r.text + got.text + json.dumps(detail)
 
 
+# x10,000 at the dispatch gate must still fit a BIGINT bind value (TBD-630).
+CEILING_MAX_CENTS = (2**53 - 1) // 10_000
+
+
+async def test_fence_ceiling_boundary_is_accepted(sf, users):
+    r = client(sf, users["root"]).put(URL, json={**GOOD, "global_monthly_cents": CEILING_MAX_CENTS})
+    assert r.status_code == 200, r.text
+
+
 @pytest.mark.parametrize("bad", [
     {**GOOD, "extra": 1},
     {**GOOD, "enabled": "true"},
     {**GOOD, "global_monthly_cents": -1},
     {**GOOD, "global_monthly_cents": 1.5},
+    {**GOOD, "global_monthly_cents": CEILING_MAX_CENTS + 1},
     {**GOOD, "models": {"native": ["gpt-4o"]}},
     {**GOOD, "models": {"openai": [""]}},
     {**GOOD, "models": {"openai": ["gpt-4o"] * 51}},

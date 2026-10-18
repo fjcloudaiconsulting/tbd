@@ -135,8 +135,11 @@ class Settings(BaseSettings):
     # a new ToS to force every org to re-consent on the next admin-UI
     # mount; existing consent rows are never auto-upgraded (spec §3.5).
     # The string is included in the error response so the frontend can
-    # re-prompt with the current version.
-    ai_native_current_consent_version: str = "ai-tos-2026-05-22"
+    # re-prompt with the current version. It is the version /ai-terms
+    # publishes (frontend/lib/aiTerms.ts), pinned to it through
+    # frontend/tests/fixtures/ai-terms-version.json (TBD-592). Leave the env
+    # var unset in deployments: a pin there silently diverges from the page.
+    ai_native_current_consent_version: str = "ai-terms-2026-10"
 
     # TBD-586: house keys for platform-provided AI, one per provider. Set on
     # the ``backend`` component ONLY: ``mcp_main`` refuses to boot when any is
@@ -196,7 +199,7 @@ class Settings(BaseSettings):
     # same as being handed the answer.
     #
     # Supply it from the environment. In production it comes from the SOPS
-    # secret in cloud-infra (clusters/platform/tbd-prod), never a plaintext
+    # secret in cloud-infra (clusters/hetzner/tbd-prod), never a plaintext
     # value in a committed manifest.
     #
     # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint

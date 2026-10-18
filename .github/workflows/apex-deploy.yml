@@ -53,6 +53,7 @@ on:
       - "frontend/app/page.tsx"
       - "frontend/app/privacy/**"
       - "frontend/app/terms/**"
+      - "frontend/app/ai-terms/**"
       - "frontend/app/docs/**"
       # TBD-433. These three shipped to the apex from 2026-06-09 (#421) and
       # were never mirrored here, so a change confined to any of them
@@ -93,6 +94,8 @@ on:
       # the authed app but not here publishes CONTRADICTORY legal claims across
       # the two surfaces.
       - "frontend/lib/dataPolicy.ts"
+      # TBD-592: the AI Terms version, rendered by app/ai-terms.
+      - "frontend/lib/aiTerms.ts"
       # Shared dependencies imported by the retained app/layout.tsx,
       # page.tsx, and landing components (transitive grep of
       # `from "@/..."` across the apex-retained surface).

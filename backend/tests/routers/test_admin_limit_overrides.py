@@ -142,7 +142,7 @@ async def test_put_unknown_meter_is_400_before_any_db_work(session_factory):
 async def test_put_null_on_platform_meter_is_400(session_factory):
     seed = await _seed(session_factory)
     with TestClient(_app(session_factory)) as c:
-        r = c.put(_url(seed["target_id"], "platform_ai.cents"),
+        r = c.put(_url(seed["target_id"], "platform_ai.micros"),
                   json={"period": "month", "limit_value": None})
     assert r.status_code == 400
     async with session_factory() as db:
@@ -280,8 +280,8 @@ async def test_platform_meters_are_superadmin_only_even_with_orgs_manage(session
     monkeypatch.setattr("app.auth.permissions.has_permission", lambda u, p: True)
     with TestClient(_app(session_factory, superadmin=False)) as c:
         body = {"period": "month", "limit_value": 100}
-        assert c.put(_url(seed["target_id"], "platform_ai.cents"), json=body).status_code == 403
-        assert c.delete(_url(seed["target_id"], "platform_ai.cents")).status_code == 403
+        assert c.put(_url(seed["target_id"], "platform_ai.micros"), json=body).status_code == 403
+        assert c.delete(_url(seed["target_id"], "platform_ai.micros")).status_code == 403
         assert c.put(_url(seed["target_id"], "mcp.calls"), json=body).status_code == 200
         assert c.delete(_url(seed["target_id"], "mcp.calls")).status_code == 204
     async with session_factory() as db:
@@ -292,7 +292,7 @@ async def test_platform_meters_are_superadmin_only_even_with_orgs_manage(session
 async def test_superadmin_may_set_platform_meter(session_factory):
     seed = await _seed(session_factory)
     with TestClient(_app(session_factory)) as c:
-        r = c.put(_url(seed["target_id"], "platform_ai.cents"),
+        r = c.put(_url(seed["target_id"], "platform_ai.micros"),
                   json={"period": "month", "limit_value": 100})
     assert r.status_code == 200
 
@@ -312,7 +312,7 @@ async def test_sweep_covers_both_tables(session_factory):
                              limit_value=1, set_by=seed["admin_user_id"], expires_at=past),
             OrgLimitOverride(org_id=seed["target_id"], meter="assistant.turns", period="day",
                              limit_value=1, set_by=seed["admin_user_id"], expires_at=past),
-            OrgLimitOverride(org_id=seed["target_id"], meter="platform_ai.cents", period="day",
+            OrgLimitOverride(org_id=seed["target_id"], meter="platform_ai.micros", period="day",
                              limit_value=1, set_by=seed["admin_user_id"], expires_at=future),
         ])
         await db.commit()
@@ -323,7 +323,7 @@ async def test_sweep_covers_both_tables(session_factory):
                         "limit_overrides_deleted": 2}
     async with session_factory() as db:
         left = (await db.execute(select(OrgLimitOverride.meter))).scalars().all()
-    assert left == ["platform_ai.cents"]
+    assert left == ["platform_ai.micros"]
     feat = await _audit(session_factory, "admin.feature_override.expired_swept")
     lim = await _audit(session_factory, "admin.limit_override.expired_swept")
     assert len(feat) == 1 and feat[0].detail["deleted_count"] == 1
@@ -371,7 +371,7 @@ async def test_feature_state_has_limits_rows(session_factory):
     assert r.status_code == 200, r.text
     body = r.json()
     lim = {row["meter"]: row for row in body["limits"]}
-    assert set(lim) == {"assistant.turns", "mcp.calls", "platform_ai.tokens", "platform_ai.cents"}
+    assert set(lim) == {"assistant.turns", "mcp.calls", "platform_ai.tokens", "platform_ai.micros"}
     assert lim["mcp.calls"]["source"] == "override"
     assert lim["mcp.calls"]["effective"] == {"period": "day", "limit": 7}
     assert lim["mcp.calls"]["plan"] == {"period": "month", "limit": None}
@@ -381,8 +381,8 @@ async def test_feature_state_has_limits_rows(session_factory):
     assert lim["assistant.turns"]["source"] == "default"
     assert lim["assistant.turns"]["effective"] == lim["assistant.turns"]["plan"]
     assert lim["assistant.turns"]["override"]["is_expired"] is True
-    assert lim["platform_ai.cents"]["source"] == "default"
-    assert lim["platform_ai.cents"]["override"] is None
+    assert lim["platform_ai.micros"]["source"] == "default"
+    assert lim["platform_ai.micros"]["override"] is None
     feats = {row["key"]: row for row in body["features"]}
     assert feats["ai.budget"]["override"]["is_expired"] is True
     assert feats["ai.budget"]["effective"] is False

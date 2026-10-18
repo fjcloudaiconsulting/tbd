@@ -97,5 +97,5 @@ export const METER_LABELS: Record<string, string> = {
   "assistant.turns": "Assistant messages",
   "mcp.calls": "Connected agent calls",
   "platform_ai.tokens": "Platform AI tokens",
-  "platform_ai.cents": "Platform AI spend",
+  "platform_ai.micros": "Platform AI spend",
 };

@@ -11,6 +11,7 @@ async def _patch_platform_job(monkeypatch):
         return 0
     monkeypatch.setattr(L, "run_api_token_expiry_reminders", _noop)
     monkeypatch.setattr(L, "run_platform_ai_catalog_sync", _noop)
+    monkeypatch.setattr(L, "run_agent_action_purge", _noop)
 
 
 async def test_tick_runs_when_lock_acquired(monkeypatch):
@@ -80,4 +81,36 @@ async def test_catalog_sync_runs_once_under_the_tick_lock(monkeypatch):
     assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is True
     assert calls["n"] == 1
     assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is False
+    assert calls["n"] == 1
+
+
+async def test_agent_action_purge_runs_once_under_the_tick_lock(monkeypatch):
+    """FENCE (TBD-640): wired into the tick, and skipped with it when locked out."""
+    async def _sweep(today, **k): pass
+    monkeypatch.setattr(L, "run_all_due", _sweep)
+    await _patch_platform_job(monkeypatch)
+    calls = {"n": 0}
+    async def _job(*a, **k):
+        calls["n"] += 1
+        return 0
+    monkeypatch.setattr(L, "run_agent_action_purge", _job)
+    assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is True
+    assert calls["n"] == 1
+    assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is False
+    assert calls["n"] == 1
+
+
+async def test_agent_action_purge_runs_even_when_the_org_sweep_raises(monkeypatch):
+    """FENCE (TBD-640): the 48h promise must not depend on the org sweep succeeding."""
+    async def _boom(today, **k):
+        raise RuntimeError("sweep failed")
+    monkeypatch.setattr(L, "run_all_due", _boom)
+    await _patch_platform_job(monkeypatch)
+    calls = {"n": 0}
+    async def _job(*a, **k):
+        calls["n"] += 1
+        return 0
+    monkeypatch.setattr(L, "run_agent_action_purge", _job)
+    with pytest.raises(RuntimeError):
+        await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600)
     assert calls["n"] == 1

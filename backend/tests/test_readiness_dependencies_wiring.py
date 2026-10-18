@@ -21,7 +21,7 @@ the error below says so.
 # TBD-495: S4 and S5 fenced the Helm chart's ingress rule and readiness
 # probe. The chart was deleted as unused scaffolding -- it was named `pfv2`,
 # was never deployed. Production's routing now lives in
-# fjcloudaiconsulting/cloud-infra (clusters/platform/tbd-prod). S7 fenced the
+# fjcloudaiconsulting/cloud-infra (clusters/hetzner/tbd-prod). S7 fenced the
 # DigitalOcean App Platform ingress and went with it (INFRA-44).
 from __future__ import annotations
 

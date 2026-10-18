@@ -6,6 +6,7 @@
 import { render, screen } from "@testing-library/react";
 
 import UsageMeters, { meterLine } from "@/components/agent/UsageMeters";
+import { BALANCE_MASK, setBalancesHidden } from "@/lib/format";
 
 const day = (used: number, limit: number | null) => ({
   used, limit, period: "day" as const, resets_at: limit === 0 ? null : "2026-10-16T00:00:00+00:00",
@@ -26,8 +27,8 @@ it("renders used, limit and reset; no limit; and a closed meter", () => {
   expect(screen.getByText("Not in your plan")).toBeInTheDocument();
 });
 
-it("shows platform spend as US dollars from cents, and marks a full meter", () => {
-  expect(meterLine("platform_ai.cents", { used: 250, limit: 500, period: "month", resets_at: "2026-11-01T00:00:00+00:00" }))
+it("shows platform spend as US dollars from micro-USD, and marks a full meter", () => {
+  expect(meterLine("platform_ai.micros", { used: 2_500_000, limit: 5_000_000, period: "month", resets_at: "2026-11-01T00:00:00+00:00" }))
     .toMatch(/^\$2\.50 of \$5\.00 this month, resets (1 Nov|Nov 1)$/);
   render(<UsageMeters usage={{ "assistant.turns": day(100, 100) }} />);
   expect(screen.getByText("Limit reached")).toBeInTheDocument();
@@ -42,4 +43,26 @@ it("a reset at UTC midnight shows that date, not the local day before", () => {
     if (tz === undefined) delete process.env.TZ;
     else process.env.TZ = tz;
   }
+});
+
+// FENCE 13 (TBD-630): kills a leftover /100 ($4.05 / $10,000.00), "$0.00" for
+// real spend, and a "< " prefix that leaks "under a cent" past the mask.
+describe("platform spend in micro-USD", () => {
+  const month = (used: number) => ({
+    used, limit: 1_000_000, period: "month" as const, resets_at: "2026-11-01T00:00:00+00:00",
+  });
+
+  afterEach(() => setBalancesHidden(false));
+
+  it("a sub-cent spend reads '< $0.01', never $0.00", () => {
+    expect(meterLine("platform_ai.micros", month(405)))
+      .toMatch(/^< \$0\.01 of \$1\.00 this month, resets (1 Nov|Nov 1)$/);
+  });
+
+  it("hidden balances show the masked amount with no '< ' prefix", () => {
+    setBalancesHidden(true);
+    const line = meterLine("platform_ai.micros", month(405));
+    expect(line).toContain(BALANCE_MASK);
+    expect(line).not.toContain("<");
+  });
 });
