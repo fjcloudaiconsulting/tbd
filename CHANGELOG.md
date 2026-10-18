@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.299.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.298.0...v0.299.0) (2026-10-18)
+
+
+### Features
+
+* **ai:** meter AI spend in micro-USD and settle on the provider's reported cost (TBD-630) ([#965](https://github.com/fjcloudaiconsulting/tbd/issues/965)) ([9676f04](https://github.com/fjcloudaiconsulting/tbd/commit/9676f045cd44ef4b6192b650ebeac0a73ff41c26))
+
+
+### Bug Fixes
+
+* **deps:** update dependency react-grid-layout to v2 ([#940](https://github.com/fjcloudaiconsulting/tbd/issues/940)) ([ca47216](https://github.com/fjcloudaiconsulting/tbd/commit/ca472165959170c9dccbdef2dfdb2616ff5e9190))
+
 ## [0.298.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.297.0...v0.298.0) (2026-10-18)
 
 
