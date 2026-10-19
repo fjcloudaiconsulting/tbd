@@ -15,7 +15,23 @@ vi.mock("@/components/auth/AuthProvider", () => ({
   }),
 }));
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("<AppShellFooter />", () => {
+  it("shows the running release next to the copyright", () => {
+    vi.stubEnv("TBD_APP_VERSION", "0.299.1");
+    render(<AppShellFooter />);
+    expect(screen.getByTestId("app-version")).toHaveTextContent(/^v0\.299\.1$/);
+  });
+
+  it("shows plain dev on an unpublished build", () => {
+    render(<AppShellFooter />);
+    expect(screen.getByTestId("app-version")).toHaveTextContent(/^dev$/);
+  });
+
+
   it("renders the muted brand lockup with a copyright line", () => {
     const { container } = render(<AppShellFooter />);
     // Logo wordmark text appears via the brand component.
