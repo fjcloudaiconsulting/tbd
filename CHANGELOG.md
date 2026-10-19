@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.300.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.299.1...v0.300.0) (2026-10-19)
+
+
+### Features
+
+* **frontend:** show the running release in the app footer (TBD-646) ([#972](https://github.com/fjcloudaiconsulting/tbd/issues/972)) ([b6bc947](https://github.com/fjcloudaiconsulting/tbd/commit/b6bc9472a04b983d0c13376230f569a6c2196cab))
+* **reports:** dragging a widget rearranges the others, as on the dashboard (TBD-647) ([#973](https://github.com/fjcloudaiconsulting/tbd/issues/973)) ([1fc6b7e](https://github.com/fjcloudaiconsulting/tbd/commit/1fc6b7e805561dc39bd210e5016d0bc929fadb80))
+
 ## [0.299.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.299.0...v0.299.1) (2026-10-18)
 
 
