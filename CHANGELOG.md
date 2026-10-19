@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.301.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.300.0...v0.301.0) (2026-10-19)
+
+
+### Features
+
+* **ai:** platform AI goes OpenRouter only, driven by the model catalog (TBD-586) ([#975](https://github.com/fjcloudaiconsulting/tbd/issues/975)) ([9cdaae5](https://github.com/fjcloudaiconsulting/tbd/commit/9cdaae5e3cc5b27a2e2c2b8a386a39a96952f976))
+
 ## [0.300.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.299.1...v0.300.0) (2026-10-19)
 
 
