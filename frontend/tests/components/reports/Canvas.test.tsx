@@ -64,26 +64,10 @@ describe("Canvas literal layout", () => {
     expect(onLayoutChange).not.toHaveBeenCalled();
   });
 
-  it("passes compactType=null and preventCollision to react-grid-layout", () => {
+  it("compacts vertically and lets a dragged tile push others aside (TBD-647)", () => {
     const { props } = renderCanvas();
-    expect(props.compactType).toBeNull();
-    expect(props.preventCollision).toBe(true);
-  });
-
-  it("compact prop passes compactType='vertical' and preventCollision=false", () => {
-    const onLayoutChange = vi.fn();
-    render(
-      <Canvas
-        layout={layout}
-        editMode={true}
-        onLayoutChange={onLayoutChange}
-        renderWidget={() => <div>w</div>}
-        compact
-      />,
-    );
-    if (!captured) throw new Error("react-grid-layout stub did not capture props");
-    expect(captured.compactType).toBe("vertical");
-    expect(captured.preventCollision).toBe(false);
+    expect(props.compactType).toBe("vertical");
+    expect(props.preventCollision).toBe(false);
   });
 
   it("does NOT call onLayoutChange for a mount/no-op emission (same grid)", () => {
