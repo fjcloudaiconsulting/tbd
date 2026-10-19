@@ -53,7 +53,7 @@ function renderCanvas(editMode = true) {
   return { props: captured, onLayoutChange };
 }
 
-describe("Canvas literal layout", () => {
+describe("Canvas layout", () => {
   beforeEach(() => {
     captured = null; // reset so a test that forgets to render fails loudly
   });
