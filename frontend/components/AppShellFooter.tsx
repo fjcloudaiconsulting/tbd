@@ -3,6 +3,7 @@ import { Logo } from "@/components/brand/Logo";
 import FeedbackTrigger from "@/components/feedback/FeedbackTrigger";
 import CurrentYear from "@/components/ui/CurrentYear";
 import { BRAND_CONTACT_EMAIL } from "@/lib/brand";
+import { runtimeConfig } from "@/lib/runtime-config";
 
 // Authed-shell footer (L5.4). Deliberately lighter scope than
 // LandingFooter: users are already inside the app, so we keep this to
@@ -24,6 +25,11 @@ export default function AppShellFooter() {
           <span className="inline-flex items-center gap-1">
             <span aria-hidden>&copy;</span>
             <CurrentYear />
+          </span>
+          {/* The running release, so a report or a test ties to a version. */}
+          <span data-testid="app-version">
+            <span className="sr-only">Version </span>
+            {appVersionLabel(runtimeConfig().appVersion)}
           </span>
         </div>
         <nav
@@ -67,4 +73,9 @@ export default function AppShellFooter() {
       </div>
     </footer>
   );
+}
+
+// "0.299.1" -> "v0.299.1"; an unpublished build stays "dev".
+function appVersionLabel(version: string) {
+  return /^\d/.test(version) ? `v${version}` : version;
 }
