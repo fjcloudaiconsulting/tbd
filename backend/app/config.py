@@ -141,13 +141,10 @@ class Settings(BaseSettings):
     # var unset in deployments: a pin there silently diverges from the page.
     ai_native_current_consent_version: str = "ai-terms-2026-10"
 
-    # TBD-586: house keys for platform-provided AI, one per provider. Set on
-    # the ``backend`` component ONLY: ``mcp_main`` refuses to boot when any is
-    # set (the MCP process never dispatches). Empty = provider not offered.
+    # TBD-586: the house key for platform-provided AI (OpenRouter only). Set on
+    # the ``backend`` component ONLY: ``mcp_main`` refuses to boot when it is
+    # set (the MCP process never dispatches). Empty = platform AI off.
     platform_ai_openrouter_api_key: str = ""
-    platform_ai_openai_api_key: str = ""
-    platform_ai_anthropic_api_key: str = ""
-    platform_ai_gemini_api_key: str = ""
 
     # Wall-clock bound on a single LLM dispatch call inside
     # ``ai_dispatch``. The per-provider HTTP adapters carry their own

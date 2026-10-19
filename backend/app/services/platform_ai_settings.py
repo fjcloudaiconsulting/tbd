@@ -1,52 +1,34 @@
 """Operator settings for platform-provided AI (TBD-586). Reads ``SystemSetting``
 ONLY (never ``OrgSetting``: an org must not be able to flip any of these).
+The model allowlist is ``platform_ai_models.enabled``, not a setting.
 
-Every read fails closed: absent or malformed means off, 0, or an empty
-allowlist."""
+Every read fails closed: absent or malformed means off or 0."""
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.system_setting import SystemSetting
-from app.services.platform_ai import PLATFORM_PROVIDERS, offerable_model, platform_key
+from app.services import platform_ai
 
 ENABLED = "platform_ai.enabled"
 GLOBAL_MONTHLY_CENTS = "platform_ai.global_monthly_cents"
-MODELS = "platform_ai.models"
 
 
 @dataclass(frozen=True)
 class PlatformAISettings:
     enabled: bool = False
     global_monthly_cents: int = 0
-    models: dict[str, list[str]] = field(default_factory=dict)
-
-
-def _models(raw: str | None) -> dict[str, list[str]]:
-    try:
-        data = json.loads(raw or "")
-    except ValueError:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    out: dict[str, list[str]] = {}
-    for provider in PLATFORM_PROVIDERS:
-        v = data.get(provider)
-        if isinstance(v, list) and v and all(isinstance(m, str) and m for m in v):
-            out[provider] = list(v)
-    return out
 
 
 async def load(db: AsyncSession) -> PlatformAISettings:
     rows = dict(
         (await db.execute(
             select(SystemSetting.key, SystemSetting.value).where(
-                SystemSetting.key.in_((ENABLED, GLOBAL_MONTHLY_CENTS, MODELS))
+                SystemSetting.key.in_((ENABLED, GLOBAL_MONTHLY_CENTS))
             )
         )).all()
     )
@@ -54,18 +36,12 @@ async def load(db: AsyncSession) -> PlatformAISettings:
     return PlatformAISettings(
         enabled=rows.get(ENABLED) == "on",
         global_monthly_cents=int(cents) if cents.isascii() and cents.isdigit() else 0,
-        models=_models(rows.get(MODELS)),
     )
 
 
-def offered(conf: PlatformAISettings) -> dict[str, list[str]]:
-    """Providers an org can turn on now: env floor, the operator switch, an
-    env key and a non-empty allowlist, all four."""
-    if not (settings.ai_native_enabled and conf.enabled):
-        return {}
-    out = {
-        p: [x for x in m if offerable_model(p, x)]
-        for p, m in conf.models.items()
-        if platform_key(p)
-    }
-    return {p: m for p, m in out.items() if m}
+async def offered(db: AsyncSession, conf: PlatformAISettings) -> list[str]:
+    """Model ids an org can use now: env floor, the operator switch and the
+    env key, then every offerable catalog row."""
+    if not (settings.ai_native_enabled and conf.enabled and platform_ai.platform_key_configured("openrouter")):
+        return []
+    return await platform_ai.offerable_ids(db)

@@ -1,8 +1,8 @@
 """Daily OpenRouter sync into ``platform_ai_models`` (TBD-631).
 
 Platform-global like the PAT and OAuth sweeps: called once per tick from ``run_one_tick``
-under the tick lease. Lands dark: nothing reads the table yet. The job only ever writes
-``enabled=False``; an operator allowlist (a later ticket) is the only thing that sets it.
+under the tick lease. The job only ever writes ``enabled=False``; the superadmin PUT
+``/api/v1/admin/platform-ai`` is the only writer of ``True`` (TBD-586).
 
 Prices are integer micro-USD per 1,000,000 tokens (USD/token x 1e12), computed in
 ``Decimal`` and rounded UP, because the ZDR figures are ceilings. Errors are logged,
@@ -41,6 +41,7 @@ FETCH_DEADLINE_SECONDS = 90
 _ONE_MTOK = Decimal(10) ** 12
 MAX_BODY_BYTES = 5_000_000
 INT_MAX = 2**31 - 1  # MySQL INT
+OPENROUTER_ROOT = next(p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter")
 # Never released: the lease TTL is the 1h retry backoff after a failed or refused run.
 
 
@@ -76,7 +77,8 @@ def _pos_int(v) -> bool:
 
 
 def _endpoint_ceiling(pricing: dict, field_name: str) -> int | None:
-    """Max of the base and every override price, grossed up for the endpoint's discount."""
+    """Max of the base and every override price, grossed up for the endpoint's discount.
+    The completion ceiling also folds ``internal_reasoning`` (reasoning tokens bill there)."""
     if not isinstance(pricing, dict):
         return None
     discount = pricing.get("discount")
@@ -87,11 +89,12 @@ def _endpoint_ceiling(pricing: dict, field_name: str) -> int | None:
     dd = Decimal(str(discount))
     if not dd.is_finite() or not (0 <= dd < 1):
         return None
-    candidates = [pricing.get(field_name)]
+    folded = ("internal_reasoning",) if field_name == "completion" else ()
+    candidates = [pricing.get(field_name)] + [pricing[f] for f in folded if f in pricing]
     overrides = pricing.get("overrides") or []
     if not isinstance(overrides, list) or not all(isinstance(o, dict) for o in overrides):
         return None  # a shape we cannot read must not fall back to the (cheaper) base price
-    candidates += [o[field_name] for o in overrides if field_name in o]
+    candidates += [o[f] for o in overrides for f in (field_name, *folded) if f in o]
     parsed = [parse_price(c) for c in candidates]
     if any(p is None for p in parsed):
         return None
@@ -99,9 +102,14 @@ def _endpoint_ceiling(pricing: dict, field_name: str) -> int | None:
     return gross if gross <= PRICE_CAP_MICROS else None  # cap AFTER the gross-up
 
 
+def _request_fee(pricing) -> bool:
+    return isinstance(pricing, dict) and "request" in pricing and parse_price(pricing["request"]) != 0
+
+
 def _zdr_facts(endpoints: list[dict], fallback_ctx: int) -> dict:
+    # An endpoint with a per-request fee cannot be routed under ``max_price.request = 0``.
     tools = [e for e in endpoints if isinstance(e.get("supported_parameters"), list)
-             and "tools" in e["supported_parameters"]]
+             and "tools" in e["supported_parameters"] and not _request_fee(e.get("pricing"))]
     facts = {
         "max_completion_tokens": None, "context_length": fallback_ctx,
         "supports_structured_outputs": False,
@@ -200,11 +208,10 @@ def plan_sync(existing: dict[str, PlatformAIModel], models_feed: dict, zdr_feed:
     return plan
 
 
-def offerable(row: PlatformAIModel, now: datetime.datetime) -> bool:
-    """No caller until the switch-over. ``now`` is naive UTC."""
+def eligible(row: PlatformAIModel, now: datetime.datetime) -> bool:
+    """Every ``offerable`` condition except ``enabled``. ``now`` is naive UTC."""
     return bool(
-        row.enabled
-        and row.zdr_prompt_micros_per_mtok is not None
+        row.zdr_prompt_micros_per_mtok is not None
         and row.zdr_completion_micros_per_mtok is not None
         and row.max_completion_tokens is not None
         and not _expiring(row.expires_at, now.date())
@@ -212,12 +219,15 @@ def offerable(row: PlatformAIModel, now: datetime.datetime) -> bool:
     )
 
 
+def offerable(row: PlatformAIModel, now: datetime.datetime) -> bool:
+    """``enabled`` (written True only by the superadmin PUT) and ``eligible``."""
+    return bool(row.enabled and eligible(row, now))
+
+
 async def fetch_feeds(*, transport: httpx.AsyncBaseTransport | None = None) -> tuple[dict, dict]:
     """Both feeds, public (no Authorization: the house key never leaves for a catalog read)."""
-    root = next(p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter")
-
     async def get(client: httpx.AsyncClient, path: str) -> dict:
-        async with client.stream("GET", f"{root}{path}") as r:
+        async with client.stream("GET", f"{OPENROUTER_ROOT}{path}") as r:
             if r.status_code != 200:
                 raise CatalogFeedError(f"status {r.status_code}")
             raw = b""

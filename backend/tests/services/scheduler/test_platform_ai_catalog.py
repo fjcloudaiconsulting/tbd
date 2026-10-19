@@ -28,6 +28,7 @@ from app.services.scheduler.jobs import platform_ai_catalog as job
 from app.services.scheduler.jobs.platform_ai_catalog import (
     CatalogFeedError,
     fetch_feeds,
+    eligible,
     offerable,
     parse_price,
     plan_sync,
@@ -614,3 +615,50 @@ async def test_job_swallows_errors(sf, audits, monkeypatch):
     monkeypatch.setattr(job, "plan_sync", explode)
     out = await run_platform_ai_catalog_sync(sf, fetch=fake(*feeds("a/m")), now=NOW)
     assert out == "error"
+
+
+# ── TBD-586: eligible / offerable split, reasoning price, per-request fee ────
+
+
+_SPLIT_ROWS = [
+    {}, {"zp": None}, {"zc": None}, {"mct": None}, {"ctx": 64_000},
+    {"seen": NAIVE_NOW - datetime.timedelta(hours=49)},
+    {"expires_at": TODAY + datetime.timedelta(days=3)},
+]
+
+
+@pytest.mark.parametrize("kw", _SPLIT_ROWS)
+def test_fence21_eligible_ignores_enabled_and_offerable_is_enabled_and_eligible(kw):
+    """FENCE 21. Kills the split changing what is offerable."""
+    on, off = row("a/m", enabled=True, **kw), row("a/m", enabled=False, **kw)
+    assert eligible(on, NAIVE_NOW) == eligible(off, NAIVE_NOW)
+    assert offerable(on, NAIVE_NOW) == eligible(on, NAIVE_NOW)
+    assert offerable(off, NAIVE_NOW) is False
+    assert eligible(on, NAIVE_NOW) is (kw in ({}, {"ctx": 64_000}))
+
+
+def test_fence22_completion_ceiling_folds_internal_reasoning():
+    """FENCE 22. Kills reserving below the reasoning rate."""
+    base = {"prompt": "0.0000001", "completion": "0.0000004", "internal_reasoning": "0.000001"}
+    assert job._endpoint_ceiling(base, "completion") == 1_000_000
+    assert job._endpoint_ceiling(base, "prompt") == 100_000
+    over = {"prompt": "0.0000001", "completion": "0.0000004", "overrides": [{"internal_reasoning": "0.000001"}]}
+    assert job._endpoint_ceiling(over, "completion") == 1_000_000
+    e = ep("a/m")
+    e["pricing"]["internal_reasoning"] = "abc"
+    u = plan([], mfeed(model("a/m")), zfeed(e)).upserts["a/m"]
+    assert u["zdr_prompt_micros_per_mtok"] is None and u["zdr_completion_micros_per_mtok"] is None
+
+
+def test_fence23_an_endpoint_with_a_per_request_fee_is_not_routable():
+    """FENCE 23. Kills offering a model ``max_price.request = 0`` cannot route."""
+    fee = ep("a/m", prompt="0.000009", completion="0.000009", ctx=50_000, mct=100)
+    fee["pricing"]["request"] = "0.0001"
+    free = ep("a/m", ctx=200_000, mct=8192)
+    free["pricing"]["request"] = "0"
+    u = plan([], mfeed(model("a/m")), zfeed(fee, free, ep("a/m", ctx=300_000))).upserts["a/m"]
+    assert (u["zdr_prompt_micros_per_mtok"], u["zdr_completion_micros_per_mtok"]) == (100_000, 500_000)
+    assert (u["context_length"], u["max_completion_tokens"]) == (200_000, 8192)
+    only = plan([row("a/m", enabled=True)], mfeed(model("a/m")), zfeed(fee))
+    assert only.upserts["a/m"]["zdr_prompt_micros_per_mtok"] is None
+    assert only.disables == [("a/m", "no_zdr")]

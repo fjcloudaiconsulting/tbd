@@ -17,32 +17,35 @@ GET  /api/v1/admin/orgs/{org_id}/features
 PUT  /api/v1/admin/orgs/{org_id}/features/{feature}
     Upsert / delete OrgSetting row; audit via ``feature.org.set``.
 GET  /api/v1/admin/platform-ai
-    The platform AI settings dispatch sees, plus which env keys exist.
+    The platform AI settings dispatch sees, the catalog, and whether the
+    env key exists.
 PUT  /api/v1/admin/platform-ai
-    Full replace of the three ``platform_ai.*`` rows in one commit; audit via
+    The two ``platform_ai.*`` rows and, when ``models`` is sent, the catalog
+    allowlist (``platform_ai_models.enabled``), in one commit; audit via
     ``admin.platform_ai.updated``.
 """
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
 from typing import Annotated, Literal
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app._time import utcnow_naive
 from app.config import settings
 from app.database import get_db
 from app.auth.pat import require_interactive_session
 from app.deps import get_current_user, get_session_factory
+from app.models.platform_ai_model import PlatformAIModel
 from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip
 from app.services import audit_service, platform_ai, platform_ai_settings
+from app.services.scheduler.jobs import platform_ai_catalog
 from app.services.feature_gate import (
     Feature,
     _resolve_platform_feature,
@@ -87,7 +90,8 @@ class FeatureValueBody(BaseModel):
     value: Literal["on", "off", "inherit"]
 
 
-_ModelId = Annotated[str, StringConstraints(min_length=1, max_length=120)]
+# Printable ASCII, no space; 120 = the ledger/routing ``model`` width.
+_ModelId = Annotated[str, StringConstraints(min_length=1, max_length=120, pattern=r"^[\x21-\x7e]+$")]
 
 
 class PlatformAIBody(BaseModel):
@@ -96,10 +100,8 @@ class PlatformAIBody(BaseModel):
     enabled: StrictBool
     # x10,000 at the dispatch gate must still fit a BIGINT bind value
     global_monthly_cents: StrictInt = Field(ge=0, le=(2**53 - 1) // 10_000)
-    models: dict[
-        platform_ai.PlatformProvider,
-        Annotated[list[_ModelId], Field(max_length=50)],
-    ]
+    # Omitted = allowlist untouched; a list = full replace.
+    models: Annotated[list[_ModelId], Field(max_length=50)] | None = None
 
 
 # ─── misc helpers ─────────────────────────────────────────────────────────
@@ -363,14 +365,46 @@ async def set_org_feature(
 # ─── platform AI (TBD-586) ────────────────────────────────────────────────
 
 
+async def _enabled_ids(db: AsyncSession) -> list[str]:
+    return list((await db.scalars(
+        select(PlatformAIModel.openrouter_id)
+        .where(PlatformAIModel.enabled.is_(True))
+        .order_by(PlatformAIModel.openrouter_id)
+    )).all())
+
+
 async def _platform_ai_view(db: AsyncSession) -> dict:
     conf = await platform_ai_settings.load(db)
+    now = utcnow_naive()
+    rows = (await db.scalars(select(PlatformAIModel).where(
+        PlatformAIModel.zdr_prompt_micros_per_mtok.is_not(None),
+        PlatformAIModel.zdr_completion_micros_per_mtok.is_not(None),
+    ))).all()
     return {
-        **asdict(conf),
+        "enabled": conf.enabled,
+        "global_monthly_cents": conf.global_monthly_cents,
+        "models": await _enabled_ids(db),
         "env_floor": settings.ai_native_enabled,
         "providers": [
-            {"key": p, "key_configured": bool(platform_ai.platform_key(p))}
-            for p in platform_ai.PLATFORM_PROVIDERS
+            {"key": "openrouter", "key_configured": platform_ai.platform_key_configured("openrouter")}
+        ],
+        "catalog": [
+            {
+                "openrouter_id": r.openrouter_id,
+                "name": r.name,
+                "context_length": r.context_length,
+                "max_completion_tokens": r.max_completion_tokens,
+                "supports_structured_outputs": r.supports_structured_outputs,
+                "zdr_prompt_micros_per_mtok": r.zdr_prompt_micros_per_mtok,
+                "zdr_completion_micros_per_mtok": r.zdr_completion_micros_per_mtok,
+                "tier": platform_ai.tier(r),
+                "expires_at": r.expires_at,
+                "last_seen_at": r.last_seen_at,
+                "enabled": r.enabled,
+                # An enabled row the job or time made un-offerable shows False.
+                "offered": platform_ai_catalog.offerable(r, now) and platform_ai.can(r, "function_call"),
+            }
+            for r in sorted(rows, key=lambda r: (platform_ai.blend(r), r.openrouter_id))
         ],
     }
 
@@ -392,44 +426,60 @@ async def set_platform_ai(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> dict:
-    """Full replace. Empty and duplicate model ids are dropped. With
-    ``enabled`` true every model must be offerable and every listed provider
-    must have its env key; ``enabled: false`` always saves (kill switch)."""
-    models = {p: list(dict.fromkeys(ms)) for p, ms in body.models.items() if ms}
-    if body.enabled:
-        for p, ms in models.items():
-            for m in ms:
-                if not platform_ai.offerable_model(p, m):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail={
-                            "code": "platform_model_not_offerable",
-                            "message": f"{m!r} is not offerable on platform {p!r}",
-                            "provider": p,
-                            "model": m,
-                        },
-                    )
-        for p in models:
-            if not platform_ai.platform_key(p):
+    """``models`` omitted leaves the allowlist untouched (the kill switch
+    ``{enabled: false, global_monthly_cents}`` always saves); a list is a full
+    replace, deduped, and every id must be an eligible, tool-capable catalog
+    row whatever ``enabled`` is, so an enabled row is never silently
+    un-offered at the moment it is enabled."""
+    models = None if body.models is None else list(dict.fromkeys(body.models))
+    if models:
+        now = utcnow_naive()
+        rows = {r.openrouter_id: r for r in (await db.scalars(
+            select(PlatformAIModel).where(PlatformAIModel.openrouter_id.in_(models))
+        )).all()}
+        for m in models:
+            r = rows.get(m)
+            if r is None or not (platform_ai_catalog.eligible(r, now) and platform_ai.can(r, "function_call")):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
-                        "code": "platform_provider_key_missing",
-                        "message": f"no platform key is configured for {p!r}",
-                        "provider": p,
+                        "code": "platform_model_not_offerable",
+                        "message": f"{m!r} is not offerable",
+                        "model": m,
                     },
                 )
 
     actor_user_id = current_user.id
     actor_email = current_user.email
-    old = asdict(await platform_ai_settings.load(db))
+    conf = await platform_ai_settings.load(db)
+    old = {
+        "enabled": conf.enabled,
+        "global_monthly_cents": conf.global_monthly_cents,
+        "models": await _enabled_ids(db),  # read BEFORE the UPDATEs below
+    }
+    if (
+        body.enabled
+        and (old["models"] if models is None else models)
+        and not platform_ai.platform_key_configured("openrouter")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "platform_provider_key_missing",
+                "message": "no platform key is configured",
+            },
+        )
     for key, value in (
         (platform_ai_settings.ENABLED, "on" if body.enabled else "off"),
         (platform_ai_settings.GLOBAL_MONTHLY_CENTS, str(body.global_monthly_cents)),
-        (platform_ai_settings.MODELS, json.dumps(models, sort_keys=True)),
     ):
         await _upsert_system_setting(db, key, value)
-    await db.commit()  # ONE commit: the three rows change together or not at all
+    if models is not None:
+        await db.execute(update(PlatformAIModel).where(
+            PlatformAIModel.openrouter_id.not_in(models)).values(enabled=False))
+        await db.execute(update(PlatformAIModel).where(
+            PlatformAIModel.openrouter_id.in_(models)).values(enabled=True))
+    await db.commit()  # ONE commit: settings and allowlist change together or not at all
 
     view = await _platform_ai_view(db)
     await audit_service.record_audit_event(

@@ -1,41 +1,32 @@
-"""TBD-586 PR2: the superadmin platform AI settings (GET/PUT /api/v1/admin/platform-ai)."""
+"""TBD-586: the superadmin platform AI settings (GET/PUT /api/v1/admin/platform-ai).
+The allowlist is ``platform_ai_models.enabled``."""
 from __future__ import annotations
 
+import datetime
 import json
-from dataclasses import asdict
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import Update, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app._time import utcnow_naive
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent
+from app.models.platform_ai_model import PlatformAIModel
 from app.models.system_setting import SystemSetting
 from app.models.user import Organization, Role, User
 from app.routers import admin_features
-from app.services import platform_ai, platform_ai_settings
-from app.services.ai_pricing import MODEL_PRICING
-from app.services.ai_token_estimate import _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
 
 URL = "/api/v1/admin/platform-ai"
 SECRET = "sk-env-SECRET-"
-GOOD = {
-    "enabled": True,
-    "global_monthly_cents": 5000,
-    "models": {
-        "openai": ["gpt-4o-mini", "gpt-4o-mini", "text-embedding-3-small"],
-        "anthropic": ["claude-haiku-4-5"],
-        "openrouter": [],
-    },
-}
-GOOD_MODELS = {"openai": ["gpt-4o-mini", "text-embedding-3-small"], "anthropic": ["claude-haiku-4-5"]}
+GOOD = {"enabled": True, "global_monthly_cents": 5000, "models": ["a/m", "a/m"]}
 
 
 @pytest_asyncio.fixture
@@ -53,10 +44,7 @@ async def sf():
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setattr(app_settings, "ai_native_enabled", True)
-    for p in ("openrouter", "gemini"):
-        monkeypatch.setattr(app_settings, f"platform_ai_{p}_api_key", "")
-    for p in ("openai", "anthropic"):
-        monkeypatch.setattr(app_settings, f"platform_ai_{p}_api_key", SECRET + p)
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", SECRET)
 
 
 @pytest_asyncio.fixture
@@ -71,7 +59,27 @@ async def users(sf):
                      role=Role.OWNER, is_active=True)
         s.add_all([root, owner])
         await s.commit()
+        s.add(model_row("a/m"))
+        await s.commit()
         return {"root": root.id, "owner": owner.id}
+
+
+def model_row(mid, *, enabled=False, zp=100_000, zc=400_000, ctx=200_000, mct=8192, seen=None, expires=None):
+    return PlatformAIModel(
+        openrouter_id=mid, name=mid, context_length=ctx, max_completion_tokens=mct,
+        supports_structured_outputs=True, zdr_prompt_micros_per_mtok=zp, zdr_completion_micros_per_mtok=zc,
+        expires_at=expires, last_seen_at=seen or utcnow_naive(), enabled=enabled)
+
+
+async def add(sf, *rows):
+    async with sf() as s:
+        s.add_all(rows)
+        await s.commit()
+
+
+async def flags(sf):
+    async with sf() as s:
+        return dict((await s.execute(select(PlatformAIModel.openrouter_id, PlatformAIModel.enabled))).all())
 
 
 def client(sf, user_id, auth="jwt"):
@@ -116,94 +124,134 @@ async def test_a1_org_admin_and_pat_are_refused(sf, users):
     assert await rows(sf) == {}
 
 
-# ---- A2 / B2a --------------------------------------------------------------
+# ---- D3 ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("provider,model", [
-    ("openai", "_default"), ("openai", "no-such-model"), ("openai", "gpt-4o"), ("anthropic", "gpt-4o"),
-    ("anthropic", "claude-sonnet-4-7"),  # TBD-629: priced for history, not on Anthropic's list
-])
-async def test_a2_unofferable_model_is_400(sf, users, monkeypatch, provider, model):
-    if model == "gpt-4o" and provider == "openai":
-        monkeypatch.delitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "gpt-4o")
-    body = {**GOOD, "models": {provider: ["gpt-4o-mini" if provider == "openai" else "claude-haiku-4-5", model]}}
-    r = client(sf, users["root"]).put(URL, json=body)
-    assert r.status_code == 400, r.text
-    assert r.json()["detail"] == {"code": "platform_model_not_offerable", "provider": provider, "model": model,
-                                  "message": r.json()["detail"]["message"]}
-    assert await rows(sf) == {}
-
-
-# ---- A3 --------------------------------------------------------------------
-
-async def test_a3_key_missing_only_for_a_non_empty_list(sf, users, monkeypatch):
-    monkeypatch.setattr(app_settings, "platform_ai_anthropic_api_key", "")
-    c = client(sf, users["root"])
-    r = c.put(URL, json={**GOOD, "models": {"openai": ["gpt-4o-mini"], "anthropic": ["claude-haiku-4-5"]}})
-    assert r.status_code == 400 and r.json()["detail"]["code"] == "platform_provider_key_missing"
-    assert r.json()["detail"]["provider"] == "anthropic"
-    assert await rows(sf) == {}
-    # openrouter has no key either; an empty list for it (and for anthropic) saves.
-    r = c.put(URL, json={**GOOD, "models": {"openai": ["gpt-4o-mini"], "anthropic": [], "openrouter": []}})
+async def test_fence24_a_list_is_a_full_replace_and_audits_old_before_the_writes(sf, users):
+    """FENCE 24. Kills an additive enable; ``old`` read after the UPDATEs."""
+    await add(sf, model_row("b/m"), model_row("c/m", enabled=True))
+    r = client(sf, users["root"]).put(URL, json={**GOOD, "models": ["b/m", "a/m"]})
     assert r.status_code == 200, r.text
-    assert r.json()["models"] == {"openai": ["gpt-4o-mini"]}
+    assert await flags(sf) == {"a/m": True, "b/m": True, "c/m": False}
+    (ev,) = await audits(sf)
+    assert ev.detail["old"]["models"] == ["c/m"]
+    assert ev.detail["new"]["models"] == ["a/m", "b/m"]
 
 
-# ---- A4 --------------------------------------------------------------------
+_NOW = utcnow_naive()
+UNOFFERABLE = {
+    "no_zdr": {"zp": None, "zc": None}, "stale": {"seen": _NOW - datetime.timedelta(hours=49)},
+    "expiring": {"expires": _NOW.date() + datetime.timedelta(days=3)}, "ctx": {"ctx": 64_000},
+    "mct": {"mct": 2048},
+}
 
-async def test_a4_a_refused_put_changes_no_row(sf, users):
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("bad", ["unknown", *UNOFFERABLE])
+async def test_fence25_an_unofferable_id_is_400_and_changes_nothing(sf, users, bad, enabled):
+    """FENCE 25. Kills enabling a row dispatch would silently never offer."""
+    if bad != "unknown":
+        await add(sf, model_row("x/m", **UNOFFERABLE[bad]))
+    before = await flags(sf)
+    r = client(sf, users["root"]).put(URL, json={**GOOD, "enabled": enabled, "models": ["a/m", "x/m"]})
+    assert r.status_code == 400, r.text
+    d = r.json()["detail"]
+    assert (d["code"], d["model"]) == ("platform_model_not_offerable", "x/m")
+    assert await rows(sf) == {} and await flags(sf) == before
+
+
+@pytest.mark.parametrize("mid", ["a m", "a/\u00e9", "x" * 121])
+async def test_fence26_ids_the_columns_cannot_hold_are_422(sf, users, mid):
+    """FENCE 26. Kills ids the ledger/routing columns cannot hold."""
+    assert client(sf, users["root"]).put(URL, json={**GOOD, "models": [mid]}).status_code == 422
+    assert await rows(sf) == {}
+
+
+async def test_fence27_kill_switch_saves_with_an_ineligible_row_and_no_key(sf, users, monkeypatch):
+    """FENCE 27. Kills the kill switch blocked; omitted ``models`` read as "disable all"."""
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "")
+    await add(sf, model_row("s/m", enabled=True, seen=_NOW - datetime.timedelta(hours=49)),
+              model_row("k/m", enabled=True))
+    before = await flags(sf)
     c = client(sf, users["root"])
-    assert c.put(URL, json=GOOD).status_code == 200
-    before = await rows(sf)
-    r = c.put(URL, json={"enabled": True, "global_monthly_cents": 1,
-                         "models": {"openai": ["gpt-4o", "_default"]}})
-    assert r.status_code == 400
-    assert await rows(sf) == before
+    r = c.put(URL, json={"enabled": False, "global_monthly_cents": 0})
+    assert r.status_code == 200, r.text
+    assert c.get(URL).json()["enabled"] is False
+    assert await flags(sf) == before
 
 
-async def test_a4_a_failure_on_the_third_upsert_rolls_back_the_first_two(sf, users, monkeypatch):
+async def test_fence28_enabling_needs_the_key_only_for_a_non_empty_set(sf, users, monkeypatch):
+    """FENCE 28."""
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "")
     c = client(sf, users["root"])
-    assert c.put(URL, json=GOOD).status_code == 200
-    before = await rows(sf)
-    real = admin_features._upsert_system_setting
-    calls = []
-
-    async def flaky(db, key, value):
-        calls.append(key)
-        if len(calls) == 3:
-            raise RuntimeError("boom")
-        await real(db, key, value)
-
-    monkeypatch.setattr(admin_features, "_upsert_system_setting", flaky)
-    r = c.put(URL, json={"enabled": False, "global_monthly_cents": 7, "models": {"openai": ["gpt-4o"]}})
-    assert r.status_code == 500 and len(calls) == 3
-    assert await rows(sf) == before
+    r = c.put(URL, json=GOOD)
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "platform_provider_key_missing"
+    assert await rows(sf) == {} and await flags(sf) == {"a/m": False}
+    r = c.put(URL, json={**GOOD, "models": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["models"] == []
 
 
-# ---- A5 --------------------------------------------------------------------
+async def test_fence28_enabling_with_models_omitted_checks_the_existing_set(sf, users, monkeypatch):
+    """FENCE 28. Kills reading only the body's ``models`` for the key check."""
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "")
+    await add(sf, model_row("on/m", enabled=True))
+    r = client(sf, users["root"]).put(URL, json={"enabled": True, "global_monthly_cents": 5000})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "platform_provider_key_missing"
+    assert await rows(sf) == {}
 
-async def test_a5_round_trip_and_audit(sf, users):
+
+async def test_fence29_one_commit_a_failing_catalog_update_rolls_back_the_settings(sf, users, monkeypatch):
+    """FENCE 29. Kills more than one commit."""
+    await add(sf, model_row("b/m", enabled=True))
+    real = AsyncSession.execute
+    updates = []
+
+    async def flaky(self, stmt, *a, **k):
+        if isinstance(stmt, Update) and stmt.table.name == "platform_ai_models":
+            updates.append(stmt)
+            if len(updates) == 2:
+                raise RuntimeError("boom")
+        return await real(self, stmt, *a, **k)
+
+    monkeypatch.setattr(AsyncSession, "execute", flaky)
+    r = client(sf, users["root"]).put(URL, json=GOOD)
+    assert r.status_code == 500 and len(updates) == 2
+    monkeypatch.setattr(AsyncSession, "execute", real)
+    assert await rows(sf) == {} and await flags(sf) == {"a/m": False, "b/m": True}
+
+
+# ---- A5 / GUARD 30 ------------------------------------------------------------
+
+async def test_a5_round_trip_catalog_and_audit(sf, users):
+    await add(sf, model_row("z/dear", zp=10_000_000, zc=40_000_000),
+              model_row("n/zdr", zp=None, zc=None))
     c = client(sf, users["root"])
     r = c.put(URL, json=GOOD)
     assert r.status_code == 200, r.text
     got = c.get(URL)
     assert got.status_code == 200 and got.json() == r.json()
-    async with sf() as s:
-        conf = await platform_ai_settings.load(s)
     body = r.json()
-    assert {k: body[k] for k in ("enabled", "global_monthly_cents", "models")} == asdict(conf)
-    assert body["models"] == GOOD_MODELS
+    assert (body["enabled"], body["global_monthly_cents"], body["models"]) == (True, 5000, ["a/m"])
     assert body["env_floor"] is True
-    assert body["providers"] == [
-        {"key": "openrouter", "key_configured": False}, {"key": "openai", "key_configured": True},
-        {"key": "anthropic", "key_configured": True}, {"key": "gemini", "key_configured": False},
-    ]
-    events = await audits(sf)
-    assert len(events) == 1
-    detail = events[0].detail
-    assert detail["old"] == {"enabled": False, "global_monthly_cents": 0, "models": {}}
-    assert detail["new"] == asdict(conf)
-    assert events[0].target_org_id is None
-    assert SECRET not in r.text + got.text + json.dumps(detail)
+    assert body["providers"] == [{"key": "openrouter", "key_configured": True}]
+    assert [m["openrouter_id"] for m in body["catalog"]] == ["a/m", "z/dear"]  # cheapest first, no NULL ZDR
+    a, z = body["catalog"]
+    assert (a["enabled"], a["offered"], a["tier"]) == (True, True, "budget")
+    assert (z["enabled"], z["offered"], z["tier"]) == (False, False, "frontier")
+    assert set(a) == {"openrouter_id", "name", "context_length", "max_completion_tokens",
+                      "supports_structured_outputs", "zdr_prompt_micros_per_mtok",
+                      "zdr_completion_micros_per_mtok", "tier", "expires_at", "last_seen_at", "enabled", "offered"}
+    (ev,) = await audits(sf)
+    assert ev.detail == {"old": {"enabled": False, "global_monthly_cents": 0, "models": []},
+                         "new": {"enabled": True, "global_monthly_cents": 5000, "models": ["a/m"]}}
+    assert ev.target_org_id is None
+    assert SECRET not in r.text + got.text + json.dumps(ev.detail)
+
+
+async def test_a5_an_enabled_row_time_made_unofferable_shows_offered_false(sf, users):
+    await add(sf, model_row("s/m", enabled=True, seen=_NOW - datetime.timedelta(hours=49)))
+    (s,) = [m for m in client(sf, users["root"]).get(URL).json()["catalog"] if m["openrouter_id"] == "s/m"]
+    assert (s["enabled"], s["offered"]) == (True, False)
 
 
 # x10,000 at the dispatch gate must still fit a BIGINT bind value (TBD-630).
@@ -221,43 +269,10 @@ async def test_fence_ceiling_boundary_is_accepted(sf, users):
     {**GOOD, "global_monthly_cents": -1},
     {**GOOD, "global_monthly_cents": 1.5},
     {**GOOD, "global_monthly_cents": CEILING_MAX_CENTS + 1},
-    {**GOOD, "models": {"native": ["gpt-4o"]}},
-    {**GOOD, "models": {"openai": [""]}},
-    {**GOOD, "models": {"openai": ["gpt-4o"] * 51}},
+    {**GOOD, "models": {"openai": ["gpt-4o"]}},
+    {**GOOD, "models": [""]},
+    {**GOOD, "models": ["a/m"] * 51},
 ])
 async def test_a5_schema_422(sf, users, bad):
     assert client(sf, users["root"]).put(URL, json=bad).status_code == 422
     assert await rows(sf) == {}
-
-
-# ---- B3 --------------------------------------------------------------------
-
-async def test_b3_kill_switch_always_saves(sf, users, monkeypatch):
-    async with sf() as s:
-        s.add_all([
-            SystemSetting(key="platform_ai.enabled", value="on"),
-            SystemSetting(key="platform_ai.global_monthly_cents", value="900"),
-            SystemSetting(key="platform_ai.models", value=json.dumps({"gemini": ["gemini-x"]})),
-        ])
-        await s.commit()
-    c = client(sf, users["root"])
-    shown = c.get(URL).json()
-    assert shown["enabled"] is True and shown["models"] == {"gemini": ["gemini-x"]}
-    r = c.put(URL, json={"enabled": False, "global_monthly_cents": shown["global_monthly_cents"],
-                         "models": shown["models"]})
-    assert r.status_code == 200, r.text
-    assert c.get(URL).json()["enabled"] is False
-
-
-# ---- B2b (the real table; no fixture here patches PLATFORM_MODELS) ----------
-
-def test_b2b_every_platform_model_is_priced_and_bounded():
-    assert set(platform_ai.PLATFORM_MODELS) == set(platform_ai.PLATFORM_PROVIDERS)
-    for provider, models in platform_ai.PLATFORM_MODELS.items():
-        for m in models:
-            assert m != "_default" and m in MODEL_PRICING and m in _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, m
-            assert platform_ai.offerable_model(provider, m)
-
-
-def test_tbd629_sonnet_4_7_is_not_offerable():
-    assert platform_ai.offerable_model("anthropic", "claude-sonnet-4-7") is False

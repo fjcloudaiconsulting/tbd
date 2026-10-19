@@ -457,7 +457,7 @@ async def create_platform_credential(
     ip_address: Optional[str],
 ) -> OrgAICredential:
     conf = await platform_ai_settings.load(db)
-    if platform_provider not in platform_ai_settings.offered(conf):
+    if not await platform_ai_settings.offered(db, conf):
         raise HTTPException(
             status_code=status.HTTP_412_PRECONDITION_FAILED,
             detail={"code": "ai_native_not_available"},
@@ -490,9 +490,9 @@ async def create_platform_credential(
         raise _platform_exists()
     row = OrgAICredential(
         org_id=org_id,
-        provider=platform_ai.PLATFORM_ADAPTER[platform_provider],
+        provider=AiProvider.OPENAI_COMPATIBLE,
         platform_provider=platform_provider,
-        discovered_capabilities=list(platform_ai.PLATFORM_CAPABILITIES[platform_provider]),
+        discovered_capabilities=list(platform_ai.PLATFORM_CAPABILITIES),
     )
     db.add(row)
     try:

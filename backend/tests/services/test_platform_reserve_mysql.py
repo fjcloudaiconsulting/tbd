@@ -39,7 +39,8 @@ if not URL:
 NOW = datetime(2026, 10, 15, 12, 0, 0)
 OCT = date(2026, 10, 1)
 _CREATED: dict[str, list[int]] = {"orgs": [], "plans": []}
-_CRED = SimpleNamespace(platform_provider="openai")
+_CRED = SimpleNamespace(platform_provider="openrouter")
+_PX = {"models": ["vendor/m"], "max_price": (1, 1)}
 
 
 @pytest_asyncio.fixture
@@ -107,7 +108,7 @@ async def _set_spend(f, start: date, micros: int):
 class _Adapter:
     calls = 0
 
-    def __call__(self, _provider=None):
+    def __call__(self, _provider=None, **kw):
         _Adapter.calls += 1
         return object()
 
@@ -125,7 +126,7 @@ async def test_k2_ceiling_refusal_leaves_org_meters_unchanged(factory):
     await _set_spend(factory, OCT, 95)
     async with factory() as db:
         with pytest.raises(pr.PlatformAIUnavailable):
-            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW)
+            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW, **_PX)
     counters, spend = await _state(factory, org)
     assert set(counters.values()) == {0}
     assert spend == {OCT: 95}
@@ -136,7 +137,7 @@ async def test_k2_org_meter_refusal_reserves_nothing(factory):
     org = await _org(factory, _limits(micros=5))
     async with factory() as db:
         with pytest.raises(PlanLimitReached) as ei:
-            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW)
+            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW, **_PX)
     assert ei.value.meter == "platform_ai.micros"
     counters, spend = await _state(factory, org)
     assert set(counters.values()) == {0} and spend == {OCT: 0}
@@ -157,7 +158,7 @@ async def test_k2_db_error_on_any_update_reserves_nothing(factory, nth):
     event.listen(factory.kw["bind"].sync_engine, "before_cursor_execute", boom)
     async with factory() as db:
         with pytest.raises(pr.PlatformAIUnavailable):
-            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW)
+            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW, **_PX)
     event.remove(factory.kw["bind"].sync_engine, "before_cursor_execute", boom)
     counters, spend = await _state(factory, org)
     assert set(counters.values()) == {0} and spend == {OCT: 0}
@@ -170,7 +171,7 @@ async def test_k2_refusal_rollback_expires_callers_orm_objects(factory):
     async with factory() as db:
         o = await db.get(Organization, org)
         with pytest.raises(PlanLimitReached):
-            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW)
+            await pr.reserve(db, org, _CRED, 50, 10, 100, now=NOW, **_PX)
         from sqlalchemy import inspect
         assert "name" in inspect(o).expired_attributes  # rollback expired it
 
@@ -195,7 +196,7 @@ async def test_k3_two_orgs_race_at_ceiling_minus_one_exactly_one_admitted(factor
 
     async def one(org):
         async with factory() as db:
-            await pr.reserve(db, org, _CRED, 10, 1, 100, now=NOW)
+            await pr.reserve(db, org, _CRED, 10, 1, 100, now=NOW, **_PX)
 
     res = await asyncio.gather(one(a), one(b), return_exceptions=True)
     assert sorted(type(r).__name__ for r in res) == ["NoneType", "PlatformAIUnavailable"]
@@ -213,7 +214,7 @@ async def test_k4_settle_after_midnight_moves_only_the_reserved_period(factory, 
     org = await _org(factory, _limits(tperiod="day", cperiod="month"))
     last = datetime(2026, 10, 31, 23, 59, 59)
     async with factory() as db:
-        r = await pr.reserve(db, org, _CRED, 100, 10, 1000, now=last)
+        r = await pr.reserve(db, org, _CRED, 100, 10, 1000, now=last, **_PX)
     # The app clock is past midnight at settle time, so a settle that
     # re-resolves the period from the clock lands on November and fails here.
     monkeypatch.setattr(pr, "utcnow_naive", lambda: datetime(2026, 11, 1, 0, 0, 1))
@@ -232,7 +233,7 @@ async def test_k4_settle_after_midnight_moves_only_the_reserved_period(factory, 
 async def test_k5_actual_above_reserved_lands_even_above_the_limit(factory):
     org = await _org(factory, _limits(tokens=150, micros=15))
     async with factory() as db:
-        r = await pr.reserve(db, org, _CRED, 100, 10, 20, now=NOW)
+        r = await pr.reserve(db, org, _CRED, 100, 10, 20, now=NOW, **_PX)
         await pr.settle(db, r.handle, 400, 40)
     counters, spend = await _state(factory, org)
     assert counters == {
@@ -247,7 +248,7 @@ async def test_k5_actual_above_reserved_lands_even_above_the_limit(factory):
 async def test_k6_settle_twice_applies_once(factory):
     org = await _org(factory, _limits())
     async with factory() as db:
-        r = await pr.reserve(db, org, _CRED, 100, 10, 1000, now=NOW)
+        r = await pr.reserve(db, org, _CRED, 100, 10, 1000, now=NOW, **_PX)
         await pr.settle(db, r.handle, 30, 3)   # success path
         await pr.settle(db, r.handle, 30, 3)   # generator finally
     counters, spend = await _state(factory, org)
@@ -260,7 +261,7 @@ async def test_zero_cost_reserve_at_exact_ceiling_is_admitted(factory):
     org = await _org(factory, _limits())
     await _set_spend(factory, OCT, 100)
     async with factory() as db:
-        await pr.reserve(db, org, _CRED, 0, 0, 100, now=NOW)
+        await pr.reserve(db, org, _CRED, 0, 0, 100, now=NOW, **_PX)
 
 
 # ── F-Q7 (DB half): one org, N concurrent reservations, only those that fit ──
@@ -270,7 +271,7 @@ async def test_f_q7_n_concurrent_reservations_admit_only_those_that_fit(factory)
 
     async def one():
         async with factory() as db:
-            await pr.reserve(db, org, _CRED, 40, 1, 1000, now=NOW)
+            await pr.reserve(db, org, _CRED, 40, 1, 1000, now=NOW, **_PX)
 
     res = await asyncio.gather(*[one() for _ in range(5)], return_exceptions=True)
     assert sorted(type(r).__name__ for r in res) == ["NoneType", "NoneType"] + ["PlanLimitReached"] * 3
@@ -286,11 +287,11 @@ async def test_f_q9_a_hundred_ceiling_refusals_change_nothing_and_a_fit_still_pa
     for _ in range(100):
         async with factory() as db:
             with pytest.raises(pr.PlatformAIUnavailable):
-                await pr.reserve(db, org, _CRED, 10, 10, 100, now=NOW)
+                await pr.reserve(db, org, _CRED, 10, 10, 100, now=NOW, **_PX)
     counters, spend = await _state(factory, org)
     assert set(counters.values()) == {0} and spend == {OCT: 95}
     async with factory() as db:
-        await pr.reserve(db, org, _CRED, 10, 5, 100, now=NOW)
+        await pr.reserve(db, org, _CRED, 10, 5, 100, now=NOW, **_PX)
     assert (await _state(factory, org))[1] == {OCT: 100}
 
 
@@ -305,7 +306,7 @@ async def test_r17_entitlement_db_error_is_platform_ai_unavailable_with_nothing_
     monkeypatch.setattr(pr.feature_service, "get_entitlements", boom)
     async with factory() as db:
         with pytest.raises(pr.PlatformAIUnavailable):
-            await pr.reserve(db, org, _CRED, 10, 1, 100, now=NOW)
+            await pr.reserve(db, org, _CRED, 10, 1, 100, now=NOW, **_PX)
         await db.execute(text("SELECT 1"))  # the session was rolled back, still usable
     assert (await _state(factory, org))[0] == {} and _Adapter.calls == 0
 
@@ -315,7 +316,7 @@ async def test_r17_entitlement_db_error_is_platform_ai_unavailable_with_nothing_
 async def test_r19_settle_db_error_rolls_back_reraises_and_keeps_the_reservation(factory):
     org = await _org(factory, _limits())
     async with factory() as db:
-        r = await pr.reserve(db, org, _CRED, 100, 10, 1000, now=NOW)
+        r = await pr.reserve(db, org, _CRED, 100, 10, 1000, now=NOW, **_PX)
         fired = [0]
 
         def boom(conn, cursor, statement, parameters, context, executemany):

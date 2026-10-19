@@ -102,8 +102,10 @@ def spies(monkeypatch):
     return est, prep
 
 
-@pytest.mark.parametrize("kind", ["byok", "platform"])
-@pytest.mark.parametrize("entry", ["call_llm", "structured", "embed", "function", "stream"])
+@pytest.mark.parametrize("kind,entry", [
+    (k, e) for k in ("byok", "platform") for e in ("call_llm", "structured", "embed", "function", "stream")
+    if (k, e) != ("platform", "embed")  # a platform row cannot embed (TBD-586 D7)
+])
 async def test_d1_every_wrapper_scrubs_before_estimate_gate_and_adapter(db, fake, spies, kind, entry):
     est, prep = spies
     org = await _org(db, kind)
@@ -131,7 +133,7 @@ async def test_d3_caller_data_is_not_mutated(db, fake, entry):
 
 
 async def test_d3_embed_texts_list_is_not_mutated(db, fake):
-    org = await _org(db, "platform")
+    org = await _org(db, "byok")
     texts = [S]
     await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=texts,
                                      model="text-embedding-3-small")
