@@ -95,6 +95,7 @@ async def get_provider_options(
     real native backend exists. Returning ``available`` here while the
     create path rejects would be a UI lie.
     """
+    models = await platform_ai_settings.offered(db, await platform_ai_settings.load(db))
     return {
         "providers": [
             {"key": AiProvider.OPENAI.value, "label": "OpenAI", "availability": "available"},
@@ -114,13 +115,10 @@ async def get_provider_options(
             for preset in OPENAI_COMPATIBLE_PRESETS
         ],
         "ai_native_enabled": settings.ai_native_enabled,
-        # Platform AI providers this org can turn on right now (TBD-586).
+        # Platform AI this org can turn on right now (TBD-586).
         "platform_providers": [
-            {"key": p, "label": platform_ai.PLATFORM_LABELS[p], "models": models}
-            for p, models in platform_ai_settings.offered(
-                await platform_ai_settings.load(db)
-            ).items()
-        ],
+            {"key": "openrouter", "label": platform_ai.PLATFORM_LABEL, "models": models}
+        ] if models else [],
     }
 
 

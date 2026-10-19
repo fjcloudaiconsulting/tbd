@@ -68,10 +68,7 @@ def refuse_platform_ai_keys() -> None:
     """TBD-586 F-N3: the MCP process never dispatches AI, so a house key in
     its environment is a misconfiguration. Refuse to boot, naming the variable
     (never the value)."""
-    for name in (
-        "platform_ai_openrouter_api_key", "platform_ai_openai_api_key",
-        "platform_ai_anthropic_api_key", "platform_ai_gemini_api_key",
-    ):
+    for name in ("platform_ai_openrouter_api_key",):
         if getattr(settings, name):
             # The crash hook logs a RuntimeError as its class only, so name the variable here.
             logger.error("mcp.platform_ai_key_refused", extra={"variable": name.upper()})

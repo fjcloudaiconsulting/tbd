@@ -93,6 +93,7 @@ the env-var name (uppercased).
 | `AI_NATIVE_ENABLED` | no | `false` | `.env` `false` | `.env` `false` | tbd-prod manifest `false` | no | Master gate for the native (server-hosted) provider option. Flipped on with the native adapter + consent UI in PR4. | Native option hidden in the UI. |
 | `MCP_OAUTH_ENABLED` | no | `false` | dev compose `true` | unset | unset (stays `false` until the pen-test) | no | Turns on the MCP OAuth authorization server (TBD-587): the two `/.well-known/oauth-*` documents, `/api/v1/oauth/register`, `/token` and the consent API. Read per request. | Every one of those routes answers the plain 404 of an unknown path. |
 | `AI_NATIVE_CURRENT_CONSENT_VERSION` | no | `"ai-tos-2026-05-22"` | `.env` (same default) | `.env` (same default) | tbd-prod manifest (same default) | no | Pinned ToS version for the native-provider consent flow. POSTs to `/api/v1/settings/ai-providers/consent` must carry this exact `consent_version` string — any mismatch (older OR newer) returns 400 `code=consent_version_outdated` with the current version in the response body. Bump to force every org to re-consent on the next admin-UI mount; existing rows are never auto-upgraded (spec §3.5). | A stale value would block all consent writes; a mistakenly-bumped value would force surprise re-prompts. |
+| `PLATFORM_AI_OPENROUTER_API_KEY` | no | `""` | unset | unset | not bound yet (wired at go-live, from a Secret) | yes | House key for platform-provided AI (TBD-586), the only platform provider. Set on the **backend** component only: the mcp process refuses to boot when it is set. | Empty = platform AI off (fail closed). |
 | `GOOGLE_CLIENT_ID` | yes for SSO | `""` | `.env` (OAuth client id) | unset | tbd-prod secret | yes | Google OAuth2 client id. | SSO endpoints 503; button (if forcibly shown) crashes the redirect. |
 | `CAPTCHA_REQUIRED` | no | `false` | `.env` `false` | unset (defaults to `false`) | tbd-prod manifest `true` | no | Master switch for the register bot gate. When `true`, `/api/v1/auth/register` refuses any request without a token verified by the provider. Exposed to the frontend via `/api/v1/auth/status` so a backend flip is a real rollback on the next page load. First-run setup (`user_count == 0`) bypasses the gate so bootstrap stays usable. | Bot signups not blocked when `false`. When `true` with `CAPTCHA_SECRET=""` the verify call fails closed with `REASON_MISCONFIGURED` and all registrations are refused. |
 | `CAPTCHA_PROVIDER` | no | `"turnstile"` | `.env` | `.env` | tbd-prod manifest | no | Label only today (no dispatch logic). Reserved for a second provider later. | Mislabeled events / metrics; no functional impact. |
@@ -227,6 +228,7 @@ These are secrets (never plain env):
 - `API_TOKEN_HMAC_KEY_PREV` (when rotating the PAT pepper)
 - `AI_CREDENTIAL_ENCRYPTION_KEY`
 - `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` (when rotating)
+- `PLATFORM_AI_OPENROUTER_API_KEY` (backend only, never on mcp)
 - `MAILGUN_API_KEY`
 - `MAILGUN_WEBHOOK_SIGNING_KEY`
 - `CAPTCHA_SECRET`

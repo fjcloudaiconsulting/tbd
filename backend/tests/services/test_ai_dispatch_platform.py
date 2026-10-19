@@ -1,4 +1,4 @@
-"""TBD-586 PR1 stage 2: platform dispatch through the five wrappers.
+"""TBD-586: platform dispatch (OpenRouter only, catalog-driven) through the wrappers.
 
 Real adapters, fake provider over ``httpx.MockTransport``. The DB-level race
 fences (K2-K6) live in ``test_platform_reserve_mysql.py``.
@@ -8,9 +8,13 @@ from __future__ import annotations
 import ast
 import asyncio
 import base64
+import inspect
 import json
+import logging
 import os
+from decimal import Decimal
 from pathlib import Path
+from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -32,12 +36,15 @@ from app.models.org_ai_caps import OrgAIDefaultCaps
 from app.models.org_ai_consent import OrgAIConsent
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.org_ai_routing import OrgAIDefaultRouting
+from app.models.platform_ai_model import PlatformAIModel
 from app.models.platform_ai_spend import PlatformAISpend
 from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.system_setting import SystemSetting
 from app.models.usage_counter import UsageCounter
-from app.models.user import Organization
-from app.services import agent_chat, ai_consent_service, ai_dispatch, platform_ai, platform_reserve
+from app.models.user import Organization, Role, User
+from app.services import (
+    agent_chat, ai_consent_service, ai_dispatch, notification_service, platform_ai, platform_reserve,
+)
 from app.services.ai_credential_crypto import encrypt
 from tests.factories.ai import ai_on_rows
 from app.services.ai_dispatch import (
@@ -49,27 +56,18 @@ from app.services.ai_dispatch import (
     PlatformConsentRequired,
     http_for_dispatch_error,
 )
-from app.services.ai_pricing import MODEL_PRICING, ModelPricing, estimate_cost_micros
+from app.services.ai_pricing import MODEL_PRICING
 from app.services.ai_providers import NativeNotAvailable
 from app.services.ai_providers.base import AIProviderError, CapabilityNotSupported
-from app.services.ai_token_estimate import (
-    _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL,
-    estimate_prompt_tokens_from_messages,
-)
+from app.services.ai_token_estimate import estimate_prompt_tokens_from_messages
 from app.services.usage_service import PlanLimitReached
 
 APP = Path(__file__).resolve().parents[2] / "app"
 MSGS = [{"role": "user", "content": "hi"}]
 TOOLS = [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}]
 SCHEMA = {"type": "object", "required": ["a"]}
-HOSTS = {
-    "openrouter": "openrouter.ai", "openai": "api.openai.com",
-    "anthropic": "api.anthropic.com", "gemini": "generativelanguage.googleapis.com",
-}
-MODELS = {
-    "openrouter": "vendor/model-a", "openai": "gpt-4o-mini",
-    "anthropic": "claude-haiku-4-5", "gemini": "gemini-x",
-}
+MODEL = "vendor/model-a"  # seeded by ``setup`` at 100,000 / 400,000 micro-USD per Mtok
+PRICE = (100_001, 400_001)  # its padded pair
 
 
 # ---- fixtures ------------------------------------------------------------
@@ -102,14 +100,7 @@ async def db(sf):
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setattr(app_settings, "ai_native_enabled", True)
-    for p in HOSTS:
-        monkeypatch.setattr(app_settings, f"platform_ai_{p}_api_key", f"env-key-{p}")
-    monkeypatch.setitem(MODEL_PRICING, "vendor/model-a", ModelPricing(100, 400))
-    monkeypatch.setitem(MODEL_PRICING, "gemini-x", ModelPricing(100, 400))
-    monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "vendor/model-a", 2000)
-    monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "gemini-x", 2000)
-    monkeypatch.setitem(platform_ai.PLATFORM_MODELS, "openrouter", {"vendor/model-a"})
-    monkeypatch.setitem(platform_ai.PLATFORM_MODELS, "gemini", {"gemini-x", "emb-x"})
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "env-key-openrouter")
     monkeypatch.setattr(app_settings, "ai_dispatch_timeout_s", 5.0)
     # BYOK rows are encrypted at rest; CI has no key in its env (the dev .env does).
     monkeypatch.setattr(
@@ -118,6 +109,14 @@ def _env(monkeypatch):
         base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"),
     )
     monkeypatch.setattr(app_settings, "ai_credential_encryption_key_prev", "")
+
+
+class _Broken(httpx.AsyncByteStream):
+    """One SSE chunk, then the connection drops mid-body."""
+
+    async def __aiter__(self):
+        yield b'data: {"choices":[{"delta":{"content":"he"}}]}\n\n'
+        raise httpx.ReadError("dropped")
 
 
 class Fake:
@@ -130,6 +129,8 @@ class Fake:
         self.contents: list[str] = []
         self.content = "hello"
         self.status = 200
+        self.statuses: list[int] = []
+        self.break_stream = False
         self.delay = 0.0
         self.stream_usage = True
         self.stream_done = True
@@ -146,8 +147,11 @@ class Fake:
         body = json.loads(request.content)
         if self.delay:
             await asyncio.sleep(self.delay)
-        if self.status != 200:
-            return httpx.Response(self.status, json={})
+        status = self.statuses.pop(0) if self.statuses else self.status
+        if status != 200:
+            return httpx.Response(status, json={})
+        if self.break_stream:
+            return httpx.Response(200, stream=_Broken())
         p, c = self.usages.pop(0) if self.usages else self.usage
         text = self.contents.pop(0) if self.contents else self.content
         host, path = request.url.host, request.url.path
@@ -208,15 +212,24 @@ def spy(monkeypatch):
     return calls
 
 
-async def set_platform(db, *, enabled="on", cents="1000", models=None):
-    models = models if models is not None else {
-        p: [MODELS[p]] for p in HOSTS} | {"openai": ["gpt-4o-mini", "text-embedding-3-small", "text-embedding-3-large"]}
-    for k, v in (("enabled", enabled), ("global_monthly_cents", cents), ("models", json.dumps(models))):
+async def set_platform(db, *, enabled="on", cents="1000"):
+    for k, v in (("enabled", enabled), ("global_monthly_cents", cents)):
         existing = await db.scalar(select(SystemSetting).where(SystemSetting.key == f"platform_ai.{k}"))
         if existing:
             existing.value = v
         else:
             db.add(SystemSetting(key=f"platform_ai.{k}", value=v))
+    await db.commit()
+
+
+async def mk_model(db, mid, p, c, *, mct=8192, structured=True, enabled=True, ctx=200_000,
+                   seen=None, expires=None):
+    db.add(PlatformAIModel(
+        openrouter_id=mid, name=mid, context_length=ctx, max_completion_tokens=mct,
+        supports_structured_outputs=structured, headline_prompt_micros_per_mtok=p,
+        headline_completion_micros_per_mtok=c, zdr_prompt_micros_per_mtok=p,
+        zdr_completion_micros_per_mtok=c, expires_at=expires,
+        last_seen_at=seen or utcnow_naive(), enabled=enabled))
     await db.commit()
 
 
@@ -236,18 +249,14 @@ async def mk_org(db, *, tokens=100_000, micros=10_000_000, name="Acme", extra=No
     return org.id
 
 
-_ADAPTER_ENUM = {"openrouter": AiProvider.OPENAI_COMPATIBLE, "gemini": AiProvider.OPENAI_COMPATIBLE,
-                 "openai": AiProvider.OPENAI, "anthropic": AiProvider.ANTHROPIC}
-
-
-async def mk_platform(db, org_id, platform="openai", model=None, **cols):
+async def mk_platform(db, org_id, model=MODEL, **cols):
     cred = OrgAICredential(
-        org_id=org_id, provider=cols.pop("provider", _ADAPTER_ENUM[platform]),
-        platform_provider=platform,
-        discovered_capabilities=list(platform_ai.PLATFORM_CAPABILITIES[platform]), **cols)
+        org_id=org_id, provider=cols.pop("provider", AiProvider.OPENAI_COMPATIBLE),
+        platform_provider="openrouter",
+        discovered_capabilities=list(platform_ai.PLATFORM_CAPABILITIES), **cols)
     db.add(cred)
     await db.flush()
-    db.add(OrgAIDefaultRouting(org_id=org_id, credential_id=cred.id, model=model or MODELS[platform]))
+    db.add(OrgAIDefaultRouting(org_id=org_id, credential_id=cred.id, model=model))
     db.add(OrgAIConsent(org_id=org_id, consent_version=app_settings.ai_native_current_consent_version))
     await db.commit()
     return cred
@@ -270,11 +279,22 @@ async def ledger(sf):
         return (await s.scalars(select(AIUsageLedger).order_by(AIUsageLedger.id))).all()
 
 
-async def setup(db, *, provider="openai", model=None, **org_kw):
+async def setup(db, *, model=MODEL, **org_kw):
     await set_platform(db)
+    if await db.get(PlatformAIModel, MODEL) is None:
+        await mk_model(db, MODEL, 100_000, 400_000)
     org = await mk_org(db, **org_kw)
-    cred = await mk_platform(db, org, provider, model)
+    cred = await mk_platform(db, org, model)
     return org, cred
+
+
+async def disable(db, mid):
+    (await db.get(PlatformAIModel, mid)).enabled = False
+    await db.commit()
+
+
+def settled(p=20, c=7, price=PRICE):
+    return platform_ai.cost_micros(p, c, *price)
 
 
 # ---- the five entry points -------------------------------------------------
@@ -299,13 +319,7 @@ async def _stream(db, org, mt=100):
         db, org_id=org, feature_key="chat", messages=MSGS, max_tokens=mt)]
 
 
-async def _embed(db, org, mt=None):
-    return await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=["hi"],
-                                            model="text-embedding-3-small")
-
-
-ENTRIES = {"call_llm": _chat, "structured": _structured, "embed": _embed,
-           "function": _function, "stream": _stream}
+ENTRIES = {"call_llm": _chat, "structured": _structured, "function": _function, "stream": _stream}
 ALL = pytest.mark.parametrize("entry", list(ENTRIES))
 
 
@@ -334,14 +348,9 @@ async def test_every_entry_point_reserves_then_settles_to_actual(db, sf, fake, s
     assert len(spy) == 1
     rows = await ledger(sf)
     assert [r.billing_source for r in rows] == ["platform"]
-    p, c = (fake.embed_tokens, 0) if entry == "embed" else fake.usage
-    model = rows[0].model
-    assert await counters(sf, org) == {
-        "platform_ai.tokens": p + c,
-        "platform_ai.micros": estimate_cost_micros(model=model, prompt_tokens=p, completion_tokens=c)}
-    assert await spend(sf) == estimate_cost_micros(model=model, prompt_tokens=p, completion_tokens=c)
-    if entry != "embed":
-        assert all(b["max_tokens"] == 100 for b in fake.bodies)
+    assert await counters(sf, org) == {"platform_ai.tokens": 27, "platform_ai.micros": settled()}
+    assert await spend(sf) == settled()
+    assert all(b["max_tokens"] == 1024 for b in fake.bodies)  # caller 100, floored
 
 
 async def test_byok_dispatch_never_reserves_and_is_org_key(db, sf, fake, spy):
@@ -375,57 +384,46 @@ async def test_k13_byok_bodies_are_byte_identical_no_bound_no_extras(db, sf, fak
     assert spy == [] and "max_tokens" not in fake.bodies[0] and "provider" not in fake.bodies[0]
 
 
-# ---- F-V1: all four providers, bound, key, host, zero usage ------------------
+# ---- F-V1: bound, key, host, zero usage ------------------------------------
 
-@pytest.mark.parametrize("provider", list(HOSTS))
-async def test_f_v1_explicit_bound_key_and_host_on_every_provider(db, sf, fake, spy, provider):
-    org, _ = await setup(db, provider=provider)
-    await _chat(db, org, None)  # caller pins nothing -> the model's ceiling
+async def test_f_v1_explicit_bound_key_and_host(db, sf, fake, spy):
+    org, _ = await setup(db)
+    await _chat(db, org, None)  # caller pins nothing -> the platform ceiling
     req = fake.reqs[0]
-    assert req.url.host == HOSTS[provider]
-    key = req.headers.get("x-api-key") or req.headers["authorization"].removeprefix("Bearer ")
-    assert key == f"env-key-{provider}"
-    ceiling = _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL[MODELS[provider]]
-    assert fake.bodies[0]["max_tokens"] == ceiling
-    assert spy[0].tokens == estimate_prompt_tokens_from_messages(MSGS) + ceiling
+    assert req.url.host == "openrouter.ai"
+    assert req.headers["authorization"] == "Bearer env-key-openrouter"
+    assert fake.bodies[0]["max_tokens"] == 4096
+    assert spy[0].tokens == estimate_prompt_tokens_from_messages(MSGS) + 4096
 
 
-@pytest.mark.parametrize("provider", list(HOSTS))
-async def test_f_v1_zero_usage_keeps_the_reservation(db, sf, fake, spy, provider):
-    org, _ = await setup(db, provider=provider)
+async def test_f_v1_zero_usage_keeps_the_reservation(db, sf, fake, spy):
+    org, _ = await setup(db)
     fake.usage = (0, 0)
     await _chat(db, org, 100)
     assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
     assert (await counters(sf, org))["platform_ai.micros"] == spy[0].micros
 
 
-async def test_bound_is_min_of_caller_and_ceiling(db, sf, fake):
+@pytest.mark.parametrize("caller,sent", [(None, 4096), (300, 1024), (2000, 2000), (9000, 4096)])
+async def test_fence9_max_tokens_is_always_sent_floored_and_capped(db, sf, fake, caller, sent):
+    """FENCE 9. Kills the BYOK ceiling table on the platform path; omitting
+    ``max_tokens``; no floor (300 on a reasoning default)."""
     org, _ = await setup(db)
-    await _chat(db, org, 10**6)
-    assert fake.bodies[0]["max_tokens"] == 4096
+    await _chat(db, org, caller)
+    assert fake.bodies[0]["max_tokens"] == sent
 
 
 # ---- F-Q7 -----------------------------------------------------------------
 
 async def test_f_q7_a_second_dispatch_that_does_not_fit_is_refused(db, sf, fake, spy):
-    org, _ = await setup(db, tokens=250)
-    await _chat(db, org, 100)             # reserves 101, settles to 27
+    org, _ = await setup(db, tokens=1250)
+    await _chat(db, org, 100)             # reserves 1 + 1024, settles to 27
     fake.usage = (100, 100)
-    await _chat(db, org, 100)             # counter 27 + 101 <= 250, settles to 227
+    await _chat(db, org, 100)             # counter 27 + 1025 <= 1250, settles to 227
     n = len(fake.reqs)
     with pytest.raises(AIPlanLimitReached):
-        await _chat(db, org, 100)         # 227 + 101 > 250
+        await _chat(db, org, 100)         # 227 + 1025 > 1250
     assert len(fake.reqs) == n and (await counters(sf, org))["platform_ai.tokens"] == 227
-
-
-@pytest.mark.parametrize("status", [500, 429])
-async def test_f_q7_provider_error_keeps_the_full_reservation(db, sf, fake, spy, status):
-    org, _ = await setup(db)
-    fake.status = status
-    with pytest.raises(AIDispatchFailed):
-        await _chat(db, org)
-    assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
-    assert (await ledger(sf))[0].billing_source == "platform"
 
 
 async def test_f_q7_dispatch_timeout_keeps_the_full_reservation(db, sf, fake, spy, monkeypatch):
@@ -441,7 +439,7 @@ async def test_f_q7_dispatch_timeout_keeps_the_full_reservation(db, sf, fake, sp
 
 async def test_f_q7_pre_send_refusal_reserves_nothing(db, sf, fake, spy):
     org, _ = await setup(db)
-    await set_platform(db, models={"openai": ["something-else"]})
+    await disable(db, MODEL)
     with pytest.raises(NativeNotAvailable):
         await _chat(db, org)
     assert spy == [] and await counters(sf, org) == {} and fake.reqs == []
@@ -472,7 +470,7 @@ async def test_f_q4_a_huge_org_cap_does_not_lift_the_plan_limit(db, sf, fake):
     db.add(OrgAIDefaultCaps(org_id=org, hard_cap_cents=10**9))
     await db.commit()
     with pytest.raises(AIPlanLimitReached):
-        await _chat(db, org, 100)  # 101 > 100
+        await _chat(db, org, 100)  # 1025 > 100
     assert fake.reqs == []
 
 
@@ -507,7 +505,7 @@ async def test_f_q8_byok_still_pins_zero_and_dispatches(db, sf, fake, monkeypatc
     assert len(fake.reqs) == 1
 
 
-# ---- F-N1 / F-S1 / C9 / C12 / K11 ------------------------------------------
+# ---- F-S1 / K11 ------------------------------------------
 
 async def test_f_s1_env_floor_off_refuses_with_setting_on(db, sf, fake, monkeypatch):
     org, _ = await setup(db)
@@ -534,53 +532,9 @@ async def test_f_s1_global_ceiling_zero_refuses_and_absent_is_not_unlimited(db, 
     assert fake.reqs == [] and await counters(sf, org) == {}
 
 
-async def test_f_n1_non_allowlisted_model_is_refused(db, sf, fake):
-    org, _ = await setup(db, model="gpt-4o")  # priced, not allowlisted
-    with pytest.raises(NativeNotAvailable):
-        await _chat(db, org)
-    assert fake.reqs == []
-
-
-async def test_c9_priced_at_dispatch_a_deleted_pricing_row_refuses_before_reserve(db, sf, fake, spy, monkeypatch):
-    org, _ = await setup(db, provider="gemini")
-    monkeypatch.delitem(MODEL_PRICING, "gemini-x")
-    with pytest.raises(NativeNotAvailable):
-        await _chat(db, org)
-    assert spy == [] and fake.reqs == []
-
-
-async def test_c9_unknown_output_ceiling_refuses(db, sf, fake, spy, monkeypatch):
-    org, _ = await setup(db, provider="gemini")
-    monkeypatch.delitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "gemini-x")
-    with pytest.raises(NativeNotAvailable):
-        await _chat(db, org)
-    assert spy == []
-
-
-async def test_c9_the_default_pricing_row_is_never_priced(db, sf, fake, spy, monkeypatch):
-    monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "_default", 100)
-    await set_platform(db, models={"gemini": ["_default"]})
-    org = await mk_org(db)
-    await mk_platform(db, org, "gemini", "_default")
-    with pytest.raises(NativeNotAvailable):
-        await _chat(db, org)
-    assert spy == []
-
-
-async def test_c12_a_priced_openai_model_not_vetted_for_max_tokens_is_refused(db, sf, fake, spy, monkeypatch):
-    monkeypatch.setitem(MODEL_PRICING, "o3-mini", ModelPricing(1, 1))
-    monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "o3-mini", 100)
-    await set_platform(db, models={"openai": ["o3-mini"]})
-    org = await mk_org(db)
-    await mk_platform(db, org, "openai", "o3-mini")
-    with pytest.raises(NativeNotAvailable):
-        await _chat(db, org)
-    assert spy == [] and fake.reqs == []
-
-
 async def test_k11_key_removed_after_allowlisting_refuses_before_reserve(db, sf, fake, spy, monkeypatch):
     org, _ = await setup(db)
-    monkeypatch.setattr(app_settings, "platform_ai_openai_api_key", "")
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "")
     with pytest.raises(NativeNotAvailable):
         await _chat(db, org)
     assert spy == [] and fake.reqs == []
@@ -589,7 +543,8 @@ async def test_k11_key_removed_after_allowlisting_refuses_before_reserve(db, sf,
 async def test_k11_tampered_platform_row_reaches_the_preset_host_with_the_env_key(db, sf, fake):
     await set_platform(db)
     org = await mk_org(db)
-    await mk_platform(db, org, "openrouter", provider=AiProvider.OLLAMA,
+    await mk_model(db, MODEL, 100_000, 400_000)
+    await mk_platform(db, org, provider=AiProvider.OLLAMA,
                       base_url="https://attacker.example", base_url_is_api_root=False,
                       encrypted_api_key=encrypt("stored-key"), encrypted_bearer_token=encrypt("stored-bearer"))
     await _chat(db, org)
@@ -613,29 +568,126 @@ async def test_k11_a_byok_row_never_receives_an_env_key(db, sf, fake):
     assert auth == "Bearer sk-mine" and "env-key" not in auth and fake.reqs[0].url.host == "byok.example"
 
 
-# ---- F-N4: OpenRouter data-collection deny ---------------------------------
+# ---- D5: the request body ----------------------------------------------------
 
+def _prefs(p, c):
+    return {"zdr": True, "data_collection": "deny", "require_parameters": True, "allow_fallbacks": True,
+            "max_price": {"prompt": p / 1e6, "completion": c / 1e6, "request": 0}}
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["one_model", "with_fallback"])
 @ALL
-async def test_f_n4_openrouter_bodies_carry_the_deny_preference(db, sf, fake, entry):
-    if entry == "embed":
-        pytest.skip("embeddings body has no provider routing")
-    org, _ = await setup(db, provider="openrouter")
+async def test_fence1_every_body_carries_the_full_provider_prefs(db, sf, fake, entry, fallback):
+    """FENCE 1. Kills prefs on one entry point only; prefs dropped when a
+    fallback list is present."""
+    org, _ = await setup(db)
+    if fallback:
+        await mk_model(db, "vendor/model-b", 150_000, 600_000)
     await ENTRIES[entry](db, org)
-    assert all(b["provider"] == {"data_collection": "deny"} for b in fake.bodies)
+    for b in fake.bodies:
+        if fallback:
+            assert b["provider"] == _prefs(150_001, 600_001)
+            assert b["models"] == [MODEL, "vendor/model-b"]
+        else:
+            assert b["provider"] == _prefs(*PRICE) and "models" not in b
 
 
-@pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini"])
-async def test_f_n4_control_other_providers_do_not_get_it(db, sf, fake, provider):
-    org, _ = await setup(db, provider=provider)
-    await _chat(db, org)
-    assert "provider" not in fake.bodies[0]
+@pytest.mark.parametrize("models,price", [(["a/m"], (1, 2)), (["a/m", "b/m"], (10**10, 7))])
+def test_fence2_the_factory_alone_owns_the_privacy_prefs(monkeypatch, models, price):
+    """FENCE 2. Kills a caller able to override or omit the privacy prefs."""
+    a = platform_ai.build_adapter("openrouter", models=models, max_price=price)
+    prov = a.extra_body["provider"]
+    assert (prov["zdr"], prov["data_collection"], prov["require_parameters"]) == (True, "deny", True)
+    assert set(inspect.signature(platform_ai.build_adapter).parameters) == {"platform_provider", "models", "max_price"}
+
+
+def test_fence3_build_adapter_has_exactly_one_caller():
+    """FENCE 3 (AST). Kills a second construction path that could skip the
+    reservation or the factory's body."""
+    sites = []
+    for path in APP.rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        where = _enclosing(tree)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and (
+                (isinstance(n.func, ast.Attribute) and n.func.attr == "build_adapter")
+                or (isinstance(n.func, ast.Name) and n.func.id == "build_adapter")
+            ):
+                sites.append((path.relative_to(APP).as_posix(), where.get(n)))
+    assert sites == [("services/platform_reserve.py", "reserve")]
+
+
+async def test_fence4_reserve_and_cap_on_the_dearer_of_chosen_and_fallback(db, sf, fake, spy):
+    """FENCE 4. Kills reserving or capping on the chosen model only; no padding."""
+    org, _ = await setup(db)
+    await mk_model(db, "vendor/model-b", 150_000, 600_000)
+    await _chat(db, org, None)
+    prompt = estimate_prompt_tokens_from_messages(MSGS)
+    assert spy[0].micros == platform_ai.cost_micros(prompt, 4096, 150_001, 600_001)
+    assert fake.bodies[0]["provider"]["max_price"] == {"prompt": 0.150001, "completion": 0.600001, "request": 0}
+
+
+@pytest.mark.parametrize("p", [1, 61, 110_001, 1_234_567_891, 10_000_000_001])
+def test_fence5_max_price_round_trips_exactly(p):
+    """FENCE 5. Kills rounding ``max_price`` below the reserved price."""
+    mp = platform_ai.build_adapter("openrouter", models=["a/m"], max_price=(p, p)).extra_body["provider"]["max_price"]
+    assert Decimal(str(mp["prompt"])) * 10**6 == p and Decimal(str(mp["completion"])) * 10**6 == p
+
+
+# ---- D4: model choice ----------------------------------------------------------
+
+async def test_fence6_default_is_the_cheapest_capable_offerable_row(db):
+    """FENCE 6. Kills ignoring capability, ``enabled``, freshness, context, the
+    output floor, ZDR/mct/expiry (a ``candidates()`` that re-implements
+    ``offerable``); prompt-only ordering."""
+    now = utcnow_naive()
+    await mk_model(db, "A", 100_000, 400_000, structured=False)
+    await mk_model(db, "B", 100_000, 500_000)
+    await mk_model(db, "C", 1_000_000, 4_000_000)
+    await mk_model(db, "D", 1, 1, enabled=False)
+    await mk_model(db, "E", 2, 2, seen=now - timedelta(hours=49))
+    await mk_model(db, "F", 3, 3, ctx=64_000)
+    await mk_model(db, "H", 4, 4, mct=2048)
+    await mk_model(db, "J", 5, 5, mct=None)
+    await mk_model(db, "K", 6, 6, expires=now.date() + timedelta(days=3))
+    await mk_model(db, "G", 50_000, 600_000, structured=False)  # prompt below A's, blend above
+    db.add(PlatformAIModel(openrouter_id="I", name="I", context_length=200_000, max_completion_tokens=8192,
+                           supports_structured_outputs=True, last_seen_at=now, enabled=True))
+    await db.commit()
+    assert (await platform_ai.pick(db, "function_call", None)).model == "A"
+    assert (await platform_ai.pick(db, "structured_output", None)).model == "B"
+
+
+async def test_fence7_routing_is_honoured_and_a_dead_route_falls_back(db, sf, fake):
+    """FENCE 7. Kills ignoring routing; erroring on a disabled routed choice."""
+    await set_platform(db)
+    await mk_model(db, "A", 100_000, 400_000, structured=False)
+    await mk_model(db, "B", 100_000, 500_000)
+    await mk_model(db, "C", 1_000_000, 4_000_000, structured=False)
+    org = await mk_org(db)
+    await mk_platform(db, org, "C")
+    await _function(db, org)
+    await _structured(db, org)
+    await disable(db, "C")
+    await _function(db, org)
+    assert [b["model"] for b in fake.bodies] == ["C", "B", "A"]
+
+
+async def test_fence8_no_candidate_refuses_before_reserve(db, sf, fake, spy):
+    """FENCE 8. Kills falling back to a non-enabled row or a code-table model."""
+    org, _ = await setup(db, model="gpt-4o-mini")
+    assert "gpt-4o-mini" in MODEL_PRICING
+    await disable(db, MODEL)
+    with pytest.raises(NativeNotAvailable) as ei:
+        await _chat(db, org)
+    assert ei.value.code == "platform_model_not_allowed"
+    assert spy == [] and fake.reqs == [] and await counters(sf, org) == {}
 
 
 # ---- R4: include_usage stream only --------------------------------------------
 
-@pytest.mark.parametrize("provider", ["openrouter", "openai", "gemini"])
-async def test_r4_include_usage_only_on_stream_bodies(db, sf, fake, provider):
-    org, _ = await setup(db, provider=provider)
+async def test_r4_include_usage_only_on_stream_bodies(db, sf, fake):
+    org, _ = await setup(db)
     await _chat(db, org)
     await _stream(db, org)
     plain, streamed = fake.bodies
@@ -646,17 +698,18 @@ async def test_r4_include_usage_only_on_stream_bodies(db, sf, fake, provider):
 # ---- K7 / K8 / K9 / R19 ----------------------------------------------------
 
 POST_SEND = [
-    AIProviderError(code="boom"), asyncio.TimeoutError(), NotImplementedError(), ValueError("parse"),
-    CapabilityNotSupported(model="m"), asyncio.CancelledError(),
+    AIProviderError(code="boom"), asyncio.TimeoutError(), httpx.ConnectError("x"), NotImplementedError(),
+    ValueError("parse"), CapabilityNotSupported(model="m"), asyncio.CancelledError(),
 ]
 
 
 @pytest.mark.parametrize("exc", POST_SEND, ids=lambda e: type(e).__name__)
-@pytest.mark.parametrize("entry", ["call_llm", "function", "structured", "stream", "embed"])
+@pytest.mark.parametrize("entry", ["call_llm", "function", "structured", "stream"])
 async def test_k7_every_post_send_failure_keeps_the_reservation(db, sf, fake, spy, monkeypatch, exc, entry):
     org, _ = await setup(db)
+    """FENCE 11 (with the timeout and no-status legs). Kills settling on errors that may have billed."""
     method = {"call_llm": "chat", "function": "function_call", "structured": "chat_structured",
-              "stream": "stream", "embed": "embed"}[entry]
+              "stream": "stream"}[entry]
 
     if entry == "stream":
         async def raiser(**kw):
@@ -667,7 +720,7 @@ async def test_k7_every_post_send_failure_keeps_the_reservation(db, sf, fake, sp
             raise exc
 
     adapter = SimpleNamespace(**{method: raiser})
-    monkeypatch.setattr(platform_ai, "build_adapter", lambda _p: adapter)
+    monkeypatch.setattr(platform_ai, "build_adapter", lambda _p, **kw: adapter)
     with pytest.raises(BaseException):
         await ENTRIES[entry](db, org)
     c = await counters(sf, org)
@@ -693,8 +746,7 @@ async def test_k9_ledger_commit_failure_after_settle_leaves_actual(db, sf, fake,
     monkeypatch.setattr(ai_dispatch, "_write_ledger_row", bad)
     with pytest.raises(OperationalError):
         await ENTRIES[entry](db, org)
-    p, c = (fake.embed_tokens, 0) if entry == "embed" else fake.usage
-    assert (await counters(sf, org))["platform_ai.tokens"] == p + c
+    assert (await counters(sf, org))["platform_ai.tokens"] == 27
 
 
 @ALL
@@ -718,8 +770,8 @@ async def test_k10_structured_bound_on_all_attempts_triple_reservation_summed_se
     fake.contents = ["nope", "{}", '{"a": 1}']
     fake.usages = [(10, 5), (11, 6), (12, 7)]
     await _structured(db, org, 100)
-    assert [b["max_tokens"] for b in fake.bodies] == [100, 100, 100]
-    one = estimate_prompt_tokens_from_messages(MSGS + [{"role": "user", "content": json.dumps(SCHEMA)}]) + 100
+    assert [b["max_tokens"] for b in fake.bodies] == [1024, 1024, 1024]
+    one = estimate_prompt_tokens_from_messages(MSGS + [{"role": "user", "content": json.dumps(SCHEMA)}]) + 1024
     assert spy[0].tokens == 3 * one
     assert (await counters(sf, org))["platform_ai.tokens"] == 15 + 17 + 19
 
@@ -749,43 +801,6 @@ async def test_r9_platform_structured_projection_includes_the_schema(db, sf, fak
     assert spy[0].tokens >= 3 * (1000 + 100)
 
 
-# ---- R6 / K12 embed ------------------------------------------------------------
-
-async def test_r6_platform_embed_prices_and_ledgers_the_model_sent(db, sf, fake, spy):
-    org, _ = await setup(db)
-    await _embed(db, org)
-    rows = await ledger(sf)
-    assert rows[0].model == "text-embedding-3-small"  # not the provider-returned name
-    assert rows[0].cost_micros == estimate_cost_micros(
-        model="text-embedding-3-small", prompt_tokens=15, completion_tokens=0)
-
-
-async def test_k12_embed_override_is_projected_on_the_model_sent(db, sf, fake, spy):
-    org, _ = await setup(db, tokens=10**7)
-    big = ["x" * 3_500_000]
-    await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=big,
-                                     model="text-embedding-3-large")
-    assert spy[0].micros == estimate_cost_micros(
-        model="text-embedding-3-large", prompt_tokens=1_000_000, completion_tokens=0)
-    assert fake.bodies[0]["model"] == "text-embedding-3-large"
-
-
-async def test_k12_non_allowlisted_embed_override_is_refused(db, sf, fake, spy):
-    org, _ = await setup(db)
-    await set_platform(db, models={"openai": ["gpt-4o-mini", "text-embedding-3-small"]})
-    with pytest.raises(NativeNotAvailable):
-        await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=["hi"],
-                                         model="text-embedding-3-large")
-    assert spy == [] and fake.reqs == []
-
-
-async def test_anthropic_platform_row_cannot_embed(db, sf, fake, spy):
-    org, _ = await setup(db, provider="anthropic")
-    with pytest.raises(AICapabilityNotSupported):
-        await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=["hi"])
-    assert spy == []
-
-
 # ---- stream: usage_final, finally settle, R10 ---------------------------------
 
 async def test_stream_without_a_final_usage_chunk_keeps_the_reservation(db, sf, fake, spy):
@@ -795,17 +810,9 @@ async def test_stream_without_a_final_usage_chunk_keeps_the_reservation(db, sf, 
     assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
 
 
-@pytest.mark.parametrize("provider", ["openrouter", "openai", "gemini"])
-async def test_r5_openai_shape_usage_without_done_is_not_final(db, sf, fake, spy, provider):
-    org, _ = await setup(db, provider=provider)
+async def test_r5_openai_shape_usage_without_done_is_not_final(db, sf, fake, spy):
+    org, _ = await setup(db)
     fake.stream_done = False  # connection dropped after the usage chunk
-    await _stream(db, org)
-    assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
-
-
-async def test_anthropic_stream_message_start_alone_is_not_final(db, sf, fake, spy):
-    org, _ = await setup(db, provider="anthropic")
-    fake.stream_usage = False  # message_start reports output_tokens=1, nothing after
     await _stream(db, org)
     assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
 
@@ -1013,7 +1020,8 @@ async def test_r1_blocking_a_meter_without_a_limit_fails_closed_not_unlimited_no
     with pytest.raises(AIPlatformUnavailable):  # headroom: no TypeError
         await _chat(db, org)
     with pytest.raises(platform_reserve.PlatformAIUnavailable):  # reserve: no `<= NULL`
-        await platform_reserve.reserve(db, org, SimpleNamespace(platform_provider="openai"), 1, 1, 100)
+        await platform_reserve.reserve(db, org, SimpleNamespace(platform_provider="openrouter"), 1, 1, 100,
+                                      models=[MODEL], max_price=PRICE)
     assert fake.reqs == [] and await counters(sf, org) == {}
 
 
@@ -1043,7 +1051,8 @@ async def test_item9_entitlement_read_failures_propagate_and_reserve_nothing(db,
     assert fake.reqs == [] and await counters(sf, org) == {} and await spend(sf) == 0
     # The typed-refusal property of the reserve path keeps its own fence.
     with pytest.raises(platform_reserve.PlatformAIUnavailable):
-        await platform_reserve.reserve(db, org, SimpleNamespace(platform_provider="openai"), 1, 1, 100)
+        await platform_reserve.reserve(db, org, SimpleNamespace(platform_provider="openrouter"), 1, 1, 100,
+                                      models=[MODEL], max_price=PRICE)
     with pytest.raises(platform_reserve.PlatformAIUnavailable):
         await platform_reserve.check_headroom(db, org, 1, 1, 100)
 
@@ -1061,7 +1070,7 @@ async def test_item10_settings_read_db_error_is_a_402_not_a_500(db, sf, fake, mo
 
 
 async def test_item3_openrouter_embed_is_refused_before_reserve(db, sf, fake, spy):
-    org, _ = await setup(db, provider="openrouter")
+    org, _ = await setup(db)
     with pytest.raises(AICapabilityNotSupported):
         await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=["hi"])
     assert spy == [] and fake.reqs == [] and await counters(sf, org) == {}
@@ -1079,34 +1088,18 @@ async def test_item11_assistant_tool_call_arguments_are_projected(db, sf, fake, 
 
 # ---- item 4: cents and global spend are not vacuous ----------------------------
 
-@pytest.fixture
-def big_prices(monkeypatch):
-    monkeypatch.setitem(MODEL_PRICING, "gemini-x", ModelPricing(1_000_000, 2_000_000))   # 1c / 2c per token
-    monkeypatch.setitem(MODEL_PRICING, "emb-x", ModelPricing(10_000_000, 0))              # 10c per token
-    monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "emb-x", 0)
-
-
-async def _embed_x(db, org, mt=None):
-    return await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=["hi"], model="emb-x")
-
-
-BIG = {**ENTRIES, "embed": _embed_x}
-
-
 @ALL
-async def test_item4_cents_meter_and_global_spend_settle_to_the_actual_cost(db, sf, fake, spy, big_prices, entry):
-    await set_platform(db, models={"gemini": ["gemini-x", "emb-x"]})
-    org = await mk_org(db)
-    await mk_platform(db, org, "gemini")
-    await BIG[entry](db, org)
-    expected = 1_500_000 if entry == "embed" else 340_000  # 15 tokens*10c ; 20*1c + 7*2c, in micros
+async def test_item4_cents_meter_and_global_spend_settle_to_the_actual_cost(db, sf, fake, spy, entry):
+    await set_platform(db)
+    await mk_model(db, "big/m", 1_000_000_000, 2_000_000_000)  # 0.1c / 0.2c per token
+    org = await mk_org(db, micros=10**9)
+    await mk_platform(db, org, "big/m")
+    await ENTRIES[entry](db, org)
+    expected = settled(price=(1_000_000_001, 2_000_000_001))
     assert spy[0].micros > 0 and spy[0].micros != expected  # reserved differs from actual
     c = await counters(sf, org)
     assert c["platform_ai.micros"] == expected and await spend(sf) == expected
-    rows = await ledger(sf)
-    assert rows[0].cost_micros == expected
-    if entry == "embed":
-        assert rows[0].model == "emb-x"  # R6: priced on the model sent, not response.model
+    assert (await ledger(sf))[0].cost_micros == expected
 
 
 # ---- TBD-586 PR2: consent at dispatch (D2 / C1), provider ownership (B2) -----
@@ -1141,17 +1134,6 @@ async def test_r2_2_dark_platform_with_ai_off_answers_consent_required(db, sf, f
         await _chat(db, org)
     assert http_for_dispatch_error(ei.value).detail["code"] == "ai_consent_required"
     assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
-
-
-async def test_b2a_a_model_outside_the_provider_is_refused_before_reserve(db, sf, fake, spy):
-    await set_platform(db, models={"anthropic": ["gpt-4o"]})
-    org = await mk_org(db)
-    await mk_platform(db, org, "anthropic", "gpt-4o")
-    with pytest.raises(NativeNotAvailable) as ei:
-        await _chat(db, org)
-    assert ei.value.code == "platform_model_not_allowed"
-    assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
-
 
 
 async def test_consent_read_db_error_propagates_and_dispatches_nothing(db, sf, fake, spy, monkeypatch):
@@ -1215,17 +1197,15 @@ async def test_f13_chat_preflight_on_a_byok_org_with_ai_off_is_412_and_counts_no
 
 @pytest.mark.parametrize("entry", ["call_llm", "structured", "function", "stream"])
 async def test_fence_reported_cost_settles_meter_spend_and_ledger(db, sf, fake, spy, entry):
-    """FENCE 10 (Jira): OpenRouter reports $0.001234; the plan meter, the global
-    spend row and the ledger all end at 1234 micros. Kills settling the
-    estimate, and meter and spend diverging."""
-    await set_platform(db)
-    org = await mk_org(db)
-    await mk_platform(db, org, "openrouter")
-    fake.cost = 0.001234
+    """FENCE 13 (TBD-630 fence 10): OpenRouter reports $0.000405; the plan
+    meter, the global spend row and the ledger all end at 405 micros. Kills
+    settling the estimate, and meter and spend diverging."""
+    org, _ = await setup(db)
+    fake.cost = 0.000405
     await ENTRIES[entry](db, org)
-    assert (await counters(sf, org))["platform_ai.micros"] == 1234
-    assert await spend(sf) == 1234
-    assert [r.cost_micros for r in await ledger(sf)] == [1234]
+    assert (await counters(sf, org))["platform_ai.micros"] == 405
+    assert await spend(sf) == 405
+    assert [r.cost_micros for r in await ledger(sf)] == [405]
 
 
 async def test_fence_global_ceiling_is_converted_at_both_sites(db, sf, fake, monkeypatch):
@@ -1234,15 +1214,18 @@ async def test_fence_global_ceiling_is_converted_at_both_sites(db, sf, fake, mon
     ``reserve`` (the ``_PlatformReq`` ceiling); 10,000 is admitted. Kills the
     ceiling left in cents, or converted at only one of the two sites."""
     await set_platform(db, cents="1")
+    await mk_model(db, MODEL, 0, 0)
     org = await mk_org(db, micros=10**9)
-    cred = await mk_platform(db, org, "openrouter")
+    cred = await mk_platform(db, org)
 
-    async def prepare(price):
-        # prompt priced at 0; 100 completion tokens x price / 100 = price micros
-        monkeypatch.setitem(MODEL_PRICING, "vendor/model-a", ModelPricing(0, price))
+    async def prepare(micros):
+        # prompt priced 0 (padded to 1); 1024 completion tokens at the padded rate
+        row = await db.get(PlatformAIModel, MODEL)
+        row.zdr_completion_micros_per_mtok = {10_000: 9_765_623, 10_001: 9_765_624}[micros]
+        await db.commit()
         return await ai_dispatch._prepare_platform(
-            db, org_id=org, cred=cred, capability="chat", routed_model="vendor/model-a",
-            model_override=None, messages=MSGS, max_tokens=100, retry_multiplier=1)
+            db, org_id=org, cred=cred, capability="chat", routed_model=MODEL,
+            messages=MSGS, max_tokens=100, retry_multiplier=1)
 
     # 10,000 passes the REAL pre-flight (a ceiling left in cents would refuse it).
     _, _, req_ok = await prepare(10_000)
@@ -1265,11 +1248,123 @@ async def test_fence_openrouter_byok_usage_cost_is_not_the_spend(db, sf, fake):
     """FENCE (review): with ``usage.is_byok`` true, ``usage.cost`` is only
     OpenRouter's fee; the upstream spend is elsewhere. The estimate is charged,
     never the ~0 fee. Kills ignoring ``is_byok``."""
-    await set_platform(db)
-    org = await mk_org(db)
-    await mk_platform(db, org, "openrouter")
+    org, _ = await setup(db)
     fake.cost, fake.is_byok = 0.0001, True
     await _chat(db, org)
-    want = estimate_cost_micros(model="vendor/model-a", prompt_tokens=20, completion_tokens=7)
+    want = settled()
     assert want != 100
     assert [r.cost_micros for r in await ledger(sf)] == [want]
+
+
+# ---- D5: a provider refusal settles (B3) ---------------------------------------
+
+@pytest.mark.parametrize("status", [404, 429, 500, 502, 503])
+@ALL
+async def test_fence10_a_non_200_refusal_settles_to_zero(db, sf, fake, spy, entry, status):
+    """FENCE 10. Kills a storm of non-200s burning meters and the global
+    ceiling with $0 spent. Deliberately reverses the deleted F-Q7 fence
+    (500/429 kept the reservation): OpenRouter does not bill a non-200."""
+    org, _ = await setup(db)
+    fake.status = status
+    with pytest.raises(AIDispatchFailed):
+        await ENTRIES[entry](db, org)
+    assert spy[0].tokens > 0
+    assert await counters(sf, org) == {"platform_ai.tokens": 0, "platform_ai.micros": 0}
+    assert await spend(sf) == 0
+    assert [(r.success, r.cost_micros) for r in await ledger(sf)] == [(False, 0)]
+
+
+async def test_fence10_structured_refusal_settles_to_the_billed_earlier_attempt(db, sf, fake, spy):
+    """FENCE 10. Kills settling earlier billed attempts to 0."""
+    org, _ = await setup(db)
+    fake.contents = ["{}"]  # schema-invalid
+    fake.usages = [(20, 7)]
+    fake.statuses = [200, 404]
+    with pytest.raises(AIDispatchFailed):
+        await _structured(db, org)
+    assert await counters(sf, org) == {"platform_ai.tokens": 27, "platform_ai.micros": settled()}
+
+
+async def test_fence10_structured_refusal_after_an_incomplete_attempt_keeps(db, sf, fake, spy):
+    org, _ = await setup(db)
+    fake.contents = ["{}"]
+    fake.usages = [(20, 0)]
+    fake.statuses = [200, 404]
+    with pytest.raises(AIDispatchFailed):
+        await _structured(db, org)
+    assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
+
+
+async def test_fence10_a_mid_stream_failure_keeps_the_reservation(db, sf, fake, spy):
+    """FENCE 10. Kills treating a mid-stream failure as a refusal."""
+    org, _ = await setup(db)
+    fake.break_stream = True
+    with pytest.raises(AIDispatchFailed):
+        await _stream(db, org)
+    assert await counters(sf, org) == {"platform_ai.tokens": spy[0].tokens, "platform_ai.micros": spy[0].micros}
+
+
+# ---- D5: missing usage.cost is priced from the catalog --------------------------
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["one_model", "with_fallback"])
+async def test_fence12_missing_cost_settles_on_the_padded_pair(db, sf, fake, fallback):
+    """FENCE 12. Kills ``estimate_cost_micros`` on platform (``_default``);
+    settling on the chosen model's prices when a dearer fallback may have answered."""
+    org, _ = await setup(db)
+    assert MODEL not in MODEL_PRICING
+    if fallback:
+        await mk_model(db, "vendor/model-b", 150_000, 600_000)
+    await _chat(db, org)
+    want = settled(price=(150_001, 600_001) if fallback else PRICE)
+    assert [r.cost_micros for r in await ledger(sf)] == [want]
+    assert (await counters(sf, org))["platform_ai.micros"] == want and await spend(sf) == want
+
+
+# ---- D6: own-key caps count own-key spend only ----------------------------------
+
+def _ledger_row(org, cred_id, micros, source):
+    return AIUsageLedger(org_id=org, credential_id=cred_id, feature_key="chat", model="m", prompt_tokens=1,
+                         completion_tokens=1, total_tokens=2, cost_micros=micros, latency_ms=1, success=True,
+                         billing_source=source)
+
+
+async def test_fence14_platform_spend_does_not_count_toward_the_own_key_cap(db, sf, fake):
+    """FENCE 14. Kills an unfiltered ``_aggregate_cost_micros``."""
+    await set_platform(db)
+    org = await mk_org(db)
+    cred = OrgAICredential(org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-byok"))
+    db.add(cred)
+    await db.flush()
+    db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
+    db.add(OrgAIDefaultCaps(org_id=org, hard_cap_cents=1))
+    db.add(ai_on_rows(org)[0])
+    db.add(_ledger_row(org, None, 1_000_000, "platform"))
+    await db.commit()
+    await _chat(db, org, None)
+    assert len(fake.reqs) == 1
+
+
+async def test_fence15_own_key_caps_never_gate_or_warn_a_platform_dispatch(db, sf, fake, spy, monkeypatch, caplog):
+    """FENCE 15. Kills ``_enforce_cap`` or the soft-cap warning applied to platform."""
+    caplog.set_level(logging.DEBUG)
+    org, cred = await setup(db)
+    db.add(User(org_id=org, username="own", email="own@x.io", password_hash="h", role=Role.OWNER,
+                is_active=True))
+    db.add(OrgAIDefaultCaps(org_id=org, hard_cap_cents=1, soft_cap_cents=1))
+    db.add(_ledger_row(org, cred.id, 50_000, "org_key"))
+    await db.commit()
+    notes, claims = [], []
+
+    async def note(*a, **k):
+        notes.append(k.get("event_type"))
+
+    async def claim(*a, **k):
+        claims.append(a)
+        return True
+
+    monkeypatch.setattr(notification_service, "dispatch_notification", note)
+    monkeypatch.setattr(ai_dispatch.state_db, "claim_token", claim)
+    await _chat(db, org)
+    assert len(spy) == 1 and len(fake.reqs) == 1
+    assert "ai.cap.soft_warning" not in notes and claims == []
+    assert not [r for r in caplog.records if r.getMessage().startswith("ai.dispatch.soft_cap")]

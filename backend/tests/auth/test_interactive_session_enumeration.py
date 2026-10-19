@@ -145,7 +145,7 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     # fail-safe direction and stays PAT-reachable on purpose; see the allowlist
     # in test_every_ai_provider_write_route_is_interactive_only.
     ("PUT", "/api/v1/admin/platform-ai"),            # set_platform_ai
-    ("POST", "/api/v1/settings/ai-providers/platform/openai"),  # enable_platform
+    ("POST", "/api/v1/settings/ai-providers/platform/openrouter"),  # enable_platform
     # TBD-626. A write PAT must not be able to point the org's AI at another
     # host (credential create/rotate/patch, routing) or loosen caps/consent.
     # (Every ai-providers write route except the platform disable is listed.)
@@ -365,15 +365,15 @@ async def test_write_pat_can_still_disable_platform_provider(app, factory, super
         s.add(
             OrgAICredential(
                 org_id=superadmin.org_id,
-                provider=AiProvider.OPENAI,
-                platform_provider="openai",
+                provider=AiProvider.OPENAI_COMPATIBLE,
+                platform_provider="openrouter",
                 discovered_capabilities=["chat"],
             )
         )
         await s.commit()
     pat = await _mint_write_pat(factory, superadmin)
     with TestClient(app) as client:
-        r = _call(client, "DELETE", "/api/v1/settings/ai-providers/platform/openai", pat)
+        r = _call(client, "DELETE", "/api/v1/settings/ai-providers/platform/openrouter", pat)
     assert r.status_code == 204, r.text
     async with factory() as s:
         assert (await s.scalars(select(OrgAICredential))).all() == []

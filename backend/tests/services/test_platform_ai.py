@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -15,12 +16,11 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings as app_settings
 from app.models import Base
+from app.models.platform_ai_model import PlatformAIModel
 from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.services import platform_ai, platform_ai_settings
 from app.services.ai_providers import NativeNotAvailable
-from app.services.ai_providers.anthropic import AnthropicAdapter
-from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import OpenAICompatibleAdapter
 
 APP = Path(__file__).resolve().parents[2] / "app"
@@ -48,29 +48,23 @@ async def _set(db, **kv):
 
 # ---- settings reader -----------------------------------------------------
 
-async def test_settings_absent_means_off_zero_empty(db):
+async def test_settings_absent_means_off_zero(db):
     s = await platform_ai_settings.load(db)
-    assert (s.enabled, s.global_monthly_cents, s.models) == (False, 0, {})
+    assert (s.enabled, s.global_monthly_cents) == (False, 0)
 
 
 async def test_settings_parsed(db):
     await _set(db, enabled="on", global_monthly_cents="500", models='{"openai": ["gpt-4o"]}')
     s = await platform_ai_settings.load(db)
-    assert (s.enabled, s.global_monthly_cents, s.models) == (True, 500, {"openai": ["gpt-4o"]})
+    assert (s.enabled, s.global_monthly_cents) == (True, 500)
 
 
-@pytest.mark.parametrize("enabled,cents,models", [
-    ("yes", "abc", "not json"),
-    ("", "-5", "[1,2]"),
-    ("ON ", "1.5", '{"openai": "gpt-4o"}'),
-    ("true", "", '{"openai": [1, null]}'),
-])
-async def test_settings_malformed_fails_closed(db, enabled, cents, models):
-    await _set(db, enabled=enabled, global_monthly_cents=cents, models=models)
+@pytest.mark.parametrize("enabled,cents", [("yes", "abc"), ("", "-5"), ("ON ", "1.5"), ("true", "")])
+async def test_settings_malformed_fails_closed(db, enabled, cents):
+    await _set(db, enabled=enabled, global_monthly_cents=cents)
     s = await platform_ai_settings.load(db)
     assert s.enabled is False
     assert s.global_monthly_cents == 0
-    assert s.models.get("openai", []) == []
 
 
 async def test_settings_read_system_setting_only(db):
@@ -83,31 +77,41 @@ async def test_settings_read_system_setting_only(db):
 
 @pytest.fixture
 def keys(monkeypatch):
-    for p in platform_ai.PLATFORM_PROVIDERS:
-        monkeypatch.setattr(app_settings, f"platform_ai_{p}_api_key", f"env-{p}")
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "env-openrouter")
 
 
-def test_factory_derives_everything_from_platform_provider(keys):
-    a = platform_ai.build_adapter("openrouter")
+def _build(provider="openrouter"):
+    return platform_ai.build_adapter(provider, models=["a/m"], max_price=(1, 1))
+
+
+def test_fence17_factory_is_openrouter_only(keys, monkeypatch):
+    """FENCE 17. Kills a surviving direct-vendor branch."""
+    a = _build()
     assert isinstance(a, OpenAICompatibleAdapter)
     assert (a.api_key, a.api_root) == ("env-openrouter", "https://openrouter.ai/api/v1")
     assert a.base_url_is_api_root is True
-    assert a.extra_body == {"provider": {"data_collection": "deny"}}
-    g = platform_ai.build_adapter("gemini")
-    assert isinstance(g, OpenAICompatibleAdapter)
-    assert (g.api_key, g.api_root) == (
-        "env-gemini", "https://generativelanguage.googleapis.com/v1beta/openai")
-    assert g.extra_body == {}
-    o = platform_ai.build_adapter("openai")
-    assert isinstance(o, OpenAIAdapter) and o.api_key == "env-openai"
-    n = platform_ai.build_adapter("anthropic")
-    assert isinstance(n, AnthropicAdapter) and n.api_key == "env-anthropic"
-
-
-def test_factory_missing_key_is_native_not_available(monkeypatch):
-    monkeypatch.setattr(app_settings, "platform_ai_openai_api_key", "")
+    for p in ("openai", "anthropic", "gemini"):
+        with pytest.raises(NativeNotAvailable):
+            _build(p)
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "")
     with pytest.raises(NativeNotAvailable):
-        platform_ai.build_adapter("openai")
+        _build()
+
+
+async def test_fence36_platform_adapter_refuses_embed(keys, monkeypatch):
+    """FENCE 36. Kills a platform embed reaching OpenRouter without the privacy prefs."""
+    reqs = []
+    transport = httpx.MockTransport(lambda r: reqs.append(r) or httpx.Response(200, json={}))
+    orig = httpx.AsyncClient.__init__
+
+    def _init(self, *a, **kw):
+        kw["transport"] = transport
+        orig(self, *a, **kw)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", _init)
+    with pytest.raises(NativeNotAvailable):
+        await _build().embed(texts=["hi"], model="a/m")
+    assert reqs == []
 
 
 def test_factory_never_decrypts_or_reads_stored_columns():
@@ -119,36 +123,68 @@ def test_factory_never_decrypts_or_reads_stored_columns():
     assert "encrypted_bearer_token" not in used
 
 
-def test_anthropic_capability_set_excludes_embed():
-    caps = platform_ai.PLATFORM_CAPABILITIES
-    assert "embed" not in caps["anthropic"]
-    for p in ("openai", "gemini"):
-        assert set(caps[p]) == {"chat", "embed", "structured_output", "function_call", "stream"}
-    assert set(caps["openrouter"]) == {"chat", "structured_output", "function_call", "stream"}
-    assert set(caps["anthropic"]) == {"chat", "structured_output", "function_call", "stream"}
+def _row(*, structured=True, ctx=128_000, mct=4096):
+    return PlatformAIModel(openrouter_id="a/m", name="M", context_length=ctx, max_completion_tokens=mct,
+                           supports_structured_outputs=structured)
 
 
-# ---- C12 forcing test ----------------------------------------------------
+def test_fence19_can_reads_per_model_capability():
+    """FENCE 19. Kills per-model capability ignored."""
+    assert all(platform_ai.can(_row(), c) for c in ("chat", "structured_output", "function_call", "stream"))
+    assert platform_ai.can(_row(structured=False), "structured_output") is False
+    assert platform_ai.can(_row(structured=False), "function_call") is True
+    assert platform_ai.can(_row(), "embed") is False
+    assert platform_ai.can(_row(ctx=127_999), "chat") is False
+    assert platform_ai.can(_row(mct=4095), "chat") is False
+    assert platform_ai.can(_row(mct=None), "chat") is False
 
-def test_c12_every_priced_openai_chat_model_is_in_the_max_tokens_set():
-    """An OpenAI chat model the platform offers that is not vetted for
-    ``max_tokens`` (e.g. a reasoning model that needs ``max_completion_tokens``)
-    fails here until a human decides. Pricing alone offers nothing (TBD-618
-    prices BYOK-only models), so the set is the platform's own OpenAI list.
-    OpenRouter ``openai/*`` ids go through another path."""
-    openai_chat = {
-        m for m in platform_ai.PLATFORM_MODELS["openai"]
-        if not m.startswith("text-embedding-")
-    }
-    assert openai_chat, "the forcing set must not be empty"
-    assert openai_chat <= platform_ai.OPENAI_ACCEPTS_MAX_TOKENS
+
+_KEY = "platform_ai_openrouter_api_key"
+_KEY_READERS = {("services/platform_ai.py", "build_adapter"),
+                ("services/platform_ai.py", "platform_key_configured"),
+                ("mcp_main.py", "refuse_platform_ai_keys")}
+
+
+def test_fence35_the_house_key_never_leaves_its_three_readers():
+    """FENCE 35. Kills a helper that hands the key string out; the dynamic
+    ``getattr`` read a name-based fence cannot see."""
+    seen = set()
+    for path in APP.rglob("*.py"):
+        rel = path.relative_to(APP).as_posix()
+        if rel == "config.py":
+            continue
+        tree = ast.parse(path.read_text())
+        fns = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for n in ast.walk(fn):
+                    fns.setdefault(n, fn.name)  # outermost first: ast.walk is BFS
+        for n in ast.walk(tree):
+            hit = ((isinstance(n, ast.Attribute) and n.attr == _KEY)
+                   or (isinstance(n, ast.Constant) and n.value == _KEY))
+            if hit:
+                assert (rel, fns.get(n)) in _KEY_READERS, (rel, n.lineno)
+                seen.add((rel, fns.get(n)))
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr"):
+                for a in n.args:
+                    assert not (isinstance(a, ast.JoinedStr) and "_api_key" in ast.unparse(a)), (rel, n.lineno)
+    assert seen == _KEY_READERS
+    assert not hasattr(platform_ai, "platform_key")
+
+
+def test_fence35_key_configured_is_a_bool(keys):
+    assert platform_ai.platform_key_configured("openrouter") is True
+    assert platform_ai.platform_key_configured("openai") is False
 
 
 # ---- config + mcp_main refusal (F-N3) ------------------------------------
 
-def test_config_has_four_platform_keys_default_empty():
-    for p in ("openrouter", "openai", "anthropic", "gemini"):
-        assert type(app_settings).model_fields[f"platform_ai_{p}_api_key"].default == ""
+def test_fence18_config_has_only_the_openrouter_key():
+    """FENCE 18. Kills dead keys."""
+    fields = type(app_settings).model_fields
+    assert fields["platform_ai_openrouter_api_key"].default == ""
+    for p in ("openai", "anthropic", "gemini"):
+        assert f"platform_ai_{p}_api_key" not in fields
 
 
 def _import_mcp_main(extra_env: dict) -> subprocess.CompletedProcess:
@@ -159,8 +195,9 @@ def _import_mcp_main(extra_env: dict) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.parametrize("p", ["OPENROUTER", "OPENAI", "ANTHROPIC", "GEMINI"])
-def test_f_n3_mcp_main_refuses_to_boot_with_a_platform_key(p):
+def test_f_n3_mcp_main_refuses_to_boot_with_a_platform_key():
+    """FENCE 18. Kills the mcp guard lost with the list."""
+    p = "OPENROUTER"
     r = _import_mcp_main({f"PLATFORM_AI_{p}_API_KEY": "k"})
     assert r.returncode != 0
     # Named in the JSON line that logs the refusal; the crash hook itself prints the class only.
@@ -169,7 +206,7 @@ def test_f_n3_mcp_main_refuses_to_boot_with_a_platform_key(p):
 
 
 def test_f_n3_control_mcp_main_boots_without_keys():
-    env = {f"PLATFORM_AI_{p}_API_KEY": "" for p in ("OPENROUTER", "OPENAI", "ANTHROPIC", "GEMINI")}
+    env = {"PLATFORM_AI_OPENROUTER_API_KEY": ""}
     r = _import_mcp_main(env)
     assert r.returncode == 0, r.stderr[-800:]
 
@@ -185,7 +222,7 @@ def test_reserved_prefix_blocks_platform_ai_in_the_generic_writer():
 
 # ---- F-S2: an org-scoped platform_ai.* is refused at write, ignored at read --
 
-@pytest.mark.parametrize("key", ["platform_ai.enabled", "Platform_AI.enabled", "PLATFORM_AI.models"])
+@pytest.mark.parametrize("key", ["platform_ai.enabled", "Platform_AI.enabled", "PLATFORM_AI.global_monthly_cents"])
 def test_f_s2_generic_writer_refuses_the_namespace_in_any_case(key):
     from types import SimpleNamespace
 
@@ -219,16 +256,3 @@ async def test_f_s2_reader_ignores_an_org_scoped_row(db):
     await db.commit()
     s = await platform_ai_settings.load(db)
     assert (s.enabled, s.global_monthly_cents) == (False, 0)
-
-
-@pytest.mark.parametrize("stored,expected", [
-    (["claude-sonnet-4-7"], {}),
-    (["claude-sonnet-4-7", "claude-haiku-4-5"], {"anthropic": ["claude-haiku-4-5"]}),
-])
-def test_tbd629_offered_drops_unofferable_stored_models(monkeypatch, stored, expected):
-    monkeypatch.setattr(app_settings, "ai_native_enabled", True)
-    monkeypatch.setattr(app_settings, "platform_ai_anthropic_api_key", "sk-x")
-    conf = platform_ai_settings.PlatformAISettings(
-        enabled=True, global_monthly_cents=1, models={"anthropic": stored}
-    )
-    assert platform_ai_settings.offered(conf) == expected

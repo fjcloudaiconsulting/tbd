@@ -29,7 +29,7 @@ from app.models.org_ai_routing import (
     OrgAIDefaultRouting,
     OrgAIFeatureRouting,
 )
-from app.services import audit_service, platform_ai, platform_ai_settings
+from app.services import audit_service, platform_ai
 
 
 logger = logging.getLogger(__name__)
@@ -49,18 +49,16 @@ class UnknownFeatureName(Exception):
 
 
 class PlatformModelNotAllowed(Exception):
-    """Routing a platform row to a model its provider does not offer or the
-    operator has not allowlisted. BYOK rows are never checked."""
+    """Routing a platform row to a model the catalog does not offer now.
+    BYOK rows are never checked."""
 
 
 async def _assert_platform_model(
     db: AsyncSession, cred: OrgAICredential, model: str
 ) -> None:
-    p = cred.platform_provider
-    if p is None:
+    if cred.platform_provider is None:
         return
-    conf = await platform_ai_settings.load(db)
-    if not (platform_ai.offerable_model(p, model) and model in conf.models.get(p, ())):
+    if model not in await platform_ai.offerable_ids(db):
         raise PlatformModelNotAllowed(model)
 
 

@@ -46,6 +46,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.category import Category
+from app.models.org_ai_credential import OrgAICredential
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.ai_forecast import (
     AIForecastAdjustments,
@@ -54,7 +55,9 @@ from app.schemas.ai_forecast import (
     RefinedForecastProvenance,
     RefinedForecastResponse,
 )
-from app.services import ai_consent_service, ai_dispatch, ai_routing_service, ai_scrub, forecast_service
+from app.services import (
+    ai_consent_service, ai_dispatch, ai_routing_service, ai_scrub, forecast_service, platform_ai,
+)
 from app.services.ai_forecast_refine_token_estimate import (
     Scope,
     _duration_band,
@@ -405,15 +408,11 @@ def _baseline_response(
 
 async def _resolve_model_or_none(
     db: AsyncSession, *, org_id: int
-) -> Optional[str]:
-    """Return the routed model string for ROUTING_KEY, or None if not configured."""
-    routing = await ai_routing_service.get_routing_for_feature(
+) -> Optional[tuple[int, str]]:
+    """Return the routed (credential_id, model) for ROUTING_KEY, or None if not configured."""
+    return await ai_routing_service.get_routing_for_feature(
         db, org_id=org_id, feature_name=ROUTING_KEY
     )
-    if routing is None:
-        return None
-    _credential_id, model = routing
-    return model
 
 
 def _coerce_adjustments(parsed: Any) -> dict:
@@ -813,8 +812,8 @@ async def estimate_refine(
     prompt_text = "".join(m["content"] for m in messages)
     est_prompt = estimate_prompt_tokens(prompt_text)
 
-    model = await _resolve_model_or_none(db, org_id=org_id)
-    if model is None:
+    routing = await _resolve_model_or_none(db, org_id=org_id)
+    if routing is None:
         return ForecastRefineEstimate(
             est_prompt_tokens=est_prompt,
             est_output_tokens=est_out,
@@ -835,9 +834,26 @@ async def estimate_refine(
             reason="ai_consent_required",
         )
 
-    est_micros = estimate_cost_micros(
-        model=model, prompt_tokens=est_prompt, completion_tokens=est_out
-    )
+    credential_id, model = routing
+    platform = await db.scalar(select(OrgAICredential.platform_provider).where(
+        OrgAICredential.id == credential_id, OrgAICredential.org_id == org_id))
+    if platform is not None:
+        # Priced like the dispatch it previews; own-key caps never gate it (D6).
+        pk = await platform_ai.pick(db, "structured_output", model)
+        if pk is None:
+            return ForecastRefineEstimate(
+                est_prompt_tokens=est_prompt,
+                est_output_tokens=est_out,
+                est_cost_cents=0,
+                duration_band=_duration_band(scope),
+                can_proceed=False,
+                reason="ai_routing_not_configured",
+            )
+        est_micros = platform_ai.cost_micros(est_prompt, est_out, *pk.price)
+    else:
+        est_micros = estimate_cost_micros(
+            model=model, prompt_tokens=est_prompt, completion_tokens=est_out
+        )
     # The public field stays in cents (v1); ceil, as the confirm screen shows
     # an "at most" figure. The cap compare below is micros vs micros.
     est_cost = -(-est_micros // MICROS_PER_CENT)
@@ -854,7 +870,7 @@ async def estimate_refine(
     # run, overspending. Best-effort: spend can shift between here and
     # dispatch (concurrent calls, ledger writes), so the dispatch
     # chokepoint stays the authority.
-    remaining = await ai_dispatch.remaining_hard_cap_micros(
+    remaining = None if platform is not None else await ai_dispatch.remaining_hard_cap_micros(
         db, org_id=org_id, feature_key=ROUTING_KEY
     )
     if remaining is not None and (remaining <= 0 or est_micros > remaining):

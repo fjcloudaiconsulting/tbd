@@ -1,101 +1,136 @@
-"""Platform-provided AI constants and the adapter factory (TBD-586).
+"""Platform-provided AI: OpenRouter only, driven by the ``platform_ai_models``
+catalog (TBD-586).
 
-The factory derives the adapter class, API root and key from
-``platform_provider`` ALONE. It never reads a stored ``provider``,
-``base_url``, ``base_url_is_api_root`` or key column and never decrypts, so a
-tampered platform row cannot redirect the house key; a BYOK row never reaches
-it.
+The factory derives the adapter, API root and key from ``platform_provider``
+ALONE. It never reads a stored ``provider``, ``base_url``,
+``base_url_is_api_root`` or key column and never decrypts, so a tampered
+platform row cannot redirect the house key; a BYOK row never reaches it. The
+key string never leaves this module: callers get ``platform_key_configured``.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, get_args
+from dataclasses import dataclass
+from typing import Literal, get_args
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app._time import utcnow_naive
 from app.config import settings
-from app.models.org_ai_credential import AiProvider
-from app.services.ai_pricing import MODEL_PRICING
+from app.models.platform_ai_model import PlatformAIModel
+from app.services.ai_pricing import cost_tier
 from app.services.ai_providers import NativeNotAvailable
-from app.services.ai_providers.anthropic import AnthropicAdapter
-from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import (
     OPENAI_COMPATIBLE_PRESETS,
     OpenAICompatibleAdapter,
 )
-from app.services.ai_token_estimate import _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
+from app.services.scheduler.jobs import platform_ai_catalog
 
-PlatformProvider = Literal["openrouter", "openai", "anthropic", "gemini"]
+PlatformProvider = Literal["openrouter"]
 PLATFORM_PROVIDERS: tuple[str, ...] = get_args(PlatformProvider)
+PLATFORM_LABEL = "Included AI"
+# No embed: the embeddings body never carries ``extra_body`` (D7).
+PLATFORM_CAPABILITIES: tuple[str, ...] = ("chat", "structured_output", "function_call", "stream")
 
-# The stored ``provider`` column of a platform row (display only: the factory
-# below never reads it).
-PLATFORM_ADAPTER: dict[str, AiProvider] = {
-    "openrouter": AiProvider.OPENAI_COMPATIBLE,
-    "gemini": AiProvider.OPENAI_COMPATIBLE,
-    "openai": AiProvider.OPENAI,
-    "anthropic": AiProvider.ANTHROPIC,
-}
-PLATFORM_LABELS = {
-    "openrouter": "OpenRouter", "openai": "OpenAI",
-    "anthropic": "Anthropic", "gemini": "Google Gemini",
-}
-# The models each provider can serve on the house key. An allowlisted id
-# outside its provider's set is refused at the admin PUT, at routing writes
-# and at dispatch. OpenRouter and Gemini get theirs with their pricing rows.
-PLATFORM_MODELS: dict[str, set[str]] = {
-    "openai": {"gpt-4o", "gpt-4o-mini", "text-embedding-3-small", "text-embedding-3-large"},
-    "anthropic": {"claude-haiku-4-5"},
-    "openrouter": set(),
-    "gemini": set(),
-}
+MIN_CONTEXT = 128_000
+PLATFORM_MAX_OUTPUT_TOKENS = 4096
+PLATFORM_MIN_OUTPUT_TOKENS = 1024
+TIER_ORDER = {"budget": 0, "standard": 1, "frontier": 2}
+
+_ROOT = next(p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter")
+# Request-wide, so it binds every endpoint and fallback model OpenRouter uses.
+_PROVIDER = {"zdr": True, "data_collection": "deny", "require_parameters": True, "allow_fallbacks": True}
 
 
-def offerable_model(platform_provider: str, model: str) -> bool:
-    """Owned by the provider, priced at an exact id (never ``_default``) and
-    with a known output ceiling (R8)."""
-    return (
-        model in PLATFORM_MODELS.get(platform_provider, ())
-        and model in MODEL_PRICING
-        and model != "_default"
-        and model in _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
-    )
+def platform_key_configured(platform_provider: str) -> bool:
+    return platform_provider == "openrouter" and bool(settings.platform_ai_openrouter_api_key)
 
 
-_ALL = ["chat", "embed", "structured_output", "function_call", "stream"]
-# Fixed per provider; written by PR2's create action, never by the org.
-PLATFORM_CAPABILITIES: dict[str, list[str]] = {
-    # No embed: the embeddings body never carries ``extra_body``, so OpenRouter's
-    # data_collection=deny preference would not be sent (unverified there).
-    "openrouter": [c for c in _ALL if c != "embed"],
-    "openai": list(_ALL),
-    "gemini": list(_ALL),
-    "anthropic": [c for c in _ALL if c != "embed"],
-}
-
-# OpenAI chat models vetted to accept ``max_tokens`` (reasoning models need
-# ``max_completion_tokens`` and would 400). C12: a forcing test pins every
-# OpenAI chat model in ``PLATFORM_MODELS`` into this set.
-OPENAI_ACCEPTS_MAX_TOKENS = frozenset({"gpt-4o", "gpt-4o-mini"})
-
-_PRESET_URL = {p["key"]: p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS}
+class _PlatformAdapter(OpenAICompatibleAdapter):
+    async def embed(self, **kw):
+        # The embeddings body never merges ``extra_body``, so it would reach
+        # OpenRouter without zdr / data_collection=deny.
+        raise NativeNotAvailable("platform_embed_refused")
 
 
-def platform_key(platform_provider: str) -> str:
-    return getattr(settings, f"platform_ai_{platform_provider}_api_key", "") or ""
-
-
-def build_adapter(platform_provider: str) -> Any:
-    key = platform_key(platform_provider)
-    if platform_provider not in PLATFORM_PROVIDERS or not key:
+def build_adapter(
+    platform_provider: str, *, models: list[str], max_price: tuple[int, int]
+) -> OpenAICompatibleAdapter:
+    """``max_price`` is the reserved (padded) micro-USD per Mtok pair. The
+    privacy prefs are constants here, never caller input."""
+    key = settings.platform_ai_openrouter_api_key
+    if platform_provider != "openrouter" or not key:
         raise NativeNotAvailable("platform_provider_unavailable")
-    if platform_provider == "openai":
-        return OpenAIAdapter(api_key=key)
-    if platform_provider == "anthropic":
-        return AnthropicAdapter(api_key=key)
-    return OpenAICompatibleAdapter(
-        api_key=key,
-        base_url=_PRESET_URL[platform_provider],
-        base_url_is_api_root=True,
-        extra_body=(
-            {"provider": {"data_collection": "deny"}}
-            if platform_provider == "openrouter" else {}
-        ),
+    p, c = max_price
+    extra_body: dict = {"provider": {
+        **_PROVIDER, "max_price": {"prompt": p / 1e6, "completion": c / 1e6, "request": 0},
+    }}
+    if len(models) > 1:
+        extra_body["models"] = list(models)
+    return _PlatformAdapter(
+        api_key=key, base_url=_ROOT, base_url_is_api_root=True, extra_body=extra_body,
     )
+
+
+def can(row: PlatformAIModel, capability: str) -> bool:
+    return bool(
+        capability in PLATFORM_CAPABILITIES
+        and (capability != "structured_output" or row.supports_structured_outputs)
+        and row.context_length >= MIN_CONTEXT
+        and row.max_completion_tokens is not None
+        and row.max_completion_tokens >= PLATFORM_MAX_OUTPUT_TOKENS
+    )
+
+
+def blend(row: PlatformAIModel) -> int:
+    return 3 * row.zdr_prompt_micros_per_mtok + row.zdr_completion_micros_per_mtok
+
+
+def tier(row: PlatformAIModel) -> str:
+    return cost_tier(row.zdr_prompt_micros_per_mtok, row.zdr_completion_micros_per_mtok)
+
+
+def cost_micros(pt: int, ct: int, p: int, c: int) -> int:
+    """Tokens at micro-USD per Mtok, rounded up."""
+    return -(-(pt * p + ct * c) // 1_000_000)
+
+
+async def candidates(db: AsyncSession, capability: str) -> list[PlatformAIModel]:
+    """Offerable rows that can serve ``capability``, cheapest blend first."""
+    now = utcnow_naive()
+    rows = (await db.scalars(select(PlatformAIModel).where(PlatformAIModel.enabled.is_(True)))).all()
+    return sorted(
+        (r for r in rows if platform_ai_catalog.offerable(r, now) and can(r, capability)),
+        key=lambda r: (blend(r), r.openrouter_id),
+    )
+
+
+async def offerable_ids(db: AsyncSession) -> list[str]:
+    return [r.openrouter_id for r in await candidates(db, "function_call")]
+
+
+@dataclass(frozen=True)
+class Pick:
+    model: str
+    models: list[str]  # [chosen] or [chosen, fallback]
+    price: tuple[int, int]  # componentwise max over ``models``, +1 micro/Mtok each
+
+
+async def pick(db: AsyncSession, capability: str, routed: str | None) -> Pick | None:
+    """The routed model when it is a candidate, else the cheapest; plus the
+    first other candidate no dearer by tier as OpenRouter's fallback."""
+    cands = await candidates(db, capability)
+    if not cands:
+        return None
+    chosen = next((r for r in cands if r.openrouter_id == routed), cands[0])
+    fallback = next(
+        (r for r in cands if r is not chosen and TIER_ORDER[tier(r)] <= TIER_ORDER[tier(chosen)]),
+        None,
+    )
+    pair = [chosen] if fallback is None else [chosen, fallback]
+    # +1: padding against the float comparison at OpenRouter.
+    price = (
+        max(r.zdr_prompt_micros_per_mtok for r in pair) + 1,
+        max(r.zdr_completion_micros_per_mtok for r in pair) + 1,
+    )
+    return Pick(chosen.openrouter_id, [r.openrouter_id for r in pair], price)

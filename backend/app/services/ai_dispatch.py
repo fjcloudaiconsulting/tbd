@@ -96,7 +96,6 @@ from app.services.ai_credential_crypto import decrypt
 from app.services.ai_feature_map import AI_FEATURE_MAP
 from app.services.ai_pricing import MICROS_PER_CENT, estimate_cost_micros
 from app.services.ai_token_estimate import (
-    _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL,
     default_max_output_tokens_for,
     estimate_prompt_tokens_from_messages,
 )
@@ -555,11 +554,13 @@ def _month_start(now: Optional[datetime] = None) -> datetime:
 async def _aggregate_cost_micros(
     db: AsyncSession, *, org_id: int, since: datetime
 ) -> int:
-    """Sum cost_micros for the org for the current period."""
+    """Sum the org's OWN-key cost_micros for the current period. Platform
+    spend is governed by the plan meters, never by the org's caps (D6)."""
     total = await db.scalar(
         select(func.coalesce(func.sum(AIUsageLedger.cost_micros), 0)).where(
             AIUsageLedger.org_id == org_id,
             AIUsageLedger.dispatched_at >= since,
+            AIUsageLedger.billing_source == "org_key",
         )
     )
     return int(total or 0)
@@ -853,15 +854,17 @@ async def _maybe_warn_soft_cap(
 
 
 def _call_cost_micros(
-    model: str, prompt: int, completion: int, reported: Optional[int]
+    prepared: "_PreparedDispatch", prompt: int, completion: int, reported: Optional[int]
 ) -> int:
     """What one provider call cost: the provider's billed figure when it
     reported one (a reported 0 is a real 0, e.g. a free model), else the
-    table estimate."""
+    platform's reserved (padded) catalog prices, else the BYOK table estimate."""
     if reported is not None:
         return reported
+    if prepared.platform is not None:
+        return platform_ai.cost_micros(prompt, completion, *prepared.platform.price)
     return estimate_cost_micros(
-        model=model, prompt_tokens=prompt, completion_tokens=completion
+        model=prepared.model, prompt_tokens=prompt, completion_tokens=completion
     )
 
 
@@ -1010,6 +1013,8 @@ async def call_llm(
         raise
     except AIProviderError as exc:
         latency_ms = int((time.perf_counter() - start) * 1000)
+        if exc.status_code is not None:  # an OpenRouter non-200 is not billed
+            await _settle_shielded(db, handle, prompt=0, completion=0, cost=0, refused=True)
         await _write_ledger_row(
             db,
             org_id=org_id,
@@ -1064,7 +1069,7 @@ async def call_llm(
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     cost = _call_cost_micros(
-        model,
+        prepared,
         response.prompt_tokens,
         response.completion_tokens,
         response.cost_micros,
@@ -1181,12 +1186,15 @@ async def _touch_last_used(credential_id: int) -> None:
 @dataclass(frozen=True)
 class _PlatformReq:
     """What ``_reserve`` needs to reserve a platform dispatch. Plain ints
-    plus the credential row (read once, for ``platform_provider``)."""
+    plus the credential row (read once, for ``platform_provider``), the
+    models sent and the padded price pair the reservation was priced at."""
 
     cred: Any
     tokens: int
     micros: int
     ceiling_micros: int
+    models: list[str]
+    price: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -1206,7 +1214,8 @@ class _PreparedDispatch:
     resolved: _ResolvedCaps
     cost_so_far: int
     # The value every wrapper sends: the caller's own for BYOK (bytes
-    # unchanged), min(caller or ceiling, ceiling) for a platform row.
+    # unchanged), the caller's floored and capped to [1024, 4096] for a
+    # platform row.
     max_tokens: Optional[int] = None
     billing_source: str = "org_key"
     platform: Optional[_PlatformReq] = None
@@ -1219,13 +1228,12 @@ async def _prepare_platform(
     cred: OrgAICredential,
     capability: str,
     routed_model: str,
-    model_override: Optional[str],
     messages: list[dict],
     max_tokens: Optional[int],
     retry_multiplier: int,
-) -> tuple[str, Optional[int], _PlatformReq]:
+) -> tuple[str, int, _PlatformReq]:
     """Pure platform gate: refuses or returns (model, bound, reservation
-    request). Reads settings and counters, writes nothing."""
+    request). Reads settings, the catalog and counters, writes nothing."""
     platform = cred.platform_provider
     try:
         conf = await platform_ai_settings.load(db)
@@ -1234,33 +1242,25 @@ async def _prepare_platform(
         raise AIPlatformUnavailable() from None
     if (
         not (settings.ai_native_enabled and conf.enabled)
-        or not platform_ai.platform_key(platform)
+        or not platform_ai.platform_key_configured(platform)
     ):
         raise NativeNotAvailable("platform_disabled")
-    model = model_override or routed_model
-    # Owned by the provider, priced and bounded (R8), allowlisted, and for
-    # OpenAI a model vetted for ``max_tokens``.
-    if (
-        model not in conf.models.get(platform, [])
-        or not platform_ai.offerable_model(platform, model)
-        or (
-            platform == "openai"
-            and capability != "embed"
-            and model not in platform_ai.OPENAI_ACCEPTS_MAX_TOKENS
-        )
-    ):
+    # A disabled, stale or incapable routed choice falls back to the default.
+    pk = await platform_ai.pick(db, capability, routed_model)
+    if pk is None:
         raise NativeNotAvailable("platform_model_not_allowed")
     if conf.global_monthly_cents <= 0:
         raise AIPlatformUnavailable()
-    ceiling = _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL[model]
-    bound = None if capability == "embed" else min(max_tokens or ceiling, ceiling)
+    # Every candidate offers >= the max, so the bound fits chosen and fallback;
+    # the floor keeps a reasoning default from spending a small bound on thought.
+    bound = min(
+        max(max_tokens or platform_ai.PLATFORM_MAX_OUTPUT_TOKENS, platform_ai.PLATFORM_MIN_OUTPUT_TOKENS),
+        platform_ai.PLATFORM_MAX_OUTPUT_TOKENS,
+    )
     try:
         prompt = estimate_prompt_tokens_from_messages(messages)
-        completion = bound or 0
-        tokens = (prompt + completion) * retry_multiplier
-        micros = retry_multiplier * estimate_cost_micros(
-            model=model, prompt_tokens=prompt, completion_tokens=completion
-        )
+        tokens = (prompt + bound) * retry_multiplier
+        micros = retry_multiplier * platform_ai.cost_micros(prompt, bound, *pk.price)
     except Exception as exc:  # noqa: BLE001 - a platform dispatch never projects 0
         logger.warning(
             "ai.dispatch.platform.projection_failed",
@@ -1282,10 +1282,11 @@ async def _prepare_platform(
     except platform_reserve.PlatformAIUnavailable:
         raise AIPlatformUnavailable() from None
     return (
-        model,
+        pk.model,
         bound,
         _PlatformReq(
-            cred=cred, tokens=tokens, micros=micros, ceiling_micros=ceiling_micros
+            cred=cred, tokens=tokens, micros=micros, ceiling_micros=ceiling_micros,
+            models=pk.models, price=pk.price,
         ),
     )
 
@@ -1301,7 +1302,8 @@ async def _reserve(
         return prepared.adapter, None
     try:
         res = await platform_reserve.reserve(
-            db, org_id, req.cred, req.tokens, req.micros, req.ceiling_micros
+            db, org_id, req.cred, req.tokens, req.micros, req.ceiling_micros,
+            models=req.models, max_price=req.price,
         )
     except PlanLimitReached as exc:
         raise AIPlanLimitReached(exc) from None
@@ -1319,13 +1321,18 @@ async def _settle(
     cost: int,
     embed: bool = False,
     final: bool = True,
+    refused: bool = False,
 ) -> None:
     """Swap a platform reservation for the actual usage, ONLY when the usage
     is complete (prompt and completion both > 0; embed: prompt > 0; stream:
     the adapter marked it final). Otherwise the reservation stays. A DB
     failure keeps the reservation too: it is logged, never raised, so the
-    response and the ledger row still land."""
-    if handle is None or not final or prompt <= 0 or (completion <= 0 and not embed):
+    response and the ledger row still land. ``refused``: the provider
+    answered a non-200 status, which bills nothing, so the passed usage
+    (zeros allowed) settles as is."""
+    if handle is None:
+        return
+    if not refused and (not final or prompt <= 0 or (completion <= 0 and not embed)):
         return
     try:
         await platform_reserve.settle(db, handle, prompt + completion, cost)
@@ -1365,7 +1372,6 @@ async def _prepare_dispatch(
     messages: list[dict],
     max_tokens: Optional[int],
     retry_multiplier: int = 1,
-    model_override: Optional[str] = None,
     platform_gate_extra: Optional[list[dict]] = None,
 ) -> _PreparedDispatch:
     """Resolve routing + credential + caps for one dispatch.
@@ -1392,10 +1398,9 @@ async def _prepare_dispatch(
     capability check, ``decrypt`` and any reservation.
 
     PURE with respect to platform spend (the agent-chat pre-flight calls it
-    as a dry gate): a platform row is checked (switch, key, allowlist,
-    pricing, headroom) but never reserved and never given an adapter.
-    ``model_override`` (embed only) is the model the caller will actually
-    send; a platform row projects and allowlists THAT model.
+    as a dry gate): a platform row is checked (switch, key, catalog,
+    pricing, headroom) but never reserved and never given an adapter. The
+    org's own-key caps never gate or warn a platform row (D6).
     """
     # TBD-627: the entitlement, fail closed. Routing falls back to the default
     # row for ANY name, so an unmapped key must be refused here, not there.
@@ -1453,7 +1458,7 @@ async def _prepare_dispatch(
     platform_provider = cred.platform_provider
     if capability != "chat":
         capabilities = (
-            platform_ai.PLATFORM_CAPABILITIES.get(platform_provider, [])
+            platform_ai.PLATFORM_CAPABILITIES
             if platform_provider is not None
             else cred.discovered_capabilities or []
         )
@@ -1482,15 +1487,17 @@ async def _prepare_dispatch(
             cred=cred,
             capability=capability,
             routed_model=model,
-            model_override=model_override,
             messages=gate_messages,
             max_tokens=max_tokens,
             retry_multiplier=retry_multiplier,
         )
 
-    resolved, cost_so_far = await _resolve_caps_and_cost(
-        db, org_id=org_id, feature_key=feature_key
-    )
+    if req is None:
+        resolved, cost_so_far = await _resolve_caps_and_cost(
+            db, org_id=org_id, feature_key=feature_key
+        )
+    else:  # own-key caps govern the org's own money only (D6)
+        resolved, cost_so_far = _ResolvedCaps(None, None, False), 0
     _enforce_cap(
         resolved=resolved,
         cost_so_far=cost_so_far,
@@ -1711,6 +1718,12 @@ async def call_llm_structured(
             # naturally land at zero because no successful response
             # ever returned.
             cost = total_cost
+            if isinstance(exc, AIProviderError) and exc.status_code is not None and all_complete:
+                # The refusal bills nothing; the earlier attempts did.
+                await _settle_shielded(
+                    db, handle, prompt=total_prompt_tokens,
+                    completion=total_completion_tokens, cost=cost, refused=True,
+                )
             await _write_ledger_row(
                 db,
                 billing_source=prepared.billing_source,
@@ -1743,7 +1756,7 @@ async def call_llm_structured(
         total_prompt_tokens += response.prompt_tokens
         total_completion_tokens += response.completion_tokens
         total_cost += _call_cost_micros(
-            prepared.model,
+            prepared,
             response.prompt_tokens,
             response.completion_tokens,
             response.cost_micros,
@@ -1915,7 +1928,6 @@ async def call_llm_embed(
         messages=gate_messages,
         max_tokens=None,
         retry_multiplier=1,
-        model_override=model,
     )
     adapter, handle = await _reserve(db, org_id, prepared)
     embed_model = model or prepared.model
@@ -2097,6 +2109,8 @@ async def call_llm_function(
         ) from None
     except AIProviderError as exc:
         latency_ms = int((time.perf_counter() - start) * 1000)
+        if exc.status_code is not None:  # an OpenRouter non-200 is not billed
+            await _settle_shielded(db, handle, prompt=0, completion=0, cost=0, refused=True)
         row = await _write_ledger_row(
             db,
             billing_source=prepared.billing_source,
@@ -2127,7 +2141,7 @@ async def call_llm_function(
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     cost = _call_cost_micros(
-        prepared.model,
+        prepared,
         response.prompt_tokens,
         response.completion_tokens,
         response.cost_micros,
@@ -2231,6 +2245,10 @@ async def call_llm_stream(
             raise
         except AIProviderError as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
+            # Set only on the status line, before any chunk; a mid-stream
+            # failure carries none and keeps the reservation.
+            if exc.status_code is not None:
+                await _settle_shielded(db, handle, prompt=0, completion=0, cost=0, refused=True)
             await _write_ledger_row(
                 db,
                 billing_source=prepared.billing_source,
@@ -2259,7 +2277,7 @@ async def call_llm_stream(
                 completion_tokens=max(0, len(full_text) // 4),
             )
         cost = _call_cost_micros(
-            prepared.model,
+            prepared,
             final_usage.prompt_tokens,
             final_usage.completion_tokens,
             final_usage.cost_micros,
@@ -2318,7 +2336,7 @@ async def call_llm_stream(
                 prompt=final_usage.prompt_tokens,
                 completion=final_usage.completion_tokens,
                 cost=_call_cost_micros(
-                    prepared.model,
+                    prepared,
                     final_usage.prompt_tokens,
                     final_usage.completion_tokens,
                     final_usage.cost_micros,

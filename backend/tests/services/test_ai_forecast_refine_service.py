@@ -677,3 +677,62 @@ async def test_refine_entitlement_off_falls_back_with_its_own_code(
     )
     assert resp.provenance.ai_applied is False
     assert resp.provenance.fallback_reason == "feature_not_enabled"
+
+
+# ---------- TBD-586 D6: a platform route is priced from the catalog --------
+
+
+async def _route_to_platform(db_session, org_id, *, offerable=True):
+    from app._time import utcnow_naive
+    from app.models.platform_ai_model import PlatformAIModel
+
+    db_session.add(PlatformAIModel(
+        openrouter_id="vendor/model-a", name="A", context_length=200_000, max_completion_tokens=8192,
+        supports_structured_outputs=offerable, zdr_prompt_micros_per_mtok=100_000,
+        zdr_completion_micros_per_mtok=400_000, last_seen_at=utcnow_naive(), enabled=True))
+    cred = OrgAICredential(org_id=org_id, provider=AiProvider.OPENAI_COMPATIBLE, platform_provider="openrouter",
+                           discovered_capabilities=["chat", "structured_output", "function_call", "stream"])
+    db_session.add(cred)
+    await db_session.flush()
+    routing = await db_session.get(OrgAIDefaultRouting, org_id)
+    routing.credential_id, routing.model = cred.id, "vendor/model-a"
+    await db_session.commit()
+    return routing
+
+
+@pytest.mark.asyncio
+async def test_fence34_platform_estimate_is_catalog_priced_and_not_own_key_capped(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """FENCE 34. Kills ``_default`` pricing for a platform route; own-key caps
+    gating platform."""
+    from app.services import platform_ai
+
+    _patch_estimate_internals(monkeypatch, est_cost_micros=10**9)  # the BYOK table price
+    await _seed_cap_and_spend(db_session, org_id=seeded_org.id, hard_cap_cents=1, spent_micros=50_000)
+    byok_id = (await db_session.get(OrgAIDefaultRouting, seeded_org.id)).credential_id
+    routing = await _route_to_platform(db_session, seeded_org.id)
+
+    async def estimate():
+        return await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,
+                                         timeframe_months=6, scope=Scope.TOP_20)
+
+    est = await estimate()
+    want = platform_ai.cost_micros(est.est_prompt_tokens, est.est_output_tokens, 100_001, 400_001)
+    assert est.est_cost_cents == -(-want // 10_000)
+    assert (est.can_proceed, est.reason) == (True, None)
+
+    routing.credential_id, routing.model = byok_id, "gpt-4o-mini"
+    await db_session.commit()
+    assert (await estimate()).reason == "ai_cap_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_fence34_platform_route_with_no_candidate_is_not_configured(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    _patch_estimate_internals(monkeypatch, est_cost_micros=405)
+    await _route_to_platform(db_session, seeded_org.id, offerable=False)  # no structured output
+    est = await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,
+                                    timeframe_months=6, scope=Scope.TOP_20)
+    assert (est.can_proceed, est.reason) == (False, "ai_routing_not_configured")

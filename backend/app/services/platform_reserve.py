@@ -168,13 +168,16 @@ async def reserve(
     micros: int,
     ceiling_micros: int,
     *,
+    models: list[str],
+    max_price: tuple[int, int],
     now: datetime | None = None,
 ) -> Reservation:
     """Reserve ``tokens``/``micros`` or raise. COMMITS the caller's session
     (like ``usage_service.admit``) and ROLLS IT BACK on refusal, which expires
     the caller's ORM objects: do not touch them after a refusal. Call it before
     any write of the unit of work. The adapter is built (from
-    ``cred.platform_provider`` alone) only after the reservation committed."""
+    ``cred.platform_provider`` alone, capped at ``max_price``, the reserved
+    prices) only after the reservation committed."""
     if db.new or db.dirty or db.deleted:
         raise RuntimeError("platform_reserve.reserve: the session holds uncommitted ORM changes")
     provider = cred.platform_provider  # read before the first commit/rollback
@@ -218,7 +221,7 @@ async def reserve(
         raise PlatformAIUnavailable("reservation failed") from exc
 
     return Reservation(
-        adapter=platform_ai.build_adapter(provider),
+        adapter=platform_ai.build_adapter(provider, models=models, max_price=max_price),
         handle=SettleHandle(org_id, tkey, ckey, month, tokens, micros),
     )
 
