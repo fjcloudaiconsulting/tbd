@@ -10,7 +10,7 @@ key string never leaves this module: callers get ``platform_key_configured``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, get_args
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,14 +20,10 @@ from app.config import settings
 from app.models.platform_ai_model import PlatformAIModel
 from app.services.ai_pricing import cost_tier
 from app.services.ai_providers import NativeNotAvailable
-from app.services.ai_providers.openai_compatible import (
-    OPENAI_COMPATIBLE_PRESETS,
-    OpenAICompatibleAdapter,
-)
+from app.services.ai_providers.openai_compatible import OpenAICompatibleAdapter
 from app.services.scheduler.jobs import platform_ai_catalog
 
 PlatformProvider = Literal["openrouter"]
-PLATFORM_PROVIDERS: tuple[str, ...] = get_args(PlatformProvider)
 PLATFORM_LABEL = "Included AI"
 # No embed: the embeddings body never carries ``extra_body`` (D7).
 PLATFORM_CAPABILITIES: tuple[str, ...] = ("chat", "structured_output", "function_call", "stream")
@@ -37,7 +33,6 @@ PLATFORM_MAX_OUTPUT_TOKENS = 4096
 PLATFORM_MIN_OUTPUT_TOKENS = 1024
 TIER_ORDER = {"budget": 0, "standard": 1, "frontier": 2}
 
-_ROOT = next(p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter")
 # Request-wide, so it binds every endpoint and fallback model OpenRouter uses.
 _PROVIDER = {"zdr": True, "data_collection": "deny", "require_parameters": True, "allow_fallbacks": True}
 
@@ -68,7 +63,8 @@ def build_adapter(
     if len(models) > 1:
         extra_body["models"] = list(models)
     return _PlatformAdapter(
-        api_key=key, base_url=_ROOT, base_url_is_api_root=True, extra_body=extra_body,
+        api_key=key, base_url=platform_ai_catalog.OPENROUTER_ROOT,
+        base_url_is_api_root=True, extra_body=extra_body,
     )
 
 

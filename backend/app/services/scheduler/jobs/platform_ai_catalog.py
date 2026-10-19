@@ -41,6 +41,7 @@ FETCH_DEADLINE_SECONDS = 90
 _ONE_MTOK = Decimal(10) ** 12
 MAX_BODY_BYTES = 5_000_000
 INT_MAX = 2**31 - 1  # MySQL INT
+OPENROUTER_ROOT = next(p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter")
 # Never released: the lease TTL is the 1h retry backoff after a failed or refused run.
 
 
@@ -225,10 +226,8 @@ def offerable(row: PlatformAIModel, now: datetime.datetime) -> bool:
 
 async def fetch_feeds(*, transport: httpx.AsyncBaseTransport | None = None) -> tuple[dict, dict]:
     """Both feeds, public (no Authorization: the house key never leaves for a catalog read)."""
-    root = next(p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter")
-
     async def get(client: httpx.AsyncClient, path: str) -> dict:
-        async with client.stream("GET", f"{root}{path}") as r:
+        async with client.stream("GET", f"{OPENROUTER_ROOT}{path}") as r:
             if r.status_code != 200:
                 raise CatalogFeedError(f"status {r.status_code}")
             raw = b""

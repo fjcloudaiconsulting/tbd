@@ -406,15 +406,6 @@ def _baseline_response(
     )
 
 
-async def _resolve_model_or_none(
-    db: AsyncSession, *, org_id: int
-) -> Optional[tuple[int, str]]:
-    """Return the routed (credential_id, model) for ROUTING_KEY, or None if not configured."""
-    return await ai_routing_service.get_routing_for_feature(
-        db, org_id=org_id, feature_name=ROUTING_KEY
-    )
-
-
 def _coerce_adjustments(parsed: Any) -> dict:
     """Sanitize the model's structured output into a shape the strict
     ``AIForecastAdjustments`` will accept.
@@ -812,7 +803,9 @@ async def estimate_refine(
     prompt_text = "".join(m["content"] for m in messages)
     est_prompt = estimate_prompt_tokens(prompt_text)
 
-    routing = await _resolve_model_or_none(db, org_id=org_id)
+    routing = await ai_routing_service.get_routing_for_feature(
+        db, org_id=org_id, feature_name=ROUTING_KEY
+    )
     if routing is None:
         return ForecastRefineEstimate(
             est_prompt_tokens=est_prompt,
