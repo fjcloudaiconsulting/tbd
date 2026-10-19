@@ -59,6 +59,11 @@ exports[`<AppShellFooter /> > snapshot stays stable in dark + light > app-footer
           2026
         </span>
       </span>
+      <span
+        data-testid="app-version"
+      >
+        dev
+      </span>
     </div>
     <nav
       aria-label="App footer"
@@ -182,6 +187,11 @@ exports[`<AppShellFooter /> > snapshot stays stable in dark + light > app-footer
         <span>
           2026
         </span>
+      </span>
+      <span
+        data-testid="app-version"
+      >
+        dev
       </span>
     </div>
     <nav
