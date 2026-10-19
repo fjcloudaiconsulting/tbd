@@ -487,7 +487,6 @@ export default function CustomDashboard() {
             <Canvas
               layout={layout}
               editMode={editModeActive}
-              compact
               onLayoutChange={updateLayout}
               renderWidget={(w) =>
                 // h-full is load-bearing: react-grid-layout sizes the grid item

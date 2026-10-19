@@ -36,16 +36,6 @@ interface Props {
    * caller (so the editor can wrap with WidgetShell for click-to-select).
    */
   renderWidget: (widget: Widget) => React.ReactNode;
-  /**
-   * Placement mode.
-   *  - ``false`` (default): literal placement — widgets never auto-compact
-   *    and a drag/resize into an occupied cell snaps back, honouring authored
-   *    position/size verbatim (Reports v3 #442).
-   *  - ``true``: vertical compaction + collision displacement — dragging a tile
-   *    over another pushes it aside and tiles float up to fill gaps
-   *    (phone-style rearrange). Used by the dashboard.
-   */
-  compact?: boolean;
 }
 
 // The editor canvas is desktop-only — true mobile widths render the
@@ -62,7 +52,6 @@ export default function Canvas({
   editMode,
   onLayoutChange,
   renderWidget,
-  compact = false,
 }: Props) {
   // Wrap in useMemo so the `?? []` fallback doesn't mint a fresh array
   // every render, which would destabilize the rgLayout useMemo below.
@@ -113,14 +102,11 @@ export default function Canvas({
         breakpoints={BREAKPOINTS}
         cols={COLS}
         rowHeight={60}
-        // Placement mode (see the `compact` prop):
-        //  - compact: vertical compaction + collision displacement — dragging a
-        //    tile over another pushes it aside and tiles float up (phone-style).
-        //  - literal (default): widgets never auto-compact and a drag into an
-        //    occupied cell snaps back to the last valid position, honouring the
-        //    authored position/size verbatim (Reports v3 #442).
-        compactType={compact ? "vertical" : null}
-        preventCollision={!compact}
+        // Dragging a tile over another pushes it aside and tiles float up to
+        // fill gaps, on reports and the dashboard alike (TBD-647 replaced
+        // Reports v3 #442's literal placement, operator ruling 2026-10-19).
+        compactType="vertical"
+        preventCollision={false}
         isDraggable={editMode}
         isResizable={editMode}
         draggableHandle="[data-grid-drag-handle]"
