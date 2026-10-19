@@ -27,7 +27,10 @@ export default function AppShellFooter() {
             <CurrentYear />
           </span>
           {/* The running release, so a report or a test ties to a version. */}
-          <span data-testid="app-version">{appVersionLabel(runtimeConfig().appVersion)}</span>
+          <span data-testid="app-version">
+            <span className="sr-only">Version </span>
+            {appVersionLabel(runtimeConfig().appVersion)}
+          </span>
         </div>
         <nav
           aria-label="App footer"
