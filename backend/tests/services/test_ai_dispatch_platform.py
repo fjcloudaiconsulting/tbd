@@ -676,7 +676,7 @@ async def test_fence6_default_is_the_cheapest_capable_offerable_row(db):
     await mk_model(db, "K", 6, 6, expires=now.date() + timedelta(days=3))
     await mk_model(db, "G", 50_000, 600_000, structured=False)  # prompt below A's, blend above
     # completion above A's, 3p + c below A's: only the 3:1 blend ranks it first
-    await mk_model(db, "W", 10_000, 500_000, structured=False)
+    await mk_model(db, "W", 60_000, 450_000, structured=False)  # 3p+c 630k; p+c 510k; G keeps the cheapest prompt
     db.add(PlatformAIModel(openrouter_id="I", name="I", context_length=200_000, max_completion_tokens=8192,
                            supports_structured_outputs=True, last_seen_at=now, enabled=True))
     await db.commit()
@@ -1090,9 +1090,11 @@ async def test_item10_settings_read_db_error_is_a_402_not_a_500(db, sf, fake, mo
         raise OperationalError("s", {}, Exception("d"))
 
     monkeypatch.setattr(ai_dispatch.platform_ai_settings, "load", boom)
+    rolled = _spy_rollback(db, monkeypatch)
     with pytest.raises(AIPlatformUnavailable) as ei:
         await _chat(db, org)
     assert http_for_dispatch_error(ei.value).status_code == 402
+    assert rolled
 
 
 async def test_item3_openrouter_embed_is_refused_before_reserve(db, sf, fake, spy):
@@ -1405,7 +1407,19 @@ async def test_pick_db_error_is_a_402_not_a_500(db, sf, fake, spy, monkeypatch):
         raise OperationalError("s", {}, Exception("d"))
 
     monkeypatch.setattr(platform_ai, "pick", boom)
+    rolled = _spy_rollback(db, monkeypatch)
     with pytest.raises(AIPlatformUnavailable) as ei:
         await _chat(db, org)
     assert http_for_dispatch_error(ei.value).status_code == 402
-    assert spy == [] and fake.reqs == []
+    assert rolled and spy == [] and fake.reqs == []
+
+
+def _spy_rollback(db, monkeypatch):
+    calls, real = [], db.rollback
+
+    async def rollback():
+        calls.append(1)
+        await real()
+
+    monkeypatch.setattr(db, "rollback", rollback)
+    return calls
