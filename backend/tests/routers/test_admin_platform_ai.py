@@ -191,6 +191,15 @@ async def test_fence28_enabling_needs_the_key_only_for_a_non_empty_set(sf, users
     assert r.json()["models"] == []
 
 
+async def test_fence28_enabling_with_models_omitted_checks_the_existing_set(sf, users, monkeypatch):
+    """FENCE 28. Kills reading only the body's ``models`` for the key check."""
+    monkeypatch.setattr(app_settings, "platform_ai_openrouter_api_key", "")
+    await add(sf, model_row("on/m", enabled=True))
+    r = client(sf, users["root"]).put(URL, json={"enabled": True, "global_monthly_cents": 5000})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "platform_provider_key_missing"
+    assert await rows(sf) == {}
+
+
 async def test_fence29_one_commit_a_failing_catalog_update_rolls_back_the_settings(sf, users, monkeypatch):
     """FENCE 29. Kills more than one commit."""
     await add(sf, model_row("b/m", enabled=True))

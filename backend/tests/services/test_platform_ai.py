@@ -145,6 +145,11 @@ _KEY_READERS = {("services/platform_ai.py", "build_adapter"),
                 ("mcp_main.py", "refuse_platform_ai_keys")}
 
 
+def _is_settings(node) -> bool:
+    return (isinstance(node, ast.Name) and node.id in ("settings", "app_settings")) or (
+        isinstance(node, ast.Attribute) and node.attr == "settings")
+
+
 def test_fence35_the_house_key_never_leaves_its_three_readers():
     """FENCE 35. Kills a helper that hands the key string out; the dynamic
     ``getattr`` read a name-based fence cannot see."""
@@ -165,9 +170,20 @@ def test_fence35_the_house_key_never_leaves_its_three_readers():
             if hit:
                 assert (rel, fns.get(n)) in _KEY_READERS, (rel, n.lineno)
                 seen.add((rel, fns.get(n)))
-            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr"):
-                for a in n.args:
-                    assert not (isinstance(a, ast.JoinedStr) and "_api_key" in ast.unparse(a)), (rel, n.lineno)
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+            on_settings = bool(n.args) and _is_settings(n.args[0])
+            # getattr(settings, <anything but a literal>): f-string, %, .format, +, a variable
+            if name == "getattr" and on_settings and not (
+                len(n.args) > 1 and isinstance(n.args[1], ast.Constant) and isinstance(n.args[1].value, str)
+            ):
+                assert (rel, fns.get(n)) == ("mcp_main.py", "refuse_platform_ai_keys"), (rel, n.lineno)
+            # whole-object dumps
+            assert not (name in ("dict", "vars") and on_settings), (rel, n.lineno)
+            assert not (isinstance(f, ast.Attribute) and _is_settings(f.value)
+                        and f.attr in ("model_dump", "model_dump_json", "dict", "json")), (rel, n.lineno)
     assert seen == _KEY_READERS
     assert not hasattr(platform_ai, "platform_key")
 

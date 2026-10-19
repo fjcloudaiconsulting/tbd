@@ -603,28 +603,52 @@ def test_fence2_the_factory_alone_owns_the_privacy_prefs(monkeypatch, models, pr
 
 def test_fence3_build_adapter_has_exactly_one_caller():
     """FENCE 3 (AST). Kills a second construction path that could skip the
-    reservation or the factory's body."""
+    reservation or the factory's body, including through an alias, an import
+    or a ``getattr`` by name."""
     sites = []
     for path in APP.rglob("*.py"):
         tree = ast.parse(path.read_text())
         where = _enclosing(tree)
         for n in ast.walk(tree):
-            if isinstance(n, ast.Call) and (
-                (isinstance(n.func, ast.Attribute) and n.func.attr == "build_adapter")
-                or (isinstance(n.func, ast.Name) and n.func.id == "build_adapter")
-            ):
-                sites.append((path.relative_to(APP).as_posix(), where.get(n)))
-    assert sites == [("services/platform_reserve.py", "reserve")]
+            hit = (
+                (isinstance(n, ast.Attribute) and n.attr == "build_adapter")
+                or (isinstance(n, ast.Name) and n.id == "build_adapter")
+                or (isinstance(n, ast.Constant) and n.value == "build_adapter")
+                or (isinstance(n, ast.alias) and "build_adapter" in (n.name, n.asname))
+            )
+            if hit:
+                sites.append((path.relative_to(APP).as_posix(), where.get(n), type(n).__name__))
+    assert sites == [("services/platform_reserve.py", "reserve", "Attribute")]
 
 
-async def test_fence4_reserve_and_cap_on_the_dearer_of_chosen_and_fallback(db, sf, fake, spy):
-    """FENCE 4. Kills reserving or capping on the chosen model only; no padding."""
-    org, _ = await setup(db)
-    await mk_model(db, "vendor/model-b", 150_000, 600_000)
+# A is dearer on prompt, B on completion (same tier, B the higher blend): the
+# componentwise max is neither row's pair.
+SPLIT = (100_001, 700_001)
+
+
+@pytest.mark.parametrize("routed", [MODEL, "vendor/model-b"], ids=["cheap_routed", "dear_routed"])
+async def test_fence4_reserve_and_cap_on_the_componentwise_max(db, sf, fake, spy, routed):
+    """FENCE 4. Kills reserving or capping on the chosen model only, on the
+    fallback's pair, or on the higher-blend row's pair; no padding."""
+    org, _ = await setup(db, model=routed)
+    await mk_model(db, "vendor/model-b", 50_000, 700_000)
     await _chat(db, org, None)
     prompt = estimate_prompt_tokens_from_messages(MSGS)
-    assert spy[0].micros == platform_ai.cost_micros(prompt, 4096, 150_001, 600_001)
-    assert fake.bodies[0]["provider"]["max_price"] == {"prompt": 0.150001, "completion": 0.600001, "request": 0}
+    assert spy[0].micros == platform_ai.cost_micros(prompt, 4096, *SPLIT)
+    assert fake.bodies[0]["provider"]["max_price"] == {"prompt": 0.100001, "completion": 0.700001, "request": 0}
+    assert fake.bodies[0]["models"] == [routed, ({MODEL, "vendor/model-b"} - {routed}).pop()]
+
+
+async def test_fence37_a_dearer_tier_is_never_the_fallback(db, sf, fake, spy):
+    """FENCE 37. Kills dropping the tier filter on the fallback: a frontier
+    fallback would widen ``max_price`` and the reservation past a budget choice."""
+    org, _ = await setup(db)
+    await mk_model(db, "vendor/frontier", 10_000_000, 40_000_000)
+    await _chat(db, org, None)
+    body = fake.bodies[0]
+    assert "models" not in body
+    assert body["provider"]["max_price"] == {"prompt": 0.100001, "completion": 0.400001, "request": 0}
+    assert spy[0].micros == platform_ai.cost_micros(estimate_prompt_tokens_from_messages(MSGS), 4096, *PRICE)
 
 
 @pytest.mark.parametrize("p", [1, 61, 110_001, 1_234_567_891, 10_000_000_001])
@@ -651,10 +675,12 @@ async def test_fence6_default_is_the_cheapest_capable_offerable_row(db):
     await mk_model(db, "J", 5, 5, mct=None)
     await mk_model(db, "K", 6, 6, expires=now.date() + timedelta(days=3))
     await mk_model(db, "G", 50_000, 600_000, structured=False)  # prompt below A's, blend above
+    # completion above A's, 3p + c below A's: only the 3:1 blend ranks it first
+    await mk_model(db, "W", 10_000, 500_000, structured=False)
     db.add(PlatformAIModel(openrouter_id="I", name="I", context_length=200_000, max_completion_tokens=8192,
                            supports_structured_outputs=True, last_seen_at=now, enabled=True))
     await db.commit()
-    assert (await platform_ai.pick(db, "function_call", None)).model == "A"
+    assert (await platform_ai.pick(db, "function_call", None)).model == "W"
     assert (await platform_ai.pick(db, "structured_output", None)).model == "B"
 
 
@@ -1262,8 +1288,9 @@ async def test_fence_openrouter_byok_usage_cost_is_not_the_spend(db, sf, fake):
 @ALL
 async def test_fence10_a_non_200_refusal_settles_to_zero(db, sf, fake, spy, entry, status):
     """FENCE 10. Kills a storm of non-200s burning meters and the global
-    ceiling with $0 spent. Deliberately reverses the deleted F-Q7 fence
-    (500/429 kept the reservation): OpenRouter does not bill a non-200."""
+    ceiling with $0 spent. Deliberately reverses the deleted
+    ``test_f_q7_provider_error_keeps_the_full_reservation`` (a 500/429 kept the
+    reservation): OpenRouter does not bill a non-200."""
     org, _ = await setup(db)
     fake.status = status
     with pytest.raises(AIDispatchFailed):
@@ -1313,9 +1340,9 @@ async def test_fence12_missing_cost_settles_on_the_padded_pair(db, sf, fake, fal
     org, _ = await setup(db)
     assert MODEL not in MODEL_PRICING
     if fallback:
-        await mk_model(db, "vendor/model-b", 150_000, 600_000)
+        await mk_model(db, "vendor/model-b", 50_000, 700_000)
     await _chat(db, org)
-    want = settled(price=(150_001, 600_001) if fallback else PRICE)
+    want = settled(price=SPLIT if fallback else PRICE)
     assert [r.cost_micros for r in await ledger(sf)] == [want]
     assert (await counters(sf, org))["platform_ai.micros"] == want and await spend(sf) == want
 
@@ -1368,3 +1395,17 @@ async def test_fence15_own_key_caps_never_gate_or_warn_a_platform_dispatch(db, s
     assert len(spy) == 1 and len(fake.reqs) == 1
     assert "ai.cap.soft_warning" not in notes and claims == []
     assert not [r for r in caplog.records if r.getMessage().startswith("ai.dispatch.soft_cap")]
+
+
+async def test_pick_db_error_is_a_402_not_a_500(db, sf, fake, spy, monkeypatch):
+    """GUARD: a catalog read failure maps like the settings read above it."""
+    org, _ = await setup(db)
+
+    async def boom(*a, **k):
+        raise OperationalError("s", {}, Exception("d"))
+
+    monkeypatch.setattr(platform_ai, "pick", boom)
+    with pytest.raises(AIPlatformUnavailable) as ei:
+        await _chat(db, org)
+    assert http_for_dispatch_error(ei.value).status_code == 402
+    assert spy == [] and fake.reqs == []

@@ -1246,7 +1246,11 @@ async def _prepare_platform(
     ):
         raise NativeNotAvailable("platform_disabled")
     # A disabled, stale or incapable routed choice falls back to the default.
-    pk = await platform_ai.pick(db, capability, routed_model)
+    try:
+        pk = await platform_ai.pick(db, capability, routed_model)
+    except SQLAlchemyError:
+        await db.rollback()
+        raise AIPlatformUnavailable() from None
     if pk is None:
         raise NativeNotAvailable("platform_model_not_allowed")
     if conf.global_monthly_cents <= 0:
