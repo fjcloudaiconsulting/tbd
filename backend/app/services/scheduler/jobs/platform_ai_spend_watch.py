@@ -19,7 +19,7 @@ import logging
 from decimal import Decimal
 
 import httpx
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from sqlalchemy import func, select
 
 from app import state_db, tracing
@@ -29,9 +29,14 @@ from app.models.ai_usage_ledger import AIUsageLedger
 from app.models.system_setting import SystemSetting
 from app.services import platform_ai
 from app.services.ai_pricing import usd_to_micros
-from app.services.scheduler.jobs.platform_ai_catalog import OPENROUTER_ROOT
+from app.services.scheduler.jobs.platform_ai_catalog import OPENROUTER_ROOT, PLATFORM_AI_EVENTS
 
 logger = logging.getLogger(__name__)
+# The heartbeat the infra absence alarm reads, set on every tick from the stored snapshot so a
+# restart cannot blank it. 0 = armed but never succeeded (an absent series would be silent).
+_meter = metrics.get_meter(__name__)
+_LAST_SUCCESS = _meter.create_gauge("tbd.platform_ai.reconciled_last_success", unit="s")
+_KEY_CONFIGURED = _meter.create_gauge("tbd.platform_ai.house_key_configured")
 
 DRIFT_PCT = 2
 FLOOR_MICROS = 100_000  # a gap under $0.10 is noise whatever its percentage
@@ -132,11 +137,13 @@ async def _spikes(session_factory, now: datetime.datetime) -> None:
         await db.commit()  # commit before logging: a failed commit must not alarm twice
         for extra in spikes:
             logger.error("platform_ai_spend.spike", extra=extra)
+            PLATFORM_AI_EVENTS.add(1, {"event": "spike", "scope": extra["scope"]})
 
 
 async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
     async with session_factory() as db:
         prev = _snapshot(await _get(db, SNAPSHOT_KEY))
+    _LAST_SUCCESS.set(0 if prev is None else _epoch(prev["at"]))
     if prev is not None and now - prev["at"] < DUE_AFTER:
         return "fresh"
     if await state_db.acquire_lease(ATTEMPT_LEASE, ATTEMPT_LEASE_TTL) is None:
@@ -151,6 +158,7 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
         logger.error("platform_ai_spend.reconcile_failed", extra={
             "error": type(exc).__name__, "status": status,
             "hours_since_success": None if prev is None else round((now - prev["at"]).total_seconds() / 3600, 1)})
+        PLATFORM_AI_EVENTS.add(1, {"event": "reconcile_failed"})
         return "fetch_failed"
     fp = hashlib.sha256(settings.platform_ai_openrouter_api_key.encode()).hexdigest()[:16]
     new = json.dumps({"usage_micros": usage, "at": now.isoformat(), "key_fp": fp})
@@ -182,7 +190,14 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
         await db.commit()
         for log, name, extra in events:  # no await between commit and log: a cancel cannot drop an alarm
             log(name, extra=extra)
+            if name != "platform_ai_spend.reconciled":  # the heartbeat is the gauge, not an event
+                PLATFORM_AI_EVENTS.add(1, {"event": name.rsplit(".", 1)[1]})
+        _LAST_SUCCESS.set(_epoch(now))
     return outcome
+
+
+def _epoch(at: datetime.datetime) -> float:
+    return at.replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
 async def run_platform_ai_spend_watch(
@@ -194,14 +209,18 @@ async def run_platform_ai_spend_watch(
         now = now.astimezone(datetime.timezone.utc).replace(tzinfo=None)
     now = now.replace(microsecond=0)  # the ledger column has no fractional seconds
     try:
-        if not (settings.ai_native_enabled and platform_ai.platform_key_configured("openrouter")):
+        armed = settings.ai_native_enabled and platform_ai.platform_key_configured("openrouter")
+        _KEY_CONFIGURED.set(int(armed))  # gates the absence alarm: off is not silent-by-failure
+        if not armed:
             return "off"
         try:
             await _spikes(session_factory, now)
         except Exception as exc:  # noqa: BLE001 -- a spike failure must not block the reconcile
             logger.error("platform_ai_spend.spike_failed", extra={"error": type(exc).__name__})
+            PLATFORM_AI_EVENTS.add(1, {"event": "spike_failed"})
         return await _reconcile(session_factory, fetch, now)
     except Exception as exc:  # noqa: BLE001 -- never let the ticker die
         tracing.mark_error(trace.get_current_span(), exc)
         logger.error("platform_ai_spend.failed", extra={"error": type(exc).__name__})
+        PLATFORM_AI_EVENTS.add(1, {"event": "failed"})
         return "error"

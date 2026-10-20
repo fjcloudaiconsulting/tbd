@@ -70,6 +70,7 @@ from typing import Any, Optional
 
 import logging
 from fastapi import HTTPException, status
+from opentelemetry import metrics
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -133,6 +134,10 @@ DISPATCH_TIMEOUT_ERROR_CODE = "provider_timeout"
 
 
 logger = logging.getLogger(__name__)
+
+# TBD-633: the estimated-cost alarm is a metric, since TBD logs do not reach Grafana. Low-cardinality
+# attributes only (billing_source, cost_estimated); never org_id.
+_LEDGER_RECORDED = metrics.get_meter(__name__).create_counter("tbd.ai.ledger.recorded")
 
 
 async def _with_dispatch_timeout(awaitable):
@@ -925,6 +930,7 @@ async def _write_ledger_row(
             "cost_estimated": cost_estimated,
         },
     )
+    _LEDGER_RECORDED.add(1, {"billing_source": billing_source, "cost_estimated": cost_estimated})
     return row
 
 

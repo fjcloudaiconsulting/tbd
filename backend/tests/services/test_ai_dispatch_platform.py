@@ -1358,14 +1358,18 @@ def _recorded(log_lines):
 
 
 @ALL
-async def test_f8_unreported_platform_cost_is_flagged_once(db, sf, fake, log_lines, entry):
+async def test_f8_unreported_platform_cost_is_flagged_once(db, sf, fake, log_lines, metric_reader, entry):
     """FENCE F8. Kills a falsy check and a flag that is always on; pins exactly one
-    ``ai.ledger.recorded`` per call."""
+    ``ai.ledger.recorded`` per call, as a log line and as the metric infra alerts on."""
     org, _ = await setup(db)
     await ENTRIES[entry](db, org)
     (ev,) = _recorded(log_lines)
     assert ev["cost_estimated"] is True and ev["billing_source"] == "platform"
     assert ev["cost_micros"] == settled() == (await ledger(sf))[0].cost_micros
+    data = metric_reader.get_metrics_data()
+    pts = [(dict(p.attributes), p.value) for rm in data.resource_metrics for sm in rm.scope_metrics
+           for m in sm.metrics if m.name == "tbd.ai.ledger.recorded" for p in m.data.data_points]
+    assert pts == [({"billing_source": "platform", "cost_estimated": True}, 1)]
 
 
 @ALL

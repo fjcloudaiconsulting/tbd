@@ -590,3 +590,77 @@ async def test_fetch_key_usage_url_auth_data_and_limits(monkeypatch):
     monkeypatch.setattr(settings, "platform_ai_openrouter_api_key", KEY)
     await fetch_key_usage(transport=httpx.MockTransport(handler))
     assert kwargs["trust_env"] is False
+
+
+# ── metrics: the alarm path infra alerts on (TBD logs do not reach Grafana) ──
+
+
+def points(reader, name):
+    data = reader.get_metrics_data()
+    return [(dict(p.attributes), p.value)
+            for rm in (data.resource_metrics if data else []) for sm in rm.scope_metrics
+            for m in sm.metrics if m.name == name for p in m.data.data_points]
+
+
+EPOCH = NOW.replace(tzinfo=dt.timezone.utc).timestamp()
+
+
+async def test_metrics_drift_counts_and_the_heartbeat_moves(sf, metric_reader):
+    """FENCE. Kills a log-only alarm (no event point) and a heartbeat that never advances."""
+    await snap(sf, 0, NOW - 24 * H)
+    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(1_000_000), now=NOW) == "drift"
+    assert points(metric_reader, "tbd.platform_ai.events") == [({"event": "drift"}, 1)]
+    assert points(metric_reader, "tbd.platform_ai.reconciled_last_success") == [({}, EPOCH)]
+    assert points(metric_reader, "tbd.platform_ai.house_key_configured") == [({}, 1)]
+
+
+async def test_metrics_a_fresh_tick_reports_the_stored_success(sf, metric_reader):
+    """Kills a process-local heartbeat: after a restart the next tick must report the DB snapshot."""
+    await snap(sf, 0, NOW - 2 * H)
+    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(0), now=NOW) == "fresh"
+    assert points(metric_reader, "tbd.platform_ai.reconciled_last_success") == [({}, EPOCH - 7200)]
+    assert points(metric_reader, "tbd.platform_ai.events") == []
+
+
+async def test_metrics_never_succeeded_is_zero_not_absent(sf, metric_reader):
+    """Kills an unset gauge when armed with no snapshot: an absent series keeps the alarm silent."""
+
+    async def broken():
+        raise job.SpendFetchError("status", 503)
+
+    assert await run_platform_ai_spend_watch(sf, fetch=broken, now=NOW) == "fetch_failed"
+    assert points(metric_reader, "tbd.platform_ai.reconciled_last_success") == [({}, 0)]
+    assert points(metric_reader, "tbd.platform_ai.events") == [({"event": "reconcile_failed"}, 1)]
+
+
+async def test_metrics_off_reports_unarmed(sf, metric_reader, monkeypatch):
+    monkeypatch.setattr(settings, "platform_ai_openrouter_api_key", "")
+    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(1), now=NOW) == "off"
+    assert points(metric_reader, "tbd.platform_ai.house_key_configured") == [({}, 0)]
+
+
+async def test_metrics_spikes_carry_scope_never_org_id(sf, log_lines, metric_reader):
+    """Kills org_id as a metric attribute (unbounded cardinality) and a dropped scope."""
+    await spikes(sf, log_lines, day=[6_000_000], window=[0])
+    got = sorted(points(metric_reader, "tbd.platform_ai.events"), key=lambda p: p[0]["scope"])
+    assert got == [({"event": "spike", "scope": "global"}, 1), ({"event": "spike", "scope": "org"}, 1)]
+
+
+async def test_metrics_rebaseline_and_spike_failure_count(sf, metric_reader):
+    await snap(sf, 0, NOW - 24 * H, fp="0" * 16)
+
+    def factory():
+        s = sf()
+        real = s.execute
+
+        async def execute(stmt, *a, **k):
+            if "ai_usage_ledger" in str(stmt):
+                raise OperationalError("select", {}, Exception("db down"))
+            return await real(stmt, *a, **k)
+
+        s.execute = execute
+        return s
+
+    assert await run_platform_ai_spend_watch(factory, fetch=fetch_of(5), now=NOW) == "rebaselined"
+    got = sorted(points(metric_reader, "tbd.platform_ai.events"), key=lambda p: p[0]["event"])
+    assert got == [({"event": "rebaselined"}, 1), ({"event": "spike_failed"}, 1)]

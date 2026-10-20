@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
 import httpx
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from sqlalchemy import func, select
 
 from app import state_db, tracing
@@ -30,6 +30,9 @@ from app.services import audit_service
 from app.services.ai_providers.openai_compatible import OPENAI_COMPATIBLE_PRESETS
 
 logger = logging.getLogger(__name__)
+# TBD-633: the platform AI alarms, as a metric because TBD logs do not reach Grafana. Attribute
+# ``event`` is the log event's last segment (spend watch shares this counter); never org_id.
+PLATFORM_AI_EVENTS = metrics.get_meter(__name__).create_counter("tbd.platform_ai.events")
 
 PRICE_CAP_MICROS = 10_000_000_000  # $10,000/Mtok; today's max is $180
 EXPIRY_DISABLE_DAYS = 14
@@ -306,6 +309,7 @@ async def run_platform_ai_catalog_sync(
             return "refused"
         for mid, reason in plan.disables:
             logger.warning("platform_ai_catalog.model_disabled", extra={"openrouter_id": mid, "reason": reason})
+            PLATFORM_AI_EVENTS.add(1, {"event": "model_disabled"})
             await _audit(session_factory, "platform_ai.catalog.model_disabled", "success",
                          {"openrouter_id": mid, "reason": reason})
         for d in plan.ceiling_drops:
