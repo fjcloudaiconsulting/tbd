@@ -32,11 +32,20 @@ from app.services.ai_pricing import usd_to_micros
 from app.services.scheduler.jobs.platform_ai_catalog import OPENROUTER_ROOT, PLATFORM_AI_EVENTS
 
 logger = logging.getLogger(__name__)
-# The heartbeat the infra absence alarm reads, set on every tick from the stored snapshot so a
-# restart cannot blank it. 0 = armed but never succeeded (an absent series would be silent).
+# The heartbeat the infra absence alarm reads. Updated on every tick from the stored snapshot (so the
+# first tick after a restart restores it); observable, so every export re-reports the last value and
+# it ages visibly when the ticker stalls, under any temporality. 0 = armed but never succeeded (an
+# absent series would keep the alarm silent).
+_gauges: dict[str, float] = {}
+
+
+def _observe(name: str):
+    return lambda _options: [metrics.Observation(_gauges[name])] if name in _gauges else []
+
+
 _meter = metrics.get_meter(__name__)
-_LAST_SUCCESS = _meter.create_gauge("tbd.platform_ai.reconciled_last_success", unit="s")
-_KEY_CONFIGURED = _meter.create_gauge("tbd.platform_ai.house_key_configured")
+_meter.create_observable_gauge("tbd.platform_ai.reconciled_last_success", [_observe("last_success")], unit="s")
+_meter.create_observable_gauge("tbd.platform_ai.house_key_configured", [_observe("configured")])
 
 DRIFT_PCT = 2
 FLOOR_MICROS = 100_000  # a gap under $0.10 is noise whatever its percentage
@@ -143,7 +152,7 @@ async def _spikes(session_factory, now: datetime.datetime) -> None:
 async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
     async with session_factory() as db:
         prev = _snapshot(await _get(db, SNAPSHOT_KEY))
-    _LAST_SUCCESS.set(0 if prev is None else _epoch(prev["at"]))
+    _gauges["last_success"] = 0 if prev is None else _epoch(prev["at"])
     if prev is not None and now - prev["at"] < DUE_AFTER:
         return "fresh"
     if await state_db.acquire_lease(ATTEMPT_LEASE, ATTEMPT_LEASE_TTL) is None:
@@ -192,7 +201,7 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
             log(name, extra=extra)
             if name != "platform_ai_spend.reconciled":  # the heartbeat is the gauge, not an event
                 PLATFORM_AI_EVENTS.add(1, {"event": name.rsplit(".", 1)[1]})
-        _LAST_SUCCESS.set(_epoch(now))
+        _gauges["last_success"] = _epoch(now)
     return outcome
 
 
@@ -210,7 +219,7 @@ async def run_platform_ai_spend_watch(
     now = now.replace(microsecond=0)  # the ledger column has no fractional seconds
     try:
         armed = settings.ai_native_enabled and platform_ai.platform_key_configured("openrouter")
-        _KEY_CONFIGURED.set(int(armed))  # gates the absence alarm: off is not silent-by-failure
+        _gauges["configured"] = int(armed)  # gates the absence alarm: off is not silent-by-failure
         if not armed:
             return "off"
         try:

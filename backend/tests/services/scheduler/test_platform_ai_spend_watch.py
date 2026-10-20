@@ -12,6 +12,10 @@ import json
 from collections.abc import AsyncIterator
 
 import httpx
+from opentelemetry import metrics as otel_metrics
+from opentelemetry.sdk.metrics import ObservableGauge
+from opentelemetry.sdk.metrics import _Gauge as _SyncGauge
+from opentelemetry.sdk.metrics.export import AggregationTemporality, InMemoryMetricReader
 import pytest
 import pytest_asyncio
 from sqlalchemy import event, select
@@ -64,6 +68,7 @@ async def sf() -> AsyncIterator:
 def _on(monkeypatch):
     monkeypatch.setattr(settings, "ai_native_enabled", True)
     monkeypatch.setattr(settings, "platform_ai_openrouter_api_key", KEY)
+    monkeypatch.setattr(job, "_gauges", {})  # the observed heartbeat is process state
     expire_lease("platform_ai_spend:attempt")
 
 
@@ -614,12 +619,22 @@ async def test_metrics_drift_counts_and_the_heartbeat_moves(sf, metric_reader):
     assert points(metric_reader, "tbd.platform_ai.house_key_configured") == [({}, 1)]
 
 
-async def test_metrics_a_fresh_tick_reports_the_stored_success(sf, metric_reader):
-    """Kills a process-local heartbeat: after a restart the next tick must report the DB snapshot."""
-    await snap(sf, 0, NOW - 2 * H)
-    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(0), now=NOW) == "fresh"
-    assert points(metric_reader, "tbd.platform_ai.reconciled_last_success") == [({}, EPOCH - 7200)]
-    assert points(metric_reader, "tbd.platform_ai.events") == []
+async def test_metrics_a_fresh_tick_reports_the_stored_success(sf):
+    """Kills a process-local heartbeat (after a restart the next tick must report the DB snapshot) and
+    a synchronous gauge, which a delta-temporality export reports once and then drops: a stalled
+    ticker would leave an empty series and a silent absence alarm."""
+    reader = InMemoryMetricReader(preferred_temporality={ObservableGauge: AggregationTemporality.DELTA,
+                                                         _SyncGauge: AggregationTemporality.DELTA})
+    provider = otel_metrics.get_meter_provider()
+    provider.add_metric_reader(reader)
+    try:
+        await snap(sf, 0, NOW - 2 * H)
+        assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(0), now=NOW) == "fresh"
+        assert points(reader, "tbd.platform_ai.reconciled_last_success") == [({}, EPOCH - 7200)]
+        assert points(reader, "tbd.platform_ai.events") == []
+        assert points(reader, "tbd.platform_ai.reconciled_last_success") == [({}, EPOCH - 7200)]
+    finally:
+        provider.remove_metric_reader(reader)
 
 
 async def test_metrics_never_succeeded_is_zero_not_absent(sf, metric_reader):
@@ -664,3 +679,14 @@ async def test_metrics_rebaseline_and_spike_failure_count(sf, metric_reader):
     assert await run_platform_ai_spend_watch(factory, fetch=fetch_of(5), now=NOW) == "rebaselined"
     got = sorted(points(metric_reader, "tbd.platform_ai.events"), key=lambda p: p[0]["event"])
     assert got == [({"event": "rebaselined"}, 1), ({"event": "spike_failed"}, 1)]
+
+
+async def test_metrics_an_unexpected_failure_counts(sf, metric_reader):
+    """Kills a log-only outer except: the job swallowing every error must still raise an alarm."""
+
+    def broken():
+        raise RuntimeError("no db")
+
+    assert await run_platform_ai_spend_watch(broken, fetch=fetch_of(0), now=NOW) == "error"
+    got = sorted(points(metric_reader, "tbd.platform_ai.events"), key=lambda p: p[0]["event"])
+    assert got == [({"event": "failed"}, 1), ({"event": "spike_failed"}, 1)]
