@@ -1423,6 +1423,16 @@ async def test_f8_structured_exhausted_row_keeps_the_flag(db, sf, fake, log_line
     assert ev["cost_estimated"] is True
 
 
+async def test_f9_ledger_event_key_set(db, sf, fake, log_lines):
+    """FENCE F9. Kills a silent rename that blinds the infra rate alarm."""
+    org, _ = await setup(db)
+    await _chat(db, org)
+    (ev,) = _recorded(log_lines)
+    assert set(ev) - {"ts", "level", "logger", "msg"} == {
+        "ledger_id", "org_id", "feature_key", "success", "prompt_tokens", "completion_tokens",
+        "billing_source", "cost_micros", "cost_estimated"}
+
+
 async def test_f8_a_call_that_never_ran_is_not_estimated(db, sf, fake, log_lines):
     org, _ = await setup(db)
     fake.statuses = [404]

@@ -574,6 +574,15 @@ async def test_disable_audits_after_commit_per_model(sf, monkeypatch):
     assert enabled_after is False  # the row was committed before the audit
 
 
+async def test_f9_model_disabled_event_contract(sf, audits, log_lines):
+    """FENCE F9 (TBD-633). Kills a silent rename that blinds the infra alert on a turned-off model."""
+    await seed(sf, *[row(f"a/{i}", enabled=True) for i in range(4)])
+    assert await run_platform_ai_catalog_sync(sf, fetch=fake(*feeds("a/0", "a/1", "a/3")), now=NOW) == "synced"
+    (e,) = [e for e in log_lines() if e["msg"] == "platform_ai_catalog.model_disabled"]
+    assert set(e) - {"ts", "level", "logger", "msg"} == {"openrouter_id", "reason"}
+    assert (e["openrouter_id"], e["reason"], e["level"]) == ("a/2", "vanished", "WARNING")
+
+
 async def test_failed_commit_means_no_audit_and_not_synced(sf, audits):
     await seed(sf, *[row(f"a/{i}", enabled=True) for i in range(4)])
 
