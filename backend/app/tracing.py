@@ -124,6 +124,9 @@ def configure(service: str) -> None:
     _configured = True
     trace.set_tracer_provider(_provider(service))
     metrics.set_meter_provider(_meter_provider(service))
+    # The SDK skips an export when nothing recorded, and the probes record nothing: without this a
+    # process with no user traffic (the scheduler, an idle MCP) never reaches Grafana (TBD-649).
+    metrics.get_meter(__name__).create_observable_gauge("tbd.process.up", [lambda _options: [metrics.Observation(1)]])
 
 
 def error_summary(error: BaseException) -> str:

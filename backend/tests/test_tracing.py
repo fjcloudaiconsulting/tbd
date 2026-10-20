@@ -273,15 +273,35 @@ def test_the_span_ends_after_a_streamed_body_not_at_its_headers(spans):
     assert server.end_time >= STREAMED[-1]
 
 
-def test_importing_the_app_registers_sdk_providers():
-    """conftest calls configure() itself, so only a fresh interpreter shows app.main does."""
+def _up_points(reader) -> list:
+    data = reader.get_metrics_data()
+    return [p for rm in (data.resource_metrics if data else []) for sm in rm.scope_metrics
+            for m in sm.metrics if m.name == "tbd.process.up" for p in m.data.data_points]
+
+
+def test_a_process_with_nothing_recorded_still_reports_up(metric_reader):
+    """TBD-649 fence. The SDK skips an export when nothing recorded, and the probes record nothing,
+    so without this gauge a process with no user traffic never reaches Grafana."""
+    points = _up_points(metric_reader)
+    assert [(p.value, dict(p.attributes)) for p in points] == [(1, {})]
+    assert [(p.value, dict(p.attributes)) for p in _up_points(metric_reader)] == [(1, {})]  # every interval
+
+
+@pytest.mark.parametrize("module", ["app.main", "app.mcp_main"])
+def test_importing_the_app_registers_sdk_providers(module):
+    """conftest calls configure() itself, so only a fresh interpreter shows each entrypoint does."""
     code = (
-        "import app.main\n"
+        f"import {module}\n"
         "from opentelemetry import metrics, trace\n"
         "from opentelemetry.sdk.metrics import MeterProvider\n"
+        "from opentelemetry.sdk.metrics.export import InMemoryMetricReader\n"
         "from opentelemetry.sdk.trace import TracerProvider\n"
+        "reader = InMemoryMetricReader()\n"
+        "metrics.get_meter_provider().add_metric_reader(reader)\n"
+        "names = {m.name for rm in reader.get_metrics_data().resource_metrics"
+        " for sm in rm.scope_metrics for m in sm.metrics}\n"
         "print('PROVIDERS', isinstance(trace.get_tracer_provider(), TracerProvider),"
-        " isinstance(metrics.get_meter_provider(), MeterProvider))"
+        " isinstance(metrics.get_meter_provider(), MeterProvider), 'tbd.process.up' in names)"
     )
     env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("OTEL_")}
     out = subprocess.run(
@@ -289,7 +309,7 @@ def test_importing_the_app_registers_sdk_providers():
         cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
     ).stdout.splitlines()
     providers = [line.split()[1:] for line in out if line.startswith("PROVIDERS ")]
-    assert providers == [["True", "True"]]
+    assert providers == [["True", "True", "True"]]
 
 
 def test_a_handled_5xx_is_an_error_named_by_its_status(spans):
