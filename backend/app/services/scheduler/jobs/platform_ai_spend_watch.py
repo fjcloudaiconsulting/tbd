@@ -2,7 +2,8 @@
 
 Platform-global like the catalog sync: called once per tick from ``run_one_tick`` under the tick
 lease. Alarms are structured log events (the contract with the infra session's Grafana rules):
-``platform_ai_spend.reconciled|drift|rebaselined|reconcile_failed|spike|spike_failed``.
+``platform_ai_spend.reconciled|drift|rebaselined|reconcile_failed|spike|spike_failed|failed``
+(``failed`` is the outer except).
 
 Once a day it compares OpenRouter's lifetime ``/key`` usage delta against the platform rows of
 ``ai_usage_ledger`` over the same window, and separately flags a day whose spend jumped against the
@@ -69,7 +70,8 @@ def _usage_counter_micros(value) -> int | None:
 
 async def fetch_key_usage(*, transport: httpx.AsyncBaseTransport | None = None) -> dict:
     """``data`` of ``GET /key`` for the house key."""
-    headers = {"Authorization": f"Bearer {settings.platform_ai_openrouter_api_key}"}
+    # identity encoding: the byte cap must bound decompressed bytes
+    headers = {"Authorization": f"Bearer {settings.platform_ai_openrouter_api_key}", "Accept-Encoding": "identity"}
     async with asyncio.timeout(FETCH_DEADLINE_SECONDS):
         async with httpx.AsyncClient(timeout=FETCH_DEADLINE_SECONDS, transport=transport, trust_env=False) as client:
             async with client.stream("GET", f"{OPENROUTER_ROOT}/key", headers=headers) as r:
@@ -101,7 +103,8 @@ def _snapshot(raw: str | None) -> dict | None:
     try:
         s = json.loads(raw)
         usage, at = s["usage_micros"], datetime.datetime.fromisoformat(s["at"])
-        if isinstance(usage, int) and not isinstance(usage, bool) and usage >= 0 and isinstance(s["key_fp"], str):
+        if (at.tzinfo is None and isinstance(usage, int) and not isinstance(usage, bool) and usage >= 0
+                and isinstance(s["key_fp"], str)):
             return {"usage_micros": usage, "at": at, "key_fp": s["key_fp"]}
     except (TypeError, ValueError, KeyError):
         pass
@@ -124,7 +127,7 @@ async def _spikes(session_factory, now: datetime.datetime) -> None:
     day = now.date() - datetime.timedelta(days=1)
     async with session_factory() as db:
         try:
-            if datetime.date.fromisoformat(await _get(db, SPIKE_DAY_KEY)) >= day:
+            if datetime.date.fromisoformat(await _get(db, SPIKE_DAY_KEY)) == day:  # a later day = clock moved back: stale
                 return
         except (TypeError, ValueError):
             pass
@@ -133,13 +136,13 @@ async def _spikes(session_factory, now: datetime.datetime) -> None:
         window = await _sums(db, start - datetime.timedelta(days=7), start)
         scopes = [("org", o, today[o], window.get(o, 0), ORG_FLOOR) for o in today]
         scopes.append(("global", None, sum(today.values()), sum(window.values()), GLOBAL_FLOOR))
-        for scope, org_id, d, w, floor in scopes:
-            if _spiked(d, w, floor):
-                logger.error("platform_ai_spend.spike", extra={
-                    "scope": scope, "org_id": org_id, "day": day.isoformat(), "day_micros": d,
-                    "baseline_micros": w // 7, "ratio_x100": d * 700 // w if w else None})
+        spikes = [{"scope": scope, "org_id": org_id, "day": day.isoformat(), "day_micros": d,
+                   "baseline_micros": w // 7, "ratio_x100": d * 700 // w if w else None}
+                  for scope, org_id, d, w, floor in scopes if _spiked(d, w, floor)]
         await _put(db, SPIKE_DAY_KEY, day.isoformat())
-        await db.commit()
+        await db.commit()  # commit before logging: a failed commit must not alarm twice
+        for extra in spikes:
+            logger.error("platform_ai_spend.spike", extra=extra)
 
 
 async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
@@ -163,12 +166,13 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
     fp = hashlib.sha256(settings.platform_ai_openrouter_api_key.encode()).hexdigest()[:16]
     new = json.dumps({"usage_micros": usage, "at": now.isoformat(), "key_fp": fp})
     outcome = "baselined"
+    events: list = []  # logged only after the snapshot commits
     if prev is None:
-        logger.info("platform_ai_spend.reconciled", extra={"openrouter_micros": usage, "baseline": True})
+        events.append((logger.info, "platform_ai_spend.reconciled", {"openrouter_micros": usage, "baseline": True}))
     elif prev["key_fp"] != fp or usage < prev["usage_micros"]:
         outcome = "rebaselined"
-        logger.warning("platform_ai_spend.rebaselined", extra={
-            "reason": "key_changed" if prev["key_fp"] != fp else "usage_decreased"})
+        events.append((logger.warning, "platform_ai_spend.rebaselined", {
+            "reason": "key_changed" if prev["key_fp"] != fp else "usage_decreased"}))
     else:
         async with session_factory() as db:
             ledger = int(await db.scalar(select(func.coalesce(func.sum(AIUsageLedger.cost_micros), 0)).where(
@@ -180,13 +184,15 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
         fields = {"openrouter_micros": or_delta, "ledger_micros": ledger, "gap_micros": gap,
                   "gap_bp": abs(gap) * 10_000 // top if top else 0,
                   "window_s": int((now - prev["at"]).total_seconds()), "drift": drift}
-        logger.info("platform_ai_spend.reconciled", extra=fields)
+        events.append((logger.info, "platform_ai_spend.reconciled", fields))
         if drift:
-            logger.error("platform_ai_spend.drift", extra=fields)
+            events.append((logger.error, "platform_ai_spend.drift", fields))
         outcome = "drift" if drift else "reconciled"
     async with session_factory() as db:
         await _put(db, SNAPSHOT_KEY, new)
         await db.commit()
+    for log, name, extra in events:
+        log(name, extra=extra)
     return outcome
 
 

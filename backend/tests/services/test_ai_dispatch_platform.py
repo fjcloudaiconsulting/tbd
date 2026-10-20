@@ -1359,8 +1359,8 @@ def _recorded(log_lines):
 
 @ALL
 async def test_f8_unreported_platform_cost_is_flagged_once(db, sf, fake, log_lines, entry):
-    """FENCE F8. Kills a falsy check, a flag that is always on, and logging inside
-    ``_call_cost_micros`` (the stream path calls it twice)."""
+    """FENCE F8. Kills a falsy check and a flag that is always on; pins exactly one
+    ``ai.ledger.recorded`` per call."""
     org, _ = await setup(db)
     await ENTRIES[entry](db, org)
     (ev,) = _recorded(log_lines)

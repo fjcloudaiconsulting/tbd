@@ -294,6 +294,12 @@ async def test_f6_rebaseline_does_not_compare(sf, log_lines, fp, usage, reason):
     assert json.loads(await get(sf, SNAP)) == {"usage_micros": usage, "at": NOW.isoformat(), "key_fp": FP}
 
 
+async def test_a_tz_aware_snapshot_is_malformed_not_an_error(sf):
+    """Kills letting an aware `at` reach the naive subtraction (TypeError -> "error")."""
+    await put(sf, SNAP, json.dumps({"usage_micros": 1, "at": "2026-10-19T12:00:00+00:00", "key_fp": FP}))
+    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(1_000_000), now=NOW) == "baselined"
+
+
 async def test_a_malformed_snapshot_is_treated_as_absent(sf):
     await put(sf, SNAP, "{not json")
     assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(1_000_000), now=NOW) == "baselined"
@@ -355,6 +361,7 @@ async def spikes(sf, log_lines, *, day, window):
     (4_000_000, 7_000_000, True),      # 4x the mean, above the floor
     (2_000_000, 7_000_000, False),     # 2x
     (3_000_000, 7_000_000, False),     # exactly 3x: strictly greater
+    (3_000_002, 7_000_006, False),     # under 3x only by integer math (kills a truncated mean)
     (500_000, 350_000, False),         # 10x but under the floor
     (1_500_000, 0, True),              # a new org
     (1_000_000, 1_000_000, True),      # exactly the floor
@@ -400,6 +407,77 @@ async def test_f11_spikes_are_evaluated_once_per_day_and_survive_the_reconcile(s
     assert await get(sf, SPIKE) == "2026-10-20"
 
 
+async def test_f11_a_spike_day_in_the_future_is_stale_and_evaluated(sf, log_lines):
+    """Kills `>=` on the dedup: a clock that moved back must not silence the alarm."""
+    await put(sf, SPIKE, "2026-10-25")
+    (o,) = await orgs(sf)
+    await snap(sf, 1, NOW - H)
+    await led(sf, o, 4_000_000, DAY)
+    await run_platform_ai_spend_watch(sf, fetch=fetch_of(1), now=NOW)
+    assert [e["scope"] for e in named(log_lines, "platform_ai_spend.spike")] == ["org"]
+    assert await get(sf, SPIKE) == "2026-10-19"
+
+
+async def test_spike_window_edges(sf, log_lines):
+    """Day is [yesterday 00:00:00, today 00:00:00); window is [day-7 00:00:00, day)."""
+    (o,) = await orgs(sf)
+    await snap(sf, 1, NOW - H)
+    await led(sf, o, 1_500_000, dt.datetime(2026, 10, 19, 0, 0, 0))     # in the day (start inclusive)
+    await led(sf, o, 10_000_000, dt.datetime(2026, 10, 20, 0, 0, 0))    # today: in neither
+    await led(sf, o, 700_000, dt.datetime(2026, 10, 12, 0, 0, 0))       # window start, inclusive
+    await led(sf, o, 7_000_000, dt.datetime(2026, 10, 11, 23, 59, 59))  # just before the window
+    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(1), now=NOW) == "fresh"
+    (e,) = named(log_lines, "platform_ai_spend.spike")
+    assert e["scope"] == "org" and e["day_micros"] == 1_500_000 and e["baseline_micros"] == 100_000
+
+
+def failing_commit(sf, key, state):
+    """A factory whose sessions fail to commit a write of ``key`` while ``state["fail"]``."""
+    def factory():
+        s = sf()
+        real = s.commit
+
+        async def commit():
+            if state["fail"] and any(isinstance(x, SystemSetting) and x.key == key for x in (*s.new, *s.dirty)):
+                raise OperationalError("commit", {}, Exception("db down"))
+            await real()
+
+        s.commit = commit
+        return s
+
+    return factory
+
+
+async def test_drift_is_logged_only_after_the_snapshot_commits(sf, log_lines):
+    """Kills logging before the commit: a failed commit would re-alarm on every retry."""
+    (o,) = await orgs(sf)
+    await put(sf, SPIKE, "2026-10-19")
+    await snap(sf, 0, NOW - 24 * H)
+    await led(sf, o, 5_000_000, NOW - 12 * H)
+    state = {"fail": True}
+    factory = failing_commit(sf, SNAP, state)
+    assert await run_platform_ai_spend_watch(factory, fetch=fetch_of(10_000_000), now=NOW) == "error"
+    assert not named(log_lines, "platform_ai_spend.drift") and not named(log_lines, "platform_ai_spend.reconciled")
+    state["fail"] = False
+    expire_lease("platform_ai_spend:attempt")
+    assert await run_platform_ai_spend_watch(factory, fetch=fetch_of(10_000_000), now=NOW) == "drift"
+    assert len(named(log_lines, "platform_ai_spend.drift")) == 1
+
+
+async def test_spike_is_logged_only_after_spike_day_commits(sf, log_lines):
+    (o,) = await orgs(sf)
+    await snap(sf, 1, NOW - H)
+    await led(sf, o, 4_000_000, DAY)
+    state = {"fail": True}
+    factory = failing_commit(sf, SPIKE, state)
+    assert await run_platform_ai_spend_watch(factory, fetch=fetch_of(1), now=NOW) == "fresh"
+    assert not named(log_lines, "platform_ai_spend.spike")
+    assert len(named(log_lines, "platform_ai_spend.spike_failed")) == 1
+    state["fail"] = False
+    await run_platform_ai_spend_watch(factory, fetch=fetch_of(1), now=NOW)
+    assert len(named(log_lines, "platform_ai_spend.spike")) == 1
+
+
 async def test_g6_a_failing_spike_query_does_not_block_the_reconcile(sf, log_lines):
     await snap(sf, 0, NOW - 24 * H)
     n = {"n": 0}
@@ -421,6 +499,20 @@ async def test_g6_a_failing_spike_query_does_not_block_the_reconcile(sf, log_lin
     (f,) = named(log_lines, "platform_ai_spend.spike_failed")
     assert f["error"] == "OperationalError"
     assert len(named(log_lines, "platform_ai_spend.reconciled")) == 1
+
+
+async def test_g6_the_spike_step_uses_its_own_session(sf):
+    """Kills sharing one session: a failed spike transaction would poison the reconcile."""
+    await snap(sf, 0, NOW - 24 * H)
+    made = []
+
+    def factory():
+        s = sf()
+        made.append(s)
+        return s
+
+    await run_platform_ai_spend_watch(factory, fetch=fetch_of(0), now=NOW)
+    assert len(made) >= 2 and len({id(s) for s in made}) == len(made)
 
 
 # ── F9: the event contract ───────────────────────────────────────────────────
