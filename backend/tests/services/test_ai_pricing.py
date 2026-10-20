@@ -242,7 +242,13 @@ def test_fence_exact_micros_and_round_up(monkeypatch):
     "value,want",
     [
         (0.000123, 123),
-        ("0.0000001", 1),
+        ("0.0000001", 0),
+        ("0.0000005", 0),
+        ("0.0000015", 2),
+        ("0.0000474", 47),
+        ("0.0001255", 126),
+        ("0.0002485", 248),
+        (0.0001255, 126),
         (0, 0),
         (10000, 10_000_000_000),
         ("10000.000001", None),
@@ -257,8 +263,8 @@ def test_fence_exact_micros_and_round_up(monkeypatch):
     ],
 )
 def test_fence_usd_to_micros(value, want):
-    """FENCE: float math (0.000123 -> 124), unguarded ceil on non-finite, and
-    no upper bound (1e300 would overflow BIGINT at the counter)."""
+    """FENCE: float math (0.0001255 -> 125), ceil (0.0000001 -> 1; TBD-633 bills half-even),
+    unguarded rounding on non-finite, and no upper bound (1e300 would overflow BIGINT at the counter)."""
     from app.services.ai_pricing import usd_to_micros
 
     assert usd_to_micros(value) == want
