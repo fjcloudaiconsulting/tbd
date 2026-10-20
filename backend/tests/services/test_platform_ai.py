@@ -142,7 +142,10 @@ def test_fence19_can_reads_per_model_capability():
 _KEY = "platform_ai_openrouter_api_key"
 _KEY_READERS = {("services/platform_ai.py", "build_adapter"),
                 ("services/platform_ai.py", "platform_key_configured"),
-                ("mcp_main.py", "refuse_platform_ai_keys")}
+                ("mcp_main.py", "refuse_platform_ai_keys"),
+                # TBD-633: the spend watch authenticates GET /key and fingerprints the key (sha256, never stored).
+                ("services/scheduler/jobs/platform_ai_spend_watch.py", "fetch_key_usage"),
+                ("services/scheduler/jobs/platform_ai_spend_watch.py", "_reconcile")}
 
 
 def _is_settings(node) -> bool:
@@ -150,7 +153,7 @@ def _is_settings(node) -> bool:
         isinstance(node, ast.Attribute) and node.attr == "settings")
 
 
-def test_fence35_the_house_key_never_leaves_its_three_readers():
+def test_fence35_the_house_key_never_leaves_its_readers():
     """FENCE 35. Kills a helper that hands the key string out; the dynamic
     ``getattr`` read a name-based fence cannot see."""
     seen = set()

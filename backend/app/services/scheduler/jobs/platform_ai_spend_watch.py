@@ -155,8 +155,9 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
         if usage is None:
             raise SpendFetchError("unusable usage")
     except Exception as exc:  # noqa: BLE001
+        status = getattr(exc, "status", None)
         logger.error("platform_ai_spend.reconcile_failed", extra={
-            "error": type(exc).__name__, "status": getattr(exc, "status", None),
+            "error": type(exc).__name__, "status": status,
             "hours_since_success": None if prev is None else round((now - prev["at"]).total_seconds() / 3600, 1)})
         return "fetch_failed"
     fp = hashlib.sha256(settings.platform_ai_openrouter_api_key.encode()).hexdigest()[:16]
