@@ -868,6 +868,11 @@ def _call_cost_micros(
     )
 
 
+def _is_estimated(prepared: "_PreparedDispatch", reported: Optional[int]) -> bool:
+    """A platform call OpenRouter did not price, so it was charged at the catalog estimate (TBD-633)."""
+    return prepared.billing_source == "platform" and reported is None
+
+
 async def _write_ledger_row(
     db: AsyncSession,
     *,
@@ -883,6 +888,7 @@ async def _write_ledger_row(
     error_class: Optional[str],
     retries_used: int = 0,
     billing_source: str = "org_key",
+    cost_estimated: bool = False,
 ) -> AIUsageLedger:
     row = AIUsageLedger(
         org_id=org_id,
@@ -914,6 +920,9 @@ async def _write_ledger_row(
             "error_class": error_class,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
+            "billing_source": billing_source,
+            "cost_micros": cost_micros_value,
+            "cost_estimated": cost_estimated,
         },
     )
     return row
@@ -1096,6 +1105,7 @@ async def call_llm(
         success=True,
         error_class=None,
         billing_source=bs,
+        cost_estimated=_is_estimated(prepared, response.cost_micros),
     )
 
     # 7. Post-write boundary check: catch the very first call that
@@ -1686,6 +1696,7 @@ async def call_llm_structured(
     # Platform settle needs EVERY attempt's usage complete; one incomplete
     # attempt keeps the (3x) reservation.
     all_complete = True
+    any_estimated = False  # OR-ed over EVERY attempt, never the last one's value
 
     for attempt in range(STRUCTURED_OUTPUT_MAX_RETRIES + 1):
         try:
@@ -1742,6 +1753,7 @@ async def call_llm_structured(
                 success=False,
                 error_class=error_code,
                 retries_used=attempt,
+                cost_estimated=any_estimated,
             )
             logger.info(
                 "ai.dispatch.structured.failed",
@@ -1765,6 +1777,7 @@ async def call_llm_structured(
             response.completion_tokens,
             response.cost_micros,
         )
+        any_estimated = any_estimated or _is_estimated(prepared, response.cost_micros)
         all_complete = (
             all_complete
             and response.prompt_tokens > 0
@@ -1803,6 +1816,7 @@ async def call_llm_structured(
                 success=True,
                 error_class=None,
                 retries_used=attempt,
+                cost_estimated=any_estimated,
             )
             await _post_write_soft_cap_crossing(
                 db,
@@ -1867,6 +1881,7 @@ async def call_llm_structured(
         success=False,
         error_class="STATUS_ERROR_STRUCTURED_OUTPUT",
         retries_used=STRUCTURED_OUTPUT_MAX_RETRIES,
+        cost_estimated=any_estimated,
     )
     await _post_write_soft_cap_crossing(
         db,
@@ -2170,6 +2185,7 @@ async def call_llm_function(
         latency_ms=latency_ms,
         success=True,
         error_class=None,
+        cost_estimated=_is_estimated(prepared, response.cost_micros),
     )
     await _post_write_soft_cap_crossing(
         db,
@@ -2307,6 +2323,7 @@ async def call_llm_stream(
             latency_ms=latency_ms,
             success=True,
             error_class=None,
+            cost_estimated=_is_estimated(prepared, final_usage.cost_micros),
         )
         await _post_write_soft_cap_crossing(
             db,
