@@ -1,5 +1,5 @@
-"""OpenTelemetry for the API process: the telemetry standard (cloud-infra docs/architecture.md, Telemetry),
-ported from Ziftbook's app/tracing.py.
+"""OpenTelemetry for the API, scheduler and MCP processes: the telemetry standard (cloud-infra
+docs/architecture.md, Telemetry), ported from Ziftbook's app/tracing.py.
 
 Manual spans only, no contrib instrumentation, so every attribute set anywhere comes from an explicit
 allowlist. Exception recording is off on every span: an error is its class (``error_summary``), never
@@ -126,7 +126,9 @@ def configure(service: str) -> None:
     metrics.set_meter_provider(_meter_provider(service))
     # The SDK skips an export when nothing recorded, and the probes record nothing: without this a
     # process with no user traffic (the scheduler, an idle MCP) never reaches Grafana (TBD-649).
-    metrics.get_meter(__name__).create_observable_gauge("tbd.process.up", [lambda _options: [metrics.Observation(1)]])
+    metrics.get_meter(__name__).create_observable_gauge(
+        "tbd.process.up", [lambda _options: [metrics.Observation(1)]]
+    )
 
 
 def error_summary(error: BaseException) -> str:
