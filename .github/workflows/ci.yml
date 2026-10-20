@@ -304,6 +304,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
     with:
       image: ${{ matrix.image }}
@@ -318,6 +320,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
     with:
       image: frontend
@@ -980,6 +984,7 @@ jobs:
       checks: read
       pull-requests: read
       packages: write
+      attestations: read
     uses: fjcloudaiconsulting/.github/.github/workflows/release.yml@v1
     with:
       images: backend frontend migrations mcp

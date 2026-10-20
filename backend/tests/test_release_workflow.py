@@ -60,6 +60,7 @@ def test_release_job_calls_the_shared_workflow_after_both_gates_on_main_only():
         "checks": "read",
         "pull-requests": "read",
         "packages": "write",
+        "attestations": "read",
     }
     assert job["with"]["health-url"] == "http://localhost:8000/health"
 
