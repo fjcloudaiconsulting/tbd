@@ -11,6 +11,7 @@ from app.services.scheduler.jobs.agent_action_purge import run_agent_action_purg
 from app.services.scheduler.jobs.api_token_expiry import run_api_token_expiry_reminders
 from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
 from app.services.scheduler.jobs.platform_ai_catalog import run_platform_ai_catalog_sync
+from app.services.scheduler.jobs.platform_ai_spend_watch import run_platform_ai_spend_watch
 from app.services.scheduler.runner import run_all_due
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,9 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # TBD-631: daily OpenRouter catalog sync. Never raises.
     with tracing.span("job platform_ai_catalog", SpanKind.INTERNAL, {"job.kind": "platform_ai_catalog"}):
         await run_platform_ai_catalog_sync()
+    # TBD-633: OpenRouter spend reconciliation and spike alarm. Never raises.
+    with tracing.span("job platform_ai_spend_watch", SpanKind.INTERNAL, {"job.kind": "platform_ai_spend_watch"}):
+        await run_platform_ai_spend_watch()
     logger.info("scheduler.tick.complete")
     return True
 

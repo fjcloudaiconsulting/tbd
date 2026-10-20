@@ -136,6 +136,7 @@ class Fake:
         self.stream_done = True
         self.embed_tokens = 15
         self.cost = None  # OpenRouter's usage.cost (USD)
+        self.costs: list = []  # per-call override of ``cost`` (None entries report none)
         self.is_byok = False
 
     @property
@@ -181,7 +182,8 @@ class Fake:
             "usage": {"prompt_tokens": p, "completion_tokens": c, **self._cost()}})
 
     def _cost(self):
-        out = {} if self.cost is None else {"cost": self.cost}
+        cost = self.costs.pop(0) if self.costs else self.cost
+        out = {} if cost is None else {"cost": cost}
         return out | ({"is_byok": True} if self.is_byok else {})
 
 
@@ -1347,6 +1349,101 @@ async def test_fence12_missing_cost_settles_on_the_padded_pair(db, sf, fake, fal
     want = settled(price=SPLIT if fallback else PRICE)
     assert [r.cost_micros for r in await ledger(sf)] == [want]
     assert (await counters(sf, org))["platform_ai.micros"] == want and await spend(sf) == want
+
+
+# ---- TBD-633 D1: the estimate fallback is flagged on the ledger event ------------
+
+def _recorded(log_lines):
+    return [e for e in log_lines() if e["msg"] == "ai.ledger.recorded"]
+
+
+@ALL
+async def test_f8_unreported_platform_cost_is_flagged_once(db, sf, fake, log_lines, metric_reader, entry):
+    """FENCE F8. Kills a falsy check and a flag that is always on; pins exactly one
+    ``ai.ledger.recorded`` per call, as a log line and as the metric infra alerts on."""
+    org, _ = await setup(db)
+    await ENTRIES[entry](db, org)
+    (ev,) = _recorded(log_lines)
+    assert ev["cost_estimated"] is True and ev["billing_source"] == "platform"
+    assert ev["cost_micros"] == settled() == (await ledger(sf))[0].cost_micros
+    data = metric_reader.get_metrics_data()
+    pts = [(dict(p.attributes), p.value) for rm in data.resource_metrics for sm in rm.scope_metrics
+           for m in sm.metrics if m.name == "tbd.ai.ledger.recorded" for p in m.data.data_points]
+    assert pts == [({"billing_source": "platform", "cost_estimated": True}, 1)]
+
+
+@ALL
+async def test_f8_a_reported_zero_is_not_estimated(db, sf, fake, log_lines, entry):
+    org, _ = await setup(db)
+    fake.cost = 0
+    await ENTRIES[entry](db, org)
+    (ev,) = _recorded(log_lines)
+    assert ev["cost_estimated"] is False and ev["cost_micros"] == 0
+
+
+async def test_f8_byok_without_a_cost_is_not_estimated(db, sf, fake, log_lines):
+    await set_platform(db)
+    org = await mk_org(db)
+    cred = OrgAICredential(org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-byok"))
+    db.add(cred)
+    await db.flush()
+    db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
+    db.add(ai_on_rows(org)[0])
+    await db.commit()
+    await _chat(db, org, None)
+    (ev,) = _recorded(log_lines)
+    assert ev["cost_estimated"] is False and ev["billing_source"] == "org_key"
+
+
+async def test_f8_structured_any_estimated_attempt_flags_the_row(db, sf, fake, log_lines):
+    """Kills last-attempt-wins."""
+    org, _ = await setup(db)
+    fake.contents = ["nope", '{"a": 1}']
+    fake.costs = [None, 0.000405]
+    await _structured(db, org)
+    (ev,) = _recorded(log_lines)
+    assert ev["cost_estimated"] is True
+
+
+async def test_f8_structured_failure_row_keeps_the_flag_of_earlier_attempts(db, sf, fake, log_lines):
+    """Kills a hardcoded False on the failure row (:1731)."""
+    org, _ = await setup(db)
+    fake.contents = ["nope"]
+    fake.costs = [None]
+    fake.statuses = [200, 404]
+    with pytest.raises(AIDispatchFailed):
+        await _structured(db, org)
+    (ev,) = _recorded(log_lines)
+    assert ev["success"] is False and ev["cost_micros"] > 0 and ev["cost_estimated"] is True
+
+
+async def test_f8_structured_exhausted_row_keeps_the_flag(db, sf, fake, log_lines):
+    org, _ = await setup(db)
+    fake.contents = ["x", "y", "z"]
+    fake.costs = [None, 0.0001, 0.0001]
+    with pytest.raises(ai_dispatch.StructuredOutputError):
+        await _structured(db, org)
+    (ev,) = _recorded(log_lines)
+    assert ev["cost_estimated"] is True
+
+
+async def test_f9_ledger_event_key_set(db, sf, fake, log_lines):
+    """FENCE F9. Kills a silent rename that blinds the infra rate alarm."""
+    org, _ = await setup(db)
+    await _chat(db, org)
+    (ev,) = _recorded(log_lines)
+    assert set(ev) - {"ts", "level", "logger", "msg"} == {
+        "ledger_id", "org_id", "feature_key", "success", "prompt_tokens", "completion_tokens",
+        "billing_source", "cost_micros", "cost_estimated"}
+
+
+async def test_f8_a_call_that_never_ran_is_not_estimated(db, sf, fake, log_lines):
+    org, _ = await setup(db)
+    fake.statuses = [404]
+    with pytest.raises(AIDispatchFailed):
+        await _chat(db, org)
+    (ev,) = _recorded(log_lines)
+    assert ev["cost_micros"] == 0 and ev["cost_estimated"] is False
 
 
 # ---- D6: own-key caps count own-key spend only ----------------------------------

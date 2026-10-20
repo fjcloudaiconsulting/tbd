@@ -28,9 +28,8 @@ PR3 adds embedding-model rows. Embeddings only charge on the input
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Literal
 
 
@@ -229,12 +228,13 @@ def estimate_cost_micros(
     return -(-raw // 100)
 
 
-def usd_to_micros(value) -> int | None:
-    """A provider-reported USD amount -> micro-USD, rounded up; None if unusable."""
+def usd_to_micros(value, cap_usd: Decimal = COST_CAP_USD) -> int | None:
+    """A provider-reported USD amount -> micro-USD, rounded half-even (the billed figure, not a
+    ceiling: ceil would add ~0.5 micro per call); None if unusable."""
     try:
-        d = Decimal(str(value))  # str() of the JSON float keeps it exact
+        d = Decimal(str(value))  # str() of the JSON float keeps it exact; bool/None/dict raise here
     except InvalidOperation:
         return None
-    if not d.is_finite() or d < 0 or d > COST_CAP_USD:
+    if not d.is_finite() or d < 0 or d > cap_usd:
         return None
-    return math.ceil(d * 1_000_000)
+    return int((d * 1_000_000).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
