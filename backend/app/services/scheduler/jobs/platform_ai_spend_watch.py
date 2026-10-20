@@ -16,7 +16,7 @@ import datetime
 import hashlib
 import json
 import logging
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import Decimal
 
 import httpx
 from opentelemetry import trace
@@ -28,6 +28,7 @@ from app.database import async_session
 from app.models.ai_usage_ledger import AIUsageLedger
 from app.models.system_setting import SystemSetting
 from app.services import platform_ai
+from app.services.ai_pricing import usd_to_micros
 from app.services.scheduler.jobs.platform_ai_catalog import OPENROUTER_ROOT
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ ATTEMPT_LEASE = "platform_ai_spend:attempt"
 ATTEMPT_LEASE_TTL = 3600  # never released: the TTL is the 1h retry backoff
 FETCH_DEADLINE_SECONDS = 30
 MAX_BODY_BYTES = 65_536
-USAGE_CAP_MICROS = 10**15  # the counter is lifetime, so it is not bound by the per-call cap
+USAGE_CAP_USD = Decimal(10**9)  # the counter is lifetime, so it is not bound by the per-call cap
 
 
 class SpendFetchError(Exception):
@@ -55,20 +56,7 @@ class SpendFetchError(Exception):
         self.status = status
 
 
-def _usage_counter_micros(value) -> int | None:
-    """Lifetime USD counter -> micro-USD, half-even; None if unusable."""
-    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        return None
-    try:
-        d = Decimal(str(value))
-    except InvalidOperation:
-        return None
-    if not d.is_finite() or d < 0 or d > Decimal(USAGE_CAP_MICROS) / 1_000_000:
-        return None
-    return int((d * 1_000_000).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
-
-
-async def fetch_key_usage(*, transport: httpx.AsyncBaseTransport | None = None) -> dict:
+async def fetch_key_usage(*, transport: httpx.AsyncBaseTransport | None = None) -> dict | None:
     """``data`` of ``GET /key`` for the house key."""
     # identity encoding: the byte cap must bound decompressed bytes
     headers = {"Authorization": f"Bearer {settings.platform_ai_openrouter_api_key}", "Accept-Encoding": "identity"}
@@ -103,8 +91,9 @@ def _snapshot(raw: str | None) -> dict | None:
     try:
         s = json.loads(raw)
         usage, at = s["usage_micros"], datetime.datetime.fromisoformat(s["at"])
-        if (at.tzinfo is None and isinstance(usage, int) and not isinstance(usage, bool) and usage >= 0
-                and isinstance(s["key_fp"], str)):
+        if at.tzinfo is not None:  # columns are naive UTC; keep the window rather than rebaseline
+            at = at.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        if isinstance(usage, int) and not isinstance(usage, bool) and usage >= 0 and isinstance(s["key_fp"], str):
             return {"usage_micros": usage, "at": at, "key_fp": s["key_fp"]}
     except (TypeError, ValueError, KeyError):
         pass
@@ -154,7 +143,7 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
         return "backoff"
     try:
         data = await fetch()
-        usage = _usage_counter_micros(data.get("usage") if isinstance(data, dict) else None)
+        usage = usd_to_micros(data.get("usage") if isinstance(data, dict) else None, USAGE_CAP_USD)
         if usage is None:
             raise SpendFetchError("unusable usage")
     except Exception as exc:  # noqa: BLE001
@@ -191,8 +180,8 @@ async def _reconcile(session_factory, fetch, now: datetime.datetime) -> str:
     async with session_factory() as db:
         await _put(db, SNAPSHOT_KEY, new)
         await db.commit()
-    for log, name, extra in events:
-        log(name, extra=extra)
+        for log, name, extra in events:  # no await between commit and log: a cancel cannot drop an alarm
+            log(name, extra=extra)
     return outcome
 
 

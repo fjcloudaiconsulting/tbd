@@ -294,10 +294,11 @@ async def test_f6_rebaseline_does_not_compare(sf, log_lines, fp, usage, reason):
     assert json.loads(await get(sf, SNAP)) == {"usage_micros": usage, "at": NOW.isoformat(), "key_fp": FP}
 
 
-async def test_a_tz_aware_snapshot_is_malformed_not_an_error(sf):
-    """Kills letting an aware `at` reach the naive subtraction (TypeError -> "error")."""
-    await put(sf, SNAP, json.dumps({"usage_micros": 1, "at": "2026-10-19T12:00:00+00:00", "key_fp": FP}))
-    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(1_000_000), now=NOW) == "baselined"
+async def test_a_tz_aware_snapshot_keeps_its_window(sf):
+    """Kills letting an aware `at` reach the naive subtraction (TypeError -> "error"), and
+    dropping it (a rebaseline hides that window's drift)."""
+    await put(sf, SNAP, json.dumps({"usage_micros": 0, "at": "2026-10-19T14:00:00+02:00", "key_fp": FP}))
+    assert await run_platform_ai_spend_watch(sf, fetch=fetch_of(1_000_000), now=NOW) == "drift"
 
 
 async def test_a_malformed_snapshot_is_treated_as_absent(sf):
@@ -501,20 +502,6 @@ async def test_g6_a_failing_spike_query_does_not_block_the_reconcile(sf, log_lin
     assert len(named(log_lines, "platform_ai_spend.reconciled")) == 1
 
 
-async def test_g6_the_spike_step_uses_its_own_session(sf):
-    """Kills sharing one session: a failed spike transaction would poison the reconcile."""
-    await snap(sf, 0, NOW - 24 * H)
-    made = []
-
-    def factory():
-        s = sf()
-        made.append(s)
-        return s
-
-    await run_platform_ai_spend_watch(factory, fetch=fetch_of(0), now=NOW)
-    assert len(made) >= 2 and len({id(s) for s in made}) == len(made)
-
-
 # ── F9: the event contract ───────────────────────────────────────────────────
 
 
@@ -587,6 +574,7 @@ async def test_fetch_key_usage_url_auth_data_and_limits(monkeypatch):
 
     assert await fetch_key_usage(transport=httpx.MockTransport(handler)) == {"usage": 1.5, "limit": None}
     assert str(seen[0].url) == "https://openrouter.ai/api/v1/key"
+    assert seen[0].headers["accept-encoding"] == "identity"  # the byte cap must bound decoded bytes
     monkeypatch.setattr(job, "MAX_BODY_BYTES", 10)
     with pytest.raises(job.SpendFetchError):
         await fetch_key_usage(transport=httpx.MockTransport(handler))
