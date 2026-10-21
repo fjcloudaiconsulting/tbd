@@ -227,16 +227,18 @@ def _oauth_error(status_code: int, code: str, message: str) -> HTTPException:
     )
 
 
+def _oauth_unavailable() -> HTTPException:
+    return _oauth_error(
+        status.HTTP_503_SERVICE_UNAVAILABLE, "oauth_unavailable", "Try again in a moment."
+    )
+
+
 async def _oauth_rate_limit(scope: str, user_id: int) -> None:
     # Per user (not per org): a second admin cannot exhaust a victim's budget.
     try:
         hits = await asyncio.to_thread(rate_limit_db.hit, f"{scope}:{user_id}", 3600)
     except SQLAlchemyError as exc:
-        raise _oauth_error(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "oauth_unavailable",
-            "Try again in a moment.",
-        ) from exc
+        raise _oauth_unavailable() from exc
     if hits > 10:
         raise _oauth_error(
             status.HTTP_429_TOO_MANY_REQUESTS,
@@ -354,11 +356,7 @@ async def openrouter_oauth_complete(
         try:
             bound = await state_db.session_family_exists(sid)
         except SQLAlchemyError as exc:
-            raise _oauth_error(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "oauth_unavailable",
-                "Try again in a moment.",
-            ) from exc
+            raise _oauth_unavailable() from exc
     bound = (
         bound
         and claims["iat"] >= token_cutoff(current_user).timestamp()
@@ -381,11 +379,7 @@ async def openrouter_oauth_complete(
     try:
         first_use = await state_db.claim_token("openrouter_oauth", jti, 660)
     except SQLAlchemyError as exc:
-        raise _oauth_error(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "oauth_unavailable",
-            "Try again in a moment.",
-        ) from exc
+        raise _oauth_unavailable() from exc
     if not first_use:
         await _audit_oauth_refused(
             request, session_factory, current_user, "state_used", ref

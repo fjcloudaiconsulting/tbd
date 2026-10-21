@@ -89,11 +89,9 @@ OPENAI_COMPATIBLE_PRESETS: tuple[dict[str, str], ...] = (
     },
 )
 
-_OPENROUTER_ROOT = next(
+OPENROUTER_BASE_URL = next(
     p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter"
 )
-
-OPENROUTER_BASE_URL = _OPENROUTER_ROOT
 
 _VERSION_SEGMENT = re.compile(r"^v\d+(?:(?:alpha|beta)\d*)?$", re.IGNORECASE)
 UNVERSIONED_ROOT_404_ERROR = (
@@ -131,7 +129,7 @@ class OpenAICompatibleAdapter:
     def _cost_micros(self, usage: dict) -> Optional[int]:
         """``usage.cost`` is OpenRouter's billed USD; another host's ``cost``
         has no defined unit, so only the OpenRouter root is trusted (TBD-630)."""
-        if self.api_root != _OPENROUTER_ROOT:
+        if self.api_root != OPENROUTER_BASE_URL:
             return None
         # Routed through the key holder's own upstream key: ``cost`` is then only
         # OpenRouter's fee, so fail safe and let the estimate be charged.
