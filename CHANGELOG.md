@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.302.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.301.0...v0.302.0) (2026-10-21)
+
+
+### Features
+
+* **ai:** platform AI money-safety alarms: daily OpenRouter reconciliation, spend spikes, estimated-cost flag (TBD-633) ([#979](https://github.com/fjcloudaiconsulting/tbd/issues/979)) ([46b5e3a](https://github.com/fjcloudaiconsulting/tbd/commit/46b5e3a0edada6f80325003a8cb47ebafcf94fe2))
+
+
+### Bug Fixes
+
+* **observability:** every backend process reports a liveness metric, and the MCP server sends OTel (TBD-649) ([#982](https://github.com/fjcloudaiconsulting/tbd/issues/982)) ([2846c0c](https://github.com/fjcloudaiconsulting/tbd/commit/2846c0cdb13c41338e3cb92b4feec9eb6fec4743))
+
 ## [0.301.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.300.0...v0.301.0) (2026-10-19)
 
 
