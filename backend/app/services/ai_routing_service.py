@@ -21,7 +21,9 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.org_ai_credential import AiProvider, OrgAICredential
@@ -50,6 +52,10 @@ class CrossOrgRoutingDenied(Exception):
 
 class UnknownFeatureName(Exception):
     """Refuse routing writes for feature_names outside the closed set."""
+
+
+class ModelListUnavailable(Exception):
+    """The plan/catalog read behind the model list failed (not the routing write)."""
 
 
 class ModelNotListed(Exception):
@@ -130,7 +136,12 @@ def _own_key_models(cred: OrgAICredential, feature: str | None) -> ModelList:
 async def _assert_model_listed(
     db: AsyncSession, cred: OrgAICredential, feature: str | None, model: str
 ) -> None:
-    if model not in {o.id for o in (await list_models(db, cred, feature)).options}:
+    try:
+        listed = await list_models(db, cred, feature)
+    except (SQLAlchemyError, PydanticValidationError):
+        await db.rollback()
+        raise ModelListUnavailable from None
+    if model not in {o.id for o in listed.options}:
         raise ModelNotListed(model)
 
 

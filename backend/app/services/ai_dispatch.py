@@ -1257,10 +1257,7 @@ async def _prepare_platform(
     except SQLAlchemyError:
         await db.rollback()
         raise AIPlatformUnavailable() from None
-    if (
-        not (settings.ai_native_enabled and conf.enabled)
-        or not platform_ai.platform_key_configured(platform)
-    ):
+    if not platform_ai_settings.switched_on(conf, platform):
         raise NativeNotAvailable("platform_disabled")
     # A disabled, stale or incapable routed choice falls back to the default.
     # shortcut: get_entitlements now runs 4 times per platform dispatch (has_feature, here,
@@ -1269,7 +1266,7 @@ async def _prepare_platform(
     try:
         frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
         pk = await platform_ai.pick(db, capability, routed_model, frontier=frontier)
-    except (SQLAlchemyError, PydanticValidationError, KeyError):
+    except (SQLAlchemyError, PydanticValidationError):
         await db.rollback()
         raise AIPlatformUnavailable() from None
     if pk is None:

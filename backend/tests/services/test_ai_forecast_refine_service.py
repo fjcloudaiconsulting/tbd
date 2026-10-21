@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 from sqlalchemy import event
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -816,7 +817,7 @@ async def test_f_rf2_unreadable_entitlements_are_a_typed_refusal_not_a_500(
     await _route_to_platform(db_session, seeded_org.id)
 
     async def boom(*a, **k):
-        raise KeyError("x")
+        raise SQLAlchemyError("x")
 
     monkeypatch.setattr(svc.feature_service, "get_entitlements", boom)
     est = await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,

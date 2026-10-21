@@ -286,6 +286,19 @@ async def test_o3_a_free_only_catalog_is_offered_to_nobody(sf, org):
         assert client(sf, uid).get(f"{BASE}/options").json()["platform_providers"] == []
 
 
+async def test_r9d_a_routing_write_with_unreadable_entitlements_is_402(sf, org, monkeypatch):
+    pid = await mk_cred(sf, org[0], "openrouter")
+
+    async def boom(*a, **k):
+        raise SQLAlchemyError("x")
+
+    monkeypatch.setattr(feature_service, "get_entitlements", boom)
+    c = client(sf, org[1])
+    for r in (put_default(c, pid, MODEL), put_feature(c, pid, "chat", MODEL)):
+        assert r.status_code == 402 and r.json()["detail"] == {"code": "platform_ai_unavailable"}, r.text
+    assert await rows(sf) == ([], [])
+
+
 # ---- G3, G4 ---------------------------------------------------------------------------------------
 
 async def test_g3_shape_and_types(sf, org):

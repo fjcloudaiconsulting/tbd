@@ -68,6 +68,7 @@ from app.services.ai_providers.openai_compatible import (
 )
 from app.services.ai_routing_service import (
     CrossOrgRoutingDenied,
+    ModelListUnavailable,
     ModelNotListed,
     UnknownFeatureName,
 )
@@ -282,10 +283,6 @@ def _cross_org_denied() -> HTTPException:
     )
 
 
-def _platform_ai_unavailable() -> HTTPException:
-    return HTTPException(status_code=402, detail={"code": "platform_ai_unavailable"})
-
-
 def _model_not_listed() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -359,6 +356,8 @@ async def put_default_routing(
         raise _cross_org_denied()
     except ModelNotListed:
         raise _model_not_listed()
+    except ModelListUnavailable:
+        raise HTTPException(status_code=402, detail={"code": "platform_ai_unavailable"})
     return DefaultRoutingResponse.model_validate(row)
 
 
@@ -396,6 +395,8 @@ async def put_feature_routing(
         raise _cross_org_denied()
     except ModelNotListed:
         raise _model_not_listed()
+    except ModelListUnavailable:
+        raise HTTPException(status_code=402, detail={"code": "platform_ai_unavailable"})
     return FeatureRoutingResponse.model_validate(row)
 
 
@@ -658,7 +659,7 @@ async def list_credential_models(
                 await usage_service.current_usage(db, current_user.org_id, include_platform=True))
     except (SQLAlchemyError, PydanticValidationError):
         await db.rollback()
-        raise _platform_ai_unavailable()
+        raise HTTPException(status_code=402, detail={"code": "platform_ai_unavailable"})
     return ModelListResponse(
         default=lst.default,
         replies_period=period,

@@ -54,7 +54,7 @@ async def offered(db: AsyncSession, conf: PlatformAISettings, org_id: int) -> li
         return []
     try:
         frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
-    except (SQLAlchemyError, PydanticValidationError, KeyError):
+    except (SQLAlchemyError, PydanticValidationError):
         await db.rollback()
         return []  # unreadable plan: offer nothing rather than 500 /options
     rows = await platform_ai.candidates(db, "function_call", frontier=frontier)

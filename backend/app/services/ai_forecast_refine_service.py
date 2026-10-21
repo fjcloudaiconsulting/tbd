@@ -836,19 +836,13 @@ async def estimate_refine(
     if platform is not None:
         # Priced like the dispatch it previews; own-key caps never gate it (D6).
         # routed=None: smart_forecast is a background feature, dispatch runs the default.
+        pk, reason = None, "ai_routing_not_configured"
         try:
             frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
             pk = await platform_ai.pick(db, FEATURE_CAPABILITY[ROUTING_KEY], None, frontier=frontier)
-        except (SQLAlchemyError, PydanticValidationError, KeyError):
+        except (SQLAlchemyError, PydanticValidationError):
             await db.rollback()
-            return ForecastRefineEstimate(
-                est_prompt_tokens=est_prompt,
-                est_output_tokens=est_out,
-                est_cost_cents=0,
-                duration_band=_duration_band(scope),
-                can_proceed=False,
-                reason="platform_ai_unavailable",
-            )
+            reason = "platform_ai_unavailable"
         if pk is None:
             return ForecastRefineEstimate(
                 est_prompt_tokens=est_prompt,
@@ -856,7 +850,7 @@ async def estimate_refine(
                 est_cost_cents=0,
                 duration_band=_duration_band(scope),
                 can_proceed=False,
-                reason="ai_routing_not_configured",
+                reason=reason,
             )
         est_micros = platform_ai.cost_micros(est_prompt, est_out, *pk.price)
     else:
