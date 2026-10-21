@@ -140,8 +140,6 @@ export default function ModelPicker({
       ? models.filter((m) => m.id.toLowerCase().includes(q) || (m.label?.toLowerCase().includes(q) ?? false))
       : models;
   }, [list, q]);
-  // The list can shrink under the highlight (filter, refresh); never point past it.
-  const hl = highlight < filtered.length ? highlight : -1;
 
   const showList = open && !!list;
 
@@ -169,9 +167,9 @@ export default function ModelPicker({
   }, [showList]);
 
   useEffect(() => {
-    if (hl < 0) return;
-    (listRef.current?.children[hl] as HTMLElement | undefined)?.scrollIntoView?.({ block: "nearest" });
-  }, [hl]);
+    if (highlight < 0) return;
+    (listRef.current?.children[highlight] as HTMLElement | undefined)?.scrollIntoView?.({ block: "nearest" });
+  }, [highlight]);
 
   function close() {
     setOpen(false);
@@ -191,13 +189,13 @@ export default function ModelPicker({
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlight(Math.min(hl + 1, filtered.length - 1));
+      setHighlight(Math.min(highlight + 1, filtered.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setHighlight(Math.max(hl - 1, 0));
+      setHighlight(Math.max(highlight - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (hl >= 0) pick(filtered[hl]);
+      if (highlight >= 0) pick(filtered[highlight]);
     } else if (e.key === "Escape") {
       close();
     }
@@ -232,7 +230,7 @@ export default function ModelPicker({
           aria-haspopup="listbox"
           aria-autocomplete="list"
           aria-controls={`${id}-listbox`}
-          aria-activedescendant={showList && hl >= 0 ? `${id}-opt-${hl}` : undefined}
+          aria-activedescendant={showList && highlight >= 0 ? `${id}-opt-${highlight}` : undefined}
           aria-describedby={noteIds.length ? noteIds.join(" ") : undefined}
           disabled={disabled}
           placeholder={placeholder}
@@ -282,7 +280,7 @@ export default function ModelPicker({
                 aria-selected={m.id === value}
                 onClick={() => pick(m)}
                 className={`block w-full px-3 py-2 text-left text-sm transition-colors ${
-                  hl === i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"
+                  highlight === i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"
                 }`}
               >
                 <span className="flex items-center justify-between gap-2">

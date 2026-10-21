@@ -769,7 +769,7 @@ function RoutingSection({
   // that flaked the "PUTs the default routing payload on save" test.
 
   const saveDefault = async () => {
-    if (!defaultCred || !defaultModel.trim() || !defaultListed) return;
+    if (!defaultCred || !defaultModel.trim()) return;
     setSavingDefault(true);
     setSectionError(null);
     try {
@@ -908,7 +908,7 @@ function FeatureRoutingTable({
 
   const save = async (featureName: string) => {
     const d = drafts[featureName];
-    if (!d.cred || !d.model.trim() || !listed[featureName]) return;
+    if (!d.cred || !d.model.trim()) return;
     setBusy(featureName);
     setErr(null);
     try {
