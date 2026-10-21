@@ -9,15 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
+import hmac
 import logging
 from typing import Optional
+from urllib.parse import urlencode
 
+import anyio
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import rate_limit_db
+from app import rate_limit_db, state_db
 from app.auth.org_permissions import require_org_admin
 from app.auth.pat import require_interactive_session
 from app.config import settings
@@ -28,6 +33,8 @@ from app.models.user import User
 from app.rate_limit import get_client_ip
 from app.schemas.common import ListEnvelope
 from app.schemas.org_ai_credential import (
+    OpenRouterOAuthComplete,
+    OpenRouterOAuthStart,
     OrgAICredentialCreate,
     OrgAICredentialResponse,
     OrgAICredentialRotate,
@@ -62,9 +69,21 @@ from app.services import (
     platform_ai_settings,
     usage_service,
 )
+from app.security import (
+    create_openrouter_oauth_state,
+    decode_openrouter_oauth_state,
+    decode_refresh_jti_sid,
+    openrouter_oauth_sid_hmac,
+    openrouter_pkce_challenge,
+    openrouter_pkce_verifier,
+    token_cutoff,
+)
+from app.services import audit_service
+from app.services.ai_providers import openrouter_oauth
 from app.services.ai_feature_map import CHAT_FEATURE
 from app.services.ai_providers.openai_compatible import (
     OPENAI_COMPATIBLE_PRESETS,
+    OPENROUTER_BASE_URL,
 )
 from app.services.ai_routing_service import (
     CrossOrgRoutingDenied,
@@ -192,6 +211,235 @@ async def create_credential(
         ip_address=get_client_ip(request),
     )
     return OrgAICredentialResponse.model_validate(row)
+
+
+# --------------------------------------------------------------------
+# Connect OpenRouter with OAuth PKCE (TBD-632). Declared BEFORE /{credential_id}.
+# --------------------------------------------------------------------
+
+_OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
+_OAUTH_CALLBACK_PATH = "/settings/ai-providers/openrouter/callback"
+
+
+def _oauth_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code, detail={"code": code, "message": message}
+    )
+
+
+async def _oauth_rate_limit(scope: str, user_id: int) -> None:
+    # Per user (not per org): a second admin cannot exhaust a victim's budget.
+    if await asyncio.to_thread(rate_limit_db.hit, f"{scope}:{user_id}", 3600) > 10:
+        raise _oauth_error(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "oauth_rate_limited",
+            "Too many attempts. Try again later.",
+        )
+
+
+def _refresh_sid(request: Request) -> Optional[str]:
+    raw = request.cookies.get("refresh_token")
+    if not raw:
+        return None
+    try:
+        return decode_refresh_jti_sid(raw)[1]
+    # The decode raises PyJWTError subclasses as well as the ValueError it documents.
+    except (ValueError, jwt.PyJWTError):
+        return None
+
+
+async def _audit_oauth_refused(
+    request: Request,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    reason: str,
+    ref: Optional[str] = None,
+) -> None:
+    # The detail never holds the code, state, verifier, nonce or key.
+    detail = {"reason": reason}
+    if ref:
+        detail["ref"] = ref
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="ai.credential.oauth_refused",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=user.org_id,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="failure",
+        detail=detail,
+    )
+
+
+@router.post(
+    "/oauth/openrouter/start",
+    dependencies=[Depends(require_interactive_session)],
+)
+async def openrouter_oauth_start(
+    payload: OpenRouterOAuthStart,
+    request: Request,
+    current_user: User = Depends(require_org_admin),
+) -> dict:
+    await _oauth_rate_limit("ai_or_oauth_start", current_user.id)
+    sid = _refresh_sid(request)
+    if sid is None:
+        raise _oauth_error(
+            status.HTTP_409_CONFLICT,
+            "oauth_session_unavailable",
+            "Sign in again to connect OpenRouter.",
+        )
+    state, jti = create_openrouter_oauth_state(
+        current_user.id, current_user.org_id, sid, payload.nonce_hash
+    )
+    params = {
+        # From config, never from the request.
+        "callback_url": settings.app_url + _OAUTH_CALLBACK_PATH,
+        "code_challenge": openrouter_pkce_challenge(openrouter_pkce_verifier(jti)),
+        "code_challenge_method": "S256",
+        "key_label": "The Better Decision (" + jti[:8] + ")",
+        "state": state,
+    }
+    return {"url": _OPENROUTER_AUTH_URL + "?" + urlencode(params)}
+
+
+@router.post(
+    "/oauth/openrouter/complete",
+    response_model=OrgAICredentialResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_interactive_session)],
+)
+async def openrouter_oauth_complete(
+    payload: OpenRouterOAuthComplete,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+) -> OrgAICredentialResponse:
+    # Rate limit before any audit write, so garbage states cannot flood audit_events.
+    await _oauth_rate_limit("ai_or_oauth_complete", current_user.id)
+
+    claims = decode_openrouter_oauth_state(payload.state)
+    if claims is None:
+        await _audit_oauth_refused(request, session_factory, current_user, "state_invalid")
+        raise _oauth_error(
+            status.HTTP_400_BAD_REQUEST, "oauth_state_invalid", "The connection link is invalid or expired."
+        )
+    jti = claims["jti"]
+    ref = jti[:8]
+
+    sid = _refresh_sid(request)
+    bound = (
+        int(claims["sub"]) == current_user.id
+        and claims["org_id"] == current_user.org_id
+        and sid is not None
+        and hmac.compare_digest(openrouter_oauth_sid_hmac(sid), claims["sid_h"])
+    )
+    if bound:
+        try:
+            bound = await state_db.session_family_exists(sid)
+        except SQLAlchemyError as exc:
+            raise _oauth_error(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "oauth_unavailable",
+                "Try again in a moment.",
+            ) from exc
+    bound = (
+        bound
+        and claims["iat"] >= token_cutoff(current_user).timestamp()
+        and hmac.compare_digest(
+            hashlib.sha256(payload.nonce.encode()).hexdigest(), claims["nh"]
+        )
+    )
+    if not bound:
+        await _audit_oauth_refused(request, session_factory, current_user, "state_mismatch", ref)
+        raise _oauth_error(
+            status.HTTP_409_CONFLICT,
+            "oauth_state_mismatch",
+            "This connection was started from a different session. Start again.",
+        )
+
+    # After the binding (a stranger cannot burn the victim's state), before the
+    # exchange (a race cannot mint two keys).
+    try:
+        first_use = await state_db.claim_token("openrouter_oauth", jti, 660)
+    except SQLAlchemyError as exc:
+        raise _oauth_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "oauth_unavailable",
+            "Try again in a moment.",
+        ) from exc
+    if not first_use:
+        await _audit_oauth_refused(request, session_factory, current_user, "state_used", ref)
+        raise _oauth_error(
+            status.HTTP_409_CONFLICT, "oauth_state_used", "This connection link was already used. Start again."
+        )
+
+    # Once the exchange is sent, any outcome but a clear refusal or a created
+    # row may leave a live key at OpenRouter. The audit is shielded so a
+    # cancellation (client disconnect) cannot cancel it too.
+    async def _refused(reason: str) -> None:
+        with anyio.CancelScope(shield=True):
+            await _audit_oauth_refused(request, session_factory, current_user, reason, ref)
+
+    try:
+        key = await openrouter_oauth.exchange_code(
+            payload.code, openrouter_pkce_verifier(jti)
+        )
+        row = await ai_credential_service.create_credential(
+            db,
+            org_id=current_user.org_id,
+            payload=OrgAICredentialCreate(
+                provider=AiProvider.OPENAI_COMPATIBLE,
+                api_key=key,
+                base_url=OPENROUTER_BASE_URL,
+                label="OpenRouter (" + ref + ")",
+            ),
+            session_factory=session_factory,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+        )
+        return OrgAICredentialResponse.model_validate(row)
+    except openrouter_oauth.CodeRejected as exc:
+        await _refused("exchange_rejected")
+        if exc.busy:
+            raise _oauth_error(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "openrouter_busy",
+                "OpenRouter is busy. Wait a minute and connect again.",
+            ) from None
+        raise _oauth_error(
+            status.HTTP_400_BAD_REQUEST,
+            "openrouter_code_rejected",
+            "OpenRouter rejected the authorization. Start again.",
+        ) from None
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        await _refused(
+            "validation_failed"
+            if detail.get("code") == "credential_validation_failed"
+            else "orphan_possible"
+        )
+        raise
+    except BaseException as exc:
+        # error_class only: a ValidationError's str() carries the raw key.
+        logger.warning(
+            "ai.openrouter_oauth.orphan_possible",
+            extra={"error_class": type(exc).__name__},
+        )
+        await _refused("orphan_possible")
+        if not isinstance(exc, Exception):
+            raise
+        raise _oauth_error(
+            status.HTTP_502_BAD_GATEWAY,
+            "openrouter_unavailable",
+            "Could not finish connecting OpenRouter.",
+        ) from None
 
 
 # --------------------------------------------------------------------

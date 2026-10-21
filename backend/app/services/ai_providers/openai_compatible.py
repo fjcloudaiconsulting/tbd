@@ -93,6 +93,8 @@ _OPENROUTER_ROOT = next(
     p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS if p["key"] == "openrouter"
 )
 
+OPENROUTER_BASE_URL = _OPENROUTER_ROOT
+
 _VERSION_SEGMENT = re.compile(r"^v\d+(?:(?:alpha|beta)\d*)?$", re.IGNORECASE)
 UNVERSIONED_ROOT_404_ERROR = (
     "Provider rejected the request (404). "
