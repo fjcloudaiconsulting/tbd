@@ -46,13 +46,14 @@ from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
 from app.config import settings
 from app.database import async_session, engine
-from app import logs
+from app import logs, tracing
 from app.middleware.request_context import RequestContextMiddleware
 from app.rate_limit import rate_limit_key
 from app.services import ai_consent_service, ai_scrub, feature_service
 from app.services.ai_consent_service import AI_OFF_MESSAGE
 
 logs.configure()
+tracing.configure("tbd-mcp")
 logger = logging.getLogger(__name__)
 
 # Tests point this at their own database.

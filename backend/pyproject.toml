@@ -63,8 +63,8 @@ mcp = [
     "httpx==0.28.1",
     "slowapi==0.1.10",
     "cryptography==50.0.2",
-    # INFRA-105: app.logs and the request middleware read the current span, and app.tracing (the
-    # error summary) loads the SDK and exporter. Same pins as `app`.
+    # INFRA-105: app.logs and the request middleware read the current span; TBD-649: mcp_main calls
+    # tracing.configure, which exports tbd.process.up. Same pins as `app`.
     "opentelemetry-api==1.45.1",
     "opentelemetry-sdk==1.45.1",
     "opentelemetry-exporter-otlp-proto-http==1.45.1",

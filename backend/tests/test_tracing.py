@@ -216,15 +216,19 @@ def test_health_paths_get_no_span_and_no_metric(real_app, spans, metric_reader):
 # ── native HTTP metrics ────────────────────────────────────────────────────
 
 
-def _duration_points(reader) -> list:
+def _points(reader, name: str) -> list:
     data = reader.get_metrics_data()
     points = []
     for rm in (data.resource_metrics if data else []):
         for sm in rm.scope_metrics:
             for metric in sm.metrics:
-                if metric.name == "http.server.request.duration":
+                if metric.name == name:
                     points += list(metric.data.data_points)
     return points
+
+
+def _duration_points(reader) -> list:
+    return _points(reader, "http.server.request.duration")
 
 
 def test_http_metrics_carry_only_the_allowlisted_attributes(real_app, metric_reader):
@@ -273,23 +277,40 @@ def test_the_span_ends_after_a_streamed_body_not_at_its_headers(spans):
     assert server.end_time >= STREAMED[-1]
 
 
-def test_importing_the_app_registers_sdk_providers():
-    """conftest calls configure() itself, so only a fresh interpreter shows app.main does."""
+def test_a_process_with_nothing_recorded_still_reports_up(metric_reader):
+    """TBD-649 fence. The SDK skips an export when nothing recorded, and the probes record nothing,
+    so without this gauge a process with no user traffic never reaches Grafana."""
+    points = _points(metric_reader, "tbd.process.up")
+    assert [(p.value, dict(p.attributes)) for p in points] == [(1, {})]
+    assert [(p.value, dict(p.attributes)) for p in _points(metric_reader, "tbd.process.up")] == [(1, {})]  # every interval
+
+
+@pytest.mark.parametrize("module, service", [("app.main", "tbd-api"), ("app.mcp_main", "tbd-mcp")])
+def test_importing_the_app_registers_sdk_providers(module, service):
+    """conftest calls configure() itself, so only a fresh interpreter shows each entrypoint does."""
     code = (
-        "import app.main\n"
+        f"import {module}\n"
         "from opentelemetry import metrics, trace\n"
         "from opentelemetry.sdk.metrics import MeterProvider\n"
+        "from opentelemetry.sdk.metrics.export import InMemoryMetricReader\n"
         "from opentelemetry.sdk.trace import TracerProvider\n"
+        "reader = InMemoryMetricReader()\n"
+        "metrics.get_meter_provider().add_metric_reader(reader)\n"
+        "rms = reader.get_metrics_data().resource_metrics\n"
+        "names = {m.name for rm in rms for sm in rm.scope_metrics for m in sm.metrics}\n"
         "print('PROVIDERS', isinstance(trace.get_tracer_provider(), TracerProvider),"
-        " isinstance(metrics.get_meter_provider(), MeterProvider))"
+        " isinstance(metrics.get_meter_provider(), MeterProvider), 'tbd.process.up' in names,"
+        " *{rm.resource.attributes['service.name'] for rm in rms})"
     )
-    env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("OTEL_")}
+    # The infra alarms key on service.name; mcp_main refuses to boot with a platform AI key set.
+    env = {k: v for k, v in __import__("os").environ.items()
+           if not k.startswith(("OTEL_", "PLATFORM_AI_"))}
     out = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True,
         cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
     ).stdout.splitlines()
     providers = [line.split()[1:] for line in out if line.startswith("PROVIDERS ")]
-    assert providers == [["True", "True"]]
+    assert providers == [["True", "True", "True", service]]
 
 
 def test_a_handled_5xx_is_an_error_named_by_its_status(spans):
