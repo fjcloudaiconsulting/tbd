@@ -151,8 +151,8 @@ def _patch_adapter():
             "validate": AsyncMock(
                 return_value=ValidateResult(
                     ok=True,
-                    discovered_models=["gpt-4o-mini"],
-                    discovered_capabilities=["chat"],
+                    discovered_models=["gpt-4o-mini", "gpt-4o"],
+                    discovered_capabilities=["chat", "structured_output"],
                 )
             )
         },

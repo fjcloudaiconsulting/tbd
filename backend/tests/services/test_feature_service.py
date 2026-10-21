@@ -301,3 +301,21 @@ async def test_defensive_filter_on_override_rows(session_factory):
 
         assert "ancient.key" not in features
         assert features["ai.budget"] is True
+
+
+@pytest.mark.asyncio
+async def test_frontier_models_follow_the_plan_slug_only(session_factory):
+    """TBD-608: Frontier platform models are a Pro-plan fact; no override grants them."""
+    from app.services.feature_service import get_entitlements
+
+    async with session_factory() as db:
+        pro, other, bare = [await _make_org(db, name=n) for n in ("Pro", "Other", "Bare")]
+        for org, slug in ((pro, "pro"), (other, "free")):
+            plan = await _make_plan(db, slug=slug, name=slug, features={})
+            await _make_subscription(db, org_id=org.id, plan_id=plan.id)
+        db.add(OrgFeatureOverride(org_id=other.id, feature_key="ai.agent", value=True))
+        await db.commit()
+
+        assert (await get_entitlements(db, pro.id)).frontier_models is True
+        assert (await get_entitlements(db, other.id)).frontier_models is False
+        assert (await get_entitlements(db, bare.id)).frontier_models is False

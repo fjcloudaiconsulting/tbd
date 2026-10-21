@@ -77,11 +77,11 @@ async def set_platform(sf, *, enabled="on", cents="1000"):
         await s.commit()
 
 
-def model_row(mid, *, enabled=True, mct=8192):
+def model_row(mid, *, enabled=True, mct=8192, zp=100_000, zc=400_000, structured=True):
     return PlatformAIModel(
         openrouter_id=mid, name=mid, context_length=200_000, max_completion_tokens=mct,
-        supports_structured_outputs=True, zdr_prompt_micros_per_mtok=100_000,
-        zdr_completion_micros_per_mtok=400_000, last_seen_at=utcnow_naive(), enabled=enabled)
+        supports_structured_outputs=structured, zdr_prompt_micros_per_mtok=zp,
+        zdr_completion_micros_per_mtok=zc, last_seen_at=utcnow_naive(), enabled=enabled)
 
 
 async def set_enabled(sf, mid, enabled):
@@ -97,15 +97,16 @@ async def consent(sf, org_id, *, version=None, revoked=False):
         await s.commit()
 
 
-async def mk_org(sf, name, *, tokens=100_000, micros=1000, with_consent=True):
+async def mk_org(sf, name, *, tokens=100_000, micros=1000, with_consent=True, slug=None, tokens_period="month",
+                 micros_period="month"):
     async with sf() as s:
         org = Organization(name=name, billing_cycle_day=1)
         s.add(org)
         await s.flush()
         limits = PlanUsageLimits().model_dump(by_alias=True)
-        limits["platform_ai.tokens"] = {"period": "month", "limit": tokens}
-        limits["platform_ai.micros"] = {"period": "month", "limit": micros}
-        plan = Plan(slug=f"p{org.id}", name="P", features={}, usage_limits=limits)
+        limits["platform_ai.tokens"] = {"period": tokens_period, "limit": tokens}
+        limits["platform_ai.micros"] = {"period": micros_period, "limit": micros}
+        plan = Plan(slug=slug or f"p{org.id}", name="P", features={}, usage_limits=limits)
         s.add(plan)
         await s.flush()
         s.add(Subscription(org_id=org.id, plan_id=plan.id, status=SubscriptionStatus.ACTIVE))
@@ -119,12 +120,13 @@ async def mk_org(sf, name, *, tokens=100_000, micros=1000, with_consent=True):
     return ids
 
 
-async def mk_cred(sf, org_id, platform=None, provider=None):
+async def mk_cred(sf, org_id, platform=None, provider=None, discovered_models=None, discovered_capabilities=None):
     provider = provider or (AiProvider.OPENAI if platform is None else AiProvider.OPENAI_COMPATIBLE)
     async with sf() as s:
         cred = OrgAICredential(org_id=org_id, provider=provider, platform_provider=platform,
                                label="mine" if platform is None else None,
-                               discovered_capabilities=["chat"])
+                               discovered_models=discovered_models,
+                               discovered_capabilities=discovered_capabilities or ["chat"])
         s.add(cred)
         await s.commit()
         return cred.id
@@ -380,7 +382,8 @@ async def test_s1_key_routes_refuse_a_platform_row(sf, org, hits, monkeypatch, m
     monkeypatch.setattr(ai_credential_service, "_run_validate", _ok_validate)
     other, other_uid = await mk_org(sf, "Other")
     pid = await mk_cred(sf, org[0], "openrouter")
-    byok = await mk_cred(sf, org[0], None)
+    byok = await mk_cred(sf, org[0], None, discovered_models=["gpt-4o"],
+                         discovered_capabilities=["chat", "function_call"])
     theirs = await mk_cred(sf, other, "openrouter")
     c = client(sf, org[1])
     kw = {"json": body} if body is not None else {}
@@ -421,14 +424,15 @@ async def test_fence32_routing_write_to_a_platform_row(sf, org, which):
         await s.commit()
     other, _ = await mk_org(sf, "Other")
     pid = await mk_cred(sf, org[0], "openrouter")
-    byok = await mk_cred(sf, org[0], None)
+    byok = await mk_cred(sf, org[0], None, discovered_models=["gpt-4o"],
+                         discovered_capabilities=["chat", "function_call"])
     theirs = await mk_cred(sf, other, "openrouter")
     c = client(sf, org[1])
     url = f"{BASE}/routing/default" if which == "default" else f"{BASE}/routing/features/chat"
 
     for model in ("gpt-4o", "off/m", "short/m"):  # code table only / disabled / incapable
         r = c.put(url, json={"credential_id": pid, "model": model})
-        assert r.status_code == 400 and r.json()["detail"]["code"] == "platform_model_not_allowed", r.text
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "model_not_listed", r.text
     assert await _routing_rows(sf) == ([], [])
     r = c.put(url, json={"credential_id": theirs, "model": "gpt-4o"})
     assert r.status_code == 400 and r.json()["detail"]["code"] == "cross_org_routing_denied"

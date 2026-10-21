@@ -37,6 +37,7 @@ from typing import AsyncIterator, Optional, Protocol, runtime_checkable
 import httpx
 
 from app.models.org_ai_credential import AiProvider
+from app.schemas.org_ai_routing import MODEL_NAME_MAX_LENGTH
 
 
 @dataclass
@@ -45,6 +46,13 @@ class ValidateResult:
     error: Optional[str] = None
     discovered_models: list[str] = field(default_factory=list)
     discovered_capabilities: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Stored as JSON and listed to the admin: a hostile or buggy /models cannot bloat the row.
+        # Adapters derive capabilities from the full list before this runs; the cap does not change them.
+        self.discovered_models = [
+            m for m in self.discovered_models if isinstance(m, str) and 0 < len(m) <= MODEL_NAME_MAX_LENGTH
+        ][:1000]
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,17 @@ AI_FEATURE_MAP: tuple[tuple[str, str, str], ...] = (
     ("ai.agent", "chat", "agent"),
 )
 
+CHAT_FEATURE = "chat"
+# Capability each routing name's production dispatch uses (agent_chat -> call_llm_function;
+# the rest -> call_llm_structured). The model list, the routing-write gate and dispatch share it.
+FEATURE_CAPABILITY: dict[str, str] = {
+    "chat": "function_call",
+    "categorize_transactions": "structured_output",
+    "smart_forecast": "structured_output",
+    "smart_budget": "structured_output",
+    "smart_plan": "structured_output",
+}
+
 
 def ui_to_routing(ui_id: str) -> str:
     for _ent, routing, ui in AI_FEATURE_MAP:
