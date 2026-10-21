@@ -137,12 +137,12 @@ const ROUTABLE_FEATURES: { key: string; label: string }[] = [
   { key: "chat", label: "Chat" },
 ];
 
-// Fails closed: a credential the page does not know is treated as platform
-// (no Refresh), because validate answers 409 for those.
-const isPlatformCred = (creds: Credential[], id: number | "") => {
-  const c = creds.find((x) => x.id === id);
-  return !c || c.platform_provider != null;
-};
+// A credential the page does not know (not on the current page) is "unknown":
+// no Refresh, since validate answers 409 for platform keys we cannot see.
+const isPlatformCred = (creds: Credential[], id: number | "") =>
+  creds.find((c) => c.id === id)?.platform_provider != null;
+const isUnknownCred = (creds: Credential[], id: number | "") =>
+  id !== "" && !creds.some((c) => c.id === id);
 
 const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
 const BASE_URL_PLACEHOLDERS: Partial<Record<Provider, string>> = {
@@ -831,6 +831,7 @@ function RoutingSection({
                 id="default-model"
                 credentialId={defaultCred}
                 platform={isPlatformCred(credentials, defaultCred)}
+                unknown={isUnknownCred(credentials, defaultCred)}
                 value={defaultModel}
                 onChange={setDefaultModel}
                 onListedChange={setDefaultListed}
@@ -1008,6 +1009,7 @@ function FeatureRoutingTable({
                       rowLabel={f.label}
                       onValidated={onValidated}
                       platform={isPlatformCred(credentials, draft.cred)}
+                      unknown={isUnknownCred(credentials, draft.cred)}
                       value={draft.model}
                       onChange={(model) =>
                         setDrafts((prev) => ({

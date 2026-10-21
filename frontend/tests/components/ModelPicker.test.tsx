@@ -181,7 +181,6 @@ describe("ModelPicker", () => {
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
     fireEvent.blur(combo());
-    fireEvent.mouseDown(document.body);
     expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
   });
 
@@ -361,14 +360,78 @@ describe("ModelPicker", () => {
     await waitFor(() => expect(validated).toHaveBeenCalledTimes(1));
   });
 
-  it("explains a 402 platform_ai_unavailable and a platform key's empty list", async () => {
-    serve({ "/42/models": new ApiResponseError(402, "Request failed", "platform_ai_unavailable") });
-    const { unmount } = render(<Harness platform />);
+  it("maps a 402 without the code to the Included AI message", async () => {
+    serve({ "/42/models": new ApiResponseError(402, "Request failed") });
+    render(<Harness platform />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Included AI is not available right now.");
-    unmount();
+  });
+
+  it("maps the platform_ai_unavailable code without a 402 to the Included AI message", async () => {
+    serve({ "/42/models": new ApiResponseError(503, "Request failed", "platform_ai_unavailable") });
+    render(<Harness platform />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Included AI is not available right now.");
+  });
+
+  it("does not map an unrelated error to the Included AI message", async () => {
+    serve({ "/42/models": new ApiResponseError(500, "Server exploded") });
+    render(<Harness />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Server exploded");
+  });
+
+  it("a platform key's empty list does not mention Refresh", async () => {
     serve({ "/42/models": { default: null, replies_period: null, models: [] } });
     render(<Harness platform />);
     expect(await screen.findByText("Included AI has no model for this right now.")).toBeInTheDocument();
     expect(screen.queryByText(/Refresh models/)).not.toBeInTheDocument();
+  });
+
+  it("Escape then reopen then Enter does not select the previously highlighted option", async () => {
+    serve({ "/42/models": LIST });
+    render(<Harness initial="mid-model" />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.focus(combo());
+    fireEvent.keyDown(combo(), { key: "ArrowDown" });
+    fireEvent.keyDown(combo(), { key: "ArrowDown" });
+    fireEvent.keyDown(combo(), { key: "Escape" });
+    fireEvent.keyDown(combo(), { key: "ArrowDown" }); // reopens, input keeps focus
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    fireEvent.keyDown(combo(), { key: "Enter" });
+    expect(screen.getByTestId("draft")).toHaveTextContent("mid-model");
+  });
+
+  it("an option click survives the browser's focus move (listbox mousedown is default-prevented)", async () => {
+    serve({ "/42/models": LIST });
+    render(<Harness initial="mid-model" />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.focus(combo());
+    const opt = screen.getAllByRole("option")[1];
+    // jsdom has no focus-on-mousedown default, so emulate it: when the mousedown
+    // is NOT default-prevented the browser would blur the input before the click.
+    if (fireEvent.mouseDown(opt)) fireEvent.blur(combo());
+    fireEvent.click(opt);
+    expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
+  });
+
+  it("a list that shrinks under the highlight leaves no dangling aria-activedescendant", async () => {
+    serve({ "/42/models": LIST, "/42/validate": {} });
+    render(<Harness initial="mid-model" />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.focus(combo());
+    for (let i = 0; i < 3; i++) fireEvent.keyDown(combo(), { key: "ArrowDown" });
+    expect(combo()).toHaveAttribute("aria-activedescendant", "mp-opt-2");
+    let release: (v: unknown) => void = () => {};
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url.includes("/validate")) return {} as never;
+      return new Promise((r) => { release = r; }) as never;
+    });
+    // refresh closes the box; reopen after the shorter list lands, highlight still 2 if unreset
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Smart plan" }));
+    await waitFor(() => expect(typeof release).toBe("function"));
+    release({ default: null, replies_period: null, models: [M("only-one")] });
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.keyDown(combo(), { key: "ArrowDown" });
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    const active = combo().getAttribute("aria-activedescendant");
+    expect(active === null || document.getElementById(active) !== null).toBe(true);
   });
 });

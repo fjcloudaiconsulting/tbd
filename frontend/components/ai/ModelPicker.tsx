@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
@@ -28,8 +28,10 @@ interface Props {
   credentialId: number | "";
   /** Per-feature rows pass their key; the default row omits it. */
   feature?: string;
-  /** Platform (or unknown) credentials have no refresh (validate answers 409). */
+  /** Platform credentials have no refresh (validate answers 409). */
   platform?: boolean;
+  /** The credential is not on the page's list: no refresh, and not claimed to be Included AI. */
+  unknown?: boolean;
   value: string;
   onChange: (model: string) => void;
   /** True when `value` is one of the listed ids. Callers gate Save on it. */
@@ -54,6 +56,7 @@ export default function ModelPicker({
   credentialId,
   feature,
   platform = false,
+  unknown = false,
   value,
   onChange,
   onListedChange,
@@ -73,6 +76,8 @@ export default function ModelPicker({
   const listRef = useRef<HTMLDivElement>(null);
   const valueRef = useRef(value);
   useEffect(() => { valueRef.current = value; }, [value]);
+  const onValidatedRef = useRef(onValidated);
+  useEffect(() => { onValidatedRef.current = onValidated; }, [onValidated]);
   const lastCred = useRef<number | "">(credentialId);
   const seq = useRef(0);
 
@@ -87,7 +92,7 @@ export default function ModelPicker({
         if (afterValidate) {
           await apiFetch(`/api/v1/settings/ai-providers/${cred}/validate`, { method: "POST" });
           if (mine !== seq.current) return;
-          onValidated?.();
+          onValidatedRef.current?.();
         }
         const qs = feature ? `?feature=${encodeURIComponent(feature)}` : "";
         const res = await apiFetch<ModelList>(`/api/v1/settings/ai-providers/${cred}/models${qs}`);
@@ -107,7 +112,7 @@ export default function ModelPicker({
         if (mine === seq.current) setLoading(false);
       }
     },
-    // onChange and onValidated are stable enough at every call site
+    // onChange is a state setter or stable wrapper at every call site
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [feature],
   );
@@ -140,7 +145,7 @@ export default function ModelPicker({
 
   const showList = open && !!list;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!showList) return;
     function place() {
       const r = inputRef.current?.getBoundingClientRect();
@@ -171,6 +176,7 @@ export default function ModelPicker({
   function close() {
     setOpen(false);
     setQuery("");
+    setHighlight(-1);
   }
 
   function pick(m: ModelEntry) {
@@ -236,7 +242,7 @@ export default function ModelPicker({
           onBlur={close}
           onKeyDown={onKeyDown}
         />
-        {!platform && credentialId !== "" && (
+        {!platform && !unknown && credentialId !== "" && (
           <button
             type="button"
             className={`${btnLink} whitespace-nowrap`}
@@ -309,7 +315,9 @@ export default function ModelPicker({
         <p id={`${id}-empty`} role="status" className="mt-1 text-xs text-text-muted">
           {platform
             ? "Included AI has no model for this right now."
-            : "This key has no model that can do this. Refresh models or pick another key."}
+            : unknown
+              ? "This key has no model that can do this."
+              : "This key has no model that can do this. Refresh models or pick another key."}
         </p>
       )}
       {stale && (

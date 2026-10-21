@@ -465,6 +465,18 @@ describe("AiProvidersPage", () => {
     expect(screen.getByLabelText(/^Model$/i)).toHaveValue("gone");
   });
 
+  it("an unknown credential hides Refresh and is not called Included AI", async () => {
+    mockRouting({
+      routing: { default: { org_id: 1, credential_id: 99, model: "x" }, features: [] },
+      models: { default: null, replies_period: null, models: [] },
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+    expect(await screen.findByText("This key has no model that can do this.")).toBeInTheDocument();
+    expect(screen.queryByText(/Included AI has no model/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Refresh models/ })).not.toBeInTheDocument();
+  });
+
   it("P10 shows the server message when a save is refused with model_not_listed", async () => {
     mockRouting({
       routing: { default: { org_id: 1, credential_id: 42, model: "gpt-4o" }, features: [] },
