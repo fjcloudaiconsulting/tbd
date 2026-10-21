@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.system_setting import SystemSetting
-from app.services import platform_ai
+from app.services import feature_service, platform_ai
 
 ENABLED = "platform_ai.enabled"
 GLOBAL_MONTHLY_CENTS = "platform_ai.global_monthly_cents"
@@ -44,9 +44,12 @@ def switched_on(conf: PlatformAISettings, platform_provider: str = "openrouter")
                 and platform_ai.platform_key_configured(platform_provider))
 
 
-async def offered(db: AsyncSession, conf: PlatformAISettings) -> list[str]:
-    """Model ids an org can use now: env floor, the operator switch and the
-    env key, then every offerable catalog row."""
+async def offered(db: AsyncSession, conf: PlatformAISettings, org_id: int) -> list[str]:
+    """Model ids ``org_id`` can use now: env floor, the operator switch and the env key, then
+    the offerable catalog rows its plan may run. Empty when none is paid (dispatch would have
+    no default to run), e.g. a non-Pro org whose catalog is only frontier or free rows."""
     if not switched_on(conf):
         return []
-    return await platform_ai.offerable_ids(db)
+    frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
+    rows = await platform_ai.candidates(db, "function_call", frontier=frontier)
+    return [r.openrouter_id for r in rows] if platform_ai.default_row(rows) else []

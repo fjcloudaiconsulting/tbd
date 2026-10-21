@@ -10,7 +10,7 @@ key string never leaves this module: callers get ``platform_key_configured``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,12 +111,6 @@ def default_row(cands: list[PlatformAIModel]) -> PlatformAIModel | None:
     return next((r for r in cands if blend(r) > 0), None)
 
 
-async def offerable_ids(db: AsyncSession) -> list[str]:
-    # Every operator-enabled model, for /options and the enable gate (create_platform_credential);
-    # one org's routable list is ai_routing_service.list_models.
-    return [r.openrouter_id for r in await candidates(db, "function_call", frontier=True)]
-
-
 @dataclass(frozen=True)
 class Pick:
     model: str
@@ -133,13 +127,11 @@ async def pick(db: AsyncSession, capability: str, routed: str | None, *, frontie
     chosen = next((r for r in cands if r.openrouter_id == routed), None) or default_row(cands)
     if chosen is None:
         return None
-    # Never add a free fallback to a paid choice: a fallback is still a send, and free
-    # endpoints may log prompts. A routed free chat model may fall back to another free row.
+    # Never add a free fallback, even to a free choice: a fallback is still a send, and free
+    # endpoints may log prompts, so a free model runs only when the user chose it.
     fallback = next(
         (r for r in cands
-         if r is not chosen
-         and TIER_ORDER[tier(r)] <= TIER_ORDER[tier(chosen)]
-         and (blend(r) > 0 or blend(chosen) == 0)),
+         if r is not chosen and blend(r) > 0 and TIER_ORDER[tier(r)] <= TIER_ORDER[tier(chosen)]),
         None,
     )
     pair = [chosen] if fallback is None else [chosen, fallback]
@@ -163,3 +155,14 @@ def replies_left(remaining_micros: int, remaining_tokens: int, p: int, c: int) -
     cost = cost_micros(*TYPICAL_CHAT_TURN, p, c)
     by_micros = by_tokens if cost == 0 else max(0, remaining_micros) // cost
     return min(by_tokens, by_micros)
+
+
+def replies_for(usage: dict) -> tuple[str | None, Callable[[int, int], int]]:
+    """The allowance period to show and a per-option ``(prompt, completion micros per Mtok) ->
+    replies_left`` over ``usage_service.current_usage`` output. A missing meter is a 0 allowance
+    that never resets (no period)."""
+    mi, tk = usage.get("platform_ai.micros"), usage.get("platform_ai.tokens")
+    if mi is None or tk is None:
+        return None, lambda p, c: 0
+    period = "day" if "day" in (mi["period"], tk["period"]) else "month"
+    return period, lambda p, c: replies_left(mi["limit"] - mi["used"], tk["limit"] - tk["used"], p, c)

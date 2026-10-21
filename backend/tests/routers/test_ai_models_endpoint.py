@@ -4,18 +4,19 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app._time import utcnow_naive
 from app.models.org_ai_routing import OrgAIDefaultRouting, OrgAIFeatureRouting
 from app.models.usage_counter import UsageCounter
 from app.models.user import Role, User
-from app.services import feature_service
+from app.services import ai_routing_service, feature_service, usage_service
 from app.services.ai_providers import ValidateResult
 from app.services.usage_service import period_start
 
 # Fixtures and helpers of the platform-credentials suite.
 from tests.routers.test_ai_platform_credentials import (  # noqa: F401
-    BASE, MODEL, _env, audits, client, mk_cred, mk_org, model_row, org, set_platform, sf,
+    BASE, MODEL, _env, audits, client, mk_cred, mk_org, model_row, org, set_enabled, set_platform, sf,
 )
 
 CHAT_CAPS = ["chat", "function_call"]
@@ -197,6 +198,14 @@ async def test_r8_replies_left_is_the_tighter_of_both_meters(sf):
     assert body["replies_period"] is None and {m["replies_left"] for m in body["models"]} == {0}
 
 
+async def test_r10b_a_daily_micros_meter_alone_makes_the_period_day(sf):
+    await set_platform(sf)
+    oid, uid = await mk_org(sf, "DailyMicros", micros=1_000_000, tokens=6_000_000, micros_period="day")
+    pid = await mk_cred(sf, oid, "openrouter")
+    body = client(sf, uid).get(f"{BASE}/{pid}/models?feature=chat").json()
+    assert body["replies_period"] == "day"
+
+
 async def test_r10_a_daily_meter_makes_the_period_day(sf):
     await set_platform(sf)
     oid, uid = await mk_org(sf, "Daily", micros=1_000_000, tokens=6_000_000, tokens_period="day")
@@ -213,13 +222,59 @@ async def test_r9_bad_entitlement_data_is_402_for_platform_and_irrelevant_to_own
     byok = await mk_cred(sf, org[0], None, discovered_models=["gpt-4o"], discovered_capabilities=CHAT_CAPS)
 
     async def boom(*a, **k):
-        raise KeyError("x")
+        raise SQLAlchemyError("x")
 
     monkeypatch.setattr(feature_service, "get_entitlements", boom)
     c = client(sf, org[1])
     r = c.get(f"{BASE}/{pid}/models")
     assert r.status_code == 402 and r.json()["detail"] == {"code": "platform_ai_unavailable"}
     assert c.get(f"{BASE}/{byok}/models").status_code == 200
+
+
+async def test_r9b_an_unreadable_usage_alone_is_402(sf, org, monkeypatch):
+    pid = await mk_cred(sf, org[0], "openrouter")
+    c = client(sf, org[1])
+    assert c.get(f"{BASE}/{pid}/models").status_code == 200  # the list itself reads fine
+
+    async def boom(*a, **k):
+        raise SQLAlchemyError("x")
+
+    monkeypatch.setattr(usage_service, "current_usage", boom)
+    r = c.get(f"{BASE}/{pid}/models")
+    assert r.status_code == 402 and r.json()["detail"] == {"code": "platform_ai_unavailable"}
+    assert c.get(f"{BASE}/{pid}/models?feature=smart_budget").status_code == 200  # no usage read there
+
+
+async def test_r9c_a_programming_error_is_a_500_not_a_402(sf, org, monkeypatch):
+    pid = await mk_cred(sf, org[0], "openrouter")
+
+    async def boom(*a, **k):
+        raise KeyError("bug")
+
+    monkeypatch.setattr(ai_routing_service, "list_models", boom)
+    assert client(sf, org[1]).get(f"{BASE}/{pid}/models").status_code == 500
+
+
+# ---- O2: Included AI is offered only where this org can use a paid row -----------------------
+
+async def test_o2_a_frontier_only_catalog_is_offered_to_pro_alone(sf, org):
+    await set_enabled(sf, MODEL, False)
+    await add_models(sf, model_row("vendor/frontier", zp=10_000_000, zc=40_000_000))
+    pro, pro_user = await mk_org(sf, "ProCo", slug="pro")
+    c = client(sf, org[1])
+    assert c.get(f"{BASE}/options").json()["platform_providers"] == []
+    r = c.post(f"{BASE}/platform/openrouter")
+    assert r.status_code == 412 and code(r) == "ai_native_not_available"
+    got = client(sf, pro_user).get(f"{BASE}/options").json()["platform_providers"]
+    assert [p["models"] for p in got] == [["vendor/frontier"]]
+
+
+async def test_o3_a_free_only_catalog_is_offered_to_nobody(sf, org):
+    await set_enabled(sf, MODEL, False)
+    await add_models(sf, model_row("x/free", zp=0, zc=0))
+    pro, pro_user = await mk_org(sf, "ProCo", slug="pro")
+    for uid in (org[1], pro_user):
+        assert client(sf, uid).get(f"{BASE}/options").json()["platform_providers"] == []
 
 
 # ---- G3, G4 ---------------------------------------------------------------------------------------

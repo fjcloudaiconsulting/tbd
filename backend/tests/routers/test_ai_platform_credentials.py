@@ -97,14 +97,15 @@ async def consent(sf, org_id, *, version=None, revoked=False):
         await s.commit()
 
 
-async def mk_org(sf, name, *, tokens=100_000, micros=1000, with_consent=True, slug=None, tokens_period="month"):
+async def mk_org(sf, name, *, tokens=100_000, micros=1000, with_consent=True, slug=None, tokens_period="month",
+                 micros_period="month"):
     async with sf() as s:
         org = Organization(name=name, billing_cycle_day=1)
         s.add(org)
         await s.flush()
         limits = PlanUsageLimits().model_dump(by_alias=True)
         limits["platform_ai.tokens"] = {"period": tokens_period, "limit": tokens}
-        limits["platform_ai.micros"] = {"period": "month", "limit": micros}
+        limits["platform_ai.micros"] = {"period": micros_period, "limit": micros}
         plan = Plan(slug=slug or f"p{org.id}", name="P", features={}, usage_limits=limits)
         s.add(plan)
         await s.flush()

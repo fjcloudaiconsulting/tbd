@@ -772,8 +772,8 @@ async def test_f_rf_estimate_picks_the_default_not_the_routed_model(
     monkeypatch.setattr(svc.platform_ai, "pick", spy)
     await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,
                               timeframe_months=6, scope=Scope.TOP_20)
-    (capability, routed, _frontier, pk), = calls
-    assert capability == "structured_output" and routed is None
+    (capability, routed, frontier, pk), = calls
+    assert capability == "structured_output" and routed is None and frontier is False
     assert pk.model == "vendor/model-a"
 
 

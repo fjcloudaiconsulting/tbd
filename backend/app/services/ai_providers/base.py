@@ -46,6 +46,10 @@ class ValidateResult:
     discovered_models: list[str] = field(default_factory=list)
     discovered_capabilities: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # Stored as JSON and listed to the admin: a hostile or buggy /models cannot bloat the row.
+        self.discovered_models = [m for m in self.discovered_models if isinstance(m, str) and m][:1000]
+
 
 @dataclass(frozen=True)
 class LLMResponse:

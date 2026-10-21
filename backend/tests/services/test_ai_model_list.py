@@ -9,7 +9,7 @@ from app.models.org_ai_routing import ROUTABLE_FEATURE_NAMES
 from app.models.platform_ai_model import PlatformAIModel
 from app.services import ai_dispatch, ai_routing_service, platform_ai
 from app.services.ai_pricing import MODEL_PRICING, ModelPricing
-from app.services.ai_providers import NativeNotAvailable
+from app.services.ai_providers import NativeNotAvailable, ValidateResult
 from tests.factories.ai import AI_ALL
 
 # Fixtures and helpers of the platform dispatch suite.
@@ -22,9 +22,9 @@ ALL_FEATURES = {k: True for k in AI_ALL}
 CAPS = ["chat", "function_call", "structured_output"]
 
 
-async def own(db, models, caps=None):
+async def own(db, models, caps=None, provider=AiProvider.OPENAI):
     org_id = await mk_org(db)
-    cred = OrgAICredential(org_id=org_id, provider=AiProvider.OPENAI, discovered_models=models,
+    cred = OrgAICredential(org_id=org_id, provider=provider, discovered_models=models,
                            discovered_capabilities=caps if caps is not None else ["chat", "function_call"])
     db.add(cred)
     await db.commit()
@@ -72,6 +72,25 @@ async def test_s3_own_key_capability_follows_the_feature(db):
     assert ids(await ai_routing_service.list_models(db, cred, None)) == ["gpt-4o"]
 
 
+async def test_s2c_completion_only_and_non_chat_openai_ids_are_not_listed(db):
+    found = ["davinci-002", "babbage-002", "gpt-3.5-turbo-instruct", "sora-2", "gpt-4o"]
+    assert ids(await ai_routing_service.list_models(db, await own(db, found), None)) == ["gpt-4o"]
+
+
+async def test_s2d_an_own_key_zero_priced_row_is_never_the_default(db, monkeypatch):
+    monkeypatch.setitem(MODEL_PRICING, "z/free", ModelPricing(0, 0))
+    lst = await ai_routing_service.list_models(db, await own(db, ["z/free", "gpt-4o"]), None)
+    assert ids(lst) == ["z/free", "gpt-4o"] and lst.default == "gpt-4o"
+
+
+async def test_s3b_ollama_lists_nothing_where_chat_can_run(db):
+    cred = await own(db, ["llama3.1"], caps=CAPS, provider=AiProvider.OLLAMA)
+    for feature in (None, "chat"):
+        lst = await ai_routing_service.list_models(db, cred, feature)
+        assert (ids(lst), lst.default) == ([], None), feature
+    assert ids(await ai_routing_service.list_models(db, cred, "smart_budget")) == ["llama3.1"]
+
+
 # ---- S4-S5: the free-model rules ---------------------------------------------
 
 async def test_s4_a_free_row_is_listed_but_never_the_default_or_a_fallback(db):
@@ -92,7 +111,12 @@ async def test_s5_only_free_rows_have_no_default_but_a_routed_free_row_is_honour
     assert (await ai_routing_service.list_models(db, cred, None)).default is None
     assert await platform_ai.pick(db, "function_call", None, frontier=False) is None
     pk = await platform_ai.pick(db, "function_call", "x/free", frontier=False)
-    assert pk.model == "x/free" and pk.models == ["x/free", "y/free"]
+    assert pk.model == "x/free" and pk.models == ["x/free"]
+
+
+def test_s13_validate_result_caps_and_cleans_discovered_models():
+    r = ValidateResult(ok=True, discovered_models=["", 42, None] + [f"m{i}" for i in range(1200)])
+    assert r.discovered_models == [f"m{i}" for i in range(1000)]
 
 
 # ---- S6-S7: frontier is Pro only ---------------------------------------------

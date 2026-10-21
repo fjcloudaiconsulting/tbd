@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from typing import Optional
 
-import logging
-from pydantic import ValidationError as PydanticValidationError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -102,7 +102,7 @@ async def get_provider_options(
     real native backend exists. Returning ``available`` here while the
     create path rejects would be a UI lie.
     """
-    models = await platform_ai_settings.offered(db, await platform_ai_settings.load(db))
+    models = await platform_ai_settings.offered(db, await platform_ai_settings.load(db), current_user.org_id)
     return {
         "providers": [
             {"key": AiProvider.OPENAI.value, "label": "OpenAI", "availability": "available"},
@@ -280,6 +280,10 @@ def _cross_org_denied() -> HTTPException:
             "message": "credential does not belong to this organization",
         },
     )
+
+
+def _platform_ai_unavailable() -> HTTPException:
+    return HTTPException(status_code=402, detail={"code": "platform_ai_unavailable"})
 
 
 def _model_not_listed() -> HTTPException:
@@ -628,10 +632,6 @@ async def get_credential(
     return OrgAICredentialResponse.model_validate(row)
 
 
-def _platform_ai_unavailable() -> HTTPException:
-    return HTTPException(status_code=402, detail={"code": "platform_ai_unavailable"})
-
-
 @router.get("/{credential_id}/models", response_model=ModelListResponse)
 async def list_credential_models(
     credential_id: int,
@@ -649,32 +649,25 @@ async def list_credential_models(
             ai_routing_service.assert_known_feature(feature)
         except UnknownFeatureName:
             raise _unknown_feature(feature)
-    # Only the two reads sit in the try: a bug building the response stays a 500.
+    # Only the reads sit in the try: a bug building the response stays a 500.
+    period, left = None, None
     try:
         lst = await ai_routing_service.list_models(db, row, feature)
-    except (SQLAlchemyError, PydanticValidationError, KeyError):
+        if row.platform_provider is not None and feature in (None, CHAT_FEATURE):
+            period, left = platform_ai.replies_for(
+                await usage_service.current_usage(db, current_user.org_id, include_platform=True))
+    except (SQLAlchemyError, PydanticValidationError):
         await db.rollback()
         raise _platform_ai_unavailable()
-    left, period = None, None
-    if row.platform_provider is not None and feature in (None, CHAT_FEATURE):
-        try:
-            u = await usage_service.current_usage(db, current_user.org_id, include_platform=True)
-        except (SQLAlchemyError, PydanticValidationError, KeyError):
-            await db.rollback()
-            raise _platform_ai_unavailable()
-        mi, tk = u.get("platform_ai.micros"), u.get("platform_ai.tokens")
-        if mi is None or tk is None:  # a 0 allowance never resets
-            left = lambda o: 0  # noqa: E731
-        else:
-            period = "day" if "day" in (mi["period"], tk["period"]) else "month"
-            left = lambda o: platform_ai.replies_left(  # noqa: E731
-                mi["limit"] - mi["used"], tk["limit"] - tk["used"],
-                o.prompt_micros_per_mtok, o.completion_micros_per_mtok)
     return ModelListResponse(
         default=lst.default,
         replies_period=period,
-        models=[ModelOptionResponse(**dataclasses.asdict(o), replies_left=left(o) if left else None)
-                for o in lst.options],
+        models=[
+            ModelOptionResponse(
+                **dataclasses.asdict(o),
+                replies_left=left(o.prompt_micros_per_mtok, o.completion_micros_per_mtok) if left else None)
+            for o in lst.options
+        ],
     )
 
 

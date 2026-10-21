@@ -24,7 +24,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.org_ai_credential import OrgAICredential
+from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.org_ai_routing import (
     ROUTABLE_FEATURE_NAMES,
     OrgAIDefaultRouting,
@@ -57,7 +57,8 @@ class ModelNotListed(Exception):
 
 
 # Substrings of ids that cannot serve chat or structured output (all routable features).
-_NON_CHAT = ("embed", "tts", "whisper", "dall-e", "image", "moderation", "realtime", "audio", "transcribe")
+_NON_CHAT = ("embed", "tts", "whisper", "dall-e", "image", "moderation", "realtime", "audio", "transcribe",
+             "davinci-002", "babbage-002", "-instruct", "sora-")
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,9 @@ async def list_models(db: AsyncSession, cred: OrgAICredential, feature: str | No
     """The ONE definition of which models ``cred`` can be routed to for ``feature``
     (None = the default routing row). The caller has validated ``feature``."""
     if cred.platform_provider is None:
+        # agent_chat.preflight refuses Ollama, and the default row feeds chat: a list there is a second answer.
+        if cred.provider == AiProvider.OLLAMA and feature in (None, CHAT_FEATURE):
+            return ModelList([], None)
         return _own_key_models(cred, feature)
     conf = await platform_ai_settings.load(db)
     if not platform_ai_settings.switched_on(conf, cred.platform_provider):
@@ -87,18 +91,18 @@ async def list_models(db: AsyncSession, cred: OrgAICredential, feature: str | No
     frontier = (await feature_service.get_entitlements(db, cred.org_id)).frontier_models
     cap = FEATURE_CAPABILITY[feature] if feature else "function_call"
     rows = await platform_ai.candidates(db, cap, frontier=frontier)
-    d = platform_ai.default_row(rows)
+    default = platform_ai.default_row(rows)
     if feature not in (None, CHAT_FEATURE):
-        rows = [d] if d else []  # dispatch always runs the default for background features
+        rows = [default] if default else []  # dispatch always runs the default for background features
     options = []
     for r in rows:
-        code = MODEL_PRICING.get(r.openrouter_id)
+        priced = MODEL_PRICING.get(r.openrouter_id)
         options.append(ModelOption(
-            id=r.openrouter_id, label=code.label if code and code.label else r.name,
-            hint=code.hint if code else None, tier=platform_ai.tier(r),
+            id=r.openrouter_id, label=priced.label if priced and priced.label else r.name,
+            hint=priced.hint if priced else None, tier=platform_ai.tier(r),
             prompt_micros_per_mtok=r.zdr_prompt_micros_per_mtok,
             completion_micros_per_mtok=r.zdr_completion_micros_per_mtok))
-    return ModelList(options, d.openrouter_id if d else None)
+    return ModelList(options, default.openrouter_id if default else None)
 
 
 def _own_key_models(cred: OrgAICredential, feature: str | None) -> ModelList:
@@ -111,7 +115,7 @@ def _own_key_models(cred: OrgAICredential, feature: str | None) -> ModelList:
         if (not i or len(i) > MODEL_NAME_MAX_LENGTH or i == "_default"
                 or any(m in i.lower() for m in _NON_CHAT)):
             continue
-        row = MODEL_PRICING.get(i)  # NEVER get_pricing(): its `_default` row would tier every unknown id "frontier"
+        row = MODEL_PRICING.get(i)  # never get_pricing(): its `_default` row would tier every unknown id "frontier"
         if row is None:
             unpriced.append(ModelOption(i, None, None, None, None, None))
             continue

@@ -457,14 +457,10 @@ async def create_platform_credential(
     ip_address: Optional[str],
 ) -> OrgAICredential:
     conf = await platform_ai_settings.load(db)
-    if not await platform_ai_settings.offered(db, conf):
-        raise HTTPException(
-            status_code=status.HTTP_412_PRECONDITION_FAILED,
-            detail={"code": "ai_native_not_available"},
-        )
     # Plan + active overrides (never the plan row alone); both meters must
-    # be open, the reservation needs both.
+    # be open, the reservation needs both. `offered` reads the plan too.
     try:
+        models = await platform_ai_settings.offered(db, conf, org_id)
         ent = await feature_service.get_entitlements(db, org_id)
         lims = [(m, ent.limits[m]) for m in (TOKENS, MICROS)]
     except (SQLAlchemyError, ValidationError, KeyError):
@@ -473,6 +469,11 @@ async def create_platform_credential(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={"code": "platform_ai_unavailable"},
         ) from None
+    if not models:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={"code": "ai_native_not_available"},
+        )
     for meter, lim in lims:
         if not lim.limit:
             raise PlanLimitReached(meter, lim.limit or 0, lim.period, None)

@@ -62,17 +62,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import logging
 from fastapi import HTTPException, status
 from opentelemetry import metrics
-from sqlalchemy import func, select, update
 from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1263,8 +1263,8 @@ async def _prepare_platform(
     ):
         raise NativeNotAvailable("platform_disabled")
     # A disabled, stale or incapable routed choice falls back to the default.
-    # shortcut: get_entitlements now runs 4 times per platform dispatch (has_feature at :1428,
-    # here, check_headroom and reserve via platform_reserve._resolve); thread `ent` through
+    # shortcut: get_entitlements now runs 4 times per platform dispatch (has_feature, here,
+    # check_headroom and reserve via platform_reserve._resolve); thread `ent` through
     # if the query count matters.
     try:
         frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
