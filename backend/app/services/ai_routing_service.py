@@ -17,9 +17,10 @@ in PR3.
 """
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from typing import Optional
 
-import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,7 +30,10 @@ from app.models.org_ai_routing import (
     OrgAIDefaultRouting,
     OrgAIFeatureRouting,
 )
-from app.services import audit_service, platform_ai
+from app.schemas.org_ai_routing import MODEL_NAME_MAX_LENGTH
+from app.services import audit_service, feature_service, platform_ai, platform_ai_settings
+from app.services.ai_feature_map import CHAT_FEATURE, FEATURE_CAPABILITY
+from app.services.ai_pricing import MICROS_PER_CENT, MODEL_PRICING, cost_tier
 
 
 logger = logging.getLogger(__name__)
@@ -48,18 +52,81 @@ class UnknownFeatureName(Exception):
     """Refuse routing writes for feature_names outside the closed set."""
 
 
-class PlatformModelNotAllowed(Exception):
-    """Routing a platform row to a model the catalog does not offer now.
-    BYOK rows are never checked."""
+class ModelNotListed(Exception):
+    """Routing to a model ``list_models`` does not list for that credential and feature."""
 
 
-async def _assert_platform_model(
-    db: AsyncSession, cred: OrgAICredential, model: str
-) -> None:
+# Substrings of ids that cannot serve chat or structured output (all routable features).
+_NON_CHAT = ("embed", "tts", "whisper", "dall-e", "image", "moderation", "realtime", "audio", "transcribe")
+
+
+@dataclass(frozen=True)
+class ModelOption:
+    id: str
+    label: str | None
+    hint: str | None
+    tier: str | None  # "budget" | "standard" | "frontier"; None = cost unknown
+    prompt_micros_per_mtok: int | None
+    completion_micros_per_mtok: int | None
+
+
+@dataclass(frozen=True)
+class ModelList:
+    options: list[ModelOption]
+    default: str | None
+
+
+async def list_models(db: AsyncSession, cred: OrgAICredential, feature: str | None) -> ModelList:
+    """The ONE definition of which models ``cred`` can be routed to for ``feature``
+    (None = the default routing row). The caller has validated ``feature``."""
     if cred.platform_provider is None:
-        return
-    if model not in await platform_ai.offerable_ids(db):
-        raise PlatformModelNotAllowed(model)
+        return _own_key_models(cred, feature)
+    conf = await platform_ai_settings.load(db)
+    if not platform_ai_settings.switched_on(conf, cred.platform_provider):
+        return ModelList([], None)
+    frontier = (await feature_service.get_entitlements(db, cred.org_id)).frontier_models
+    cap = FEATURE_CAPABILITY[feature] if feature else "function_call"
+    rows = await platform_ai.candidates(db, cap, frontier=frontier)
+    d = platform_ai.default_row(rows)
+    if feature not in (None, CHAT_FEATURE):
+        rows = [d] if d else []  # dispatch always runs the default for background features
+    options = []
+    for r in rows:
+        code = MODEL_PRICING.get(r.openrouter_id)
+        options.append(ModelOption(
+            id=r.openrouter_id, label=code.label if code and code.label else r.name,
+            hint=code.hint if code else None, tier=platform_ai.tier(r),
+            prompt_micros_per_mtok=r.zdr_prompt_micros_per_mtok,
+            completion_micros_per_mtok=r.zdr_completion_micros_per_mtok))
+    return ModelList(options, d.openrouter_id if d else None)
+
+
+def _own_key_models(cred: OrgAICredential, feature: str | None) -> ModelList:
+    if feature is not None and FEATURE_CAPABILITY[feature] not in (cred.discovered_capabilities or []):
+        return ModelList([], None)  # mirrors the dispatch refusal
+    ids = dict.fromkeys(i for i in (cred.discovered_models or []) if isinstance(i, str))
+    priced: list[tuple[int, str, ModelOption]] = []
+    unpriced: list[ModelOption] = []
+    for i in ids:
+        if (not i or len(i) > MODEL_NAME_MAX_LENGTH or i == "_default"
+                or any(m in i.lower() for m in _NON_CHAT)):
+            continue
+        row = MODEL_PRICING.get(i)  # NEVER get_pricing(): its `_default` row would tier every unknown id "frontier"
+        if row is None:
+            unpriced.append(ModelOption(i, None, None, None, None, None))
+            continue
+        p, c = row.prompt_per_1m_cents * MICROS_PER_CENT, row.completion_per_1m_cents * MICROS_PER_CENT
+        priced.append((3 * p + c, i, ModelOption(i, row.label, row.hint, cost_tier(p, c), p, c)))
+    priced.sort(key=lambda t: t[:2])
+    default = next((o.id for b, _, o in priced if b > 0), None)
+    return ModelList([o for _, _, o in priced] + sorted(unpriced, key=lambda o: o.id), default)
+
+
+async def _assert_model_listed(
+    db: AsyncSession, cred: OrgAICredential, feature: str | None, model: str
+) -> None:
+    if model not in {o.id for o in (await list_models(db, cred, feature)).options}:
+        raise ModelNotListed(model)
 
 
 def assert_known_feature(feature_name: str) -> None:
@@ -118,7 +185,7 @@ async def set_default_routing(
     cred = await _assert_credential_in_org(
         db, org_id=org_id, credential_id=credential_id
     )
-    await _assert_platform_model(db, cred, model)
+    await _assert_model_listed(db, cred, None, model)
 
     existing = await get_default_routing(db, org_id=org_id)
     if existing is None:
@@ -165,7 +232,7 @@ async def set_feature_routing(
     cred = await _assert_credential_in_org(
         db, org_id=org_id, credential_id=credential_id
     )
-    await _assert_platform_model(db, cred, model)
+    await _assert_model_listed(db, cred, feature_name, model)
 
     res = await db.execute(
         select(OrgAIFeatureRouting).where(

@@ -72,6 +72,7 @@ import logging
 from fastapi import HTTPException, status
 from opentelemetry import metrics
 from sqlalchemy import func, select, update
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -94,7 +95,7 @@ from app.services import (
     platform_reserve,
 )
 from app.services.ai_credential_crypto import decrypt
-from app.services.ai_feature_map import AI_FEATURE_MAP
+from app.services.ai_feature_map import AI_FEATURE_MAP, CHAT_FEATURE
 from app.services.ai_pricing import MICROS_PER_CENT, estimate_cost_micros
 from app.services.ai_token_estimate import (
     default_max_output_tokens_for,
@@ -1243,7 +1244,7 @@ async def _prepare_platform(
     org_id: int,
     cred: OrgAICredential,
     capability: str,
-    routed_model: str,
+    routed_model: Optional[str],
     messages: list[dict],
     max_tokens: Optional[int],
     retry_multiplier: int,
@@ -1262,9 +1263,13 @@ async def _prepare_platform(
     ):
         raise NativeNotAvailable("platform_disabled")
     # A disabled, stale or incapable routed choice falls back to the default.
+    # shortcut: get_entitlements now runs 4 times per platform dispatch (has_feature at :1428,
+    # here, check_headroom and reserve via platform_reserve._resolve); thread `ent` through
+    # if the query count matters.
     try:
-        pk = await platform_ai.pick(db, capability, routed_model)
-    except SQLAlchemyError:
+        frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
+        pk = await platform_ai.pick(db, capability, routed_model, frontier=frontier)
+    except (SQLAlchemyError, PydanticValidationError, KeyError):
         await db.rollback()
         raise AIPlatformUnavailable() from None
     if pk is None:
@@ -1506,7 +1511,8 @@ async def _prepare_dispatch(
             org_id=org_id,
             cred=cred,
             capability=capability,
-            routed_model=model,
+            # Background features always run the cheapest default (operator Q4); only chat honours a choice.
+            routed_model=model if feature_key == CHAT_FEATURE else None,
             messages=gate_messages,
             max_tokens=max_tokens,
             retry_multiplier=retry_multiplier,

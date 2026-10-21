@@ -18,6 +18,7 @@ from app.auth.feature_catalog import (
     ALL_FEATURE_KEYS,
     ALL_METER_KEYS,
     DEFAULT_TURN_INPUT_TOKENS,
+    FRONTIER_PLAN_SLUGS,
     TURN_INPUT_TOKENS_BY_PLAN_SLUG,
     PlanFeatures,
     PlanUsageLimits,
@@ -59,6 +60,7 @@ class Entitlements:
     has_plan: bool
     overridden: frozenset[str]
     turn_input_tokens: int = DEFAULT_TURN_INPUT_TOKENS
+    frontier_models: bool = False
 
 
 def _limits(model: PlanUsageLimits) -> dict[str, UsageLimit]:
@@ -125,6 +127,7 @@ async def get_entitlements(
             TURN_INPUT_TOKENS_BY_PLAN_SLUG.get(plan.slug, DEFAULT_TURN_INPUT_TOKENS)
             if plan else DEFAULT_TURN_INPUT_TOKENS
         ),
+        frontier_models=plan is not None and plan.slug in FRONTIER_PLAN_SLUGS,
     )
 
 

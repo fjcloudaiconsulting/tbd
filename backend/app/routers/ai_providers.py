@@ -8,10 +8,13 @@ on every read/write path.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Optional
 
 import logging
+from pydantic import ValidationError as PydanticValidationError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import rate_limit_db
@@ -46,6 +49,8 @@ from app.schemas.org_ai_routing import (
     DefaultRoutingWrite,
     FeatureRoutingResponse,
     FeatureRoutingWrite,
+    ModelListResponse,
+    ModelOptionResponse,
     RoutingBundleResponse,
 )
 from app.services import (
@@ -55,13 +60,15 @@ from app.services import (
     ai_routing_service,
     platform_ai,
     platform_ai_settings,
+    usage_service,
 )
+from app.services.ai_feature_map import CHAT_FEATURE
 from app.services.ai_providers.openai_compatible import (
     OPENAI_COMPATIBLE_PRESETS,
 )
 from app.services.ai_routing_service import (
     CrossOrgRoutingDenied,
-    PlatformModelNotAllowed,
+    ModelNotListed,
     UnknownFeatureName,
 )
 from app.services.exceptions import ValidationError
@@ -275,12 +282,12 @@ def _cross_org_denied() -> HTTPException:
     )
 
 
-def _platform_model_not_allowed() -> HTTPException:
+def _model_not_listed() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail={
-            "code": "platform_model_not_allowed",
-            "message": "this model is not offered on platform AI",
+            "code": "model_not_listed",
+            "message": "This model is not in the list for this credential. Refresh the model list or pick a listed model.",
         },
     )
 
@@ -346,8 +353,8 @@ async def put_default_routing(
         )
     except CrossOrgRoutingDenied:
         raise _cross_org_denied()
-    except PlatformModelNotAllowed:
-        raise _platform_model_not_allowed()
+    except ModelNotListed:
+        raise _model_not_listed()
     return DefaultRoutingResponse.model_validate(row)
 
 
@@ -383,8 +390,8 @@ async def put_feature_routing(
         raise _unknown_feature(feature_name)
     except CrossOrgRoutingDenied:
         raise _cross_org_denied()
-    except PlatformModelNotAllowed:
-        raise _platform_model_not_allowed()
+    except ModelNotListed:
+        raise _model_not_listed()
     return FeatureRoutingResponse.model_validate(row)
 
 
@@ -619,6 +626,56 @@ async def get_credential(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return OrgAICredentialResponse.model_validate(row)
+
+
+def _platform_ai_unavailable() -> HTTPException:
+    return HTTPException(status_code=402, detail={"code": "platform_ai_unavailable"})
+
+
+@router.get("/{credential_id}/models", response_model=ModelListResponse)
+async def list_credential_models(
+    credential_id: int,
+    feature: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_org_admin),
+) -> ModelListResponse:
+    row = await ai_credential_service.get_credential_for_org(
+        db, org_id=current_user.org_id, credential_id=credential_id
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if feature is not None:
+        try:
+            ai_routing_service.assert_known_feature(feature)
+        except UnknownFeatureName:
+            raise _unknown_feature(feature)
+    # Only the two reads sit in the try: a bug building the response stays a 500.
+    try:
+        lst = await ai_routing_service.list_models(db, row, feature)
+    except (SQLAlchemyError, PydanticValidationError, KeyError):
+        await db.rollback()
+        raise _platform_ai_unavailable()
+    left, period = None, None
+    if row.platform_provider is not None and feature in (None, CHAT_FEATURE):
+        try:
+            u = await usage_service.current_usage(db, current_user.org_id, include_platform=True)
+        except (SQLAlchemyError, PydanticValidationError, KeyError):
+            await db.rollback()
+            raise _platform_ai_unavailable()
+        mi, tk = u.get("platform_ai.micros"), u.get("platform_ai.tokens")
+        if mi is None or tk is None:  # a 0 allowance never resets
+            left = lambda o: 0  # noqa: E731
+        else:
+            period = "day" if "day" in (mi["period"], tk["period"]) else "month"
+            left = lambda o: platform_ai.replies_left(  # noqa: E731
+                mi["limit"] - mi["used"], tk["limit"] - tk["used"],
+                o.prompt_micros_per_mtok, o.completion_micros_per_mtok)
+    return ModelListResponse(
+        default=lst.default,
+        replies_period=period,
+        models=[ModelOptionResponse(**dataclasses.asdict(o), replies_left=left(o) if left else None)
+                for o in lst.options],
+    )
 
 
 @router.patch(

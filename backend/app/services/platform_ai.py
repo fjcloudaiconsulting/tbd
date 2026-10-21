@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app._time import utcnow_naive
 from app.config import settings
 from app.models.platform_ai_model import PlatformAIModel
+from app.schemas.org_ai_routing import MODEL_NAME_MAX_LENGTH
 from app.services.ai_pricing import cost_tier
 from app.services.ai_providers import NativeNotAvailable
 from app.services.ai_providers.openai_compatible import OpenAICompatibleAdapter
@@ -75,6 +76,8 @@ def can(row: PlatformAIModel, capability: str) -> bool:
         and row.context_length >= MIN_CONTEXT
         and row.max_completion_tokens is not None
         and row.max_completion_tokens >= PLATFORM_MAX_OUTPUT_TOKENS
+        # An id longer than a routing row can store is neither listable nor pickable.
+        and len(row.openrouter_id) <= MODEL_NAME_MAX_LENGTH
     )
 
 
@@ -91,18 +94,27 @@ def cost_micros(pt: int, ct: int, p: int, c: int) -> int:
     return -(-(pt * p + ct * c) // 1_000_000)
 
 
-async def candidates(db: AsyncSession, capability: str) -> list[PlatformAIModel]:
-    """Offerable rows that can serve ``capability``, cheapest blend first."""
+async def candidates(db: AsyncSession, capability: str, *, frontier: bool) -> list[PlatformAIModel]:
+    """Offerable rows that can serve ``capability``, cheapest blend first. Frontier-tier
+    rows only when ``frontier`` (required, so a caller cannot forget the plan gate)."""
     now = utcnow_naive()
     rows = (await db.scalars(select(PlatformAIModel).where(PlatformAIModel.enabled.is_(True)))).all()
     return sorted(
-        (r for r in rows if platform_ai_catalog.offerable(r, now) and can(r, capability)),
+        (r for r in rows if platform_ai_catalog.offerable(r, now) and can(r, capability)
+         and (frontier or tier(r) != "frontier")),
         key=lambda r: (blend(r), r.openrouter_id),
     )
 
 
+def default_row(cands: list[PlatformAIModel]) -> PlatformAIModel | None:
+    """The cheapest candidate that is not free: never default to a zero price (operator)."""
+    return next((r for r in cands if blend(r) > 0), None)
+
+
 async def offerable_ids(db: AsyncSession) -> list[str]:
-    return [r.openrouter_id for r in await candidates(db, "function_call")]
+    # Every operator-enabled model, for /options and the enable gate (create_platform_credential);
+    # one org's routable list is ai_routing_service.list_models.
+    return [r.openrouter_id for r in await candidates(db, "function_call", frontier=True)]
 
 
 @dataclass(frozen=True)
@@ -112,15 +124,22 @@ class Pick:
     price: tuple[int, int]  # componentwise max over ``models``, +1 micro/Mtok each
 
 
-async def pick(db: AsyncSession, capability: str, routed: str | None) -> Pick | None:
+async def pick(db: AsyncSession, capability: str, routed: str | None, *, frontier: bool) -> Pick | None:
     """The routed model when it is a candidate, else the cheapest; plus the
     first other candidate no dearer by tier as OpenRouter's fallback."""
-    cands = await candidates(db, capability)
+    cands = await candidates(db, capability, frontier=frontier)
     if not cands:
         return None
-    chosen = next((r for r in cands if r.openrouter_id == routed), cands[0])
+    chosen = next((r for r in cands if r.openrouter_id == routed), None) or default_row(cands)
+    if chosen is None:
+        return None
+    # Never add a free fallback to a paid choice: a fallback is still a send, and free
+    # endpoints may log prompts. A routed free chat model may fall back to another free row.
     fallback = next(
-        (r for r in cands if r is not chosen and TIER_ORDER[tier(r)] <= TIER_ORDER[tier(chosen)]),
+        (r for r in cands
+         if r is not chosen
+         and TIER_ORDER[tier(r)] <= TIER_ORDER[tier(chosen)]
+         and (blend(r) > 0 or blend(chosen) == 0)),
         None,
     )
     pair = [chosen] if fallback is None else [chosen, fallback]
@@ -130,3 +149,17 @@ async def pick(db: AsyncSession, capability: str, routed: str | None) -> Pick | 
         max(r.zdr_completion_micros_per_mtok for r in pair) + 1,
     )
     return Pick(chosen.openrouter_id, [r.openrouter_id for r in pair], price)
+
+
+# A typical assistant turn (platform.md D3): ~18k prompt tokens over its rounds, ~600 out.
+TYPICAL_CHAT_TURN = (18_000, 600)
+
+
+def replies_left(remaining_micros: int, remaining_tokens: int, p: int, c: int) -> int:
+    """Whole typical turns both platform meters still admit (check_headroom enforces both).
+    A display estimate at a fixed turn profile, NOT the admission rule: dispatch reserves its
+    own projection and may refuse sooner or later than this count suggests."""
+    by_tokens = max(0, remaining_tokens) // sum(TYPICAL_CHAT_TURN)
+    cost = cost_micros(*TYPICAL_CHAT_TURN, p, c)
+    by_micros = by_tokens if cost == 0 else max(0, remaining_micros) // cost
+    return min(by_tokens, by_micros)

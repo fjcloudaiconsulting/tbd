@@ -50,6 +50,7 @@ from app.config import settings
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.user import User
 from app.services import ai_dispatch, ai_scrub, feature_service, usage_service
+from app.services.ai_feature_map import FEATURE_CAPABILITY
 from app.services.ai_providers import NativeNotAvailable
 
 logger = logging.getLogger(__name__)
@@ -224,7 +225,7 @@ async def preflight(
         # The same routing, capability and projected-cap gate round 1 runs,
         # so a turn the first dispatch would refuse is refused here, uncounted.
         prepared = await ai_dispatch._prepare_dispatch(
-            db, org_id=org_id, feature_key=FEATURE_KEY, capability="function_call",
+            db, org_id=org_id, feature_key=FEATURE_KEY, capability=FEATURE_CAPABILITY[FEATURE_KEY],
             messages=opening(messages) + [{"role": "user", "content": json.dumps(tools)}],
             max_tokens=None,
         )
@@ -235,7 +236,7 @@ async def preflight(
         )
         if provider == AiProvider.OLLAMA:
             raise ai_dispatch.AICapabilityNotSupported(
-                capability="function_call", feature_key=FEATURE_KEY
+                capability=FEATURE_CAPABILITY[FEATURE_KEY], feature_key=FEATURE_KEY
             )
         await usage_service.admit(db, org_id, "assistant.turns")  # LAST: refusals never count
     except (ai_dispatch.AIDispatchError, NativeNotAvailable) as exc:

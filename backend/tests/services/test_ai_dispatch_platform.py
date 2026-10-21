@@ -235,7 +235,7 @@ async def mk_model(db, mid, p, c, *, mct=8192, structured=True, enabled=True, ct
     await db.commit()
 
 
-async def mk_org(db, *, tokens=100_000, micros=10_000_000, name="Acme", extra=None):
+async def mk_org(db, *, tokens=100_000, micros=10_000_000, name="Acme", extra=None, slug=None, features=None):
     org = Organization(name=name, billing_cycle_day=1)
     db.add(org)
     await db.flush()
@@ -243,7 +243,7 @@ async def mk_org(db, *, tokens=100_000, micros=10_000_000, name="Acme", extra=No
     limits["platform_ai.tokens"] = {"period": "month", "limit": tokens}
     limits["platform_ai.micros"] = {"period": "month", "limit": micros}
     limits.update(extra or {})
-    plan = Plan(slug=f"p{org.id}", name="P", features={"ai.agent": True}, usage_limits=limits)
+    plan = Plan(slug=slug or f"p{org.id}", name="P", features=features or {"ai.agent": True}, usage_limits=limits)
     db.add(plan)
     await db.flush()
     db.add(Subscription(org_id=org.id, plan_id=plan.id, status=SubscriptionStatus.ACTIVE))
@@ -643,8 +643,9 @@ async def test_fence4_reserve_and_cap_on_the_componentwise_max(db, sf, fake, spy
 
 async def test_fence37_a_dearer_tier_is_never_the_fallback(db, sf, fake, spy):
     """FENCE 37. Kills dropping the tier filter on the fallback: a frontier
-    fallback would widen ``max_price`` and the reservation past a budget choice."""
-    org, _ = await setup(db)
+    fallback would widen ``max_price`` and the reservation past a budget choice.
+    Pro org: on any other plan the frontier row is filtered before the tier rule."""
+    org, _ = await setup(db, slug="pro")
     await mk_model(db, "vendor/frontier", 10_000_000, 40_000_000)
     await _chat(db, org, None)
     body = fake.bodies[0]
@@ -682,8 +683,8 @@ async def test_fence6_default_is_the_cheapest_capable_offerable_row(db):
     db.add(PlatformAIModel(openrouter_id="I", name="I", context_length=200_000, max_completion_tokens=8192,
                            supports_structured_outputs=True, last_seen_at=now, enabled=True))
     await db.commit()
-    assert (await platform_ai.pick(db, "function_call", None)).model == "W"
-    assert (await platform_ai.pick(db, "structured_output", None)).model == "B"
+    assert (await platform_ai.pick(db, "function_call", None, frontier=False)).model == "W"
+    assert (await platform_ai.pick(db, "structured_output", None, frontier=False)).model == "B"
 
 
 async def test_fence7_routing_is_honoured_and_a_dead_route_falls_back(db, sf, fake):
@@ -1033,7 +1034,7 @@ def test_k7_only_settle_can_decrement_a_counter():
 # ---- review round 1 -----------------------------------------------------------
 
 def _ent(tokens_limit, micros_limit=10_000_000):
-    return SimpleNamespace(features={"ai.agent": True}, limits={
+    return SimpleNamespace(frontier_models=False, features={"ai.agent": True}, limits={
         "platform_ai.tokens": SimpleNamespace(period="month", limit=tokens_limit),
         "platform_ai.micros": SimpleNamespace(period="month", limit=micros_limit)})
 
@@ -1122,7 +1123,7 @@ async def test_item11_assistant_tool_call_arguments_are_projected(db, sf, fake, 
 async def test_item4_cents_meter_and_global_spend_settle_to_the_actual_cost(db, sf, fake, spy, entry):
     await set_platform(db)
     await mk_model(db, "big/m", 1_000_000_000, 2_000_000_000)  # 0.1c / 0.2c per token
-    org = await mk_org(db, micros=10**9)
+    org = await mk_org(db, micros=10**9, slug="pro")
     await mk_platform(db, org, "big/m")
     await ENTRIES[entry](db, org)
     expected = settled(price=(1_000_000_001, 2_000_000_001))

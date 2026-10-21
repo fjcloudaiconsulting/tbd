@@ -736,3 +736,59 @@ async def test_fence34_platform_route_with_no_candidate_is_not_configured(
     est = await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,
                                     timeframe_months=6, scope=Scope.TOP_20)
     assert (est.can_proceed, est.reason) == (False, "ai_routing_not_configured")
+
+
+# ---------- TBD-608: the estimate previews the model dispatch will run ------
+
+
+@pytest.mark.asyncio
+async def test_f_rf_estimate_picks_the_default_not_the_routed_model(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """FENCE F-RF. Kills ``pick(db, cap, model)``: smart_forecast is a background
+    feature, so dispatch ignores the routed model; the estimate must too. (Both
+    rows cost 1 cent here, so the pick itself is asserted, not the price.)"""
+    from app._time import utcnow_naive
+    from app.models.platform_ai_model import PlatformAIModel
+    from app.services import platform_ai
+
+    _patch_estimate_internals(monkeypatch, est_cost_micros=405)
+    routing = await _route_to_platform(db_session, seeded_org.id)
+    db_session.add(PlatformAIModel(
+        openrouter_id="vendor/model-c", name="C", context_length=200_000, max_completion_tokens=8192,
+        supports_structured_outputs=True, zdr_prompt_micros_per_mtok=1_000_000,
+        zdr_completion_micros_per_mtok=4_000_000, last_seen_at=utcnow_naive(), enabled=True))
+    routing.model = "vendor/model-c"
+    await db_session.commit()
+
+    calls = []
+    real = platform_ai.pick
+
+    async def spy(db, capability, routed, *, frontier):
+        pk = await real(db, capability, routed, frontier=frontier)
+        calls.append((capability, routed, frontier, pk))
+        return pk
+
+    monkeypatch.setattr(svc.platform_ai, "pick", spy)
+    await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,
+                              timeframe_months=6, scope=Scope.TOP_20)
+    (capability, routed, _frontier, pk), = calls
+    assert capability == "structured_output" and routed is None
+    assert pk.model == "vendor/model-a"
+
+
+@pytest.mark.asyncio
+async def test_f_rf2_unreadable_entitlements_are_a_typed_refusal_not_a_500(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """FENCE F-RF2. Dispatch answers bad entitlement data with a typed 402; so does the estimate."""
+    _patch_estimate_internals(monkeypatch, est_cost_micros=405)
+    await _route_to_platform(db_session, seeded_org.id)
+
+    async def boom(*a, **k):
+        raise KeyError("x")
+
+    monkeypatch.setattr(svc.feature_service, "get_entitlements", boom)
+    est = await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,
+                                    timeframe_months=6, scope=Scope.TOP_20)
+    assert (est.can_proceed, est.reason) == (False, "platform_ai_unavailable")

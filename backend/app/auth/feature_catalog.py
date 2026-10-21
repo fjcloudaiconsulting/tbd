@@ -21,7 +21,8 @@ meter and NOT in ``plans.usage_limits`` (that stored contract is meters only).
 ``feature_service.get_entitlements`` resolves it from the subscribed plan's slug;
 no subscription or an unknown/custom slug gets ``DEFAULT_TURN_INPUT_TOKENS``.
 A new plan slug that needs a different budget is one entry in
-``TURN_INPUT_TOKENS_BY_PLAN_SLUG``.
+``TURN_INPUT_TOKENS_BY_PLAN_SLUG``. ``FRONTIER_PLAN_SLUGS`` (TBD-608) follows the
+same pattern: a plan-slug constant, resolved by ``get_entitlements``, not a feature.
 """
 from __future__ import annotations
 
@@ -64,6 +65,10 @@ ALL_METER_KEYS: frozenset[str] = frozenset(get_args(MeterKey))
 # rounds (history is re-billed every round). Re-priced per plan slug, not stored.
 DEFAULT_TURN_INPUT_TOKENS = 40_000
 TURN_INPUT_TOKENS_BY_PLAN_SLUG: dict[str, int] = {"pro": 60_000}
+
+# Plans whose orgs may use Frontier-tier platform models (operator 2026-10-15). Plan slug
+# only: an override cannot grant it. Own-key (BYOK) models are never tier-gated.
+FRONTIER_PLAN_SLUGS: frozenset[str] = frozenset({"pro"})
 
 Period = Literal["day", "month"]
 

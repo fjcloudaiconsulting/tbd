@@ -480,6 +480,6 @@ async def test_f12_config_writes_do_not_need_the_ai_switch(session_factory):
         ).status_code == 200
     put = client.put(
         "/api/v1/settings/ai-providers/routing/default",
-        json={"credential_id": cred_id, "model": "gpt-4o-mini"},
+        json={"credential_id": cred_id, "model": "gpt-5"},
     )
     assert put.status_code == 200, put.text

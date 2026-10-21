@@ -7,7 +7,7 @@ PUT/DELETE endpoints per shape.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,3 +54,19 @@ class FeatureRoutingResponse(BaseModel):
 class RoutingBundleResponse(BaseModel):
     default: Optional[DefaultRoutingResponse] = None
     features: list[FeatureRoutingResponse] = Field(default_factory=list)
+
+
+class ModelOptionResponse(BaseModel):
+    id: str
+    label: Optional[str] = None
+    hint: Optional[str] = None
+    tier: Optional[Literal["budget", "standard", "frontier"]] = None
+    prompt_micros_per_mtok: Optional[int] = None
+    completion_micros_per_mtok: Optional[int] = None
+    replies_left: Optional[int] = None
+
+
+class ModelListResponse(BaseModel):
+    default: Optional[str] = None
+    replies_period: Optional[Literal["day", "month"]] = None
+    models: list[ModelOptionResponse] = Field(default_factory=list)

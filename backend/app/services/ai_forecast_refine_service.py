@@ -43,6 +43,7 @@ from typing import Any, Optional
 import logging
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.category import Category
@@ -56,8 +57,10 @@ from app.schemas.ai_forecast import (
     RefinedForecastResponse,
 )
 from app.services import (
-    ai_consent_service, ai_dispatch, ai_routing_service, ai_scrub, forecast_service, platform_ai,
+    ai_consent_service, ai_dispatch, ai_routing_service, ai_scrub, feature_service, forecast_service,
+    platform_ai,
 )
+from app.services.ai_feature_map import FEATURE_CAPABILITY
 from app.services.ai_forecast_refine_token_estimate import (
     Scope,
     _duration_band,
@@ -832,7 +835,20 @@ async def estimate_refine(
         OrgAICredential.id == credential_id, OrgAICredential.org_id == org_id))
     if platform is not None:
         # Priced like the dispatch it previews; own-key caps never gate it (D6).
-        pk = await platform_ai.pick(db, "structured_output", model)
+        # routed=None: smart_forecast is a background feature, dispatch runs the default.
+        try:
+            frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
+            pk = await platform_ai.pick(db, FEATURE_CAPABILITY[ROUTING_KEY], None, frontier=frontier)
+        except (SQLAlchemyError, PydanticValidationError, KeyError):
+            await db.rollback()
+            return ForecastRefineEstimate(
+                est_prompt_tokens=est_prompt,
+                est_output_tokens=est_out,
+                est_cost_cents=0,
+                duration_band=_duration_band(scope),
+                can_proceed=False,
+                reason="platform_ai_unavailable",
+            )
         if pk is None:
             return ForecastRefineEstimate(
                 est_prompt_tokens=est_prompt,
