@@ -1898,7 +1898,13 @@ async def logout(
     if scheme.lower() == "bearer" and token:
         try:
             payload = decode_token(token)
-            sub = payload.get("sub") if payload else None
+            # Only an access token names the actor: any validly signed JWT
+            # (an OAuth state, mfa or reset token) carries a ``sub`` too.
+            sub = (
+                payload.get("sub")
+                if payload and payload.get("type") == "access"
+                else None
+            )
             if sub is not None:
                 actor_user_id = int(sub)
         except Exception:
@@ -1909,7 +1915,7 @@ async def logout(
                 payload = decode_token(raw)
             except Exception:
                 continue
-            if payload is None:
+            if payload is None or payload.get("type") != "refresh":
                 continue
             sub = payload.get("sub")
             if sub is not None:

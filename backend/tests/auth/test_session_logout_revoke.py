@@ -572,6 +572,31 @@ async def test_logout_audit_binds_to_actor_when_bearer_present(
     assert audit[0].detail["jti_count"] == 1
 
 
+async def test_logout_does_not_attribute_to_a_non_access_token(session_factory):
+    """Any validly signed JWT carries a ``sub``: an OpenRouter OAuth state (which
+    travels in a URL), an mfa or reset token. Presented as the Bearer or as the
+    refresh cookie it must not name its ``sub`` as the logout actor."""
+    from app.security import create_openrouter_oauth_state
+
+    seed = await _seed_user(session_factory)
+    state, _ = create_openrouter_oauth_state(
+        seed["user_id"], seed["org_id"], "sid", "0" * 64
+    )
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/logout", headers={"Authorization": f"Bearer {state}"}
+        )
+        assert res.status_code == 200
+    limiter.reset()
+    with TestClient(app) as client:
+        set_refresh_cookie(client, state)
+        res = client.post("/api/v1/auth/logout")
+        assert res.status_code == 200
+    audit = await _list_audit(session_factory, "auth.session.terminated")
+    assert [a.actor_user_id for a in audit] == []
+
+
 # ─── 9. Logout clears BOTH the canonical and legacy cookie paths ────────────
 
 
