@@ -60,15 +60,6 @@ from app.schemas.org_ai_routing import (
     ModelOptionResponse,
     RoutingBundleResponse,
 )
-from app.services import (
-    ai_caps_service,
-    ai_consent_service,
-    ai_credential_service,
-    ai_routing_service,
-    platform_ai,
-    platform_ai_settings,
-    usage_service,
-)
 from app.security import (
     create_openrouter_oauth_state,
     decode_openrouter_oauth_state,
@@ -78,9 +69,18 @@ from app.security import (
     openrouter_pkce_verifier,
     token_cutoff,
 )
-from app.services import audit_service
-from app.services.ai_providers import openrouter_oauth
+from app.services import (
+    ai_caps_service,
+    ai_consent_service,
+    ai_credential_service,
+    ai_routing_service,
+    audit_service,
+    platform_ai,
+    platform_ai_settings,
+    usage_service,
+)
 from app.services.ai_feature_map import CHAT_FEATURE
+from app.services.ai_providers import openrouter_oauth
 from app.services.ai_providers.openai_compatible import (
     OPENAI_COMPATIBLE_PRESETS,
     OPENROUTER_BASE_URL,
@@ -229,7 +229,15 @@ def _oauth_error(status_code: int, code: str, message: str) -> HTTPException:
 
 async def _oauth_rate_limit(scope: str, user_id: int) -> None:
     # Per user (not per org): a second admin cannot exhaust a victim's budget.
-    if await asyncio.to_thread(rate_limit_db.hit, f"{scope}:{user_id}", 3600) > 10:
+    try:
+        hits = await asyncio.to_thread(rate_limit_db.hit, f"{scope}:{user_id}", 3600)
+    except SQLAlchemyError as exc:
+        raise _oauth_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "oauth_unavailable",
+            "Try again in a moment.",
+        ) from exc
+    if hits > 10:
         raise _oauth_error(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "oauth_rate_limited",
@@ -324,9 +332,13 @@ async def openrouter_oauth_complete(
 
     claims = decode_openrouter_oauth_state(payload.state)
     if claims is None:
-        await _audit_oauth_refused(request, session_factory, current_user, "state_invalid")
+        await _audit_oauth_refused(
+            request, session_factory, current_user, "state_invalid"
+        )
         raise _oauth_error(
-            status.HTTP_400_BAD_REQUEST, "oauth_state_invalid", "The connection link is invalid or expired."
+            status.HTTP_400_BAD_REQUEST,
+            "oauth_state_invalid",
+            "The connection link is invalid or expired.",
         )
     jti = claims["jti"]
     ref = jti[:8]
@@ -355,7 +367,9 @@ async def openrouter_oauth_complete(
         )
     )
     if not bound:
-        await _audit_oauth_refused(request, session_factory, current_user, "state_mismatch", ref)
+        await _audit_oauth_refused(
+            request, session_factory, current_user, "state_mismatch", ref
+        )
         raise _oauth_error(
             status.HTTP_409_CONFLICT,
             "oauth_state_mismatch",
@@ -373,17 +387,24 @@ async def openrouter_oauth_complete(
             "Try again in a moment.",
         ) from exc
     if not first_use:
-        await _audit_oauth_refused(request, session_factory, current_user, "state_used", ref)
+        await _audit_oauth_refused(
+            request, session_factory, current_user, "state_used", ref
+        )
         raise _oauth_error(
-            status.HTTP_409_CONFLICT, "oauth_state_used", "This connection link was already used. Start again."
+            status.HTTP_409_CONFLICT,
+            "oauth_state_used",
+            "This connection link was already used. Start again.",
         )
 
     # Once the exchange is sent, any outcome but a clear refusal or a created
-    # row may leave a live key at OpenRouter. The audit is shielded so a
-    # cancellation (client disconnect) cannot cancel it too.
+    # row may leave a live key at OpenRouter. The audit is shielded so an anyio
+    # cancellation (client disconnect) cannot cancel it too; a native
+    # task.cancel() (e.g. at shutdown) can still skip this row, which is accepted.
     async def _refused(reason: str) -> None:
         with anyio.CancelScope(shield=True):
-            await _audit_oauth_refused(request, session_factory, current_user, reason, ref)
+            await _audit_oauth_refused(
+                request, session_factory, current_user, reason, ref
+            )
 
     try:
         key = await openrouter_oauth.exchange_code(
@@ -404,7 +425,6 @@ async def openrouter_oauth_complete(
             request_id=_request_id(),
             ip_address=get_client_ip(request),
         )
-        return OrgAICredentialResponse.model_validate(row)
     except openrouter_oauth.CodeRejected as exc:
         await _refused("exchange_rejected")
         if exc.busy:
@@ -440,6 +460,8 @@ async def openrouter_oauth_complete(
             "openrouter_unavailable",
             "Could not finish connecting OpenRouter.",
         ) from None
+    # The row exists from here on: nothing below may claim an orphan.
+    return OrgAICredentialResponse.model_validate(row)
 
 
 # --------------------------------------------------------------------

@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import gzip
 import hmac
 import json
+import json as _json
 import logging
 import os
 import secrets
@@ -26,7 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app import state_db
+from app import rate_limit_db, state_db
 from app.config import settings
 from app.models import Base
 from app.models.api_token import ApiToken
@@ -34,6 +36,7 @@ from app.models.audit_event import AuditEvent
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.user import Organization, Role, User
 from app.routers.ai_providers import router as ai_providers_router
+from app.schemas.org_ai_credential import OrgAICredentialResponse
 from app.security import create_access_token, decode_refresh_jti_sid, derive_hmac_key
 from app.services import ai_credential_service
 from app.services.ai_providers import openrouter_oauth
@@ -69,12 +72,27 @@ def _verifier(jti: str) -> str:
     return _b64u(hmac.new(derive_hmac_key(b"openrouter-pkce-v1"), jti.encode(), "sha256").digest())
 
 
+class _Body(httpx.AsyncByteStream):
+    def __init__(self, data: bytes):
+        self.data = data
+
+    async def __aiter__(self):
+        yield self.data
+
+
+def R(status_code, *, json=None, content=b"", headers=None):
+    """A streamed response: aiter_raw() fails on MockTransport's eagerly-read ones."""
+    if json is not None:
+        content = _json.dumps(json).encode()
+    return httpx.Response(status_code, headers=headers, stream=_Body(content))
+
+
 class Fake:
     """Injected OpenRouter transport; records only auth/keys calls."""
 
     def __init__(self):
         self.calls: list[dict] = []
-        self.respond = lambda req: httpx.Response(200, json={"key": KEY})
+        self.respond = lambda req: R(200, json={"key": KEY})
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v1/auth/keys" and request.method == "POST":
@@ -260,6 +278,7 @@ async def test_o2_complete_happy_path(owner, fake, factory):
 
 async def _assert_no_key(factory, caplog, *bodies):
     blob = "".join(bodies) + caplog.text
+    blob += json.dumps([r.__dict__ for r in caplog.records], default=str)
     for e in await _audits(factory) + await _audits(factory, "ai.credential.created"):
         blob += json.dumps(e.detail)
     assert KEY not in blob
@@ -276,11 +295,11 @@ async def test_o3_key_never_leaks_happy(owner, fake, factory, caplog):
 async def test_o3_key_never_leaks_bad_key_and_create_failures(owner, fake, factory, caplog, monkeypatch):
     caplog.set_level(logging.DEBUG)
     bodies = []
-    fake.respond = lambda req: httpx.Response(200, json={"key": KEY + " " * 5000})  # over the max
+    fake.respond = lambda req: R(200, json={"key": KEY + " " * 5000})  # over the max
     nonce, _, state = await owner.flow()
     bodies.append((await owner.complete(state, nonce)).text)
 
-    fake.respond = lambda req: httpx.Response(200, json={"key": KEY})
+    fake.respond = lambda req: R(200, json={"key": KEY})
 
     async def _boom(*a, **k):
         raise RuntimeError("unexpected: " + KEY)
@@ -371,12 +390,21 @@ async def test_o11_invalid_states(owner, world, fake, factory):
         "tampered": good[:-3] + ("AAA" if not good.endswith("AAA") else "BBB"),
         "expired": _sign(owner, world, nonce, iat=now - 700, exp=now - 100),
         "wrong_type": _sign(owner, world, nonce, type="access"),
+        "missing_nh": _sign(owner, world, nonce, nh=None),
+        "bad_org_type": _sign(owner, world, nonce, org_id="x"),
+        "bad_nh_type": _sign(owner, world, nonce, nh=123),
     }
     for name, state in bad.items():
         r = await owner.complete(state, nonce)
         assert r.status_code == 400 and r.json()["detail"]["code"] == "oauth_state_invalid", name
     assert fake.calls == []
-    assert [e.detail["reason"] for e in await _audits(factory)] == ["state_invalid"] * 3
+    assert [e.detail["reason"] for e in await _audits(factory)] == ["state_invalid"] * len(bad)
+
+
+async def test_sign_helper_positive_control(owner, world, fake):
+    nonce = _new_nonce()
+    r = await owner.complete(_sign(owner, world, nonce), nonce)
+    assert r.status_code == 201, r.text
 
 
 # ── O12 ─────────────────────────────────────────────────────────────────────
@@ -389,12 +417,13 @@ async def test_o12_nonce(owner, fake, factory):
 
 
 # ── O13 / O14 / O15 / O16 ───────────────────────────────────────────────────
-async def test_o13_rejected_and_busy(owner, fake, factory):
-    fake.respond = lambda req: httpx.Response(403, json={"error": "bad"})
+@pytest.mark.parametrize("status", [400, 403])
+async def test_o13_rejected_and_busy(owner, fake, factory, status):
+    fake.respond = lambda req: R(status, json={"error": "bad"})
     nonce, _, state = await owner.flow()
     r = await owner.complete(state, nonce)
     assert r.status_code == 400 and r.json()["detail"]["code"] == "openrouter_code_rejected"
-    fake.respond = lambda req: httpx.Response(429)
+    fake.respond = lambda req: R(429)
     nonce, _, state = await owner.flow()
     r = await owner.complete(state, nonce)
     assert r.status_code == 503 and r.json()["detail"]["code"] == "openrouter_busy"
@@ -407,16 +436,22 @@ def _timeout(req):
 
 
 @pytest.mark.parametrize("name,respond", [
-    ("500", lambda r: httpx.Response(500)),
+    ("500", lambda r: R(500)),
+    ("401", lambda r: R(401)),
+    ("404", lambda r: R(404)),
+    ("gzip", lambda r: R(
+        200, content=gzip.compress(json.dumps({"key": KEY}).encode()), headers={"content-encoding": "gzip"})),
+    ("encoding_header_only", lambda r: R(
+        200, content=json.dumps({"key": KEY}).encode(), headers={"content-encoding": "gzip"})),
     ("timeout", _timeout),
-    ("oversize", lambda r: httpx.Response(200, content=b"x" * 70_000)),
-    ("nonjson", lambda r: httpx.Response(200, content=b"nope")),
-    ("int_key", lambda r: httpx.Response(200, json={"key": 5})),
-    ("short_key", lambda r: httpx.Response(200, json={"key": "abc"})),
-    ("blank_key", lambda r: httpx.Response(200, json={"key": "    "})),
-    ("long_key", lambda r: httpx.Response(200, json={"key": "k" * 4097})),
-    ("302", lambda r: httpx.Response(302, headers={"location": "https://evil.test/"})),
-    ("201", lambda r: httpx.Response(201, json={"key": KEY})),
+    ("oversize", lambda r: R(200, json={"key": KEY, "pad": "x" * 70_000})),
+    ("nonjson", lambda r: R(200, content=b"nope")),
+    ("int_key", lambda r: R(200, json={"key": 5})),
+    ("short_key", lambda r: R(200, json={"key": "abc"})),
+    ("blank_key", lambda r: R(200, json={"key": "    "})),
+    ("long_key", lambda r: R(200, json={"key": "k" * 4097})),
+    ("302", lambda r: R(302, headers={"location": "https://evil.test/"})),
+    ("201", lambda r: R(201, json={"key": KEY})),
 ])
 async def test_o14_orphan_possible(owner, fake, factory, name, respond):
     fake.respond = respond
@@ -429,7 +464,8 @@ async def test_o14_orphan_possible(owner, fake, factory, name, respond):
     assert await _rows(factory) == []
 
 
-async def test_o15_validation_failed(owner, fake, factory, monkeypatch):
+async def test_o15_validation_failed(owner, fake, factory, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
     async def _bad(**_kw):
         return ValidateResult(ok=False, error="nope")
 
@@ -440,6 +476,7 @@ async def test_o15_validation_failed(owner, fake, factory, monkeypatch):
     (a,) = await _audits(factory)
     assert a.detail["reason"] == "validation_failed"
     assert await _rows(factory) == []
+    await _assert_no_key(factory, caplog, r.text)
 
 
 async def test_o16_unexpected_create_error_with_key(owner, fake, factory, caplog, monkeypatch):
@@ -481,13 +518,37 @@ async def test_cancel_after_send_audits_orphan(owner, fake, factory, monkeypatch
     assert [e.detail["reason"] for e in await _audits(factory)] == ["orphan_possible"]
 
 
+async def test_failure_after_create_is_not_an_orphan(owner, fake, factory, monkeypatch):
+    """The row exists once create returns; a later error must not claim an orphan."""
+    def _boom(*a, **k):
+        raise RuntimeError("serialize")
+
+    monkeypatch.setattr(OrgAICredentialResponse, "model_validate", classmethod(_boom))
+    nonce, _, state = await owner.flow()
+    with pytest.raises(RuntimeError):
+        await owner.complete(state, nonce)
+    assert await _audits(factory) == []
+    assert len(await _rows(factory)) == 1
+
+
+@pytest.mark.parametrize("path", ["start", "complete"])
+async def test_rate_limit_db_error_is_503(owner, path, monkeypatch):
+    def _boom(*a, **k):
+        raise SQLAlchemyError("down")
+
+    monkeypatch.setattr(rate_limit_db, "hit", _boom)
+    body = {"nonce_hash": _nh("n")} if path == "start" else {"code": CODE, "state": "s", "nonce": "n" * 22}
+    r = await owner.client.post(f"{BASE}/{path}", json=body)
+    assert r.status_code == 503
+
+
 @pytest.mark.parametrize("body", [
     {"key": 5}, {"key": "abc"}, {"key": "    "}, {"key": "k" * 4097}, [], "str", {},
 ])
 async def test_o14_exchange_helper_refuses_bad_key(monkeypatch, body):
     """The helper itself must refuse these; downstream validation would also 502 them."""
     monkeypatch.setattr(
-        openrouter_oauth, "TRANSPORT", httpx.MockTransport(lambda r: httpx.Response(200, json=body))
+        openrouter_oauth, "TRANSPORT", httpx.MockTransport(lambda r: R(200, json=body))
     )
     with pytest.raises(openrouter_oauth.ExchangeFailed):
         await openrouter_oauth.exchange_code(CODE, "v" * 43)
@@ -559,7 +620,7 @@ async def test_o21_audit_detail_and_org(app, world, owner, fake, factory):
     nonce = _new_nonce()
     state = _sign(owner, world, nonce, org_id=world["org_b"])
     await owner.complete(state, nonce, code="SECRETCODE")
-    fake.respond = lambda req: httpx.Response(403)
+    fake.respond = lambda req: R(403)
     n2, _, s2 = await owner.flow()
     await owner.complete(s2, n2, code="SECRETCODE")
     rows = await _audits(factory)

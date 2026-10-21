@@ -51,12 +51,15 @@ async def exchange_code(code: str, verifier: str) -> str:
             ) as r:
                 if r.status_code == 429:
                     raise CodeRejected(busy=True)
-                if r.status_code in (400, 401, 403, 404):
+                # OpenRouter documents only 400 and 403; anything else may have minted a key.
+                if r.status_code in (400, 403):
                     raise CodeRejected(busy=False)
                 if r.status_code != 200:
                     raise ExchangeFailed("status")
+                if r.headers.get("content-encoding", "identity").lower() != "identity":
+                    raise ExchangeFailed("encoding")
                 raw = b""
-                async for chunk in r.aiter_bytes():
+                async for chunk in r.aiter_raw():
                     raw += chunk
                     if len(raw) > MAX_BODY_BYTES:
                         raise ExchangeFailed("body too large")

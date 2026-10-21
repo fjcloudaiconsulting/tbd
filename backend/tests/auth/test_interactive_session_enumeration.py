@@ -150,8 +150,8 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     # host (credential create/rotate/patch, routing) or loosen caps/consent.
     # (Every ai-providers write route except the platform disable is listed.)
     ("POST", "/api/v1/settings/ai-providers"),
-    ("POST", "/api/v1/settings/ai-providers/oauth/openrouter/start"),     # TBD-632
-    ("POST", "/api/v1/settings/ai-providers/oauth/openrouter/complete"),  # TBD-632
+    ("POST", "/api/v1/settings/ai-providers/oauth/openrouter/start"),
+    ("POST", "/api/v1/settings/ai-providers/oauth/openrouter/complete"),
     ("PUT", "/api/v1/settings/ai-providers/routing/default"),
     ("PUT", "/api/v1/settings/ai-providers/routing/features/x"),
     ("DELETE", "/api/v1/settings/ai-providers/routing/features/x"),
