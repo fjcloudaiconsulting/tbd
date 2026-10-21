@@ -7,7 +7,7 @@
 # venv reaches either image.
 #   docker build --target migrations -t tbd-migrations backend
 #   docker build --target prod       -t tbd-backend    backend
-FROM mirror.gcr.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
+FROM mirror.gcr.io/library/python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2 AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.1@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef30279f7d64048519ab901ada336 /uv /uvx /bin/
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
@@ -24,7 +24,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project --no-default-groups --group app \
         $([ "$INSTALL_DEV" = "true" ] && echo "--group dev")
 
-FROM mirror.gcr.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime
+FROM mirror.gcr.io/library/python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2 AS runtime
 
 WORKDIR /app
 
