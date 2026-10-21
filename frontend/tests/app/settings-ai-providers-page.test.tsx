@@ -442,7 +442,7 @@ describe("AiProvidersPage", () => {
 
   it("P8 offers Refresh models for an own key and not for a native one", async () => {
     mockRouting({
-      credentials: [fixtureCredential, { ...fixtureCredential, id: 43, provider: "native" }],
+      credentials: [fixtureCredential, { ...fixtureCredential, id: 43, provider: "openai_compatible", platform_provider: "openrouter" }],
       routing: { default: { org_id: 1, credential_id: 42, model: "gpt-4o" }, features: [] },
     });
     render(<AiProvidersPage />);

@@ -36,6 +36,7 @@ interface Credential {
   id: number;
   org_id: number;
   provider: Provider;
+  platform_provider?: string | null;
   last_four: string | null;
   key_fingerprint: string | null;
   base_url: string | null;
@@ -61,6 +62,7 @@ interface ProviderPreset {
   key: string;
   label: string;
   provider: Provider;
+  platform_provider?: string | null;
   base_url: string;
 }
 
@@ -136,7 +138,7 @@ const ROUTABLE_FEATURES: { key: string; label: string }[] = [
 ];
 
 const isPlatformCred = (creds: Credential[], id: number | "") =>
-  creds.find((c) => c.id === id)?.provider === "native";
+  creds.find((c) => c.id === id)?.platform_provider != null;
 
 const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
 const BASE_URL_PLACEHOLDERS: Partial<Record<Provider, string>> = {
