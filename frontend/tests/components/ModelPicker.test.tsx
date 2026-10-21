@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 
 import ModelPicker from "@/components/ai/ModelPicker";
-import { apiFetch } from "@/lib/api";
+import { ApiResponseError, apiFetch } from "@/lib/api";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -49,12 +49,14 @@ function Harness({
   feature,
   platform,
   onListed,
+  onValidated,
 }: {
   cred?: number | "";
   initial?: string;
   feature?: string;
   platform?: boolean;
   onListed?: (b: boolean) => void;
+  onValidated?: () => void;
 }) {
   const [v, setV] = useState(initial);
   const [c, setC] = useState<number | "">(cred);
@@ -70,6 +72,9 @@ function Harness({
         value={v}
         onChange={setV}
         onListedChange={onListed}
+        onValidated={onValidated}
+        aria-label="Smart plan model"
+        rowLabel="Smart plan"
       />
     </div>
   );
@@ -198,7 +203,7 @@ describe("ModelPicker", () => {
     await waitFor(() => expect(combo()).not.toBeDisabled());
     vi.mocked(apiFetch).mockClear();
     serve({ "/42/models": LIST, "/42/validate": {} });
-    fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Smart plan" }));
     await waitFor(() =>
       expect(calls()).toEqual([
         ["/api/v1/settings/ai-providers/42/validate", "POST"],
@@ -208,7 +213,7 @@ describe("ModelPicker", () => {
     unmount();
     render(<Harness platform />);
     await waitFor(() => expect(combo()).not.toBeDisabled());
-    expect(screen.queryByRole("button", { name: "Refresh models" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh models for Smart plan" })).not.toBeInTheDocument();
   });
 
   it("P9 empty list shows the empty copy; fetch error offers Retry", async () => {
@@ -224,10 +229,10 @@ describe("ModelPicker", () => {
       return LIST as never;
     });
     render(<Harness />);
-    const retry = await screen.findByRole("button", { name: "Retry" });
+    const retry = await screen.findByRole("button", { name: "Retry for Smart plan" });
     fail = false;
     fireEvent.click(retry);
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry for Smart plan" })).not.toBeInTheDocument());
     expect(screen.getByTestId("draft")).toHaveTextContent("zeta-mini");
   });
 
@@ -256,5 +261,114 @@ describe("ModelPicker", () => {
     fireEvent.keyDown(combo(), { key: "Escape" });
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
+  });
+  it("P12 an older response never overwrites a newer one", async () => {
+    const pending: Record<string, (v: unknown) => void> = {};
+    vi.mocked(apiFetch).mockImplementation(
+      (url: string) => new Promise((r) => { pending[url.includes("/42/") ? "42" : "7"] = r; }) as never,
+    );
+    render(<Harness initial="ap-7" />);
+    await waitFor(() => expect(pending["42"]).toBeDefined());
+    fireEvent.click(screen.getByText("switch-cred"));
+    await waitFor(() => expect(pending["7"]).toBeDefined());
+    pending["7"]({ default: "seven", replies_period: null, models: [M("seven")] });
+    await waitFor(() => expect(screen.getByTestId("draft")).toHaveTextContent("seven"));
+    pending["42"](LIST);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId("draft")).toHaveTextContent("seven");
+    fireEvent.focus(combo());
+    expect(optionTexts()).toHaveLength(1);
+    expect(optionTexts()[0]).toContain("seven");
+  });
+
+  it("P13 refreshing with a stale saved id keeps the id and the warning", async () => {
+    serve({ "/42/models": LIST, "/42/validate": {} });
+    render(<Harness initial="gpt-4o" />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Smart plan" }));
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    expect(screen.getByTestId("draft")).toHaveTextContent("gpt-4o");
+    expect(screen.getByText(/No longer in this key's list/)).toBeInTheDocument();
+  });
+
+  it("P15 switching credential reports unlisted until the new list lands", async () => {
+    let release: (v: unknown) => void = () => {};
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url.includes("/42/")) return LIST as never;
+      return new Promise((r) => { release = r; }) as never;
+    });
+    const listed = vi.fn();
+    render(<Harness initial="ap-7" onListed={listed} />);
+    await waitFor(() => expect(listed).toHaveBeenLastCalledWith(true));
+    fireEvent.click(screen.getByText("switch-cred"));
+    await waitFor(() => expect(listed).toHaveBeenLastCalledWith(false));
+    expect(screen.getByRole("status")).toHaveTextContent("Loading models…");
+    release({ default: "seven", replies_period: null, models: [M("seven")] });
+    await waitFor(() => expect(listed).toHaveBeenLastCalledWith(true));
+  });
+
+  it("names the field and its buttons, and links the notes to the input", async () => {
+    serve({ "/42/models": LIST });
+    render(<Harness initial="gpt-4o" />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    expect(screen.getByRole("combobox", { name: "Smart plan model" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh models for Smart plan" })).toBeInTheDocument();
+    const note = screen.getByRole("status");
+    expect(note).toHaveTextContent(/No longer in this key's list/);
+    expect(combo().getAttribute("aria-describedby")).toContain(note.id);
+  });
+
+  it("renders the listbox in a fixed portal outside the container, with a no-match row", async () => {
+    serve({ "/42/models": LIST });
+    render(<Harness />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.focus(combo());
+    const box = screen.getByRole("listbox");
+    expect(box.parentElement).toBe(document.body);
+    expect(box.style.position).toBe("fixed");
+    fireEvent.change(combo(), { target: { value: "zzz" } });
+    expect(screen.getByText("No models match")).toBeInTheDocument();
+    expect(combo()).not.toHaveAttribute("aria-activedescendant");
+  });
+
+  it("closes on blur and before a refresh runs", async () => {
+    serve({ "/42/models": LIST, "/42/validate": {} });
+    render(<Harness />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.focus(combo());
+    fireEvent.blur(combo());
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    fireEvent.focus(combo());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Smart plan" }));
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+  });
+
+  it("a failed validate keeps the loaded list and shows the error; success calls onValidated", async () => {
+    serve({ "/42/models": LIST, "/42/validate": new Error("validate blew up") });
+    const validated = vi.fn();
+    render(<Harness initial="ap-7" onValidated={validated} />);
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Smart plan" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("validate blew up");
+    expect(validated).not.toHaveBeenCalled();
+    await waitFor(() => expect(combo()).not.toBeDisabled());
+    fireEvent.focus(combo());
+    expect(optionTexts()).toHaveLength(3);
+    fireEvent.blur(combo());
+    serve({ "/42/models": LIST, "/42/validate": {} });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Smart plan" }));
+    await waitFor(() => expect(validated).toHaveBeenCalledTimes(1));
+  });
+
+  it("explains a 402 platform_ai_unavailable and a platform key's empty list", async () => {
+    serve({ "/42/models": new ApiResponseError(402, "Request failed", "platform_ai_unavailable") });
+    const { unmount } = render(<Harness platform />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Included AI is not available right now.");
+    unmount();
+    serve({ "/42/models": { default: null, replies_period: null, models: [] } });
+    render(<Harness platform />);
+    expect(await screen.findByText("Included AI has no model for this right now.")).toBeInTheDocument();
+    expect(screen.queryByText(/Refresh models/)).not.toBeInTheDocument();
   });
 });

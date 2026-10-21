@@ -137,8 +137,12 @@ const ROUTABLE_FEATURES: { key: string; label: string }[] = [
   { key: "chat", label: "Chat" },
 ];
 
-const isPlatformCred = (creds: Credential[], id: number | "") =>
-  creds.find((c) => c.id === id)?.platform_provider != null;
+// Fails closed: a credential the page does not know is treated as platform
+// (no Refresh), because validate answers 409 for those.
+const isPlatformCred = (creds: Credential[], id: number | "") => {
+  const c = creds.find((x) => x.id === id);
+  return !c || c.platform_provider != null;
+};
 
 const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
 const BASE_URL_PLACEHOLDERS: Partial<Record<Provider, string>> = {
@@ -234,6 +238,27 @@ export default function AiProvidersPage() {
       setListError(extractErrorMessage(err, "Failed to load AI configuration"));
     } finally {
       setListLoading(false);
+    }
+  }, [sortField, sortDir, page, pageSize]);
+
+  // Refetches only the credentials table (last_validated_at etc). fetchAll
+  // would flip listLoading and remount the routing section, rewriting drafts.
+  const refreshCredentials = useCallback(async () => {
+    try {
+      const res = await apiFetch<ListEnvelope<Credential>>(
+        `/api/v1/settings/ai-providers?${new URLSearchParams({
+          sort_by: sortField,
+          sort_dir: sortDir,
+          limit: String(pageSize),
+          offset: String((page - 1) * pageSize),
+        }).toString()}`
+      );
+      if (res && Array.isArray(res.items)) {
+        setCredentials(res.items);
+        setCredentialsTotal(res.total);
+      }
+    } catch {
+      // the table keeps its last good state
     }
   }, [sortField, sortDir, page, pageSize]);
 
@@ -441,6 +466,7 @@ export default function AiProvidersPage() {
           credentials={credentials}
           routing={routing}
           onSaved={fetchAll}
+          onValidated={refreshCredentials}
         />
       )}
 
@@ -714,12 +740,14 @@ interface RoutingSectionProps {
   credentials: Credential[];
   routing: RoutingBundle | null;
   onSaved: () => Promise<void>;
+  onValidated: () => void;
 }
 
 function RoutingSection({
   credentials,
   routing,
   onSaved,
+  onValidated,
 }: RoutingSectionProps) {
   const [defaultCred, setDefaultCred] = useState<number | "">(
     routing?.default?.credential_id ?? ""
@@ -806,6 +834,7 @@ function RoutingSection({
                 value={defaultModel}
                 onChange={setDefaultModel}
                 onListedChange={setDefaultListed}
+                onValidated={onValidated}
               />
             </div>
             <button
@@ -825,6 +854,7 @@ function RoutingSection({
           credentials={credentials}
           features={routing?.features ?? []}
           onSaved={onSaved}
+          onValidated={onValidated}
         />
       </div>
     </div>
@@ -836,12 +866,14 @@ interface FeatureRoutingTableProps {
   credentials: Credential[];
   features: FeatureRouting[];
   onSaved: () => Promise<void>;
+  onValidated: () => void;
 }
 
 function FeatureRoutingTable({
   credentials,
   features,
   onSaved,
+  onValidated,
 }: FeatureRoutingTableProps) {
   const [drafts, setDrafts] = useState<Record<string, { cred: number | ""; model: string }>>(
     () => {
@@ -972,6 +1004,9 @@ function FeatureRoutingTable({
                       id={`model-${f.key}`}
                       credentialId={draft.cred}
                       feature={f.key}
+                      aria-label={`${f.label} model`}
+                      rowLabel={f.label}
+                      onValidated={onValidated}
                       platform={isPlatformCred(credentials, draft.cred)}
                       value={draft.model}
                       onChange={(model) =>

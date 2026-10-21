@@ -427,6 +427,44 @@ describe("AiProvidersPage", () => {
     expect(puts).toEqual([]);
   });
 
+  it("P14 a stale per-feature override has Save disabled and sends no PUT", async () => {
+    const puts: string[] = [];
+    mockRouting({
+      routing: {
+        default: null,
+        features: [{ org_id: 1, feature_name: "smart_plan", credential_id: 42, model: "retired-model" }],
+      },
+      onCall: (url, init) => { if (init?.method === "PUT") puts.push(url); },
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+    const row = screen.getByRole("combobox", { name: "Smart plan model" });
+    await waitFor(() => expect(row).toHaveValue("retired-model"));
+    await screen.findByText(/No longer in this key's list/);
+    const save = within(row.closest("tr") as HTMLElement).getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    expect(puts).toEqual([]);
+  });
+
+  it("refreshing models refetches the credentials without rewriting a stale saved model", async () => {
+    let credGets = 0;
+    mockRouting({
+      routing: { default: { org_id: 1, credential_id: 42, model: "gone" }, features: [] },
+      onCall: (url) => { if (isCredentialsListGet(url)) credGets++; },
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+    const section = screen.getByTestId("routing-section");
+    await screen.findByText(/No longer in this key's list/);
+    const before = credGets;
+    fireEvent.click(screen.getAllByRole("button", { name: "Refresh models" })[0]);
+    await waitFor(() => expect(credGets).toBe(before + 1));
+    await waitFor(() => expect(screen.getByLabelText(/^Model$/i)).not.toBeDisabled());
+    expect(screen.getByTestId("routing-section")).toBe(section);
+    expect(screen.getByLabelText(/^Model$/i)).toHaveValue("gone");
+  });
+
   it("P10 shows the server message when a save is refused with model_not_listed", async () => {
     mockRouting({
       routing: { default: { org_id: 1, credential_id: 42, model: "gpt-4o" }, features: [] },
