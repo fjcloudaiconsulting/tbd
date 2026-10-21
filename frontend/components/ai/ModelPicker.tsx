@@ -57,7 +57,7 @@ export default function ModelPicker({
   const [highlight, setHighlight] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
   const valueRef = useRef(value);
-  valueRef.current = value;
+  useEffect(() => { valueRef.current = value; }, [value]);
   const lastCred = useRef<number | "">(credentialId);
   const seq = useRef(0);
 
