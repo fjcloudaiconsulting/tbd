@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 
 import AiProvidersPage from "@/app/settings/ai-providers/page";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
+import { ApiResponseError, apiFetch } from "@/lib/api";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import type { AIStatus, User } from "@/lib/types";
 
@@ -311,47 +311,68 @@ describe("AiProvidersPage", () => {
     expect(screen.getByText("Smart forecast")).toBeInTheDocument();
   });
 
-  it("PUTs the default routing payload on save", async () => {
-    const calls: { url: string; body: string | null; method: string }[] = [];
+  const modelList = {
+    default: "gpt-4o-mini",
+    replies_period: null,
+    models: [
+      { id: "gpt-4o-mini", label: "GPT-4o mini", hint: null, tier: "budget", replies_left: null },
+      { id: "gpt-4o", label: null, hint: null, tier: "frontier", replies_left: null },
+    ],
+  };
+
+  function mockRouting(opts: {
+    credentials?: unknown[];
+    routing?: unknown;
+    models?: unknown;
+    onCall?: (url: string, init?: RequestInit) => void;
+    putError?: unknown;
+  }) {
     vi.mocked(apiFetch).mockImplementation(
       async (url: string, init?: RequestInit) => {
-        calls.push({
-          url,
-          body: (init?.body as string) ?? null,
-          method: init?.method ?? "GET",
-        });
+        opts.onCall?.(url, init);
         if (isCredentialsListGet(url)) {
-          return credentialsEnvelope([fixtureCredential]) as never;
+          return credentialsEnvelope(opts.credentials ?? [fixtureCredential]) as never;
         }
         if (url.endsWith("/options")) {
           return {
-            providers: [
-              { key: "openai", label: "OpenAI", availability: "available" },
-            ],
+            providers: [{ key: "openai", label: "OpenAI", availability: "available" }],
             ai_native_enabled: false,
           } as never;
         }
+        if (url.includes("/models")) return (opts.models ?? modelList) as never;
+        if (init?.method === "PUT" && opts.putError) throw opts.putError;
         if (url.endsWith("/routing")) {
-          return { default: null, features: [] } as never;
+          return (opts.routing ?? { default: null, features: [] }) as never;
         }
-        if (url.endsWith("/caps")) {
-          return { default: null, features: [] } as never;
-        }
+        if (url.endsWith("/caps")) return { default: null, features: [] } as never;
         return undefined as never;
       },
     );
+  }
+
+  const routingReady = () =>
+    waitFor(() => expect(screen.getByTestId("routing-section")).toBeInTheDocument());
+
+  it("PUTs the default routing payload on save", async () => {
+    const calls: { url: string; body: string | null; method: string }[] = [];
+    mockRouting({
+      onCall: (url, init) =>
+        calls.push({ url, body: (init?.body as string) ?? null, method: init?.method ?? "GET" }),
+    });
 
     render(<AiProvidersPage />);
-    await waitFor(() =>
-      expect(screen.getByTestId("routing-section")).toBeInTheDocument(),
-    );
+    await routingReady();
 
     fireEvent.change(screen.getByLabelText(/^Credential$/i), {
       target: { value: "42" },
     });
-    fireEvent.change(screen.getByLabelText(/^Model$/i), {
-      target: { value: "gpt-4o-mini" },
-    });
+    // Picking the credential preselects its default model.
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Model$/i)).toHaveValue("gpt-4o-mini"),
+    );
+    // Pick a different listed model from the picker.
+    fireEvent.focus(screen.getByLabelText(/^Model$/i));
+    fireEvent.click(screen.getByRole("option", { name: /^gpt-4o\s*Frontier/ }));
     fireEvent.click(
       screen.getByRole("button", { name: /Save default/i }),
     );
@@ -362,11 +383,75 @@ describe("AiProvidersPage", () => {
           (c) =>
             c.method === "PUT" &&
             c.url.endsWith("/routing/default") &&
-            (c.body ?? "").includes("gpt-4o-mini") &&
-            (c.body ?? "").includes("42"),
+            JSON.parse(c.body ?? "{}").model === "gpt-4o" &&
+            JSON.parse(c.body ?? "{}").credential_id === 42,
         ),
       ).toBeTruthy();
     });
+  });
+
+  it("P7 default row lists models without a feature, feature rows pass theirs", async () => {
+    const urls: string[] = [];
+    mockRouting({
+      routing: {
+        default: { org_id: 1, credential_id: 42, model: "gpt-4o" },
+        features: [{ org_id: 1, feature_name: "smart_plan", credential_id: 42, model: "gpt-4o" }],
+      },
+      onCall: (url) => urls.push(url),
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+    await waitFor(() =>
+      expect(urls).toContain("/api/v1/settings/ai-providers/42/models"),
+    );
+    await waitFor(() =>
+      expect(urls).toContain("/api/v1/settings/ai-providers/42/models?feature=smart_plan"),
+    );
+    // Rows with no credential fetch nothing.
+    expect(urls.filter((u) => u.includes("feature=")).length).toBe(1);
+  });
+
+  it("P5 a stale saved default keeps its id, warns, disables Save and sends no PUT", async () => {
+    const puts: string[] = [];
+    mockRouting({
+      routing: { default: { org_id: 1, credential_id: 42, model: "gpt-3.5-retired" }, features: [] },
+      onCall: (url, init) => { if (init?.method === "PUT") puts.push(url); },
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+    expect(await screen.findByText(/No longer in this key's list/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Model$/i)).toHaveValue("gpt-3.5-retired");
+    const save = screen.getByRole("button", { name: /Save default/i });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    expect(puts).toEqual([]);
+  });
+
+  it("P10 shows the server message when a save is refused with model_not_listed", async () => {
+    mockRouting({
+      routing: { default: { org_id: 1, credential_id: 42, model: "gpt-4o" }, features: [] },
+      putError: new ApiResponseError(400, "That model is not in this key's list.", "model_not_listed"),
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+    const save = screen.getByRole("button", { name: /Save default/i });
+    await waitFor(() => expect(save).not.toBeDisabled());
+    fireEvent.click(save);
+    expect(await screen.findByText("That model is not in this key's list.")).toBeInTheDocument();
+  });
+
+  it("P8 offers Refresh models for an own key and not for a native one", async () => {
+    mockRouting({
+      credentials: [fixtureCredential, { ...fixtureCredential, id: 43, provider: "native" }],
+      routing: { default: { org_id: 1, credential_id: 42, model: "gpt-4o" }, features: [] },
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+    expect(await screen.findAllByRole("button", { name: "Refresh models" })).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText(/^Credential$/i), { target: { value: "43" } });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Refresh models" })).not.toBeInTheDocument(),
+    );
   });
 
   it("disables the native option in the provider picker when not_yet_available", async () => {

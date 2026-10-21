@@ -9,6 +9,7 @@ import { useTableState } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import UsageMeters from "@/components/agent/UsageMeters";
 import AiMasterSwitchCard from "@/components/ai/AiMasterSwitchCard";
+import ModelPicker from "@/components/ai/ModelPicker";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
@@ -133,6 +134,9 @@ const ROUTABLE_FEATURES: { key: string; label: string }[] = [
   { key: "smart_plan", label: "Smart plan" },
   { key: "chat", label: "Chat" },
 ];
+
+const isPlatformCred = (creds: Credential[], id: number | "") =>
+  creds.find((c) => c.id === id)?.provider === "native";
 
 const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
 const BASE_URL_PLACEHOLDERS: Partial<Record<Provider, string>> = {
@@ -721,6 +725,7 @@ function RoutingSection({
   const [defaultModel, setDefaultModel] = useState<string>(
     routing?.default?.model ?? ""
   );
+  const [defaultListed, setDefaultListed] = useState(false);
   const [savingDefault, setSavingDefault] = useState(false);
   const [sectionError, setSectionError] = useState<string | null>(null);
 
@@ -734,7 +739,7 @@ function RoutingSection({
   // that flaked the "PUTs the default routing payload on save" test.
 
   const saveDefault = async () => {
-    if (!defaultCred || !defaultModel.trim()) return;
+    if (!defaultCred || !defaultModel.trim() || !defaultListed) return;
     setSavingDefault(true);
     setSectionError(null);
     try {
@@ -792,13 +797,13 @@ function RoutingSection({
               <label className={labelCls} htmlFor="default-model">
                 Model
               </label>
-              <input
+              <ModelPicker
                 id="default-model"
-                type="text"
-                className={input}
+                credentialId={defaultCred}
+                platform={isPlatformCred(credentials, defaultCred)}
                 value={defaultModel}
-                onChange={(e) => setDefaultModel(e.target.value)}
-                placeholder="gpt-4o-mini"
+                onChange={setDefaultModel}
+                onListedChange={setDefaultListed}
               />
             </div>
             <button
@@ -806,7 +811,7 @@ function RoutingSection({
               className={btnPrimary}
               onClick={saveDefault}
               disabled={
-                savingDefault || !defaultCred || !defaultModel.trim()
+                savingDefault || !defaultCred || !defaultModel.trim() || !defaultListed
               }
             >
               {savingDefault ? "Saving..." : "Save default"}
@@ -849,6 +854,7 @@ function FeatureRoutingTable({
       return m;
     }
   );
+  const [listed, setListed] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -867,7 +873,7 @@ function FeatureRoutingTable({
 
   const save = async (featureName: string) => {
     const d = drafts[featureName];
-    if (!d.cred || !d.model.trim()) return;
+    if (!d.cred || !d.model.trim() || !listed[featureName]) return;
     setBusy(featureName);
     setErr(null);
     try {
@@ -911,8 +917,7 @@ function FeatureRoutingTable({
         Per-feature overrides
       </h4>
       <p className="mb-2 text-xs text-text-muted">
-        Falls back to the default when an override is removed. PR1 stores
-        these; dispatch wires up in a later PR.
+        Falls back to the default when an override is removed.
       </p>
       {err && <div className={errorCls}>{err}</div>}
       <div className="overflow-x-auto">
@@ -961,17 +966,21 @@ function FeatureRoutingTable({
                     </select>
                   </td>
                   <td className="px-2 py-2">
-                    <input
-                      type="text"
-                      className={input}
+                    <ModelPicker
+                      id={`model-${f.key}`}
+                      credentialId={draft.cred}
+                      feature={f.key}
+                      platform={isPlatformCred(credentials, draft.cred)}
                       value={draft.model}
-                      onChange={(e) =>
+                      onChange={(model) =>
                         setDrafts((prev) => ({
                           ...prev,
-                          [f.key]: { ...prev[f.key], model: e.target.value },
+                          [f.key]: { ...prev[f.key], model },
                         }))
                       }
-                      placeholder="model name"
+                      onListedChange={(ok) =>
+                        setListed((prev) => (prev[f.key] === ok ? prev : { ...prev, [f.key]: ok }))
+                      }
                     />
                   </td>
                   <td className="px-2 py-2">
@@ -982,7 +991,8 @@ function FeatureRoutingTable({
                         disabled={
                           busy === f.key ||
                           !draft.cred ||
-                          !draft.model.trim()
+                          !draft.model.trim() ||
+                          !listed[f.key]
                         }
                         onClick={() => save(f.key)}
                       >
