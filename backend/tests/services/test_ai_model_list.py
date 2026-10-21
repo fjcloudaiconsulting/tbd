@@ -85,9 +85,9 @@ async def test_s2d_an_own_key_zero_priced_row_is_never_the_default(db, monkeypat
 
 async def test_s3b_ollama_lists_nothing_where_chat_can_run(db):
     cred = await own(db, ["llama3.1"], caps=CAPS, provider=AiProvider.OLLAMA)
-    for feature in (None, "chat"):
-        lst = await ai_routing_service.list_models(db, cred, feature)
-        assert (ids(lst), lst.default) == ([], None), feature
+    lst = await ai_routing_service.list_models(db, cred, "chat")
+    assert (ids(lst), lst.default) == ([], None)
+    assert ids(await ai_routing_service.list_models(db, cred, None)) == ["llama3.1"]
     assert ids(await ai_routing_service.list_models(db, cred, "smart_budget")) == ["llama3.1"]
 
 
@@ -115,7 +115,7 @@ async def test_s5_only_free_rows_have_no_default_but_a_routed_free_row_is_honour
 
 
 def test_s13_validate_result_caps_and_cleans_discovered_models():
-    r = ValidateResult(ok=True, discovered_models=["", 42, None] + [f"m{i}" for i in range(1200)])
+    r = ValidateResult(ok=True, discovered_models=["", 42, None, "a" * 121] + [f"m{i}" for i in range(1200)])
     assert r.discovered_models == [f"m{i}" for i in range(1000)]
 
 

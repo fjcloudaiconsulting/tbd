@@ -81,8 +81,9 @@ async def list_models(db: AsyncSession, cred: OrgAICredential, feature: str | No
     """The ONE definition of which models ``cred`` can be routed to for ``feature``
     (None = the default routing row). The caller has validated ``feature``."""
     if cred.platform_provider is None:
-        # agent_chat.preflight refuses Ollama, and the default row feeds chat: a list there is a second answer.
-        if cred.provider == AiProvider.OLLAMA and feature in (None, CHAT_FEATURE):
+        # agent_chat.preflight refuses Ollama, so a chat list would be a second answer; the default
+        # row (feature None) still serves every other feature and keeps listing.
+        if cred.provider == AiProvider.OLLAMA and feature == CHAT_FEATURE:
             return ModelList([], None)
         return _own_key_models(cred, feature)
     conf = await platform_ai_settings.load(db)

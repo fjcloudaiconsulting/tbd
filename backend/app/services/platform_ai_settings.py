@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -50,6 +52,10 @@ async def offered(db: AsyncSession, conf: PlatformAISettings, org_id: int) -> li
     no default to run), e.g. a non-Pro org whose catalog is only frontier or free rows."""
     if not switched_on(conf):
         return []
-    frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
+    try:
+        frontier = (await feature_service.get_entitlements(db, org_id)).frontier_models
+    except (SQLAlchemyError, PydanticValidationError, KeyError):
+        await db.rollback()
+        return []  # unreadable plan: offer nothing rather than 500 /options
     rows = await platform_ai.candidates(db, "function_call", frontier=frontier)
     return [r.openrouter_id for r in rows] if platform_ai.default_row(rows) else []

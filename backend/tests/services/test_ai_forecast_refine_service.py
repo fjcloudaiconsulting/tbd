@@ -778,6 +778,36 @@ async def test_f_rf_estimate_picks_the_default_not_the_routed_model(
 
 
 @pytest.mark.asyncio
+async def test_f_rf3_a_pro_org_estimate_passes_frontier_true(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """FENCE F-RF3. Kills a hard-coded ``frontier=False`` in the estimate's pick."""
+    from app.models.subscription import Plan, Subscription, SubscriptionStatus
+    from app.services import platform_ai
+    from app.auth.feature_catalog import PlanUsageLimits
+
+    _patch_estimate_internals(monkeypatch, est_cost_micros=405)
+    await _route_to_platform(db_session, seeded_org.id)
+    plan = Plan(slug="pro", name="Pro", features={}, usage_limits=PlanUsageLimits().model_dump(by_alias=True))
+    db_session.add(plan)
+    await db_session.flush()
+    db_session.add(Subscription(org_id=seeded_org.id, plan_id=plan.id, status=SubscriptionStatus.ACTIVE))
+    await db_session.commit()
+
+    seen = []
+    real = platform_ai.pick
+
+    async def spy(db, capability, routed, *, frontier):
+        seen.append(frontier)
+        return await real(db, capability, routed, frontier=frontier)
+
+    monkeypatch.setattr(svc.platform_ai, "pick", spy)
+    await svc.estimate_refine(db_session, org_id=seeded_org.id, period_start=None,
+                              timeframe_months=6, scope=Scope.TOP_20)
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
 async def test_f_rf2_unreadable_entitlements_are_a_typed_refusal_not_a_500(
     monkeypatch, db_session: AsyncSession, seeded_org: Organization
 ):

@@ -269,6 +269,15 @@ async def test_o2_a_frontier_only_catalog_is_offered_to_pro_alone(sf, org):
     assert [p["models"] for p in got] == [["vendor/frontier"]]
 
 
+async def test_o4_an_unreadable_plan_degrades_options_to_nothing(sf, org, monkeypatch):
+    async def boom(*a, **k):
+        raise SQLAlchemyError("x")
+
+    monkeypatch.setattr(feature_service, "get_entitlements", boom)
+    r = client(sf, org[1]).get(f"{BASE}/options")
+    assert r.status_code == 200 and r.json()["platform_providers"] == []
+
+
 async def test_o3_a_free_only_catalog_is_offered_to_nobody(sf, org):
     await set_enabled(sf, MODEL, False)
     await add_models(sf, model_row("x/free", zp=0, zc=0))
