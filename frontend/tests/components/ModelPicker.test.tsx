@@ -26,7 +26,7 @@ const LIST = {
   replies_period: "month" as const,
   models: [
     M("zeta-mini", { label: "Zeta Mini", tier: "budget", hint: "Fast and cheap", replies_left: 1200 }),
-    M("alpha-pro", { label: "Alpha Pro", tier: "frontier", hint: "Best reasoning" }),
+    M("ap-7", { label: "Alpha Pro", tier: "frontier", hint: "Best reasoning" }),
     M("mid-model", { tier: "standard" }),
   ],
 };
@@ -145,9 +145,9 @@ describe("ModelPicker", () => {
 
   it("P4b keeps a saved listed model on mount", async () => {
     serve({ "/42/models": LIST });
-    render(<Harness initial="alpha-pro" />);
+    render(<Harness initial="ap-7" />);
     await waitFor(() => expect(combo()).not.toBeDisabled());
-    expect(screen.getByTestId("draft")).toHaveTextContent("alpha-pro");
+    expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
   });
 
   it("P5 stale saved model stays, warns, reports unlisted, and never rewrites", async () => {
@@ -161,23 +161,23 @@ describe("ModelPicker", () => {
     expect(listed).toHaveBeenLastCalledWith(false);
     fireEvent.focus(combo());
     fireEvent.click(screen.getAllByRole("option")[1]);
-    expect(screen.getByTestId("draft")).toHaveTextContent("alpha-pro");
+    expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
     expect(listed).toHaveBeenLastCalledWith(true);
     expect(screen.queryByText(/No longer in this key's list/)).not.toBeInTheDocument();
   });
 
   it("P6 typed text that matches nothing never becomes the value", async () => {
     serve({ "/42/models": LIST });
-    render(<Harness initial="alpha-pro" />);
+    render(<Harness initial="ap-7" />);
     await waitFor(() => expect(combo()).not.toBeDisabled());
     fireEvent.focus(combo());
     fireEvent.change(combo(), { target: { value: "totally-made-up" } });
     fireEvent.keyDown(combo(), { key: "Enter" });
     expect(screen.queryAllByRole("option")).toHaveLength(0);
-    expect(screen.getByTestId("draft")).toHaveTextContent("alpha-pro");
+    expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
     fireEvent.blur(combo());
     fireEvent.mouseDown(document.body);
-    expect(screen.getByTestId("draft")).toHaveTextContent("alpha-pro");
+    expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
   });
 
   it("P7 default row GETs /models without feature, feature row passes it", async () => {
@@ -249,12 +249,12 @@ describe("ModelPicker", () => {
     fireEvent.keyDown(combo(), { key: "ArrowDown" });
     fireEvent.keyDown(combo(), { key: "ArrowDown" });
     fireEvent.keyDown(combo(), { key: "Enter" });
-    expect(screen.getByTestId("draft")).toHaveTextContent("alpha-pro");
+    expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     fireEvent.focus(combo());
     fireEvent.keyDown(combo(), { key: "ArrowDown" });
     fireEvent.keyDown(combo(), { key: "Escape" });
     expect(screen.queryAllByRole("option")).toHaveLength(0);
-    expect(screen.getByTestId("draft")).toHaveTextContent("alpha-pro");
+    expect(screen.getByTestId("draft")).toHaveTextContent("ap-7");
   });
 });
