@@ -708,19 +708,28 @@ describe("AiProvidersPage", () => {
 
     it("warns that deleting an own OpenRouter key does not revoke it there", async () => {
       const pasted = { ...fixtureCredential, id: 5, provider: "openai_compatible", base_url: `${OPENROUTER}/` };
-      mockWithPreset([pasted, fixtureCredential]);
+      // The platform's own OpenRouter key is not the user's to delete at OpenRouter.
+      const platform = { ...pasted, id: 6, platform_provider: "openrouter", base_url: OPENROUTER };
+      mockWithPreset([pasted, fixtureCredential, platform]);
       const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
       render(<AiProvidersPage />);
       const table = await screen.findByTestId("credentials-table");
-      const [openRouterDelete, openAiDelete] = within(table).getAllByRole("button", { name: "Delete" });
+      const [openRouterDelete, openAiDelete, platformDelete] = within(table).getAllByRole(
+        "button",
+        { name: "Delete" },
+      );
 
       fireEvent.click(openRouterDelete);
       fireEvent.click(openAiDelete);
+      fireEvent.click(platformDelete);
 
       expect(confirmSpy.mock.calls[0][0]).toMatch(
         /It keeps working at OpenRouter until you delete it at openrouter\.ai\/settings\/keys\./,
       );
       expect(confirmSpy.mock.calls[1][0]).toBe(
+        "Delete this credential? This action cannot be undone.",
+      );
+      expect(confirmSpy.mock.calls[2][0]).toBe(
         "Delete this credential? This action cannot be undone.",
       );
       confirmSpy.mockRestore();
