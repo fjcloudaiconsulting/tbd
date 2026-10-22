@@ -13,9 +13,11 @@ import ModelPicker from "@/components/ai/ModelPicker";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
+import { startOpenRouterConnect } from "@/lib/openrouter-connect";
 import type { ListEnvelope } from "@/lib/types";
 import {
   btnPrimary,
+  btnLink,
   btnSecondary,
   card,
   cardHeader,
@@ -295,9 +297,18 @@ export default function AiProvidersPage() {
     [fetchAll]
   );
 
+  const openRouterBaseUrl = providerPresets.find((p) => p.key === "openrouter")?.base_url;
   const handleDelete = useCallback(
-    async (id: number) => {
-      if (!confirm("Delete this credential? This action cannot be undone.")) {
+    async ({ id, base_url, platform_provider }: Credential) => {
+      // Deleting here never revokes an own OpenRouter key at OpenRouter.
+      const atOpenRouter =
+        platform_provider == null &&
+        !!openRouterBaseUrl &&
+        base_url?.replace(/\/+$/, "") === openRouterBaseUrl;
+      const message = atOpenRouter
+        ? "Delete this credential? This removes the key from The Better Decision only. It keeps working at OpenRouter until you delete it at openrouter.ai/settings/keys."
+        : "Delete this credential? This action cannot be undone.";
+      if (!confirm(message)) {
         return;
       }
       setBusyId(id);
@@ -312,7 +323,7 @@ export default function AiProvidersPage() {
         setBusyId(null);
       }
     },
-    [fetchAll]
+    [fetchAll, openRouterBaseUrl]
   );
 
   if (loading || !user) {
@@ -436,7 +447,7 @@ export default function AiProvidersPage() {
                           type="button"
                           className={btnSecondary}
                           disabled={busyId === c.id}
-                          onClick={() => handleDelete(c.id)}
+                          onClick={() => handleDelete(c)}
                         >
                           Delete
                         </button>
@@ -512,8 +523,12 @@ function AddCredentialModal({
   const [labelText, setLabelText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // OpenRouter connects through OAuth unless the user asks to paste a key.
+  const [pasteKey, setPasteKey] = useState(false);
 
   const preset = providerPresets.find((p) => p.key === choice);
+  const isOpenRouter = preset?.key === "openrouter";
+  const connectMode = isOpenRouter && !pasteKey;
   const provider: Provider = preset ? preset.provider : (choice as Provider);
   const needsBaseUrl = NEEDS_BASE_URL.includes(provider);
 
@@ -534,6 +549,17 @@ function AddCredentialModal({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (connectMode) {
+      setSubmitting(true);
+      setErrorText(null);
+      try {
+        await startOpenRouterConnect();
+      } catch (err) {
+        setErrorText(extractErrorMessage(err, "Could not open OpenRouter. Try again."));
+        setSubmitting(false);
+      }
+      return;
+    }
     if (!apiKeyOptional && !apiKey.trim()) return;
     setSubmitting(true);
     setErrorText(null);
@@ -633,6 +659,33 @@ function AddCredentialModal({
               </a>
             )}
           </div>
+          {connectMode ? (
+            <div className="space-y-2">
+              <p className="text-sm text-text-secondary text-pretty">
+                Sign in to OpenRouter and approve a key for The Better Decision. There is no
+                key to copy.
+              </p>
+              <button
+                type="button"
+                className={btnLink}
+                onClick={() => setPasteKey(true)}
+                disabled={submitting}
+              >
+                Paste an API key instead
+              </button>
+            </div>
+          ) : (
+          <>
+          {isOpenRouter && (
+            <button
+              type="button"
+              className={btnLink}
+              onClick={() => setPasteKey(false)}
+              disabled={submitting}
+            >
+              Connect with OpenRouter instead
+            </button>
+          )}
           <div>
             <label className={labelCls} htmlFor="ai-label">
               Label (optional)
@@ -706,6 +759,8 @@ function AddCredentialModal({
               )}
             </div>
           )}
+          </>
+          )}
           {errorText && <div className={errorCls}>{errorText}</div>}
           <div className="mt-4 flex justify-end gap-2">
             <button
@@ -716,18 +771,24 @@ function AddCredentialModal({
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              className={btnPrimary}
-              disabled={
-                submitting ||
-                (!apiKeyOptional && !apiKey.trim()) ||
-                (needsBaseUrl && !baseUrl.trim()) ||
-                provider === "native"
-              }
-            >
-              {submitting ? "Validating..." : "Add credential"}
-            </button>
+            {connectMode ? (
+              <button type="submit" className={btnPrimary} disabled={submitting}>
+                {submitting ? "Opening OpenRouter..." : "Connect with OpenRouter"}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className={btnPrimary}
+                disabled={
+                  submitting ||
+                  (!apiKeyOptional && !apiKey.trim()) ||
+                  (needsBaseUrl && !baseUrl.trim()) ||
+                  provider === "native"
+                }
+              >
+                {submitting ? "Validating..." : "Add credential"}
+              </button>
+            )}
           </div>
         </form>
       </div>
