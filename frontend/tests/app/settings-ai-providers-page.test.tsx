@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  act,
   render,
   screen,
   waitFor,
@@ -719,7 +720,9 @@ describe("AiProvidersPage", () => {
         await within(dialog).findByRole("button", { name: "Opening OpenRouter..." }),
       ).toBeDisabled();
 
-      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      act(() => {
+        window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      });
 
       expect(
         await within(dialog).findByRole("button", { name: "Connect with OpenRouter" }),

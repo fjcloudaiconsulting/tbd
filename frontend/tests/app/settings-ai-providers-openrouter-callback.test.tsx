@@ -1,5 +1,5 @@
 import React, { StrictMode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import OpenRouterCallbackPage from "@/app/settings/ai-providers/openrouter/callback/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -303,7 +303,9 @@ describe("OpenRouter callback page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Connect again" }));
     expect(screen.getByRole("button", { name: "Opening OpenRouter..." })).toBeDisabled();
 
-    window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    act(() => {
+        window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      });
 
     expect(await screen.findByRole("button", { name: "Connect again" })).toBeEnabled();
   });
