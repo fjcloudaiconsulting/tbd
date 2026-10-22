@@ -45,7 +45,7 @@ type Outcome =
 const NOTHING_SAVED: Record<NothingSaved, { title: string; body: string }> = {
   cancelled: {
     title: "Connection cancelled",
-    body: "OpenRouter did not approve the connection. Nothing was saved.",
+    body: "OpenRouter did not finish the connection. Nothing was saved.",
   },
   no_nonce: {
     title: "Start the connection again",
@@ -101,7 +101,7 @@ const linkBtnSecondary = `${btnSecondary} inline-flex min-h-[44px] items-center`
 
 export default function OpenRouterCallbackPage() {
   const { user, loading } = useAuth();
-  const params = useRef<{ code: string | null; state: string | null; any: boolean } | null>(
+  const params = useRef<{ code: string | null; state: string | null; hasQuery: boolean } | null>(
     null,
   );
   const started = useRef(false);
@@ -113,7 +113,7 @@ export default function OpenRouterCallbackPage() {
   useEffect(() => {
     if (params.current) return;
     const query = new URLSearchParams(window.location.search);
-    params.current = { code: query.get("code"), state: query.get("state"), any: window.location.search.length > 1 };
+    params.current = { code: query.get("code"), state: query.get("state"), hasQuery: window.location.search.length > 1 };
     window.history.replaceState(null, "", window.location.pathname);
   }, []);
 
@@ -127,13 +127,13 @@ export default function OpenRouterCallbackPage() {
   useEffect(() => {
     if (loading || !user || !isAdmin(user) || started.current || !params.current) return;
     started.current = true;
-    const { code, state, any } = params.current;
+    const { code, state, hasQuery } = params.current;
     const nonce = takeOpenRouterNonce();
     if (!code || !state || !nonce) {
       // A bare URL is a Back or a reload after the strip, not an OpenRouter answer:
       // a key may exist, so it must not say nothing was saved.
       setOutcome({
-        kind: !any ? "nothing_to_finish" : !code || !state ? "cancelled" : "no_nonce",
+        kind: !hasQuery ? "nothing_to_finish" : !code || !state ? "cancelled" : "no_nonce",
       });
       return;
     }
@@ -240,7 +240,7 @@ export default function OpenRouterCallbackPage() {
       title = "Nothing to finish here";
       body = (
         <p className="mt-2 text-sm text-text-secondary text-pretty">
-          This page only completes a connection that OpenRouter just sent back. Check AI
+          This page finishes a connection when OpenRouter sends you back here. Check AI
           providers to see whether OpenRouter is connected.
         </p>
       );

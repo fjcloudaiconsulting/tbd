@@ -710,6 +710,22 @@ describe("AiProvidersPage", () => {
       expect(within(dialog).getByRole("button", { name: "Connect with OpenRouter" })).toBeInTheDocument();
     });
 
+    it("re-arms Connect when Back restores the page from the browser cache", async () => {
+      mockWithPreset([]);
+      vi.mocked(startOpenRouterConnect).mockReturnValue(new Promise(() => {}));
+      const dialog = await openModalOnOpenRouter();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect with OpenRouter" }));
+      expect(
+        await within(dialog).findByRole("button", { name: "Opening OpenRouter..." }),
+      ).toBeDisabled();
+
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+
+      expect(
+        await within(dialog).findByRole("button", { name: "Connect with OpenRouter" }),
+      ).toBeEnabled();
+    });
+
     it("shows a failed start in the modal and lets the user retry", async () => {
       mockWithPreset([]);
       vi.mocked(startOpenRouterConnect).mockRejectedValue(

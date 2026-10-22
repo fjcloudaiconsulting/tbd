@@ -294,4 +294,17 @@ describe("OpenRouter callback page", () => {
 
     expect(await screen.findByText(/named "The Better Decision" at/)).toBeInTheDocument();
   });
+
+  it("re-arms Connect again when Back restores the page from the browser cache", async () => {
+    vi.mocked(startOpenRouterConnect).mockReturnValue(new Promise(() => {}));
+    visit(`?code=c1&state=${STATE}`);
+
+    render(<OpenRouterCallbackPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect again" }));
+    expect(screen.getByRole("button", { name: "Opening OpenRouter..." })).toBeDisabled();
+
+    window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+
+    expect(await screen.findByRole("button", { name: "Connect again" })).toBeEnabled();
+  });
 });
