@@ -113,13 +113,8 @@ export default function OpenRouterCallbackPage() {
     started.current = true;
     const { code, state } = params.current;
     const nonce = takeOpenRouterNonce();
-    if (!code || !state) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot outcome of reading the callback URL
-      setOutcome({ kind: "cancelled" });
-      return;
-    }
-    if (!nonce) {
-      setOutcome({ kind: "no_nonce" });
+    if (!code || !state || !nonce) {
+      setOutcome({ kind: !code || !state ? "cancelled" : "no_nonce" });
       return;
     }
     const ref = openRouterStateRef(state);
