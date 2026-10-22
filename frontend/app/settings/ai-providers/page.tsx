@@ -9,6 +9,7 @@ import { useTableState } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import UsageMeters from "@/components/agent/UsageMeters";
 import AiMasterSwitchCard from "@/components/ai/AiMasterSwitchCard";
+import ModelPicker from "@/components/ai/ModelPicker";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
@@ -35,6 +36,7 @@ interface Credential {
   id: number;
   org_id: number;
   provider: Provider;
+  platform_provider?: string | null;
   last_four: string | null;
   key_fingerprint: string | null;
   base_url: string | null;
@@ -60,6 +62,7 @@ interface ProviderPreset {
   key: string;
   label: string;
   provider: Provider;
+  platform_provider?: string | null;
   base_url: string;
 }
 
@@ -133,6 +136,13 @@ const ROUTABLE_FEATURES: { key: string; label: string }[] = [
   { key: "smart_plan", label: "Smart plan" },
   { key: "chat", label: "Chat" },
 ];
+
+// A credential the page does not know (not on the current page) is "unknown":
+// no Refresh, since validate answers 409 for platform keys we cannot see.
+const isPlatformCred = (creds: Credential[], id: number | "") =>
+  creds.find((c) => c.id === id)?.platform_provider != null;
+const isUnknownCred = (creds: Credential[], id: number | "") =>
+  id !== "" && !creds.some((c) => c.id === id);
 
 const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
 const BASE_URL_PLACEHOLDERS: Partial<Record<Provider, string>> = {
@@ -228,6 +238,27 @@ export default function AiProvidersPage() {
       setListError(extractErrorMessage(err, "Failed to load AI configuration"));
     } finally {
       setListLoading(false);
+    }
+  }, [sortField, sortDir, page, pageSize]);
+
+  // Refetches only the credentials table (last_validated_at etc). fetchAll
+  // would flip listLoading and remount the routing section, rewriting drafts.
+  const refreshCredentials = useCallback(async () => {
+    try {
+      const res = await apiFetch<ListEnvelope<Credential>>(
+        `/api/v1/settings/ai-providers?${new URLSearchParams({
+          sort_by: sortField,
+          sort_dir: sortDir,
+          limit: String(pageSize),
+          offset: String((page - 1) * pageSize),
+        }).toString()}`
+      );
+      if (res && Array.isArray(res.items)) {
+        setCredentials(res.items);
+        setCredentialsTotal(res.total);
+      }
+    } catch {
+      // the table keeps its last good state
     }
   }, [sortField, sortDir, page, pageSize]);
 
@@ -435,6 +466,7 @@ export default function AiProvidersPage() {
           credentials={credentials}
           routing={routing}
           onSaved={fetchAll}
+          onValidated={refreshCredentials}
         />
       )}
 
@@ -708,12 +740,14 @@ interface RoutingSectionProps {
   credentials: Credential[];
   routing: RoutingBundle | null;
   onSaved: () => Promise<void>;
+  onValidated: () => void;
 }
 
 function RoutingSection({
   credentials,
   routing,
   onSaved,
+  onValidated,
 }: RoutingSectionProps) {
   const [defaultCred, setDefaultCred] = useState<number | "">(
     routing?.default?.credential_id ?? ""
@@ -721,6 +755,7 @@ function RoutingSection({
   const [defaultModel, setDefaultModel] = useState<string>(
     routing?.default?.model ?? ""
   );
+  const [defaultListed, setDefaultListed] = useState(false);
   const [savingDefault, setSavingDefault] = useState(false);
   const [sectionError, setSectionError] = useState<string | null>(null);
 
@@ -792,13 +827,15 @@ function RoutingSection({
               <label className={labelCls} htmlFor="default-model">
                 Model
               </label>
-              <input
+              <ModelPicker
                 id="default-model"
-                type="text"
-                className={input}
+                credentialId={defaultCred}
+                platform={isPlatformCred(credentials, defaultCred)}
+                unknown={isUnknownCred(credentials, defaultCred)}
                 value={defaultModel}
-                onChange={(e) => setDefaultModel(e.target.value)}
-                placeholder="gpt-4o-mini"
+                onChange={setDefaultModel}
+                onListedChange={setDefaultListed}
+                onValidated={onValidated}
               />
             </div>
             <button
@@ -806,7 +843,7 @@ function RoutingSection({
               className={btnPrimary}
               onClick={saveDefault}
               disabled={
-                savingDefault || !defaultCred || !defaultModel.trim()
+                savingDefault || !defaultCred || !defaultModel.trim() || !defaultListed
               }
             >
               {savingDefault ? "Saving..." : "Save default"}
@@ -818,6 +855,7 @@ function RoutingSection({
           credentials={credentials}
           features={routing?.features ?? []}
           onSaved={onSaved}
+          onValidated={onValidated}
         />
       </div>
     </div>
@@ -829,12 +867,14 @@ interface FeatureRoutingTableProps {
   credentials: Credential[];
   features: FeatureRouting[];
   onSaved: () => Promise<void>;
+  onValidated: () => void;
 }
 
 function FeatureRoutingTable({
   credentials,
   features,
   onSaved,
+  onValidated,
 }: FeatureRoutingTableProps) {
   const [drafts, setDrafts] = useState<Record<string, { cred: number | ""; model: string }>>(
     () => {
@@ -849,6 +889,7 @@ function FeatureRoutingTable({
       return m;
     }
   );
+  const [listed, setListed] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -911,8 +952,7 @@ function FeatureRoutingTable({
         Per-feature overrides
       </h4>
       <p className="mb-2 text-xs text-text-muted">
-        Falls back to the default when an override is removed. PR1 stores
-        these; dispatch wires up in a later PR.
+        Falls back to the default when an override is removed.
       </p>
       {err && <div className={errorCls}>{err}</div>}
       <div className="overflow-x-auto">
@@ -961,17 +1001,25 @@ function FeatureRoutingTable({
                     </select>
                   </td>
                   <td className="px-2 py-2">
-                    <input
-                      type="text"
-                      className={input}
+                    <ModelPicker
+                      id={`model-${f.key}`}
+                      credentialId={draft.cred}
+                      feature={f.key}
+                      aria-label={`${f.label} model`}
+                      rowLabel={f.label}
+                      onValidated={onValidated}
+                      platform={isPlatformCred(credentials, draft.cred)}
+                      unknown={isUnknownCred(credentials, draft.cred)}
                       value={draft.model}
-                      onChange={(e) =>
+                      onChange={(model) =>
                         setDrafts((prev) => ({
                           ...prev,
-                          [f.key]: { ...prev[f.key], model: e.target.value },
+                          [f.key]: { ...prev[f.key], model },
                         }))
                       }
-                      placeholder="model name"
+                      onListedChange={(ok) =>
+                        setListed((prev) => (prev[f.key] === ok ? prev : { ...prev, [f.key]: ok }))
+                      }
                     />
                   </td>
                   <td className="px-2 py-2">
@@ -982,7 +1030,8 @@ function FeatureRoutingTable({
                         disabled={
                           busy === f.key ||
                           !draft.cred ||
-                          !draft.model.trim()
+                          !draft.model.trim() ||
+                          !listed[f.key]
                         }
                         onClick={() => save(f.key)}
                       >
