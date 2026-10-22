@@ -13,9 +13,11 @@ import ModelPicker from "@/components/ai/ModelPicker";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
+import { startOpenRouterConnect } from "@/lib/openrouter-connect";
 import type { ListEnvelope } from "@/lib/types";
 import {
   btnPrimary,
+  btnLink,
   btnSecondary,
   card,
   cardHeader,
@@ -295,9 +297,18 @@ export default function AiProvidersPage() {
     [fetchAll]
   );
 
+  const openRouterBaseUrl = providerPresets.find((p) => p.key === "openrouter")?.base_url;
   const handleDelete = useCallback(
-    async (id: number) => {
-      if (!confirm("Delete this credential? This action cannot be undone.")) {
+    async ({ id, base_url, platform_provider }: Credential) => {
+      // Deleting here never revokes an own OpenRouter key at OpenRouter.
+      const atOpenRouter =
+        platform_provider == null &&
+        !!openRouterBaseUrl &&
+        base_url?.replace(/\/+$/, "").toLowerCase() === openRouterBaseUrl.toLowerCase();
+      const message = atOpenRouter
+        ? "Delete this credential? This removes the key from The Better Decision only. It keeps working at OpenRouter until you delete it at openrouter.ai/settings/keys."
+        : "Delete this credential? This action cannot be undone.";
+      if (!confirm(message)) {
         return;
       }
       setBusyId(id);
@@ -312,7 +323,7 @@ export default function AiProvidersPage() {
         setBusyId(null);
       }
     },
-    [fetchAll]
+    [fetchAll, openRouterBaseUrl]
   );
 
   if (loading || !user) {
@@ -436,7 +447,7 @@ export default function AiProvidersPage() {
                           type="button"
                           className={btnSecondary}
                           disabled={busyId === c.id}
-                          onClick={() => handleDelete(c.id)}
+                          onClick={() => handleDelete(c)}
                         >
                           Delete
                         </button>
@@ -512,8 +523,19 @@ function AddCredentialModal({
   const [labelText, setLabelText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // OpenRouter connects through OAuth unless the user asks to paste a key.
+  const [pasteKey, setPasteKey] = useState(false);
+
+  // A Back from OpenRouter restores this modal from bfcache mid-"Opening".
+  useEffect(() => {
+    const reset = (e: PageTransitionEvent) => e.persisted && setSubmitting(false);
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
+  }, []);
 
   const preset = providerPresets.find((p) => p.key === choice);
+  const isOpenRouter = preset?.key === "openrouter";
+  const connectMode = isOpenRouter && !pasteKey;
   const provider: Provider = preset ? preset.provider : (choice as Provider);
   const needsBaseUrl = NEEDS_BASE_URL.includes(provider);
 
@@ -524,6 +546,7 @@ function AddCredentialModal({
     // survives and a preset URL never leaks into another provider.
     if (nextPreset) {
       setBaseUrl(nextPreset.base_url);
+      if (nextPreset.key === "openrouter") setPasteKey(false);
     } else if (providerPresets.some((p) => p.base_url === baseUrl)) {
       setBaseUrl("");
     }
@@ -534,6 +557,17 @@ function AddCredentialModal({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (connectMode) {
+      setSubmitting(true);
+      setErrorText(null);
+      try {
+        await startOpenRouterConnect();
+      } catch (err) {
+        setErrorText(extractErrorMessage(err, "Could not open OpenRouter. Try again."));
+        setSubmitting(false);
+      }
+      return;
+    }
     if (!apiKeyOptional && !apiKey.trim()) return;
     setSubmitting(true);
     setErrorText(null);
@@ -633,78 +667,107 @@ function AddCredentialModal({
               </a>
             )}
           </div>
-          <div>
-            <label className={labelCls} htmlFor="ai-label">
-              Label (optional)
-            </label>
-            <input
-              id="ai-label"
-              type="text"
-              className={input}
-              value={labelText}
-              onChange={(e) => setLabelText(e.target.value)}
-              disabled={submitting}
-              maxLength={120}
-            />
-          </div>
-          <div>
-            <label className={labelCls} htmlFor="ai-api-key">
-              API key{apiKeyOptional ? " (optional)" : ""}
-            </label>
-            <input
-              id="ai-api-key"
-              type="password"
-              className={input}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              disabled={submitting}
-              autoComplete="off"
-              required={!apiKeyOptional}
-            />
-            {apiKeyOptional && (
-              <p className="mt-1 text-xs text-text-muted">
-                Optional for self-hosted Ollama (LAN-only).
+          {connectMode ? (
+            <div className="space-y-2">
+              <p className="text-sm text-text-secondary text-pretty">
+                Sign in to OpenRouter and approve a key for The Better Decision. There is no
+                key to copy.
               </p>
-            )}
-          </div>
-          {allowsBearer && (
-            <div>
-              <label className={labelCls} htmlFor="ai-bearer">
-                Bearer token (optional)
-              </label>
-              <input
-                id="ai-bearer"
-                type="password"
-                className={input}
-                value={bearerToken}
-                onChange={(e) => setBearerToken(e.target.value)}
+              <button
+                type="button"
+                className={`${btnLink} min-h-[44px]`}
+                onClick={() => setPasteKey(true)}
                 disabled={submitting}
-                autoComplete="off"
-              />
+              >
+                Paste an API key instead
+              </button>
             </div>
-          )}
-          {needsBaseUrl && (
-            <div>
-              <label className={labelCls} htmlFor="ai-base-url">
-                Base URL
-              </label>
-              <input
-                id="ai-base-url"
-                type="text"
-                className={input}
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                disabled={submitting}
-                placeholder={BASE_URL_PLACEHOLDERS[provider]}
-                required
-              />
-              {provider === "openai_compatible" && (
-                <p className="mt-1 text-xs text-text-muted">
-                  Use the provider&apos;s API base URL including its version, for
-                  example /v1.
-                </p>
+          ) : (
+            <>
+              {isOpenRouter && (
+                <button
+                  type="button"
+                  className={`${btnLink} min-h-[44px]`}
+                  onClick={() => setPasteKey(false)}
+                  disabled={submitting}
+                >
+                  Connect with OpenRouter instead
+                </button>
               )}
-            </div>
+              <div>
+                <label className={labelCls} htmlFor="ai-label">
+                  Label (optional)
+                </label>
+                <input
+                  id="ai-label"
+                  type="text"
+                  className={input}
+                  value={labelText}
+                  onChange={(e) => setLabelText(e.target.value)}
+                  disabled={submitting}
+                  maxLength={120}
+                />
+              </div>
+              <div>
+                <label className={labelCls} htmlFor="ai-api-key">
+                  API key{apiKeyOptional ? " (optional)" : ""}
+                </label>
+                <input
+                  id="ai-api-key"
+                  type="password"
+                  className={input}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  disabled={submitting}
+                  autoComplete="off"
+                  required={!apiKeyOptional}
+                />
+                {apiKeyOptional && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    Optional for self-hosted Ollama (LAN-only).
+                  </p>
+                )}
+              </div>
+              {allowsBearer && (
+                <div>
+                  <label className={labelCls} htmlFor="ai-bearer">
+                    Bearer token (optional)
+                  </label>
+                  <input
+                    id="ai-bearer"
+                    type="password"
+                    className={input}
+                    value={bearerToken}
+                    onChange={(e) => setBearerToken(e.target.value)}
+                    disabled={submitting}
+                    autoComplete="off"
+                  />
+                </div>
+              )}
+              {needsBaseUrl && (
+                <div>
+                  <label className={labelCls} htmlFor="ai-base-url">
+                    Base URL
+                  </label>
+                  <input
+                    id="ai-base-url"
+                    type="text"
+                    className={input}
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    disabled={submitting}
+                    placeholder={BASE_URL_PLACEHOLDERS[provider]}
+                    required
+                  />
+                  {provider === "openai_compatible" && (
+                    <p className="mt-1 text-xs text-text-muted">
+                      Use the provider&apos;s API base URL including its version, for
+                      example /v1.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
           )}
           {errorText && <div className={errorCls}>{errorText}</div>}
           <div className="mt-4 flex justify-end gap-2">
@@ -716,18 +779,24 @@ function AddCredentialModal({
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              className={btnPrimary}
-              disabled={
-                submitting ||
-                (!apiKeyOptional && !apiKey.trim()) ||
-                (needsBaseUrl && !baseUrl.trim()) ||
-                provider === "native"
-              }
-            >
-              {submitting ? "Validating..." : "Add credential"}
-            </button>
+            {connectMode ? (
+              <button type="submit" className={btnPrimary} disabled={submitting}>
+                {submitting ? "Opening OpenRouter..." : "Connect with OpenRouter"}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className={btnPrimary}
+                disabled={
+                  submitting ||
+                  (!apiKeyOptional && !apiKey.trim()) ||
+                  (needsBaseUrl && !baseUrl.trim()) ||
+                  provider === "native"
+                }
+              >
+                {submitting ? "Validating..." : "Add credential"}
+              </button>
+            )}
           </div>
         </form>
       </div>

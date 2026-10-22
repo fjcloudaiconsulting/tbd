@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  act,
   render,
   screen,
   waitFor,
@@ -12,9 +13,11 @@ import AiProvidersPage from "@/app/settings/ai-providers/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { ApiResponseError, apiFetch } from "@/lib/api";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
+import { startOpenRouterConnect } from "@/lib/openrouter-connect";
 import type { AIStatus, User } from "@/lib/types";
 
 vi.mock("@/lib/hooks/use-ai-status", () => ({ useAiStatus: vi.fn() }));
+vi.mock("@/lib/openrouter-connect", () => ({ startOpenRouterConnect: vi.fn() }));
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(),
@@ -600,6 +603,9 @@ describe("AiProvidersPage", () => {
 
     // Picking a preset takes its URL, even over a typed one.
     fireEvent.change(select, { target: { value: "openrouter" } });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Paste an API key instead" }),
+    );
     expect(baseUrlInput().value).toBe("https://openrouter.ai/api/v1");
 
     // Leaving a preset for another provider clears its untouched URL.
@@ -608,6 +614,9 @@ describe("AiProvidersPage", () => {
 
     fireEvent.change(select, { target: { value: "openrouter" } });
     expect(select.value).toBe("openrouter");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Paste an API key instead" }),
+    );
     expect(
       (within(dialog).getByLabelText(/^Base URL$/i) as HTMLInputElement).value,
     ).toBe("https://openrouter.ai/api/v1");
@@ -623,6 +632,145 @@ describe("AiProvidersPage", () => {
       provider: "openai_compatible",
       api_key: "sk-or-test-key-abcd",
       base_url: "https://openrouter.ai/api/v1",
+    });
+  });
+
+  describe("OpenRouter connect (TBD-632)", () => {
+    const OPENROUTER = "https://openrouter.ai/api/v1";
+
+    function mockWithPreset(credentials: unknown[]) {
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        if (isCredentialsListGet(url)) return credentialsEnvelope(credentials) as never;
+        if (url.endsWith("/options")) {
+          return {
+            providers: [{ key: "openai", label: "OpenAI", availability: "available" }],
+            presets: [
+              {
+                key: "openrouter",
+                label: "OpenRouter",
+                provider: "openai_compatible",
+                base_url: OPENROUTER,
+              },
+            ],
+            ai_native_enabled: false,
+          } as never;
+        }
+        if (url.endsWith("/routing") || url.endsWith("/caps")) {
+          return { default: null, features: [] } as never;
+        }
+        return undefined as never;
+      });
+    }
+
+    async function openModalOnOpenRouter() {
+      render(<AiProvidersPage />);
+      fireEvent.click(await screen.findByRole("button", { name: /Add credential/i }));
+      const dialog = screen.getByRole("dialog", { name: /Add AI credential/i });
+      const select = within(dialog).getByLabelText(/^Provider$/i) as HTMLSelectElement;
+      await waitFor(() =>
+        expect(Array.from(select.options).some((o) => o.value === "openrouter")).toBe(true),
+      );
+      fireEvent.change(select, { target: { value: "openrouter" } });
+      return dialog;
+    }
+
+    beforeEach(() => {
+      vi.mocked(startOpenRouterConnect).mockReset();
+    });
+
+    it("offers Connect instead of a key field, and starts the flow on submit", async () => {
+      mockWithPreset([]);
+      vi.mocked(startOpenRouterConnect).mockReturnValue(new Promise(() => {}));
+      const dialog = await openModalOnOpenRouter();
+
+      expect(within(dialog).queryByLabelText(/^API key$/i)).not.toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect with OpenRouter" }));
+
+      await waitFor(() => expect(startOpenRouterConnect).toHaveBeenCalledTimes(1));
+      expect(within(dialog).getByRole("button", { name: "Opening OpenRouter..." })).toBeDisabled();
+      expect(
+        vi.mocked(apiFetch).mock.calls.some(
+          ([url, init]) => url === "/api/v1/settings/ai-providers" && init?.method === "POST",
+        ),
+      ).toBe(false);
+    });
+
+    it("toggles between connecting and pasting, and reopens OpenRouter in connect mode", async () => {
+      mockWithPreset([]);
+      const dialog = await openModalOnOpenRouter();
+      const select = within(dialog).getByLabelText(/^Provider$/i);
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Paste an API key instead" }));
+      expect(within(dialog).getByLabelText(/^API key$/i)).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect with OpenRouter instead" }));
+      expect(within(dialog).queryByLabelText(/^API key$/i)).not.toBeInTheDocument();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Paste an API key instead" }));
+      fireEvent.change(select, { target: { value: "openai" } });
+      fireEvent.change(select, { target: { value: "openrouter" } });
+      expect(within(dialog).getByRole("button", { name: "Connect with OpenRouter" })).toBeInTheDocument();
+    });
+
+    it("re-arms Connect when Back restores the page from the browser cache", async () => {
+      mockWithPreset([]);
+      vi.mocked(startOpenRouterConnect).mockReturnValue(new Promise(() => {}));
+      const dialog = await openModalOnOpenRouter();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect with OpenRouter" }));
+      expect(
+        await within(dialog).findByRole("button", { name: "Opening OpenRouter..." }),
+      ).toBeDisabled();
+
+      act(() => {
+        window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      });
+
+      expect(
+        await within(dialog).findByRole("button", { name: "Connect with OpenRouter" }),
+      ).toBeEnabled();
+    });
+
+    it("shows a failed start in the modal and lets the user retry", async () => {
+      mockWithPreset([]);
+      vi.mocked(startOpenRouterConnect).mockRejectedValue(
+        new ApiResponseError(409, "Sign in again to connect OpenRouter.", "oauth_session_unavailable"),
+      );
+      const dialog = await openModalOnOpenRouter();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect with OpenRouter" }));
+
+      expect(
+        await within(dialog).findByText("Sign in again to connect OpenRouter."),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Connect with OpenRouter" })).toBeEnabled();
+    });
+
+    it("warns that deleting an own OpenRouter key does not revoke it there", async () => {
+      const pasted = { ...fixtureCredential, id: 5, provider: "openai_compatible", base_url: `${OPENROUTER}/` };
+      // The platform's own OpenRouter key is not the user's to delete at OpenRouter.
+      const platform = { ...pasted, id: 6, platform_provider: "openrouter", base_url: OPENROUTER };
+      mockWithPreset([pasted, fixtureCredential, platform]);
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+      render(<AiProvidersPage />);
+      const table = await screen.findByTestId("credentials-table");
+      const [openRouterDelete, openAiDelete, platformDelete] = within(table).getAllByRole(
+        "button",
+        { name: "Delete" },
+      );
+
+      fireEvent.click(openRouterDelete);
+      fireEvent.click(openAiDelete);
+      fireEvent.click(platformDelete);
+
+      expect(confirmSpy.mock.calls[0][0]).toMatch(
+        /It keeps working at OpenRouter until you delete it at openrouter\.ai\/settings\/keys\./,
+      );
+      expect(confirmSpy.mock.calls[1][0]).toBe(
+        "Delete this credential? This action cannot be undone.",
+      );
+      expect(confirmSpy.mock.calls[2][0]).toBe(
+        "Delete this credential? This action cannot be undone.",
+      );
+      confirmSpy.mockRestore();
     });
   });
 
