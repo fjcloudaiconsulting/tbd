@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import hmac as _hmac
 import secrets
@@ -254,6 +255,72 @@ def create_mfa_email_token(user_id: int, code: str) -> tuple[str, str]:
     }
     token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
     return token, jti
+
+
+OPENROUTER_OAUTH_STATE_TTL_SECONDS = 10 * 60
+_OPENROUTER_STATE_CLAIMS = ("sub", "org_id", "sid_h", "nh", "jti", "iat", "exp")
+
+
+def _b64u_nopad(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def openrouter_oauth_sid_hmac(sid: str) -> str:
+    """Hash of the refresh sid carried in the OAuth state, so the raw sid never
+    travels to OpenRouter or into browser history."""
+    return _hmac.new(
+        derive_hmac_key(b"openrouter-oauth-sid-v1"), sid.encode(), "sha256"
+    ).hexdigest()
+
+
+def openrouter_pkce_verifier(jti: str) -> str:
+    """PKCE verifier derived from the state's jti (43 chars). Never stored or sent
+    to the browser; only its S256 challenge is."""
+    return _b64u_nopad(
+        _hmac.new(derive_hmac_key(b"openrouter-pkce-v1"), jti.encode(), "sha256").digest()
+    )
+
+
+def openrouter_pkce_challenge(verifier: str) -> str:
+    return _b64u_nopad(hashlib.sha256(verifier.encode()).digest())
+
+
+def create_openrouter_oauth_state(
+    user_id: int, org_id: int, sid: str, nonce_hash: str
+) -> tuple[str, str]:
+    """Signed state for the OpenRouter OAuth round trip. Returns (token, jti)."""
+    now = datetime.now(timezone.utc)
+    jti = secrets.token_urlsafe(16)
+    payload = {
+        "type": "openrouter_oauth",
+        "sub": str(user_id),
+        "org_id": org_id,
+        "sid_h": openrouter_oauth_sid_hmac(sid),
+        "nh": nonce_hash,
+        "jti": jti,
+        "iat": int(now.timestamp()),
+        "exp": now + timedelta(seconds=OPENROUTER_OAUTH_STATE_TTL_SECONDS),
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm), jti
+
+
+def decode_openrouter_oauth_state(token: str) -> dict | None:
+    """The state's claims, or None on a bad signature, expiry, wrong type or a
+    missing/ill-typed claim."""
+    payload = decode_token(token)
+    if payload is None or payload.get("type") != "openrouter_oauth":
+        return None
+    if not all(k in payload for k in _OPENROUTER_STATE_CLAIMS):
+        return None
+    try:
+        int(payload["sub"])
+    except (TypeError, ValueError):
+        return None
+    if not all(isinstance(payload[k], str) for k in ("sid_h", "nh", "jti")) or not isinstance(
+        payload["org_id"], int
+    ) or not isinstance(payload["iat"], int):
+        return None
+    return payload
 
 
 def create_email_verification_token(

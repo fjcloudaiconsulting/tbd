@@ -197,3 +197,19 @@ class OrgAICredentialResponse(BaseModel):
     last_validated_at: Optional[datetime] = None
     validation_error: Optional[str] = None
     platform_provider: Optional[str] = None
+
+
+class OpenRouterOAuthStart(BaseModel):
+    """sha256 hex of the client's nonce; the nonce itself never reaches a URL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nonce_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class OpenRouterOAuthComplete(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=512)
+    state: str = Field(min_length=1, max_length=2048)
+    nonce: str = Field(min_length=22, max_length=128)
