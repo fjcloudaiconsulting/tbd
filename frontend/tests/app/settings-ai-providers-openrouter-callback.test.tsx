@@ -90,6 +90,20 @@ describe("OpenRouter callback page", () => {
     ).toHaveAttribute("href", "https://openrouter.ai/settings/privacy");
   });
 
+  it("a re-run effect does not mistake the spent nonce for another tab", () => {
+    sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
+    vi.mocked(apiFetch).mockReturnValue(new Promise(() => {}) as never);
+    visit(`?code=c1&state=${STATE}`);
+
+    render(
+      <StrictMode>
+        <OpenRouterCallbackPage />
+      </StrictMode>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Connecting OpenRouter" })).toBeInTheDocument();
+  });
+
   it("waits for auth before completing", async () => {
     sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
     vi.mocked(apiFetch).mockResolvedValue({ id: 7, label: "x" } as never);
