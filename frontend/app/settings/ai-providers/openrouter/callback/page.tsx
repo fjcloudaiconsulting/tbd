@@ -39,6 +39,7 @@ type Outcome =
   | { kind: "connecting" }
   | { kind: "success"; label: string | null }
   | { kind: "orphan" | "unknown"; keyName: string }
+  | { kind: "nothing_to_finish" }
   | { kind: NothingSaved };
 
 const NOTHING_SAVED: Record<NothingSaved, { title: string; body: string }> = {
@@ -68,8 +69,9 @@ const NOTHING_SAVED: Record<NothingSaved, { title: string; body: string }> = {
   },
 };
 
-// Refusals the server makes before it calls OpenRouter, so no key exists.
+// Refusals made before the server calls OpenRouter, so no key exists.
 const BEFORE_EXCHANGE: Record<string, NothingSaved> = {
+  refresh_transient: "unavailable",
   openrouter_busy: "busy",
   openrouter_code_rejected: "expired",
   oauth_state_invalid: "expired",
@@ -79,14 +81,19 @@ const BEFORE_EXCHANGE: Record<string, NothingSaved> = {
   oauth_unavailable: "unavailable",
 };
 
+// Failures after OpenRouter minted a key that the server reported as such.
+const AFTER_EXCHANGE = ["credential_validation_failed", "openrouter_unavailable"];
+
 function outcomeFor(err: unknown, keyName: string): Outcome {
-  // No answer at all: the server may still have finished.
-  if (!(err instanceof ApiResponseError)) return { kind: "unknown", keyName };
-  const kind = err.code ? BEFORE_EXCHANGE[err.code] : undefined;
-  if (kind) return { kind };
-  // Auth and body checks run before the handler.
-  if ([401, 403, 422].includes(err.status)) return { kind: "expired" };
-  return { kind: "orphan", keyName };
+  if (err instanceof ApiResponseError) {
+    const kind = err.code ? BEFORE_EXCHANGE[err.code] : undefined;
+    if (kind) return { kind };
+    if (err.code && AFTER_EXCHANGE.includes(err.code)) return { kind: "orphan", keyName };
+    // Auth and body checks run before the handler.
+    if ([401, 403, 422].includes(err.status)) return { kind: "expired" };
+  }
+  // No answer, or one we cannot read (a proxy 502): the server may have finished.
+  return { kind: "unknown", keyName };
 }
 
 const linkBtnPrimary = `${btnPrimary} inline-flex items-center`;
@@ -94,7 +101,9 @@ const linkBtnSecondary = `${btnSecondary} inline-flex min-h-[44px] items-center`
 
 export default function OpenRouterCallbackPage() {
   const { user, loading } = useAuth();
-  const params = useRef<{ code: string | null; state: string | null } | null>(null);
+  const params = useRef<{ code: string | null; state: string | null; any: boolean } | null>(
+    null,
+  );
   const started = useRef(false);
   const [outcome, setOutcome] = useState<Outcome>({ kind: "connecting" });
   const [restarting, setRestarting] = useState(false);
@@ -104,17 +113,28 @@ export default function OpenRouterCallbackPage() {
   useEffect(() => {
     if (params.current) return;
     const query = new URLSearchParams(window.location.search);
-    params.current = { code: query.get("code"), state: query.get("state") };
+    params.current = { code: query.get("code"), state: query.get("state"), any: window.location.search.length > 1 };
     window.history.replaceState(null, "", window.location.pathname);
+  }, []);
+
+  // A Back from OpenRouter restores this page from bfcache mid-"Opening".
+  useEffect(() => {
+    const reset = (e: PageTransitionEvent) => e.persisted && setRestarting(false);
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
   }, []);
 
   useEffect(() => {
     if (loading || !user || !isAdmin(user) || started.current || !params.current) return;
     started.current = true;
-    const { code, state } = params.current;
+    const { code, state, any } = params.current;
     const nonce = takeOpenRouterNonce();
     if (!code || !state || !nonce) {
-      setOutcome({ kind: !code || !state ? "cancelled" : "no_nonce" });
+      // A bare URL is a Back or a reload after the strip, not an OpenRouter answer:
+      // a key may exist, so it must not say nothing was saved.
+      setOutcome({
+        kind: !any ? "nothing_to_finish" : !code || !state ? "cancelled" : "no_nonce",
+      });
       return;
     }
     const ref = openRouterStateRef(state);
@@ -215,6 +235,16 @@ export default function OpenRouterCallbackPage() {
           {keysLink}
         </>
       );
+      break;
+    case "nothing_to_finish":
+      title = "Nothing to finish here";
+      body = (
+        <p className="mt-2 text-sm text-text-secondary text-pretty">
+          This page only completes a connection that OpenRouter just sent back. Check AI
+          providers to see whether OpenRouter is connected.
+        </p>
+      );
+      actions = backLink(true);
       break;
     case "unknown":
       title = "We could not confirm the connection";

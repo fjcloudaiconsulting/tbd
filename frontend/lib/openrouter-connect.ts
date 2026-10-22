@@ -28,6 +28,7 @@ export async function startOpenRouterConnect(): Promise<void> {
     method: "POST",
     body: JSON.stringify({ nonce_hash: await sha256Hex(nonce) }),
   });
+  if (!url.startsWith("https://openrouter.ai/")) throw new Error("Unexpected OpenRouter address.");
   window.location.assign(url);
 }
 
@@ -57,5 +58,8 @@ export function completeOpenRouterConnect<T>(code: string, state: string, nonce:
   return apiFetch<T>(`${BASE}/complete`, {
     method: "POST",
     body: JSON.stringify({ code, state, nonce }),
+    // Above the server's worst case (15s exchange + key validation), so a slow
+    // success is never reported as unconfirmed.
+    timeoutMs: 45_000,
   });
 }

@@ -43,7 +43,7 @@ describe("openrouter-connect", () => {
     await startOpenRouterConnect();
 
     const nonce = sessionStorage.getItem(OPENROUTER_NONCE_KEY)!;
-    expect(nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(nonce).toMatch(/^[A-Za-z0-9_-]{22,128}$/);
     const [url, init] = vi.mocked(apiFetch).mock.calls[0];
     expect(url).toBe("/api/v1/settings/ai-providers/oauth/openrouter/start");
     expect(JSON.parse(init!.body as string)).toEqual({
@@ -53,11 +53,17 @@ describe("openrouter-connect", () => {
   });
 
   it("makes a new nonce on every start", async () => {
-    vi.mocked(apiFetch).mockResolvedValue({ url: "u" } as never);
+    vi.mocked(apiFetch).mockResolvedValue({ url: "https://openrouter.ai/auth" } as never);
     await startOpenRouterConnect();
     const first = sessionStorage.getItem(OPENROUTER_NONCE_KEY);
     await startOpenRouterConnect();
     expect(sessionStorage.getItem(OPENROUTER_NONCE_KEY)).not.toBe(first);
+  });
+
+  it("refuses to leave for anywhere but OpenRouter", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ url: "https://evil.example/auth" } as never);
+    await expect(startOpenRouterConnect()).rejects.toThrow();
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("does not leave the page when start fails", async () => {

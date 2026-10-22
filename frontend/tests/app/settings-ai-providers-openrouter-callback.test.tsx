@@ -64,6 +64,26 @@ describe("OpenRouter callback page", () => {
     expect(screen.getByRole("heading", { name: "Connecting OpenRouter" })).toBeInTheDocument();
   });
 
+  it("strips the URL even while auth is still loading", () => {
+    auth("admin", true);
+    visit(`?code=c1&state=${STATE}`);
+
+    render(<OpenRouterCallbackPage />);
+
+    expect(window.location.search).toBe("");
+  });
+
+  it("gives the exchange longer than the server's worst case", async () => {
+    sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
+    vi.mocked(apiFetch).mockReturnValue(new Promise(() => {}) as never);
+    visit(`?code=c1&state=${STATE}`);
+
+    render(<OpenRouterCallbackPage />);
+
+    await waitFor(() => expect(completeCalls()).toHaveLength(1));
+    expect((completeCalls()[0][1] as { timeoutMs?: number }).timeoutMs).toBeGreaterThanOrEqual(30_000);
+  });
+
   it("completes once with the code, state and this tab's nonce, then spends the nonce", async () => {
     sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
     vi.mocked(apiFetch).mockResolvedValue({ id: 7, label: "OpenRouter (ab12cd34)" } as never);
@@ -129,6 +149,27 @@ describe("OpenRouter callback page", () => {
     expect(apiFetch).not.toHaveBeenCalled();
   });
 
+  it("a bare URL (Back or reload after the strip) never claims nothing was saved", async () => {
+    sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
+    visit("");
+
+    render(<OpenRouterCallbackPage />);
+
+    expect(await screen.findByRole("heading", { name: "Nothing to finish here" })).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing was saved/)).not.toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("reads a code without state as cancelled", async () => {
+    sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
+    visit("?code=c1");
+
+    render(<OpenRouterCallbackPage />);
+
+    expect(await screen.findByRole("heading", { name: "Connection cancelled" })).toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
   it("reads a callback without state as cancelled and spends the nonce", async () => {
     sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
     visit("?error=access_denied");
@@ -165,12 +206,28 @@ describe("OpenRouter callback page", () => {
     expect(completeCalls()).toHaveLength(1);
   });
 
+  it("shows a failed restart and lets the user try again", async () => {
+    vi.mocked(startOpenRouterConnect).mockRejectedValue(
+      new ApiResponseError(429, "Too many attempts. Try again later.", "oauth_rate_limited"),
+    );
+    visit(`?code=c1&state=${STATE}`);
+
+    render(<OpenRouterCallbackPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect again" }));
+
+    expect(await screen.findByText("Too many attempts. Try again later.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect again" })).toBeEnabled();
+  });
+
   it.each([
     [400, "oauth_state_invalid", "This connection link no longer works"],
     [409, "oauth_state_mismatch", "This connection link no longer works"],
     [409, "oauth_state_used", "This connection link no longer works"],
     [400, "openrouter_code_rejected", "This connection link no longer works"],
+    [401, undefined, "This connection link no longer works"],
     [403, undefined, "This connection link no longer works"],
+    [422, undefined, "This connection link no longer works"],
+    [503, "refresh_transient", "Something went wrong on our side"],
     [429, "oauth_rate_limited", "Too many connection attempts"],
     [503, "oauth_unavailable", "Something went wrong on our side"],
   ])("a refusal before the exchange (%s %s) says nothing was saved", async (status, code, title) => {
@@ -188,7 +245,6 @@ describe("OpenRouter callback page", () => {
   it.each([
     [400, "credential_validation_failed"],
     [502, "openrouter_unavailable"],
-    [500, undefined],
   ])("a failure after the exchange (%s %s) names the possibly orphaned key", async (status, code) => {
     sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
     vi.mocked(apiFetch).mockRejectedValue(new ApiResponseError(status, "x", code));
@@ -208,8 +264,13 @@ describe("OpenRouter callback page", () => {
     );
   });
 
-  it.each([new TypeError("Failed to fetch"), new ApiTimeoutError()])(
-    "an unanswered complete (%s) cannot say whether it worked",
+  it.each([
+    new TypeError("Failed to fetch"),
+    new ApiTimeoutError(),
+    new ApiResponseError(502, "Bad Gateway"),
+    new ApiResponseError(500, "x", "something_new"),
+  ])(
+    "an unanswered or unreadable complete (%s) cannot say whether it worked",
     async (err) => {
       sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
       vi.mocked(apiFetch).mockRejectedValue(err);
@@ -223,4 +284,14 @@ describe("OpenRouter callback page", () => {
       expect(screen.getByText(/"The Better Decision \(ab12cd34\)"/)).toBeInTheDocument();
     },
   );
+
+  it("names the key without a ref when the state carries none", async () => {
+    sessionStorage.setItem(OPENROUTER_NONCE_KEY, NONCE);
+    vi.mocked(apiFetch).mockRejectedValue(new TypeError("Failed to fetch"));
+    visit(`?code=c1&state=${b64url("{}")}.${b64url('{"sub":"1"}')}.sig`);
+
+    render(<OpenRouterCallbackPage />);
+
+    expect(await screen.findByText(/named "The Better Decision" at/)).toBeInTheDocument();
+  });
 });

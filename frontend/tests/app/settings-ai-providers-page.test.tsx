@@ -613,6 +613,9 @@ describe("AiProvidersPage", () => {
 
     fireEvent.change(select, { target: { value: "openrouter" } });
     expect(select.value).toBe("openrouter");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Paste an API key instead" }),
+    );
     expect(
       (within(dialog).getByLabelText(/^Base URL$/i) as HTMLInputElement).value,
     ).toBe("https://openrouter.ai/api/v1");
@@ -689,6 +692,22 @@ describe("AiProvidersPage", () => {
           ([url, init]) => url === "/api/v1/settings/ai-providers" && init?.method === "POST",
         ),
       ).toBe(false);
+    });
+
+    it("toggles between connecting and pasting, and reopens OpenRouter in connect mode", async () => {
+      mockWithPreset([]);
+      const dialog = await openModalOnOpenRouter();
+      const select = within(dialog).getByLabelText(/^Provider$/i);
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Paste an API key instead" }));
+      expect(within(dialog).getByLabelText(/^API key$/i)).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect with OpenRouter instead" }));
+      expect(within(dialog).queryByLabelText(/^API key$/i)).not.toBeInTheDocument();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Paste an API key instead" }));
+      fireEvent.change(select, { target: { value: "openai" } });
+      fireEvent.change(select, { target: { value: "openrouter" } });
+      expect(within(dialog).getByRole("button", { name: "Connect with OpenRouter" })).toBeInTheDocument();
     });
 
     it("shows a failed start in the modal and lets the user retry", async () => {
