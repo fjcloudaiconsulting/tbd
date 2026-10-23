@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.303.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.302.0...v0.303.0) (2026-10-23)
+
+
+### Features
+
+* **ai:** connect OpenRouter from AI providers in one click (TBD-632) ([#993](https://github.com/fjcloudaiconsulting/tbd/issues/993)) ([0139776](https://github.com/fjcloudaiconsulting/tbd/commit/0139776ceb1279a8e2ba5b8220b29d46914df2a8))
+* **ai:** connect OpenRouter with OAuth PKCE (TBD-632) ([#989](https://github.com/fjcloudaiconsulting/tbd/issues/989)) ([fac62b3](https://github.com/fjcloudaiconsulting/tbd/commit/fac62b3b99972c79da450803f261e49c78bc97bf))
+* **ai:** list the models a saved key can use, refuse routing to unlisted models (TBD-608) ([#984](https://github.com/fjcloudaiconsulting/tbd/issues/984)) ([1df16e4](https://github.com/fjcloudaiconsulting/tbd/commit/1df16e4fdc90a9889b5edffe954974fadc74fe06))
+* **ai:** pick the routing model from the key's model list (TBD-608) ([#987](https://github.com/fjcloudaiconsulting/tbd/issues/987)) ([81a40c9](https://github.com/fjcloudaiconsulting/tbd/commit/81a40c9712ae56a6e6f746270db4f4c8cc1d5a06))
+
+
+### Bug Fixes
+
+* **auth:** Google sign-in discards the password of an unverified account (TBD-651) ([#994](https://github.com/fjcloudaiconsulting/tbd/issues/994)) ([5b203bc](https://github.com/fjcloudaiconsulting/tbd/commit/5b203bcea7705831cd732a7a7402982ef4a98c93))
+* **deps:** bump Pillow to 13.0.0 and certifi to 2026.10.19 (TBD-652) ([#995](https://github.com/fjcloudaiconsulting/tbd/issues/995)) ([bfe2abf](https://github.com/fjcloudaiconsulting/tbd/commit/bfe2abfdfa5e4eb5bc5c8b3b79b1680d5530aea1))
+
 ## [0.302.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.301.0...v0.302.0) (2026-10-21)
 
 
