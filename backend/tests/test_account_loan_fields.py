@@ -11,6 +11,7 @@ with FK enforcement ON.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import date
 from decimal import Decimal
 
 import pytest_asyncio
@@ -409,3 +410,48 @@ def test_loan_to_loan_is_idempotent(session_factory, world):
     row = asyncio.get_event_loop().run_until_complete(_row(session_factory, loan["id"]))
     assert row.principal_amount == Decimal("10000.00")
     assert row.term_months == 60
+
+
+# ── BE-16: a stored loan the projection cannot handle ────────────────────
+
+
+def test_create_loan_with_out_of_range_dates_or_zero_payment_422(session_factory, world):
+    client = _client(session_factory, world["admin_id"])
+    base = {"name": "Odd Loan", "account_type_id": world["type_ids"]["loan"],
+            "opening_balance": "-1.00"}
+    for bad in (
+        {**_LOAN_BODY, "first_payment_date": "9999-06-01"},
+        {**_LOAN_BODY, "origination_date": "1850-01-01"},
+        {**_LOAN_BODY, "principal_amount": "1.00", "interest_rate_apr": "0", "term_months": 480},
+    ):
+        r = client.post(BASE, json={**base, **bad})
+        assert r.status_code == 422, (bad, r.text)
+
+
+def test_accounts_list_survives_a_legacy_loan_row_the_math_cannot_project(
+    session_factory, world
+):
+    """Wrong implementation: computing loan metrics unguarded, so one such row
+    (written before the BE-16 bounds) 500s every accounts list for the org."""
+    import asyncio
+
+    async def _insert_legacy() -> int:
+        async with session_factory() as db:
+            acct = Account(
+                org_id=world["org_id"], account_type_id=world["type_ids"]["loan"],
+                name="Legacy Loan", balance=Decimal("-100.00"), currency="EUR",
+                opening_balance=Decimal("-100.00"), principal_amount=Decimal("100.00"),
+                interest_rate_apr=Decimal("5.00"), term_months=480,
+                origination_date=date(9999, 1, 1), first_payment_date=date(9999, 6, 1),
+            )
+            db.add(acct)
+            await db.commit()
+            return acct.id
+
+    legacy_id = asyncio.get_event_loop().run_until_complete(_insert_legacy())
+    client = _client(session_factory, world["admin_id"])
+    r = client.get(BASE)
+    assert r.status_code == 200, r.text
+    by_id = {a["id"]: a for a in r.json()}
+    assert by_id[legacy_id]["loan"] is None
+    assert world["checking_id"] in by_id
