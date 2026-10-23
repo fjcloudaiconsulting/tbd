@@ -153,6 +153,8 @@ services:
       # container and only runs in CI — and a skip reads as a pass locally,
       # which is how a drift fence quietly stops covering anything.
       - ./frontend/lib:/app/frontend/lib:ro
+      # INF-07: tests/test_apex_wrangler_pin.py reads the Worker's package.json and lockfile.
+      - ./frontend/apex-worker:/app/frontend/apex-worker:ro
       # Read-only .git so the lifespan branch guard in app.main can
       # detect the host checkout's branch and refuse to migrate from
       # a non-main feature branch (the same drift class PFV_MIGRATE_OK_OFF_MAIN
