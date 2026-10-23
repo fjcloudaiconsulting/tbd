@@ -62,7 +62,7 @@ the env-var name (uppercased).
 | Variable | Required | Default | Local | CI | Prod | Sensitive | Purpose | Failure mode if missing |
 |---|---|---|---|---|---|---|---|---|
 | `APP_NAME` | no | `"The Better Decision"` | `.env` | conftest | tbd-prod manifest | no | Display name in emails and Swagger title. | Default used. |
-| `APP_ENV` | yes | `development` | `.env` | conftest | tbd-prod manifest (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `development`. Prod-only code paths are skipped. |
+| `APP_ENV` | yes | `development` | `.env` | conftest | tbd-prod manifest (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `development`. Prod-only code paths are skipped, and every process logs `config.app_env_unset` at import (`config.app_env_unrecognised` for a value other than `development`, `test` or `production`; INF-04). |
 | `TBD_APP_VERSION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Release version reported by `/health` (`version`). Baked into the published GHCR images at build time from the Dockerfile `ARG`; Builds without build args report `dev`. | Falls back to `dev`. |
 | `TBD_APP_REVISION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Git revision reported by `/health` (`revision`). Baked at build time like `TBD_APP_VERSION`. | Falls back to `dev`. |
 | `LOG_LEVEL` | no | `INFO` | `.env` | conftest | tbd-prod manifest | no | Log level of the `app` loggers; other libraries log at INFO or above whatever this is. JSON lines on stdout. | Defaults to `INFO`. |

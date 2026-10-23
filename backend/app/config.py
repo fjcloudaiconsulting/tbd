@@ -584,6 +584,19 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _warn_app_env_not_chosen(self) -> "Settings":
+        # INF-04: unset, APP_ENV means development (Swagger, lifespan migrations, none of the
+        # production checks). The backend image then fails its boot on the migration branch
+        # guard, but mcp_main has no such guard. A production default waits on cloud-infra
+        # confirming every component sets APP_ENV, so for now each process only says so. At
+        # import this precedes logs.configure() and reaches stderr through logging's last resort.
+        if "app_env" not in self.model_fields_set:
+            logger.warning("config.app_env_unset", extra={"default": self.app_env})
+        elif self.app_env not in ("development", "test", "production"):
+            logger.warning("config.app_env_unrecognised", extra={"app_env": self.app_env})
+        return self
+
+    @model_validator(mode="after")
     def _validate_production_secrets_not_public(self) -> "Settings":
         # INF-03. One key signs every token type, so a production boot on a committed value hands
         # anyone who reads the repo every session. The message names the field, never the value.
