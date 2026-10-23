@@ -210,6 +210,25 @@ describe("BarWidget", () => {
     );
   });
 
+  it("neutralises formula-like names in the CSV but keeps negative amounts numeric (FE-04)", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [
+        { category: "=HYPERLINK(1)", value: 200 },
+        { category: "Refunds", value: -15.5 },
+      ],
+      meta: { row_count: 2, truncated: false, query_ms: 4 },
+    });
+
+    renderWithSWR(<BarWidget widget={makeWidget()} />);
+
+    const exportBtn = await screen.findByTestId("widget-csv-export");
+    await waitFor(() => expect(exportBtn).not.toBeDisabled());
+    fireEvent.click(exportBtn);
+
+    const [, csv] = downloadMock.mock.calls[0];
+    expect(csv).toBe("Category,Amount\r\n'=HYPERLINK(1),200\r\nRefunds,-15.5");
+  });
+
   it("hides the Export CSV button in edit mode", async () => {
     runQueryMock.mockResolvedValueOnce({
       rows: [{ category: "Food", value: 200 }],
