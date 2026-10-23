@@ -104,7 +104,7 @@ const ERRORS: Record<string, string> = {
   provider_status_401: "Your AI provider rejected the key. An admin can reconnect it in Settings, AI providers.",
   provider_status_403:
     "Your AI provider refused this request. An admin can check the key's access or pick another model in Settings, AI providers.",
-  platform_ai_unavailable: "The assistant's AI service is busy right now. Try again in a few minutes.",
+  platform_ai_unavailable: "The assistant's AI service isn't available right now. Try again later.",
 };
 
 const PROVIDER_5XX = "Your AI provider is having trouble. Try again shortly.";

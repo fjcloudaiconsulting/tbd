@@ -24,7 +24,7 @@ it.each([
   ["provider_status_401", /rejected the key\. An admin can reconnect/],
   ["provider_status_403", /refused this request/],
   ["provider_status_503", /having trouble/],
-  ["platform_ai_unavailable", /AI service is busy/],
+  ["platform_ai_unavailable", /AI service isn.t available right now/],
 ])("%s has specific copy", (code, text) => {
   expect(errorText(code)).toMatch(text);
 });
