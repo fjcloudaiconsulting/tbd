@@ -270,15 +270,26 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 
 ### MFA
 
-- TOTP via authenticator app (Google Authenticator, Authy, 1Password).
-- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable).
+- TOTP via authenticator app (Google Authenticator, Authy, 1Password). A code is accepted once per user: its time step, and the two before it, are claimed in `used_tokens` (BE-26).
+- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable), spent with a compare-and-swap on the stored list.
 - Email fallback with 6-digit code (10-minute expiry).
+- The 5-minute challenge token from the first leg carries a `jti`: it is claimed on success (single-use) and burned after 5 wrong codes, so the next try starts from the password.
 - TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY`).
 - Setup and disable via `/settings/security`.
 
 ### Rate limiting
 
 All limits are per client IP via slowapi. Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
+
+Failed sign-in attempts are also counted per account, beside the per-IP limits (BE-02, `backend/app/auth/attempts.py`), so a client spread over many addresses gets no larger budget:
+
+| Counter | Budget per 15 minutes | When full |
+|---------|-----------------------|-----------|
+| Wrong password, keyed on the login as typed (lower-cased) | 10 | `/login` answers 429 with `Retry-After`, even for the right password |
+| Wrong second factor (TOTP, recovery or email code), per user | 10 | every `/mfa/*` challenge leg answers 429 with `Retry-After` |
+| Wrong second factor, per challenge token | 5 | the challenge is burned: 401, sign in again |
+
+Only failures count. A success empties the account's window, a completed password reset empties its login window, and nothing locks permanently. The failure that fills an account's window writes one `auth.login.locked` or `auth.mfa.locked` audit row (for a real account only).
 
 | Endpoint | Limit |
 |----------|-------|

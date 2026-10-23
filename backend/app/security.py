@@ -238,13 +238,22 @@ def create_password_reset_token(user_id: int) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+MFA_CHALLENGE_TTL_SECONDS = 5 * 60
+
+
 def create_mfa_challenge_token(user_id: int) -> str:
-    """Create a short-lived token for MFA challenge (5 minutes)."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    """Create a short-lived token for MFA challenge (5 minutes).
+
+    The ``jti`` makes it single-use (BE-02): the second-factor routes claim it
+    in ``used_tokens`` on success, and burn it after too many wrong codes.
+    """
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "type": "mfa_challenge",
-        "exp": expire,
+        "jti": secrets.token_urlsafe(16),
+        "iat": int(now.timestamp()),
+        "exp": now + timedelta(seconds=MFA_CHALLENGE_TTL_SECONDS),
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
