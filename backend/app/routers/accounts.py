@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.account import Account, AccountType
-from app.models.transaction import Transaction
+from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip, limiter
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
@@ -317,6 +317,7 @@ async def update_account(
     actor_user_id = current_user.id
     actor_email = current_user.email
     actor_org_id = current_user.org_id
+    actor_is_admin = _is_admin_user(current_user)
     req_id = _request_id()
     ip = get_client_ip(request)
 
@@ -343,6 +344,7 @@ async def update_account(
             actor_user_id=actor_user_id,
             actor_email=actor_email,
             actor_org_id=actor_org_id,
+            actor_is_admin=actor_is_admin,
             req_id=req_id,
             ip=ip,
             session_factory=session_factory,
@@ -363,6 +365,7 @@ async def update_account(
     opening_changed = await _apply_non_type_fields(
         db, account, body, actor_org_id, nested_default=True,
         resolved_slug=account.account_type.slug if account.account_type else None,
+        actor_is_admin=actor_is_admin,
     )
     new_opening_balance = account.opening_balance
     new_opening_balance_date = account.opening_balance_date
@@ -409,6 +412,7 @@ async def _apply_non_type_fields(
     *,
     nested_default: bool,
     resolved_slug: Optional[str],
+    actor_is_admin: bool,
 ) -> bool:
     """Apply name / is_active / is_default / opening_* mutations.
 
@@ -535,6 +539,18 @@ async def _apply_non_type_fields(
     # the account will actually hold (finding 15): shifting up to a nonzero
     # balance must block deactivation, and shifting down to zero must allow it.
     if body.opening_balance is not None and body.opening_balance != account.opening_balance:
+        # BE-14: once settled activity sits on top of it, moving the opening
+        # balance rewrites the live balance with no ledger row, which is what
+        # the admin-only /adjust-balance exists for. A MEMBER may still fix
+        # the opening balance of an account with no settled activity yet.
+        if not actor_is_admin and await _has_settled_transactions(db, account.id, org_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Only an owner or admin can change the opening balance "
+                    "of an account with settled transactions"
+                ),
+            )
         # Opening balance is the foundation of the live balance
         # (balance == opening_balance + Σ settled txns). Correcting it must
         # shift the live balance by the same delta, otherwise the cached
@@ -579,6 +595,20 @@ async def _apply_non_type_fields(
     return opening_changed
 
 
+async def _has_settled_transactions(db: AsyncSession, account_id: int, org_id: int) -> bool:
+    return (
+        await db.scalar(
+            select(Transaction.id)
+            .where(
+                Transaction.account_id == account_id,
+                Transaction.org_id == org_id,
+                Transaction.status == TransactionStatus.SETTLED,
+            )
+            .limit(1)
+        )
+    ) is not None
+
+
 async def _update_account_atomic(
     *,
     account_id: int,
@@ -586,6 +616,7 @@ async def _update_account_atomic(
     actor_user_id: int,
     actor_email: str,
     actor_org_id: int,
+    actor_is_admin: bool,
     req_id: str | None,
     ip: str,
     session_factory: async_sessionmaker[AsyncSession],
@@ -634,12 +665,24 @@ async def _update_account_atomic(
                 payment_day_relative_month_in_payload="payment_day_relative_month" in body.model_fields_set,
                 payment_day_relative_month_value=body.payment_day_relative_month,
             )
+            # BE-14: leaving credit_card deletes the per-cycle payment rows,
+            # whose own endpoints are owner/admin only. Raised inside begin()
+            # so the type change rolls back with it.
+            if type_result.deleted_cycle_payments and not actor_is_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Only an owner or admin can change the type of a credit "
+                        "card account with recorded cycle payments"
+                    ),
+                )
 
             old_opening_balance = account.opening_balance
             old_opening_balance_date = account.opening_balance_date
             opening_changed = await _apply_non_type_fields(
                 svc_db, account, body, actor_org_id, nested_default=False,
                 resolved_slug=type_result.new_type_slug,
+                actor_is_admin=actor_is_admin,
             )
             new_opening_balance = account.opening_balance
             new_opening_balance_date = account.opening_balance_date
