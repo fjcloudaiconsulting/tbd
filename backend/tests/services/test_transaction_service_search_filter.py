@@ -358,3 +358,21 @@ async def test_guard_amount_search_alongside_category_term(db_session, world):
         db_session, world["org"].id, search="42",
     )
     assert [r.description for r in rows] == ["Charge"]
+
+
+async def test_search_treats_like_wildcards_literally(db_session, world):
+    """BE-27: ``%`` / ``_`` are literal characters, so ``%`` alone is not a
+    match-everything search and ``a_c`` does not match ``abc``."""
+    db_session.add_all([
+        _make_tx(world, description="50% off sale", amount="5.00"),
+        _make_tx(world, description="abc store", amount="6.00"),
+        _make_tx(world, description="a_c store", amount="7.00"),
+    ])
+    await db_session.flush()
+
+    for search, expected in (("%", ["50% off sale"]), ("a_c", ["a_c store"]),
+                             ("50%", ["50% off sale"]), ("\\", [])):
+        rows, _ = await transaction_service.list_transactions(
+            db_session, world["org"].id, search=search,
+        )
+        assert sorted(r.description for r in rows) == expected, search

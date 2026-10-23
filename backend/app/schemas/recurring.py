@@ -7,10 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.common import Money
 
 
+# BE-27: ``recurring_transactions.description`` is String(255).
+RECURRING_DESCRIPTION_MAX_LENGTH = 255
+
+
 class RecurringCreate(BaseModel):
     account_id: int
     category_id: int
-    description: str
+    description: str = Field(max_length=RECURRING_DESCRIPTION_MAX_LENGTH)
     amount: Money = Field(gt=0)
     type: Literal["income", "expense"]
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
@@ -27,7 +31,7 @@ class RecurringCreate(BaseModel):
 class RecurringUpdate(BaseModel):
     account_id: Optional[int] = None
     category_id: Optional[int] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=RECURRING_DESCRIPTION_MAX_LENGTH)
     amount: Optional[Money] = Field(default=None, gt=0)
     type: Optional[Literal["income", "expense"]] = None
     frequency: Optional[Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]] = None

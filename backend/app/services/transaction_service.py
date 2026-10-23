@@ -3073,12 +3073,18 @@ def _apply_transaction_filters(
         # parent's). A subquery, not a join: sort_by=category_name already
         # joins Category onto the page query, and a join would also land in
         # the count query.
+        #
+        # BE-27: ``%``, ``_`` and ``\`` in the search are literal characters,
+        # not wildcards.
+        from app.services.admin_users_search_service import _normalize_like
+
+        like = f"%{_normalize_like(search)}%"
         predicates = [
-            Transaction.description.ilike(f"%{search}%"),
+            Transaction.description.ilike(like, escape="\\"),
             Transaction.category_id.in_(
                 select(Category.id).where(
                     Category.org_id == org_id,
-                    Category.name.ilike(f"%{search}%"),
+                    Category.name.ilike(like, escape="\\"),
                 )
             ),
         ]
