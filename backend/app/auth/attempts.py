@@ -10,6 +10,9 @@ the account is looked up, so an unknown login is refused like a real one) and
 under the user id once the account is known. The user-id window is the real
 per-account budget: it is shared by ``/login`` and the settings re-auth
 gates, and no spelling of the login, rename or email change opens a new one.
+Only the typed-login window answers 429 at ``/login``; while the user-id window
+is full, ``/login`` does not check the password at all and answers the usual
+401, so the responses say nothing about which logins exist.
 
 Windows are short and nothing locks permanently: a full window refuses that
 account's attempts until it ends (``Retry-After``), a success empties it, and

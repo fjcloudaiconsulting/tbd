@@ -603,10 +603,9 @@ async def login(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     await _require_session_store()
-    # Per-account failure budgets beside the per-IP limit (BE-02): the login
-    # as typed, checked before the lookup so an unknown login is refused
-    # exactly like a real one; then, once the account is known, its user id,
-    # which no other spelling of the login, rename or email change reopens.
+    # Per-account failure budgets beside the per-IP limit (BE-02). The only
+    # one that answers 429 is the login AS TYPED, checked before the lookup:
+    # it fills the same way for a real login and an unknown one.
     try:
         retry_after = await attempts.login_retry_after(body.login)
     except SQLAlchemyError as exc:
@@ -625,20 +624,18 @@ async def login(
     )
     user = result.scalar_one_or_none()
     user_id = user.id if user is not None else None
+    # The account's own budget, keyed on the user id, so no other spelling
+    # of the login, rename or email change reopens it. While it is full the
+    # real password is NOT checked: the dummy bcrypt runs and the answer is
+    # the same 401 an unknown login gets. Answering 429 here would say that
+    # this login exists and which spellings belong to one account.
     try:
-        retry_after = await attempts.password_retry_after(user_id, body.login)
+        account_full = await attempts.password_retry_after(user_id, body.login) is not None
     except SQLAlchemyError as exc:
         raise _attempt_store_unavailable() from exc
-    if retry_after is not None:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=attempts.TOO_MANY_LOGIN_ATTEMPTS_DETAIL,
-            headers={"Retry-After": str(retry_after)},
-        )
+    stored_hash = user.password_hash if user is not None and not account_full else None
 
-    if not verify_password_or_dummy(
-        body.password, user.password_hash if user is not None else None
-    ):
+    if not verify_password_or_dummy(body.password, stored_hash):
         try:
             filled = await attempts.record_password_failure(body.login, user_id)
         except SQLAlchemyError as exc:

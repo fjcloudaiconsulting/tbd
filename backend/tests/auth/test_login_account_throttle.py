@@ -103,7 +103,9 @@ async def test_a_password_reset_reopens_the_window(session_factory) -> None:
     with TestClient(_make_app(session_factory)) as client:
         _fill(client, "alice")
         assert _login(client, "alice", PASSWORD).status_code == 429
-        assert _login(client, "alice@example.com", PASSWORD).status_code == 429
+        # The email's own window is open, so it answers 401 like any wrong
+        # login: the account window is full and the password is not checked.
+        assert _login(client, "alice@example.com", PASSWORD).status_code == 401
         reset = client.post(
             "/api/v1/auth/reset-password",
             json={"token": create_password_reset_token(seed["user_id"]), "new_password": "a-new-passw0rd"},
@@ -116,12 +118,51 @@ async def test_a_password_reset_reopens_the_window(session_factory) -> None:
 @pytest.mark.asyncio
 async def test_another_spelling_of_the_login_shares_the_account_budget(session_factory) -> None:
     """The typed-login window is per spelling; the account's own window is
-    keyed on the user id, so switching to the email (or any spelling the
-    database matches) opens no new budget."""
+    keyed on the user id, so switching spellings opens no new budget for
+    guessing the password: once it is full, no spelling gets it checked."""
     await _seed_user(session_factory)
     with TestClient(_make_app(session_factory)) as client:
         for i in range(attempts.LOGIN_FAILURES_PER_ACCOUNT):
             login = "alice" if i % 2 else "alice@example.com"
             assert _login(client, login, "wrong-password").status_code == 401
-        assert _login(client, "alice", PASSWORD).status_code == 429
-        assert _login(client, "alice@example.com", PASSWORD).status_code == 429
+        assert _login(client, "alice", PASSWORD).status_code == 401
+        assert _login(client, "alice@example.com", PASSWORD).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_full_account_window_answers_401_until_the_typed_window_fills(session_factory) -> None:
+    await _seed_user(session_factory)
+    with TestClient(_make_app(session_factory)) as client:
+        _fill(client, "alice@example.com")  # fills the account window too
+        for _ in range(attempts.LOGIN_FAILURES_PER_ACCOUNT):
+            assert _login(client, "alice", "wrong-password").status_code == 401
+        assert _login(client, "alice", "wrong-password").status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_known_and_unknown_logins_answer_status_for_status(session_factory) -> None:
+    """The sequence a caller sees does not depend on whether the login exists
+    or which spellings belong to one account."""
+    await _seed_user(session_factory)
+    n = attempts.LOGIN_FAILURES_PER_ACCOUNT
+
+    def sequence(client, email: str, username: str) -> list[int]:
+        out = [_login(client, email, "wrong-password").status_code for _ in range(n + 1)]
+        out += [_login(client, username, "wrong-password").status_code for _ in range(n + 1)]
+        return out
+
+    with TestClient(_make_app(session_factory)) as client:
+        known = sequence(client, "alice@example.com", "alice")
+        unknown = sequence(client, "ghost@example.com", "ghost")
+    assert known == unknown == ([401] * n + [429]) * 2
+
+
+@pytest.mark.asyncio
+async def test_the_right_password_is_refused_while_the_account_window_is_full(session_factory) -> None:
+    await _seed_user(session_factory)
+    with TestClient(_make_app(session_factory)) as client:
+        _fill(client, "alice@example.com")
+        res = _login(client, "alice", PASSWORD)
+    assert res.status_code == 401
+    assert res.json() == {"detail": "Invalid credentials"}
+    assert "set-cookie" not in res.headers

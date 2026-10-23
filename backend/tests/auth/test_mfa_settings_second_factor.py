@@ -206,9 +206,10 @@ async def test_wrong_passwords_draw_from_the_login_budget(session_factory) -> No
             json={"password": PASSWORD, "mfa_code": pyotp.TOTP(secret).now()},
             headers=auth,
         ).status_code == 429
+        # /login refuses the right password too, with its plain 401.
         assert client.post(
             "/api/v1/auth/login", json={"login": "alice", "password": PASSWORD}
-        ).status_code == 429
+        ).status_code == 401
 
 
 # ── enrolment re-authenticates ──────────────────────────────────────────────
@@ -325,6 +326,8 @@ async def test_a_rename_does_not_reopen_the_password_budget(session_factory) -> 
             json={"password": PASSWORD, "mfa_code": pyotp.TOTP(secret).now()},
             headers=auth,
         ).status_code == 429
+        # At /login the full account window refuses the right password with
+        # the plain 401 (a 429 there would show the login exists).
         assert client.post(
             "/api/v1/auth/login", json={"login": "alice-renamed", "password": PASSWORD}
-        ).status_code == 429
+        ).status_code == 401

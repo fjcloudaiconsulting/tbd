@@ -287,7 +287,7 @@ Failed sign-in attempts are also counted per account, beside the per-IP limits (
 | Counter | Budget per 15 minutes | When full |
 |---------|-----------------------|-----------|
 | Wrong password, keyed on the login as typed (lower-cased), checked before the lookup | 10 | `/login` answers 429 with `Retry-After`, even for the right password |
-| Wrong password, keyed on the user id: `/login` under any spelling, and the password re-auth on the MFA settings routes | 10 | the same, at `/login` and at re-auth; a rename or email change does not reopen it |
+| Wrong password, keyed on the user id: `/login` under any spelling, and the password re-auth on the MFA settings routes | 10 | `/login` stops checking that account's password and answers the usual 401 (a 429 would show the login exists); re-auth answers 429. A rename or email change does not reopen it |
 | Wrong second factor (TOTP, recovery or email code), per user | 10 | every `/mfa/*` challenge leg answers 429 with `Retry-After` |
 | Wrong second factor, per challenge token | 5 | the challenge is burned: 401, sign in again |
 
