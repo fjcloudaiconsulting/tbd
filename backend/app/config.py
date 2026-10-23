@@ -8,6 +8,42 @@ logger = logging.getLogger(__name__)
 # Cloudflare Turnstile's always-pass test secret, which .env.example ships for dev.
 TURNSTILE_ALWAYS_PASS_SECRET = "1x0000000000000000000000000000000AA"
 
+# INF-03: every secret-bearing setting. In production none may hold a value from
+# ``_PUBLIC_SECRET_VALUES`` or one starting "dev-only".
+SECRET_FIELDS = (
+    "jwt_secret_key",
+    "mfa_recovery_hmac_key",
+    "api_token_hmac_key",
+    "api_token_hmac_key_prev",
+    "mfa_encryption_key",
+    "ai_credential_encryption_key",
+    "ai_credential_encryption_key_prev",
+    "mailgun_api_key",
+    "mailgun_webhook_signing_key",
+    "google_client_secret",
+    "platform_ai_openrouter_api_key",
+)
+# Secret values committed to this public repository for dev, CI and tests. Anyone can read them,
+# so production refuses them. tests/test_public_secret_defaults.py scans docker-compose*.yml,
+# .env.example, the workflows and tests/conftest.py and fails on a literal missing here. Never
+# remove an entry when its source changes: git history keeps the value public.
+#
+# ⚠ compose.smoke.yaml's two values are deliberately absent. The release smoke boots the
+# published images with APP_ENV=production, and the shared smoke workflow passes it no secret,
+# so refusing them would fail every release. That fence pins them as the only exception.
+_PUBLIC_SECRET_VALUES = frozenset(
+    {
+        "change-me-generate-a-real-secret",  # .env.example, the field default
+        "dev-only-shared-api-token-hmac-key-not-for-prod",  # docker-compose.yml
+        "dev-only-mcp-jwt-secret-never-the-backend-value",  # docker-compose.yml, mcp
+        "dev-only-mcp-mfa-recovery-hmac-key-unused-here",  # docker-compose.yml, mcp
+        "ci-migration-smoke-jwt-key-not-a-real-secret",  # ci.yml, Backend Migrations
+        "ci-migration-smoke-mfa-key-distinct-01",  # ci.yml, Backend Migrations
+        "ci-migration-smoke-pat-key-distinct-02",  # ci.yml, Backend Migrations
+        "test-jwt-secret-that-is-long-enough-for-pytest-1234567890",  # tests/conftest.py
+    }
+)
+
 
 class Settings(BaseSettings):
     # App
@@ -544,6 +580,22 @@ class Settings(BaseSettings):
                     "reusing the JWT secret re-couples PAT hashing to it and "
                     "defeats the decoupling. Generate a distinct secret via: "
                     "python -c 'import secrets; print(secrets.token_urlsafe(64))'"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_production_secrets_not_public(self) -> "Settings":
+        # INF-03. One key signs every token type, so a production boot on a committed value hands
+        # anyone who reads the repo every session. The message names the field, never the value.
+        # Applies to mcp_main too: it builds the same Settings.
+        if self.app_env != "production":
+            return self
+        for name in SECRET_FIELDS:
+            value = getattr(self, name) or ""
+            if value in _PUBLIC_SECRET_VALUES or value.startswith("dev-only"):
+                raise ValueError(
+                    f"{name.upper()} is a value committed to this public repository; "
+                    "set a real secret"
                 )
         return self
 

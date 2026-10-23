@@ -123,6 +123,12 @@ services:
       # staying green in CI, which is how a fence gets weakened rather than
       # obeyed.
       - ./README.md:/app/README.md:ro
+      # INF-03: tests/test_public_secret_defaults.py scans these for committed secrets that
+      # production must refuse. Same container-only trap as README.md above.
+      - ./.env.example:/app/.env.example:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.prod.yml:/app/docker-compose.prod.yml:ro
+      - ./compose.smoke.yaml:/app/compose.smoke.yaml:ro
       # TBD-345: read-only mount so test_seed_determinism.py can assert that
       # `tbd`'s cmd_seed still forwards SEED_* generically. Without it that
       # guard is green on a bare CI checkout (where the repo root is present)
