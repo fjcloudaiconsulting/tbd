@@ -77,7 +77,7 @@ Status values: Fixed, Partial, Needs owner, Not fixed, Accepted.
 | ID | Title | Severity | Status | PR | Commit | Owner action | Jira |
 |---|---|---|---|---|---|---|---|
 | BE-01 | Bound decimal inputs on amount fields | High | Fixed | #1006 | `bb5ca768` | | |
-| BE-02 | Per-account limits on password and second-factor attempts | Medium | Fixed | #1009 | `55adb094`, `be0b10f6` |  | |
+| BE-02 | Per-account limits on password and second-factor attempts | Medium | Fixed | #1009 | `55adb094`, `be0b10f6` | Follow-up: route the remaining password re-checks (password change, email change, token-minting step-ups) through the per-user window | |
 | BE-03 | Email-code MFA fallback policy | Medium | Needs owner | | | Decide the email fallback policy for accounts with TOTP (options in the private report) | |
 | BE-04 | End sessions on password reset and change | Medium | Fixed | #1009 | `cc954908` |  | |
 | BE-05 | Self-service plan change restrictions | Medium | Partial | #1005 | `6b006697` | Decide whether paid plans require payment once billing is live, and what canceled or past-due orgs are entitled to | |
