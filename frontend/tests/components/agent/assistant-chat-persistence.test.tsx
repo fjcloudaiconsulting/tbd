@@ -605,7 +605,7 @@ describe("F16: a card decision resolving after the session moved writes nothing"
     fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
     await waitFor(() => expect(confirms()).toHaveLength(1));
     act(() => move());
-    updateEntries(generation(), () => [{ kind: "user", id: "e900", text: "fresh" }], true);
+    act(() => updateEntries(generation(), () => [{ kind: "user", id: "e900", text: "fresh" }], true));
     const before = window.sessionStorage.getItem(KEY);
     await act(async () => d.resolve(json(200, { status: "done" })));
     expect(window.sessionStorage.getItem(KEY)).toBe(before);
@@ -649,8 +649,9 @@ describe("G1: guards", () => {
 });
 
 describe("G3: the footer", () => {
-  it("states the new retention and keeps the provider sentences", () => {
+  it("states the new retention and keeps the provider sentences", async () => {
     render(<AssistantChat />);
+    await waitFor(() => expect(screen.getByRole("log")).not.toHaveAttribute("aria-busy")); // the mount GET settles
     const foot = document.querySelector("form p")!.textContent!;
     expect(foot).toContain(
       "The conversation stays in this tab until you sign out. It starts fresh when you come back after 2 hours without a message.",
