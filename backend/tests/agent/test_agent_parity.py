@@ -146,8 +146,11 @@ def _live_mutating() -> dict[tuple[str, str], object]:
 
 
 def _body_fields(route) -> set[str]:
-    out: set[str] = {f.alias for f in route.dependant.query_params}
-    for f in route.dependant.body_params:
+    deps = [route.dependant]  # sub-dependencies declare params too
+    for d in deps:
+        deps.extend(d.dependencies)
+    out: set[str] = {f.alias for d in deps for f in d.query_params}
+    for f in (f for d in deps for f in d.body_params):
         model = f.field_info.annotation
         out |= set(getattr(model, "model_fields", None) or {f.alias})
     return out
@@ -344,7 +347,7 @@ def test_body_role_scan_classifies_and_fails_closed():
 def test_depends_gate_is_seen_on_a_real_route():
     r = _live_mutating()[("POST", "/api/v1/categories/restore-recommended")]
     assert _handler_required_role(r.endpoint) == Role.MEMBER  # the gate is a Depends, not in the body
-    assert _route_required_role(r) != Role.MEMBER
+    assert _route_required_role(r) == Role.OWNER
     # a MEMBER tool mirroring it fails the same comparison the F-R4 test makes
     assert ROLE_RANK[Role.MEMBER] < ROLE_RANK[_route_required_role(r)]
 
