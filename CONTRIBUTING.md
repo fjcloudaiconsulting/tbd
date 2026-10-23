@@ -425,7 +425,8 @@ enumerates by *gate* rather than by path so those are covered.
 ⚠ **`require_interactive_session` is not an authorization gate.** It sits on many
 admin write routes (and on account and token routes outside `/api/v1/admin/`;
 the roster is `backend/tests/auth/test_interactive_session_enumeration.py`) and checks only that the caller used a browser session rather than
-a PAT — it authorizes nobody. A route carrying only that dependency is reachable
+a PAT — it authorizes nobody. Platform-wide writes carry it: plans, org
+subscriptions, announcements, broadcasts, features and overrides (BE-20). A route carrying only that dependency is reachable
 by every authenticated user.
 
 Enforced by `backend/tests/auth/test_admin_authorization_enumeration.py`, which

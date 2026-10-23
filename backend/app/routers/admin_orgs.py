@@ -111,7 +111,11 @@ async def get_org_detail(org_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
 
 
-@router.put("/{org_id}/subscription")
+# BE-20: grants or removes paid entitlements, so a leaked write PAT must not.
+@router.put(
+    "/{org_id}/subscription",
+    dependencies=[Depends(require_interactive_session)],
+)
 async def update_org_subscription(
     org_id: int,
     body: SubscriptionUpdateRequest,
