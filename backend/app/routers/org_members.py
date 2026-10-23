@@ -6,7 +6,7 @@ JWT in the URL is the proof of intent.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.org_permissions import require_org_admin
@@ -77,14 +77,32 @@ def _invitation_unavailable() -> HTTPException:
     )
 
 
+async def _deliver_invitation(
+    to: str, *, inviter_name: str, org_name: str, accept_url: str
+) -> None:
+    """Background send. Failures are logged inside email_service and never
+    surface: the row exists and the admin can revoke and re-invite."""
+    try:
+        await send_invitation_email(
+            to, inviter_name=inviter_name, org_name=org_name, accept_url=accept_url,
+        )
+    except Exception:
+        pass
+
+
 @router.post(
     "/invitations",
     response_model=InvitationResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
+# BE-06. Per client IP like every limit here; the per-ORG bound is the pending
+# and daily caps in invitation_service. No path parameter, so a plain `limit`.
+@limiter.limit(dynamic_limit("org_members.invite", "20/hour"))
 async def create_invitation(
+    request: Request,
     body: InvitationCreateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_org_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -98,6 +116,16 @@ async def create_invitation(
         )
     except ConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except invitation_service.InvitationQuotaExceeded:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many invitations sent today. Try again tomorrow.",
+        )
+    # BE-06: an address registered to another org gets the same 201 and the
+    # same pending row, but no email (accept would refuse it anyway).
+    deliver = not await invitation_service.is_registered_elsewhere(
+        db, org_id=current_user.org_id, email=inv.email,
+    )
 
     # Capture serializable fields BEFORE commit — once the session
     # expires the instance, attribute access would trigger a lazy
@@ -122,17 +150,21 @@ async def create_invitation(
             select(Organization).where(Organization.id == current_user.org_id)
         )
     ).scalar_one()
+    org_id, org_name = org.id, org.name
     await db.commit()
     # Email send happens after commit so a Mailgun outage doesn't roll
-    # back the invite (admin can revoke and re-invite).
-    try:
-        await send_invitation_email(
-            body.email, inviter_name=inviter_name, org_name=org.name, accept_url=accept_url,
+    # back the invite (admin can revoke and re-invite). It runs after the
+    # response, so response time does not reveal whether one was sent.
+    if deliver:
+        background_tasks.add_task(
+            _deliver_invitation,
+            body.email, inviter_name=inviter_name, org_name=org_name, accept_url=accept_url,
         )
-    except Exception:
-        # Logged inside email_service. Don't fail the API call — the
-        # row exists and admin can revoke + re-invite.
-        pass
+    else:
+        logger.info(
+            "org.invitation.delivery_skipped",
+            extra={"target_org_id": org_id, "invitation_id": snapshot.id},
+        )
     return snapshot
 
 

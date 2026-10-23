@@ -13,6 +13,10 @@ isolation:
 - Member-removal guards: same-org only; cannot remove self; ADMIN cannot
   remove OWNER; cannot remove the last OWNER. Soft-delete +
   ``sessions_invalidated_at = now`` so old tokens die immediately.
+- No cross-tenant oracle (BE-06): an address registered to ANOTHER org
+  gets the same pending row and the same 201 as a new address; the router
+  asks :func:`is_registered_elsewhere` and sends nothing, and accept
+  refuses it. Per-org caps bound pending and newly created invitations.
 """
 
 from __future__ import annotations
@@ -63,6 +67,17 @@ class InvitationUnavailable(Exception):
 
 INVITATION_TTL = datetime.timedelta(days=7)
 
+# BE-06 per-org caps, on top of the per-IP ``org_members.invite`` limit.
+# Revoked rows still count toward the daily cap, so revoke-and-re-invite of
+# one address cannot churn without bound. Far above a household's needs.
+MAX_PENDING_INVITATIONS = 20
+MAX_INVITATIONS_PER_DAY = 50
+
+
+class InvitationQuotaExceeded(Exception):
+    """The org created ``MAX_INVITATIONS_PER_DAY`` invitations in the last
+    24 hours. Routers translate this to 429."""
+
 
 def _normalize_email(value: str) -> str:
     # Thin wrapper preserving the historical name used throughout this
@@ -104,17 +119,18 @@ async def create_invitation(
     norm = _normalize_email(email)
 
     # Reject if a user with that email exists ACTIVE in this org. Inactive
-    # same-org user → reactivation, allowed. Active user in another org
-    # → reject (multi-org out of scope).
+    # same-org user → reactivation, allowed. A user in ANOTHER org is not
+    # revealed (BE-06): the row is created like any other, the router sends
+    # nothing (``is_registered_elsewhere``), and accept refuses it
+    # (multi-org out of scope).
     existing = (
         await db.execute(select(User).where(User.email == norm))
     ).scalar_one_or_none()
     if existing is not None:
         if existing.org_id == org_id and existing.is_active:
             raise ConflictError("This person is already a member of the org")
-        if existing.org_id != org_id:
-            raise ConflictError("Email already registered to another organization")
-        # else: same-org soft-deleted → fall through to reactivation invite
+        # else: same-org soft-deleted → reactivation invite; other org →
+        # undeliverable invite.
 
     # Lazy-clear expired pending rows so they don't block a fresh invite.
     await _clear_expired_open_invites(db, org_id=org_id, email=norm)
@@ -130,6 +146,8 @@ async def create_invitation(
     ).scalar_one_or_none()
     if pending is not None:
         raise ConflictError("This email is already invited")
+
+    await _enforce_invitation_caps(db, org_id=org_id)
 
     now = utcnow_naive()
     inv = Invitation(
@@ -155,6 +173,37 @@ async def create_invitation(
     # under prod's async engine.
     await db.refresh(inv)
     return inv
+
+
+async def _enforce_invitation_caps(db: AsyncSession, *, org_id: int) -> None:
+    """Per-org pending and daily-creation caps (BE-06). ``db.scalar``, not
+    ``db.execute``: the race test counts this function's ``execute`` calls."""
+    pending = await count_pending_invitations(db, org_id=org_id)
+    if pending >= MAX_PENDING_INVITATIONS:
+        raise ConflictError(
+            f"This organization already has {MAX_PENDING_INVITATIONS} pending "
+            "invitations. Revoke some before sending more.",
+            code="pending_invitation_cap",
+        )
+    # "Created in the last 24h" read off ``expires_at`` (app clock, set to
+    # creation + INVITATION_TTL) rather than ``created_at`` (DB clock).
+    created_after_expiry = utcnow_naive() + INVITATION_TTL - datetime.timedelta(days=1)
+    created = await db.scalar(
+        select(func.count())
+        .select_from(Invitation)
+        .where(Invitation.org_id == org_id, Invitation.expires_at > created_after_expiry)
+    ) or 0
+    if created >= MAX_INVITATIONS_PER_DAY:
+        raise InvitationQuotaExceeded()
+
+
+async def is_registered_elsewhere(db: AsyncSession, *, org_id: int, email: str) -> bool:
+    """True iff ``email`` belongs to a user of ANOTHER org. Such an invitation
+    is created (so the response cannot reveal it) but never delivered."""
+    other = await db.scalar(
+        select(User.id).where(User.email == _normalize_email(email), User.org_id != org_id)
+    )
+    return other is not None
 
 
 def _pending_invitation_filters(org_id: int):

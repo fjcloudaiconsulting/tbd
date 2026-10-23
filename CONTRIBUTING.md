@@ -297,6 +297,7 @@ All limits are per client IP via slowapi. Counters live in the MySQL `rate_limit
 | `GET /api/v1/auth/google` | 60/minute |
 | `GET /api/v1/auth/google/callback` | 60/minute |
 | `GET /api/v1/auth/sso-stepup/callback` | 60/hour |
+| `POST /api/v1/orgs/invitations` | 20/hour, plus per-org caps of 20 pending and 50 created per day |
 
 ⚠ This table is a reader's summary of the auth surface, not the inventory.
 The authoritative one is `backend/app/rate_limit_endpoint_catalogue.py`, and

@@ -219,6 +219,75 @@ async def test_create_invitation_allows_reactivation_of_soft_deleted_user(sessio
         assert inv.role == Role.ADMIN
 
 
+@pytest.mark.asyncio
+async def test_create_invitation_for_address_registered_elsewhere_is_not_revealed(session_factory):
+    """BE-06: an address registered to ANOTHER org is created like any other
+    (no distinct 409), and flagged undeliverable for the router."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    other_org_id, _ = await _seed_org_with_owner(
+        session_factory, name="Beta", owner_username="beta_owner",
+        owner_email="taken@beta.io",
+    )
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="Taken@Beta.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        assert inv.open_email == "taken@beta.io"
+        assert await invitation_service.is_registered_elsewhere(
+            db, org_id=org_id, email="Taken@Beta.io",
+        ) is True
+        assert await invitation_service.is_registered_elsewhere(
+            db, org_id=org_id, email="fresh@acme.io",
+        ) is False
+        # Same-org addresses are never "elsewhere".
+        assert await invitation_service.is_registered_elsewhere(
+            db, org_id=other_org_id, email="taken@beta.io",
+        ) is False
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_refuses_beyond_pending_cap(session_factory, monkeypatch):
+    monkeypatch.setattr(invitation_service, "MAX_PENDING_INVITATIONS", 2)
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    async with session_factory() as db:
+        for i in range(2):
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email=f"p{i}@acme.io", role=Role.MEMBER,
+            )
+        await db.commit()
+        with pytest.raises(ConflictError) as exc:
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="p2@acme.io", role=Role.MEMBER,
+            )
+    assert exc.value.code == "pending_invitation_cap"
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_daily_cap_counts_revoked_rows(session_factory, monkeypatch):
+    """Revoke-and-re-invite of one address still spends the daily budget."""
+    monkeypatch.setattr(invitation_service, "MAX_INVITATIONS_PER_DAY", 2)
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    async with session_factory() as db:
+        for _ in range(2):
+            inv = await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="churn@acme.io", role=Role.MEMBER,
+            )
+            await invitation_service.revoke_invitation(
+                db, org_id=org_id, invitation_id=inv.id,
+            )
+            await db.commit()
+        with pytest.raises(invitation_service.InvitationQuotaExceeded):
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="churn@acme.io", role=Role.MEMBER,
+            )
+
+
 # ── list / revoke ──────────────────────────────────────────────────────────
 
 
