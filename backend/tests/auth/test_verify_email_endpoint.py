@@ -194,9 +194,15 @@ async def _set_email(factory, user_id: int, email: str) -> None:
         await db.commit()
 
 
-def _post(app, token: str):
+GENERIC = "Invalid or expired verification token"
+
+
+def _post(app, token: str, password: str | None = None):
+    body = {"token": token}
+    if password is not None:
+        body["password"] = password
     with TestClient(app) as client:
-        return client.post("/api/v1/auth/verify-email", json={"token": token})
+        return client.post("/api/v1/auth/verify-email", json=body)
 
 
 @pytest.mark.asyncio
@@ -212,7 +218,7 @@ async def test_valid_token_verifies_the_account(session_factory):
     user_id = await _seed_user(session_factory, email_verified=False)
     token = create_email_verification_token(user_id, EMAIL)
 
-    resp = _post(make_app(session_factory), token)
+    resp = _post(make_app(session_factory), token, PASSWORD)
 
     assert resp.status_code == 200
     assert resp.json() == {"detail": "Email verified"}
@@ -243,9 +249,13 @@ async def test_invitation_token_is_rejected_by_the_type_check(session_factory):
     user_id = await _seed_user(session_factory, email_verified=False)
     invitation = create_invitation_token(user_id, EMAIL)
 
-    resp = _post(make_app(session_factory), invitation)
+    resp = _post(make_app(session_factory), invitation, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
+    assert resp.json()["detail"] == GENERIC
+    assert resp.json()["detail"] == GENERIC
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -275,9 +285,10 @@ async def test_access_shaped_token_is_rejected_by_the_type_check(session_factory
         algorithm=settings.jwt_algorithm,
     )
 
-    resp = _post(make_app(session_factory), access_shaped)
+    resp = _post(make_app(session_factory), access_shaped, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -302,8 +313,9 @@ async def test_real_password_reset_and_access_tokens_are_also_refused(session_fa
         create_password_reset_token(user_id),
         create_access_token(user_id, org_id=1, role=Role.OWNER.value),
     ):
-        resp = _post(app, token)
+        resp = _post(app, token, PASSWORD)
         assert resp.status_code == 400
+        assert resp.json()["detail"] == GENERIC
         assert await _is_verified(session_factory, user_id) is False
 
 
@@ -332,9 +344,10 @@ async def test_token_without_an_email_claim_is_rejected(session_factory):
         algorithm=settings.jwt_algorithm,
     )
 
-    resp = _post(make_app(session_factory), legacy)
+    resp = _post(make_app(session_factory), legacy, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -355,7 +368,7 @@ async def test_token_for_a_since_changed_address_is_rejected(session_factory):
     token = create_email_verification_token(user_id, EMAIL)
     await _set_email(session_factory, user_id, "alice+new@example.com")
 
-    resp = _post(make_app(session_factory), token)
+    resp = _post(make_app(session_factory), token, PASSWORD)
 
     assert resp.status_code == 400
     assert await _is_verified(session_factory, user_id) is False
@@ -373,7 +386,7 @@ async def test_token_bound_to_a_different_address_is_rejected(session_factory):
     user_id = await _seed_user(session_factory, email_verified=False)
     token = create_email_verification_token(user_id, "someone-else@example.com")
 
-    resp = _post(make_app(session_factory), token)
+    resp = _post(make_app(session_factory), token, PASSWORD)
 
     assert resp.status_code == 400
     assert await _is_verified(session_factory, user_id) is False
@@ -391,7 +404,7 @@ async def test_token_for_a_nonexistent_user_is_rejected(session_factory):
     await _seed_user(session_factory, email_verified=False)
     token = create_email_verification_token(999999, EMAIL)
 
-    resp = _post(make_app(session_factory), token)
+    resp = _post(make_app(session_factory), token, PASSWORD)
 
     assert resp.status_code == 400
 
@@ -444,9 +457,10 @@ async def test_garbage_token_is_rejected(session_factory):
     """
     user_id = await _seed_user(session_factory, email_verified=False)
 
-    resp = _post(make_app(session_factory), "not.a.jwt.at.all")
+    resp = _post(make_app(session_factory), "not.a.jwt.at.all", PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -471,9 +485,10 @@ async def test_expired_verification_token_is_rejected(session_factory):
         algorithm=settings.jwt_algorithm,
     )
 
-    resp = _post(make_app(session_factory), expired)
+    resp = _post(make_app(session_factory), expired, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -498,7 +513,266 @@ async def test_token_signed_with_the_wrong_key_is_rejected(session_factory):
         algorithm=settings.jwt_algorithm,
     )
 
-    resp = _post(make_app(session_factory), forged)
+    resp = _post(make_app(session_factory), forged, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
+
+
+# ── TBD-657: verifying an UNVERIFIED account needs its password ──────────────
+#
+# Attack: an attacker registers with the victim's address and password P (row
+# unverified). The victim clicks the unsolicited mail; the bootstrap arm sets
+# `email_verified` and keeps P, so the attacker logs in. The check is on ROW
+# STATE (`not user.email_verified`), after the token sub/email binding and
+# before the `promoting` branch, so it covers admin-initiated promotion too.
+# Nothing is written on a refusal, so a pending claim survives it.
+
+
+def _code(resp) -> str:
+    return resp.json()["detail"]["code"]
+
+
+async def _row(factory, user_id: int):
+    async with factory() as db:
+        return await db.scalar(select(User).where(User.id == user_id))
+
+
+async def _set_pending(factory, user_id: int, pending: str) -> None:
+    async with factory() as db:
+        user = await db.scalar(select(User).where(User.id == user_id))
+        user.pending_email = pending
+        await db.commit()
+
+
+def _login(app, password: str):
+    with TestClient(app) as client:
+        return client.post(
+            "/api/v1/auth/login", json={"login": "alice", "password": password}
+        )
+
+
+@pytest.mark.asyncio
+async def test_f1_bootstrap_without_password_is_refused(session_factory):
+    """F1. Kills: status quo; `body.password and not verify_password(...)`
+    (an optional password that is simply skippable)."""
+    user_id = await _seed_user(session_factory, email_verified=False)
+    app = make_app(session_factory)
+
+    resp = _post(app, create_email_verification_token(user_id, EMAIL))
+
+    assert resp.status_code == 400
+    assert _code(resp) == "password_required"
+    assert (await _row(session_factory, user_id)).email_verified is False
+    assert _login(app, PASSWORD).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_f2_bootstrap_with_wrong_password_is_refused(session_factory):
+    """F2. Kills: a presence-only check."""
+    user_id = await _seed_user(session_factory, email_verified=False)
+
+    resp = _post(
+        make_app(session_factory),
+        create_email_verification_token(user_id, EMAIL),
+        "not-the-password",
+    )
+
+    assert resp.status_code == 400
+    assert _code(resp) == "password_incorrect"
+    assert (await _row(session_factory, user_id)).email_verified is False
+
+
+@pytest.mark.asyncio
+async def test_f3_bootstrap_with_correct_password_verifies_and_logs_in(session_factory):
+    """F3. Kills: always-refuse; comparing the wrong column."""
+    user_id = await _seed_user(session_factory, email_verified=False)
+    app = make_app(session_factory)
+
+    resp = _post(app, create_email_verification_token(user_id, EMAIL), PASSWORD)
+
+    assert resp.status_code == 200
+    assert (await _row(session_factory, user_id)).email_verified is True
+    assert _login(app, PASSWORD).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_f4_admin_promotion_on_unverified_row_needs_password(session_factory):
+    """F4. Kills: the check living only inside `if not promoting`, or after /
+    inside `_promote_pending_email`."""
+    user_id = await _seed_user(session_factory, email_verified=False)
+    await _set_pending(session_factory, user_id, "new@example.com")
+    token = create_email_verification_token(
+        user_id, "new@example.com", admin_initiated=True
+    )
+
+    resp = _post(make_app(session_factory), token)
+
+    assert resp.status_code == 400
+    assert _code(resp) == "password_required"
+    row = await _row(session_factory, user_id)
+    assert row.pending_email == "new@example.com"
+    assert row.email == EMAIL
+    assert row.email_verified is False
+
+
+@pytest.mark.asyncio
+async def test_f4b_admin_promotion_with_taken_target_still_needs_password(
+    session_factory,
+):
+    """F4b. Kills: the check placed inside `_promote_pending_email` after its
+    `taken` check (that would 409 and abandon the claim first)."""
+    user_id = await _seed_user(session_factory, email_verified=False)
+    async with session_factory() as db:
+        org = Organization(name="o2", billing_cycle_day=1)
+        db.add(org)
+        await db.commit()
+        db.add(
+            User(
+                org_id=org.id, username="bob", email="taken@example.com",
+                password_hash=hash_password("x-irrelevant-1"), role=Role.OWNER,
+                is_superadmin=False, is_active=True, email_verified=True,
+            )
+        )
+        await db.commit()
+    await _set_pending(session_factory, user_id, "taken@example.com")
+    token = create_email_verification_token(
+        user_id, "taken@example.com", admin_initiated=True
+    )
+
+    resp = _post(make_app(session_factory), token)
+
+    assert resp.status_code == 400
+    assert _code(resp) == "password_required"
+    assert (await _row(session_factory, user_id)).pending_email == "taken@example.com"
+
+
+@pytest.mark.asyncio
+async def test_f5_self_service_promotion_on_verified_row_needs_no_password(
+    session_factory,
+):
+    """F5. TBD-361 intact. Kills: an unconditional password requirement."""
+    user_id = await _seed_user(session_factory, email_verified=True)
+    await _set_pending(session_factory, user_id, "new@example.com")
+
+    resp = _post(
+        make_app(session_factory),
+        create_email_verification_token(user_id, "new@example.com"),
+    )
+
+    assert resp.status_code == 200
+    row = await _row(session_factory, user_id)
+    assert row.email == "new@example.com"
+    assert row.pending_email is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("password", [None, "wrong-password-1"])
+async def test_f6_bad_token_never_reaches_the_password_check(
+    session_factory, password
+):
+    """F6 (R2). A stale / foreign token answers the generic 400 whether the
+    password is absent or wrong. Kills: the password check placed before the
+    token binding, which would answer password_required / password_incorrect
+    and be a password oracle for a stale-token holder."""
+    user_id = await _seed_user(session_factory, email_verified=False)
+    app = make_app(session_factory)
+    stale = create_email_verification_token(user_id, "old@example.com")
+    foreign = create_email_verification_token(user_id + 1000, EMAIL)
+
+    for token in (stale, foreign):
+        resp = _post(app, token, password)
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == GENERIC
+    assert (await _row(session_factory, user_id)).email_verified is False
+
+
+@pytest.mark.asyncio
+async def test_f7_already_verified_reclick_without_password_is_200(session_factory):
+    """F7. Kills: locking out double clicks."""
+    user_id = await _seed_user(session_factory, email_verified=True)
+
+    resp = _post(
+        make_app(session_factory), create_email_verification_token(user_id, EMAIL)
+    )
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_f8_register_squat_then_victim_recovers_end_to_end(
+    session_factory, monkeypatch
+):
+    """F8. Real POST /register as the attacker with the victim's address and
+    P. The victim's click without a password changes nothing and P cannot log
+    in; after forgot/reset to Q the same link verifies with Q only. Kills:
+    binding a password fingerprint into the token (victim's link dead)."""
+    from app.models.subscription import Plan
+    from app.routers import auth as auth_module
+    from app.security import create_password_reset_token
+
+    async with session_factory() as db:
+        db.add(Plan(slug="free", name="Free", is_active=True, sort_order=0))
+        await db_first_user(db)
+    sent: list[tuple[str, str]] = []
+
+    async def capture(to, token):
+        sent.append((to, token))
+
+    monkeypatch.setattr(auth_module, "send_verification_email", capture)
+    app = make_app(session_factory)
+    victim = "victim@example.com"
+    with TestClient(app) as client:
+        reg = client.post(
+            "/api/v1/auth/register",
+            json={"username": "alice", "email": victim, "password": "attacker-P-1"},
+        )
+        assert reg.status_code in (200, 201), reg.text
+        token = sent[-1][1]
+
+        click = client.post("/api/v1/auth/verify-email", json={"token": token})
+        assert click.status_code == 400 and _code(click) == "password_required"
+        login = client.post(
+            "/api/v1/auth/login", json={"login": "alice", "password": "attacker-P-1"}
+        )
+        assert login.status_code == 403
+
+        async with session_factory() as db:
+            uid = await db.scalar(select(User.id).where(User.email == victim))
+        reset = client.post(
+            "/api/v1/auth/reset-password",
+            json={"token": create_password_reset_token(uid), "new_password": "victim-Q-123"},
+        )
+        assert reset.status_code == 200, reset.text
+
+        old = client.post(
+            "/api/v1/auth/verify-email", json={"token": token, "password": "attacker-P-1"}
+        )
+        assert old.status_code == 400 and _code(old) == "password_incorrect"
+        ok = client.post(
+            "/api/v1/auth/verify-email", json={"token": token, "password": "victim-Q-123"}
+        )
+        assert ok.status_code == 200, ok.text
+        assert (
+            client.post(
+                "/api/v1/auth/login", json={"login": "alice", "password": "attacker-P-1"}
+            ).status_code
+            == 401
+        )
+
+
+async def db_first_user(db) -> None:
+    """Someone else owns the table first, so the attacker is not the
+    first-user bootstrap (which is pre-verified)."""
+    org = Organization(name="first", billing_cycle_day=1)
+    db.add(org)
+    await db.commit()
+    db.add(
+        User(
+            org_id=org.id, username="first", email="first@example.com",
+            password_hash=hash_password("first-pass-12"), role=Role.OWNER,
+            is_superadmin=True, is_active=True, email_verified=True,
+        )
+    )
+    await db.commit()
