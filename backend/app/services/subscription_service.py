@@ -158,7 +158,14 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
 async def change_plan(
     db: AsyncSession, org_id: int, plan_slug: str, billing_interval: str
 ) -> Subscription:
-    """Change an org's plan. Instant switch."""
+    """Change an org's plan. Instant switch.
+
+    Self-service only reaches the public catalogue: a custom plan
+    (``is_custom``, made by a superadmin for one customer) is assigned
+    through the admin console, so it answers the same 404 as an unknown
+    slug. The one exception is the org's CURRENT plan, so an org already
+    on a custom plan can still switch billing interval.
+    """
     result = await db.execute(
         select(Plan).where(Plan.slug == plan_slug, Plan.is_active == True)
     )
@@ -169,6 +176,9 @@ async def change_plan(
     sub = await get_subscription(db, org_id)
     if sub is None:
         raise NotFoundError("Subscription")
+
+    if new_plan.is_custom and new_plan.id != sub.plan_id:
+        raise NotFoundError("Plan")
 
     # Validate billing interval
     try:
