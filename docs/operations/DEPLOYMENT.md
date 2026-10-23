@@ -164,7 +164,7 @@ The bump PR changes the image tags of the backend, frontend, scheduler and migra
 
 ### Smoke tests
 
-`scripts/smoke-test.sh` runs from cloud-infra after a production rollout, against `SMOKE_BASE_URL=https://app.thebetterdecision.com` with a dedicated smoke account. The account's credentials, its required state and its controls are in infra's private notes, not in this repo.
+`scripts/smoke-test.sh` runs from cloud-infra after a production rollout, against `SMOKE_BASE_URL=https://app.thebetterdecision.com` with a dedicated smoke account. The account's credentials, its required state and its controls are in infra private ops notes (owner-held), not in this repo.
 
 ### How to verify a rollout
 

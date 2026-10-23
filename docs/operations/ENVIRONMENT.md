@@ -264,7 +264,7 @@ NOT consume `.env`.
 The `release` job in `.github/workflows/ci.yml` deploys nothing (see
 [`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow uses smoke credentials and
 there are no GitHub secrets for them. The post-deploy smoke (cloud-infra `post-deploy-smoke.yml`, INFRA-114)
-runs `scripts/smoke-test.sh`; where its credentials live is in infra's private notes.
+runs `scripts/smoke-test.sh`; where its credentials live is in infra private ops notes (owner-held).
 
 ### Production
 

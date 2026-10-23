@@ -187,17 +187,8 @@ class Settings(BaseSettings):
     # CSV, mirrors the cors-origins parsing pattern.
     #
     # ⚠⚠ NO DEFAULT VALUE, DELIBERATELY (TBD-371). This list names the
-    # production post-deploy smoke account -- an account docs/operations/DEPLOYMENT.md
-    # requires to be email-verified and to have NO MFA. Publishing it as a
-    # source default handed anyone reading the repo a confirmed-valid,
-    # MFA-less target for password spraying against a public login form.
-    # Usernames are enumerable via ``/auth/check-username`` by design, so
-    # this is not a unique disclosure channel -- but guessing is not the
-    # same as being handed the answer.
-    #
-    # Supply it from the environment. In production it comes from the SOPS
-    # secret in cloud-infra (clusters/hetzner/tbd-prod), never a plaintext
-    # value in a committed manifest.
+    # production post-deploy smoke account, so no value is committed.
+    # Supply it from the environment.
     #
     # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint
     # guards with ``if excluded:`` (routers/public_stats.py), so an empty list
