@@ -253,9 +253,6 @@ async def test_invitation_token_is_rejected_by_the_type_check(session_factory):
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == GENERIC
-    assert resp.json()["detail"] == GENERIC
-    assert resp.json()["detail"] == GENERIC
-    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -371,6 +368,7 @@ async def test_token_for_a_since_changed_address_is_rejected(session_factory):
     resp = _post(make_app(session_factory), token, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -389,6 +387,7 @@ async def test_token_bound_to_a_different_address_is_rejected(session_factory):
     resp = _post(make_app(session_factory), token, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
     assert await _is_verified(session_factory, user_id) is False
 
 
@@ -407,6 +406,7 @@ async def test_token_for_a_nonexistent_user_is_rejected(session_factory):
     resp = _post(make_app(session_factory), token, PASSWORD)
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == GENERIC
 
 
 @pytest.mark.asyncio

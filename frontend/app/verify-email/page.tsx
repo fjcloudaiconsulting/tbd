@@ -113,8 +113,9 @@ function VerifyEmailHandler() {
         <input
           type="text"
           readOnly
-          hidden
+          className="sr-only"
           tabIndex={-1}
+          name="username"
           autoComplete="username"
           value={tokenEmail}
           aria-hidden="true"

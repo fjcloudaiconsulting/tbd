@@ -141,4 +141,14 @@ describe("verify-email page, password confirmation", () => {
     expect(u.value).toBe("victim?>>@example.com");
     expect(u.readOnly).toBe(true);
   });
+
+  it.each([
+    [400, "Invalid or expired verification token"],
+    [409, "That address is now in use."],
+  ])("an initial %i is the final screen with no Password field", async (status, msg) => {
+    apiFetchMock.mockRejectedValueOnce(new ApiResponseError(status, msg));
+    render(<VerifyEmailPage />);
+    await screen.findByText(msg);
+    expect(screen.queryByLabelText("Password")).toBeNull();
+  });
 });
