@@ -42,6 +42,16 @@ HORIZON_MIN_MONTHS = 1
 NAME_MIN_LENGTH = 1
 NAME_MAX_LENGTH = 120
 
+# BE-22. List caps on the params blob. The engine runs synchronously inside
+# the request and walks every month x recurring row x event, so the lists it
+# iterates are bounded like the horizon is. Each is far above what the plan
+# editors produce by hand; a retirement curve can still step every month of
+# its 480-month horizon.
+MAX_TRIP_EXTRAS = 50
+MAX_CONTRIBUTION_CURVE_STEPS = HORIZON_CAP_BY_TYPE["retirement"]
+MAX_CUSTOM_EVENTS = 100
+MAX_EVENT_CATEGORY_IDS = 200
+
 
 def validate_horizon(scenario_type: str, horizon_months: int) -> None:
     """Raise ValueError when ``horizon_months`` exceeds the per-type cap.
@@ -98,7 +108,7 @@ class TripParams(BaseModel):
     transport_cost: BoundedDecimal = Field(ge=0)
     accommodation_per_night: BoundedDecimal = Field(ge=0)
     daily_budget: BoundedDecimal = Field(ge=0)
-    one_off_extras: list[_TripExtra] = Field(default_factory=list)
+    one_off_extras: list[_TripExtra] = Field(default_factory=list, max_length=MAX_TRIP_EXTRAS)
     source_account_id: int
 
 
@@ -179,7 +189,9 @@ class RetirementParams(BaseModel):
     target_balance: BoundedDecimal = Field(ge=0)
     annual_return_pct: BoundedDecimal = Field(ge=0, le=100)
     inflation_pct: BoundedDecimal = Field(default=Decimal("2.5"), ge=0, le=100)
-    contribution_curve: list[_RetirementCurveStep] = Field(default_factory=list)
+    contribution_curve: list[_RetirementCurveStep] = Field(
+        default_factory=list, max_length=MAX_CONTRIBUTION_CURVE_STEPS
+    )
 
     @model_validator(mode="after")
     def _check_curve(self):
@@ -238,7 +250,7 @@ class _CustomEventExpenseOff(BaseModel):
     type: Literal["expense_off"]
     from_month: int = Field(ge=0)
     to_month: Optional[int] = Field(default=None, ge=0)
-    category_ids: Optional[list[int]] = None
+    category_ids: Optional[list[int]] = Field(default=None, max_length=MAX_EVENT_CATEGORY_IDS)
 
     @model_validator(mode="after")
     def _check_range(self):
@@ -246,6 +258,9 @@ class _CustomEventExpenseOff(BaseModel):
             raise ValueError(
                 "from_month must be <= to_month"
             )
+        # A repeated id silences nothing more; keep the first of each.
+        if self.category_ids:
+            self.category_ids = list(dict.fromkeys(self.category_ids))
         return self
 
 
@@ -326,7 +341,7 @@ class CustomParams(BaseModel):
 
     scenario_type: Literal["custom"]
     label: str = Field(min_length=1, max_length=200)
-    events: list[CustomEvent] = Field(default_factory=list)
+    events: list[CustomEvent] = Field(default_factory=list, max_length=MAX_CUSTOM_EVENTS)
 
 
 ScenarioParams = Annotated[
