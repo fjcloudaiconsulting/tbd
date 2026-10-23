@@ -351,11 +351,19 @@ async def update_account(
         )
 
     # ── Fast path: no type/cc-column touch, stay on the request session.
-    result = await db.execute(
+    stmt = (
         select(Account)
         .options(selectinload(Account.account_type))
         .where(Account.id == account_id, Account.org_id == actor_org_id)
     )
+    if body.opening_balance is not None:
+        # BE-15: an opening_balance change is a read-modify-write of
+        # ``balance``. Lock the row like every other balance writer
+        # (``get_account_for_update``) so a concurrent transaction's delta
+        # is read, not overwritten. populate_existing for the same reason
+        # as there: the locked state must replace any identity-map copy.
+        stmt = stmt.with_for_update(of=Account).execution_options(populate_existing=True)
+    result = await db.execute(stmt)
     account = result.scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
