@@ -32,6 +32,9 @@ STEPUP_ACTIONS: dict[str, str] = {
     # (which can carry agent:auto), nor a mint proof approve a consent. The
     # consent page stashes its query before initiate and re-validates after.
     "oauth_consent": "/oauth/authorize",
+    # BE-32. Re-authentication before an SSO account without a password
+    # enrols an authenticator (``POST /auth/mfa/setup``).
+    "mfa_setup": "/settings/security",
 }
 
 

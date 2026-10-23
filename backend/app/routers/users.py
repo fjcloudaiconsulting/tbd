@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import state_db
 from app.auth.pat import require_interactive_session
+from app.auth.second_factor import require_second_factor
 from app.auth.stepup import consume_stepup, stepup_valid
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -39,6 +40,10 @@ from app.services.notification_templates import (
 from app import logs
 
 logger = logging.getLogger(__name__)
+
+EMAIL_CHANGE_SECOND_FACTOR_DETAIL = (
+    "An authenticator or recovery code is required to change the email of an account with two-factor on"
+)
 
 
 def _request_id() -> str | None:
@@ -191,6 +196,21 @@ async def update_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Email already taken",
+            )
+        if current_user.mfa_enabled:
+            # BE-32. The email is where reset links and the MFA email-code
+            # fallback go, so on an MFA account moving it also takes the
+            # second factor. After the target check (a taken address must
+            # not spend a code) and before the step-up is spent: a refusal
+            # rolls back, so a spent recovery code is restored with it.
+            await require_second_factor(
+                db,
+                session_factory,
+                request=request,
+                user=current_user,
+                code=body.mfa_code,
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=EMAIL_CHANGE_SECOND_FACTOR_DETAIL,
             )
         if not current_user.password_set:
             # Step-up was validated above; only consume now that the

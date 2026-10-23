@@ -91,6 +91,14 @@ def _mock_email(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _mfa_key(monkeypatch):
+    # The mfa_setup consumer encrypts the new secret.
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setattr(app_settings, "mfa_encryption_key", Fernet.generate_key().decode())
+
+
+@pytest.fixture(autouse=True)
 def _oauth_on(monkeypatch):
     # The oauth_consent consumer 404s with the OAuth server off.
     monkeypatch.setattr(app_settings, "mcp_oauth_enabled", True)
@@ -269,6 +277,16 @@ CONSUMERS: dict[str, Consumer] = {
         401,
         "Step-up verification required",
         oauth_module,
+    ),
+    # BE-32. Re-authentication of an SSO account before it enrols MFA.
+    "mfa_setup": Consumer(
+        "POST",
+        "/api/v1/auth/mfa/setup",
+        lambda tok, uid: {"stepup_token": tok},
+        200,
+        400,
+        "Step-up verification with Google is required to set up two-factor authentication",
+        auth_module,
     ),
 }
 
@@ -538,6 +556,8 @@ async def _side_effect_free(factory, uid: int, action: str) -> None:
     elif action == "password_set":
         assert u.password_set is False
         assert not verify_password(NEW_PASSWORD, u.password_hash)
+    elif action == "mfa_setup":
+        assert u.totp_secret is None
     else:
         async with factory() as s:
             n = await s.scalar(

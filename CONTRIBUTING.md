@@ -276,7 +276,7 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 - Email fallback with 6-digit code (10-minute expiry).
 - The 5-minute challenge token from the first leg carries a `jti`: it is claimed on success (single-use) and burned after 5 wrong codes, so the next try starts from the password.
 - TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY`).
-- Setup and disable via `/settings/security`.
+- Setup and disable via `/settings/security`. Setup asks for the password first (an account created with Google, `password_set=False`, uses a Google step-up for the `mfa_setup` action). Disabling MFA, regenerating recovery codes and changing the email of an MFA account also take a current TOTP code or an unused recovery code; wrong codes and passwords there draw from the per-account budgets below (BE-32).
 
 ### Rate limiting
 
