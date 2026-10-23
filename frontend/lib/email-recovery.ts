@@ -16,7 +16,7 @@
 // Design: specs/2026-08-23-tbd-362-admin-email-recovery.md
 export const EMAIL_RECOVERY_NOTICE =
   "This does not verify the account. A confirmation link is sent to the new " +
-  "address; the account stays locked out until the user opens it.";
+  "address; the account stays locked out until the user opens it and enters their password.";
 
 // The second-order consequence the DoD was silent about. Google sign-in
 // matches on `users.email`, so promoting a new address also changes which
