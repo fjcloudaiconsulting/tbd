@@ -40,6 +40,7 @@ from app.schemas.auth import (
 from app.security import decode_token, hash_password
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
+from app.services.subscription_service import enforce_user_limit
 from app.services.user_service import normalize_email as _normalize_email_shared
 
 
@@ -148,6 +149,8 @@ async def create_invitation(
         raise ConflictError("This email is already invited")
 
     await _enforce_invitation_caps(db, org_id=org_id)
+    # BE-23: no new invitation while the plan has no free seat.
+    await enforce_user_limit(db, org_id)
 
     now = utcnow_naive()
     inv = Invitation(
@@ -382,6 +385,12 @@ async def accept_invitation(
     existing = (
         await db.execute(select(User).where(User.email == inv.email))
     ).scalar_one_or_none()
+
+    # BE-23: reactivation and a new user both add an active member, so the
+    # seat check runs here, under the org lock it takes, before either
+    # writes. Every other case is refused below regardless.
+    if existing is None or (existing.org_id == inv.org_id and not existing.is_active):
+        await enforce_user_limit(db, inv.org_id)
 
     if existing is not None and existing.org_id == inv.org_id and not existing.is_active:
         # An invitation carries an ORG role and must never write the PLATFORM

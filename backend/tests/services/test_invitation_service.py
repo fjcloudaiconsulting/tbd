@@ -1058,3 +1058,124 @@ async def test_remove_member_superadmin_reason_wins_over_last_owner(session_fact
                 db, org_id=org_id, current_user=actor, target_user_id=target_id,
             )
         assert excinfo.value.code == invitation_service.CODE_LAST_ACTIVE_OWNER
+
+
+# ── BE-23: plan seat limit on invite + accept ─────────────────────────────
+
+
+async def _put_org_on_plan(factory, org_id: int, *, max_users: int | None) -> None:
+    from app.models.subscription import Plan, Subscription, SubscriptionStatus
+
+    async with factory() as db:
+        plan = Plan(name=f"Seats {max_users}", slug=f"seats-{max_users}", max_users=max_users)
+        db.add(plan)
+        await db.flush()
+        db.add(Subscription(org_id=org_id, plan_id=plan.id, status=SubscriptionStatus.ACTIVE))
+        await db.commit()
+
+
+@pytest.fixture
+def billing_live(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.subscription_service.settings.billing_ui_enabled", True
+    )
+
+
+@pytest.fixture
+def billing_not_live(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.subscription_service.settings.billing_ui_enabled", False
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_refused_when_plan_has_no_free_seat(session_factory, billing_live):
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=1)
+    async with session_factory() as db:
+        with pytest.raises(SvcValidationError, match="maximum of 1 user"):
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="second@acme.io", role=Role.MEMBER,
+            )
+
+
+@pytest.mark.asyncio
+async def test_accept_refused_when_seats_filled_after_invite(session_factory, billing_live):
+    """Invites issued while a seat was free cannot overfill the plan."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=2)
+    async with session_factory() as db:
+        a = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="a@acme.io", role=Role.MEMBER,
+        )
+        b = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="b@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token_a = create_invitation_token(a.id, a.email)
+        token_b = create_invitation_token(b.id, b.email)
+        b_id = b.id
+    async with session_factory() as db:
+        await invitation_service.accept_invitation(
+            db, token=token_a, username="aaa", password="strong-pw-12345",
+        )
+        await db.commit()
+    async with session_factory() as db:
+        with pytest.raises(SvcValidationError, match="maximum of 2 user"):
+            await invitation_service.accept_invitation(
+                db, token=token_b, username="bbb", password="strong-pw-12345",
+            )
+    async with session_factory() as db:
+        assert (await db.get(Invitation, b_id)).accepted_at is None
+        assert await invitation_service.count_members(db, org_id=org_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_reactivation_counts_against_seats(session_factory, billing_live):
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _add_user(
+        session_factory, org_id=org_id, username="gone", email="gone@acme.io", is_active=False,
+    )
+    await _put_org_on_plan(session_factory, org_id, max_users=2)
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="gone@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    await _add_user(session_factory, org_id=org_id, username="filler", email="filler@acme.io")
+    async with session_factory() as db:
+        with pytest.raises(SvcValidationError):
+            await invitation_service.accept_invitation(
+                db, token=token, username="ignored", password="strong-pw-12345",
+            )
+
+
+@pytest.mark.asyncio
+async def test_seat_limit_inert_until_billing_is_live(session_factory, billing_not_live):
+    """Beta: every post-trial org is on Free (max_users=1); members still join."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=1)
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="second@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    async with session_factory() as db:
+        await invitation_service.accept_invitation(
+            db, token=token, username="second", password="strong-pw-12345",
+        )
+        await db.commit()
+        assert await invitation_service.count_members(db, org_id=org_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_unlimited_plan_never_blocks(session_factory, billing_live):
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=None)
+    async with session_factory() as db:
+        await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="n@acme.io", role=Role.MEMBER,
+        )

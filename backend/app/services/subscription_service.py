@@ -223,7 +223,24 @@ async def cancel_subscription(db: AsyncSession, org_id: int) -> Subscription:
 
 
 async def enforce_user_limit(db: AsyncSession, org_id: int) -> None:
-    """Check if the org can add another user. Raises ValidationError if at limit."""
+    """Check if the org can add another user. Raises ValidationError if at limit.
+
+    Called before an invitation is created and inside invitation accept
+    (BE-23). It only adds a member; nobody is ever removed for being over.
+
+    Inert while ``billing_ui_enabled`` is off: during the beta every org past
+    its trial sits on Free (``max_users=1``) with no way to pay, so enforcing
+    then would stop households from adding a second member. Whether to
+    enforce before billing is live is an owner decision.
+
+    The org row is locked first so two concurrent accepts cannot both take
+    the last seat.
+    """
+    if not settings.billing_ui_enabled:
+        return
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
     pair = await get_subscription_with_plan(db, org_id)
     if pair is None:
         return  # No subscription = no limit (shouldn't happen)
