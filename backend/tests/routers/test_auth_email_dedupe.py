@@ -320,6 +320,8 @@ async def _google_link(session_factory, monkeypatch, email: str) -> None:
             follow_redirects=False,
         )
     assert res.status_code in (200, 302), res.text
+    # _google_error_redirect is also a 302: require the success landing.
+    assert "/auth/google/callback#token=" in res.headers["location"], res.headers["location"]
 
 
 def _login(session_factory, email: str, password: str):

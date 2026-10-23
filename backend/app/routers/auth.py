@@ -4015,8 +4015,9 @@ async def google_callback(
             # TBD-651: Google proved control of the email, but nobody proved
             # the stored password belongs to that person (a pre-account
             # attacker may have registered it). Discard it, as the new-user
-            # branch does. No session/MFA/PAT can exist on an unverified row
-            # (login 403s it), so nothing else needs scrubbing.
+            # branch does. No credential other than the password can exist on an
+            # unverified row (login 403s it); attacker-chosen username, profile
+            # and org name can survive.
             user.password_hash = hash_password(secrets.token_urlsafe(32))
             user.password_set = False
             mutated = True

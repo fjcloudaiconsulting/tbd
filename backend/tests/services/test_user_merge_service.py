@@ -23,7 +23,7 @@ from app.models.invitation import Invitation
 from app.models.org_data_reset_lock import OrgDataResetLock
 from app.models.tag import Tag
 from app.models.user import Organization, Role, User
-from app.security import hash_password
+from app.security import hash_password, verify_password
 from app.services import user_merge_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
@@ -489,3 +489,41 @@ async def test_merge_allowed_when_source_is_not_owner_regardless_of_org_owner_co
         assert (
             await db.scalar(select(User).where(User.id == source_id))
         ) is None
+
+
+async def _merge_pw_case(session_factory, *, target_verified: bool) -> User:
+    async with session_factory() as db:
+        org = await _seed_org(db)
+        src = await _seed_user(
+            db, org_id=org.id, username="src", email="s@x.io", email_verified=True
+        )
+        tgt = await _seed_user(
+            db, org_id=org.id, username="tgt", email="t@x.io",
+            email_verified=target_verified,
+        )
+        await db.commit()
+        await user_merge_service.merge_users(
+            db, source_user_id=src.id, target_user_id=tgt.id
+        )
+        await db.commit()
+        return await db.scalar(select(User).where(User.id == tgt.id))
+
+
+@pytest.mark.asyncio
+async def test_merge_verifying_unverified_target_discards_its_password(
+    session_factory,
+) -> None:
+    """FENCE (TBD-651): the target's password was never proven by the email
+    owner; verifying the row from the source must not keep it."""
+    t = await _merge_pw_case(session_factory, target_verified=False)
+    assert t.email_verified is True
+    assert t.password_set is False
+    assert not verify_password("pw", t.password_hash)
+
+
+@pytest.mark.asyncio
+async def test_merge_keeps_password_of_verified_target(session_factory) -> None:
+    """GUARD: an already-verified target keeps its password."""
+    t = await _merge_pw_case(session_factory, target_verified=True)
+    assert t.password_set is True
+    assert verify_password("pw", t.password_hash)
