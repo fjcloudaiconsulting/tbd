@@ -1,5 +1,12 @@
+import logging
+
 from pydantic import ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
+
+# Cloudflare Turnstile's always-pass test secret, which .env.example ships for dev.
+TURNSTILE_ALWAYS_PASS_SECRET = "1x0000000000000000000000000000000AA"
 
 
 class Settings(BaseSettings):
@@ -607,6 +614,38 @@ class Settings(BaseSettings):
         ]
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+def warn_open_production_defaults(settings_obj: Settings) -> list[str]:
+    """INF-05: log each registration safeguard production runs without; return the reasons.
+
+    A warning, not a validator: ``CAPTCHA_REQUIRED=false`` is the documented rollback during a
+    provider outage, and a boot refusal would take production down over it. The backend lifespan
+    calls this once per worker.
+    """
+    if settings_obj.app_env != "production":
+        return []
+    reasons: list[str] = []
+    if not settings_obj.captcha_required:
+        # The pins only matter once the captcha runs.
+        reasons.append("captcha_not_required")
+    else:
+        if settings_obj.captcha_secret == TURNSTILE_ALWAYS_PASS_SECRET:
+            reasons.append("captcha_test_secret")
+        if not settings_obj.captcha_expected_hostname:
+            reasons.append("captcha_hostname_unpinned")
+        if not settings_obj.captcha_expected_action:
+            reasons.append("captcha_action_unpinned")
+    for reason in reasons:
+        logger.warning("config.production_open_default", extra={"reason": reason})
+    for origin in settings_obj.cors_origins:
+        if origin == "*" or origin.startswith("http://"):
+            reasons.append("cors_origin_insecure")
+            logger.warning(
+                "config.production_open_default",
+                extra={"reason": "cors_origin_insecure", "origin": origin},
+            )
+    return reasons
 
 
 try:
