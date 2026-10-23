@@ -305,3 +305,69 @@ async def test_google_callback_merges_even_when_google_email_has_different_case(
         assert u is not None
         # Email stays in the canonical (lowercased) form we stored at seed.
         assert u.email == "flamarion@example.com"
+
+
+# ── TBD-651: Google link must not keep an unproven password ────────────────
+
+
+async def _google_link(session_factory, monkeypatch, email: str) -> None:
+    _mock_google_callback_dependencies(monkeypatch, google_email=email)
+    with TestClient(_make_app(session_factory)) as client:
+        client.cookies.set("oauth_state", "test-state")
+        res = client.get(
+            "/api/v1/auth/google/callback",
+            params={"code": "dummy", "state": "test-state"},
+            follow_redirects=False,
+        )
+    assert res.status_code in (200, 302), res.text
+    # _google_error_redirect is also a 302: require the success landing.
+    assert "/auth/google/callback#token=" in res.headers["location"], res.headers["location"]
+
+
+def _login(session_factory, email: str, password: str):
+    with TestClient(_make_app(session_factory)) as client:
+        return client.post(
+            "/api/v1/auth/login", json={"login": email, "password": password}
+        )
+
+
+@pytest.mark.asyncio
+async def test_google_link_discards_password_of_unverified_account(
+    session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FENCE (pre-account takeover). An attacker registered the victim's
+    email with their own password P (row stays unverified). The victim then
+    signs in with Google, which verifies the row: P must stop working."""
+    user_id = await _seed_local_user(
+        session_factory, email="victim@example.com", password="attacker-pw-123"
+    )
+    await _google_link(session_factory, monkeypatch, "victim@example.com")
+
+    async with session_factory() as db:
+        u = await db.scalar(select(User).where(User.id == user_id))
+        assert u.email_verified is True
+        assert u.password_set is False
+    res = _login(session_factory, "victim@example.com", "attacker-pw-123")
+    assert res.status_code == 401, res.text
+
+
+@pytest.mark.asyncio
+async def test_google_link_keeps_password_of_verified_account(
+    session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GUARD. A verified password user who signs in with Google keeps their
+    password."""
+    user_id = await _seed_local_user(
+        session_factory, email="owner@example.com", password="owner-pw-12345"
+    )
+    async with session_factory() as db:
+        u = await db.scalar(select(User).where(User.id == user_id))
+        u.email_verified = True
+        await db.commit()
+    await _google_link(session_factory, monkeypatch, "owner@example.com")
+
+    async with session_factory() as db:
+        u = await db.scalar(select(User).where(User.id == user_id))
+        assert u.password_set is True
+    res = _login(session_factory, "owner@example.com", "owner-pw-12345")
+    assert res.status_code == 200, res.text
