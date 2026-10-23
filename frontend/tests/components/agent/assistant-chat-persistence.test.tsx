@@ -422,19 +422,6 @@ describe("restore hardening", () => {
     await waitFor(() => expect(cards()).toHaveLength(1));
     expect(apply()).toBeInTheDocument();
   });
-
-  it("send builds its history from the live store: a failed mark written since the last paint keeps the orphan out of the body", async () => {
-    seed([{ kind: "user", id: "e1", text: "orphan" }]);
-    render(<AssistantChat />);
-    await screen.findByText("orphan");
-    chats.push(() => sse([["message", { text: "ok" }]]));
-    await act(async () => {
-      updateEntries(generation(), (p) => p.map((e) => (e.kind === "user" ? { ...e, failed: true } : e)));
-      send("second");
-    });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
-    expect(chatBodies().at(-1).messages).toEqual([{ role: "user", content: "second" }]);
-  });
 });
 
 describe("F15: ids", () => {

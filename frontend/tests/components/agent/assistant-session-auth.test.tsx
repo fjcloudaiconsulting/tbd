@@ -25,16 +25,6 @@ const B = "9:11";
 
 const json = (status: number, b: unknown) =>
   new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
-const sse = (events: Array<[string, unknown]>) =>
-  new Response(
-    new ReadableStream({
-      start(c) {
-        c.enqueue(enc.encode(events.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join("") + "event: done\ndata: {}\n\n"));
-        c.close();
-      },
-    }),
-    { status: 200, headers: { "content-type": "text/event-stream" } },
-  );
 const deferred = () => {
   let resolve!: (r: Response) => void;
   const p = new Promise<Response>((r) => { resolve = r; });
