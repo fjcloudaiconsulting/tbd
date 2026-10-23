@@ -86,7 +86,7 @@ export default function AssistantChat() {
   const turnRef = useRef<Turn | null>(null);
   const turnBusy = useRef(false);
   const stoppedRef = useRef(false);
-  const freshIds = useRef(new Set<string>());
+  const [freshIds] = useState(() => new Set<string>()); // never cleared: ids never repeat
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -198,7 +198,7 @@ export default function AssistantChat() {
             const rest = prev.filter((e) => !(e.kind === "tool" && e.name === tool && e.ok === undefined));
             if (prev.some((e) => e.kind === "preview" && e.action.action_id === action.action_id)) return rest;
             const entry: Entry = { kind: "preview", id: id(), tool, action };
-            freshIds.current.add(entry.id);
+            freshIds.add(entry.id);
             return [...rest, entry];
           });
         } else if (ev.event === "error") {
@@ -318,7 +318,7 @@ export default function AssistantChat() {
           if (e.kind === "preview") {
             return (
               <li key={e.id}>
-                <StoredPreview e={e} autoFocus={freshIds.current.has(e.id)} emphasis={e.id === newestOpen} />
+                <StoredPreview e={e} autoFocus={freshIds.has(e.id)} emphasis={e.id === newestOpen} />
               </li>
             );
           }

@@ -3,6 +3,7 @@
  * F19 (a-d) and F20, driven through the REAL AuthProvider and the real apiFetch
  * (only the network is mocked). Store-level cases: tests/lib/agent/session.test.ts.
  */
+import { useEffect } from "react";
 import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 
 import AssistantChat from "@/components/agent/AssistantChat";
@@ -75,11 +76,12 @@ afterEach(() => {
 });
 
 function Harness({ chat = false }: { chat?: boolean }) {
-  auth = useAuth();
+  const ctx = useAuth();
+  useEffect(() => { auth = ctx; });
   return (
     <>
-      <div data-testid="state">{auth.loading ? "loading" : auth.user ? String(auth.user.id) : "none"}</div>
-      {chat && auth.user ? <AssistantChat key={auth.user.id} /> : null}
+      <div data-testid="state">{ctx.loading ? "loading" : ctx.user ? String(ctx.user.id) : "none"}</div>
+      {chat && ctx.user ? <AssistantChat key={ctx.user.id} /> : null}
     </>
   );
 }
