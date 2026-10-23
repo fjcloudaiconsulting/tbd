@@ -693,7 +693,7 @@ async def test_refusal_audit_ip_comes_from_the_single_client_ip_helper(
     its own docstring says it cannot catch a caller passing the WRONG value.
     This closes that gap for this call site.
     """
-    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
     seed = await _seed(session_factory)
     await _add_member(
         session_factory, seed, username="orgadmin",
@@ -707,7 +707,7 @@ async def test_refusal_audit_ip_comes_from_the_single_client_ip_helper(
     with TestClient(app) as client:
         res = client.delete(
             f"/api/v1/orgs/members/{target_id}",
-            headers={"do-connecting-ip": "203.0.113.77"},
+            headers={"cf-connecting-ip": "203.0.113.77"},
         )
 
     assert res.status_code == 409

@@ -117,7 +117,7 @@ the env-var name (uppercased).
 | `OFX_MAX_ROWS` | no | `10000` | `.env` (optional) | unset | inherit default | no | Post-parse transaction-count cap for an OFX file → HTTP 413 on excess. Restored to 10 000 now that parsing is isolated + killable (was temporarily lowered to 2 000 as a pre-isolation DoS stopgap). | Default 10 000. Files above the cap must be split by date range. |
 | `EXPORT_MAX_ROWS` | no | `2000000` | `.env` (optional) | unset | inherit default | no | Pre-flight `COUNT(*)` ceiling across every table the export registry includes (TBD-222). Above it `scripts/export_org.py` refuses and points the operator at the `privacy@` email channel. | Default 2 000 000. A refusal is safe: no partial artifact is produced. |
 | `EXPORT_MAX_BYTES` | no | `1073741824` | `.env` (optional) | unset | inherit default | no | Cumulative encoded-output ceiling for one export, checked incrementally and aborted the moment it is crossed. A row count does NOT bound bytes (`transactions.description` is free text; several columns are unbounded JSON), and bytes is what exhausts a 512 MB single-instance box. | Default 1 GiB. On abort with `--out` the `.part` file is UNLINKED, so nothing is left at or beside the destination; with `--stdout` the bytes already redirected are trailer-less and fail verification by design. |
-| `PFV_RUNTIME` | legacy | unset | unset | unset | unset | no | Legacy: `app_platform` made `rate_limit.get_client_ip` read `do-connecting-ip`. Leave unset on k3s; use `CLIENT_IP_HEADER`. | Unset is correct on k3s. |
+| `PFV_RUNTIME` | removed | unset | unset | unset | unset | no | No longer read (INF-01). `app_platform` used to make `rate_limit.get_client_ip` trust `do-connecting-ip` (DigitalOcean App Platform); that header is now ignored everywhere. Use `CLIENT_IP_HEADER`. Safe to remove from any manifest that still sets it. | None. |
 | `CLIENT_IP_HEADER` | yes for k3s prod | unset | unset | unset | `cf-connecting-ip` in the cloud-infra `tbd-prod` backend and frontend manifests | no | Header `rate_limit.get_client_ip` trusts for the visitor's IP when it holds one valid IP; the frontend `proxy.ts` access log (`remote_addr`) follows the same rule. Set only where the origin accepts our Cloudflare zone exclusively (Authenticated Origin Pulls, INFRA-93). A Cloudflare-ranges firewall is not enough: a Worker on another zone can set `x-real-ip`, which Cloudflare forwards as `CF-Connecting-IP`. | Unset behind Cloudflare: rate limits and `audit_events.ip_address` key on Cloudflare edge IPs. Set without Authenticated Origin Pulls: callers can pick their own IP. |
 | `PFV_MIGRATE_OK_OFF_MAIN` | no | unset | shell / `.env` only when needed | unset | unset | no | Escape hatch for the lifespan + `./tbd migrate` branch guard. Allows migrations from a non-`main` checkout. | Without it, lifespan and `./tbd migrate` refuse to run on a feature branch. |
 
@@ -363,7 +363,7 @@ switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
   the current production deploy.
 - `backend/app/config.py` — pydantic-settings `Settings` model. Source of
   truth for backend env names, defaults, and validators.
-- `backend/app/rate_limit.py` — `PFV_RUNTIME` consumer.
+- `backend/app/rate_limit.py` — `CLIENT_IP_HEADER` consumer.
 - `backend/app/security.py` — `JWT_SECRET_KEY` consumer.
 - `backend/app/services/email_service.py` — Mailgun env consumer.
 - `frontend/proxy.ts` + `lib/security-headers.ts` — per-request CSP, `TBD_API_URL` origin

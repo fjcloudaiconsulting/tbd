@@ -1129,12 +1129,12 @@ async def test_ai_simulate_audits_resolved_client_ip(session_factory, monkeypatc
     auditing it would stamp every AI simulation with the proxy's
     address instead of the real client's.
 
-    Driven through the App Platform branch: with ``PFV_RUNTIME`` set,
-    ``do-connecting-ip`` is authoritative, so the resolved IP differs
+    Driven through the edge-header branch: with ``CLIENT_IP_HEADER`` set,
+    that header is authoritative, so the resolved IP differs
     from TestClient's direct peer ("testclient") and the assertion
     fails if the handler ever reverts to ``request.client.host``.
     """
-    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
     seen: dict = {}
 
     async def _fake_run_ai_simulation(_db, **kwargs):
@@ -1154,7 +1154,7 @@ async def test_ai_simulate_audits_resolved_client_ip(session_factory, monkeypatc
         res = client.post(
             f"/api/v1/scenarios/{created['id']}/simulate",
             json={"engine": "ai_enhanced", "options": {}},
-            headers={"do-connecting-ip": "203.0.113.9"},
+            headers={"cf-connecting-ip": "203.0.113.9"},
         )
 
     assert res.status_code == 200, res.text
