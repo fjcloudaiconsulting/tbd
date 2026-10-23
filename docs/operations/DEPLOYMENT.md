@@ -12,7 +12,7 @@ Three production surfaces. Each has its own pipeline. Some changes fan out acros
 
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
-| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (cloud-infra) | the `ci.yml` `release` job publishes the `vX.Y.Z` images; merging the Renovate bump PR in cloud-infra deploys them |
+| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | k3s cluster, namespace `tbd-prod` (cloud-infra) | the `ci.yml` `release` job publishes the `vX.Y.Z` images; merging the Renovate bump PR in cloud-infra deploys them |
 | Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | Cloudflare Worker `tbd-landing` | `apex-deploy.yml` (auto) |
 
 ```mermaid
@@ -164,54 +164,7 @@ The bump PR changes the image tags of the backend, frontend, scheduler and migra
 
 ### Smoke tests
 
-`scripts/smoke-test.sh` is run by the post-deploy smoke from cloud-infra `post-deploy-smoke.yml` (INFRA-114) after a production rollout. Env: `SMOKE_BASE_URL=https://app.thebetterdecision.com`, plus `SMOKE_USERNAME` / `SMOKE_PASSWORD` for a dedicated smoke user, read from the SOPS Secret `tbd-prod/tbd-smoke` (there are no GitHub secrets for them). The smoke user must exist, must be `email_verified`, and must **not** have MFA enabled. The exact command, the credentials' location and rotation are in [cloud-infra runbooks, "TBD smoke account"](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md).
-
-#### ⚠ The smoke account cannot have MFA, and that is an accepted risk (TBD-371)
-
-`smoke-test.sh` authenticates with `POST /api/v1/auth/login` and expects a
-`TokenResponse`. With MFA enabled that endpoint returns an `MfaChallengeResponse`
-(`mfa_required` + `mfa_token`) instead, and the smoke test cannot proceed. Making
-it proceed would mean storing the account's **TOTP seed** as a secret, a
-shared secret that mints valid codes forever, which is strictly worse than no
-second factor at all.
-
-So the account stays single-factor. The compensating controls are:
-
-1. **Its username is not published.** It lives in the cluster Secrets
-   `tbd-prod/tbd-smoke` and the founder-count exclusion (SOPS, in cloud-infra),
-   never as a plaintext value in source, a manifest or a GitHub secret.
-2. **A strong, rotated credential**, also in `tbd-prod/tbd-smoke`.
-3. **No PLATFORM rights, and a blast radius of one throwaway org.**
-
-   ⚠ It IS `role: owner`, of its own dedicated organization, and that is not
-   avoidable: `register` hardcodes `role=Role.OWNER` and creates a fresh org
-   per signup (`routers/auth.py:386-395`), so a standalone account cannot hold
-   a lesser role. A lower role would need a second org and an invitation.
-
-   What is actually load-bearing, and what to verify:
-
-   * **`is_superadmin` must be 0.** That is the platform flag, and it is the
-     difference between "owner of an empty org" and "owner of the fleet". It is
-     written only at construction and has no promote path
-     (`is_superadmin=is_first_user_setup`), so only the very first account on
-     an install gets it, but verify rather than assume (query the `users` table
-     for the smoke account's row).
-
-   * **Its org holds nothing of value.** The smoke test reads
-     `GET /api/v1/categories` and writes nothing, so the org should contain
-     only the bootstrap categories. Never point the smoke account at a real
-     tenant.
-
-⚠ Usernames are enumerable through `POST /api/v1/auth/check-username` by design,
-so a non-published name is not secrecy, it just means an attacker must guess
-rather than be handed a confirmed-valid, MFA-less target.
-
-⚠ **Renaming is the part that actually remediates a disclosure.** A username
-that was ever in git history is known forever, so rotating the password alone
-leaves a known, MFA-less account name reachable at the public login form. The
-cloud-infra runbook above covers the password rotation. A rename is
-`PUT /api/v1/users/me` as the smoke account, then the new name goes into
-`tbd-prod/tbd-smoke` and `FOUNDER_COUNT_EXCLUDE_USERNAMES` in the same change.
+`scripts/smoke-test.sh` runs from cloud-infra after a production rollout, against `SMOKE_BASE_URL=https://app.thebetterdecision.com` with a dedicated smoke account. The account's credentials, its required state and its controls are in infra's private notes, not in this repo.
 
 ### How to verify a rollout
 
