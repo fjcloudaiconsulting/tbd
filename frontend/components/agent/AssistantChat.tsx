@@ -4,15 +4,22 @@
 // text, rendered as a text node: no markdown, no links, no images. Only the
 // server-rendered activity lines and preview cards carry structure.
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent,
+} from "react";
 import { Check, CircleAlert, Search } from "lucide-react";
 
-import { ApiResponseError } from "@/lib/api";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { ApiResponseError, apiFetch } from "@/lib/api";
 import {
   MAX_INPUT_CHARS, errorText, openTurn, outgoing, type Entry, type Turn,
 } from "@/lib/agent/chat";
 import { toolLabel } from "@/lib/agent/present";
-import type { StagedAction } from "@/lib/agent/types";
+import {
+  adoptOwner, currentSeq, generation, getServerSnapshot, getSnapshot, idNum, isExpired,
+  mergeServerActions, nextId, resetConversation, subscribe, updateEntries,
+} from "@/lib/agent/session";
+import type { AgentActionRow, StagedAction } from "@/lib/agent/types";
 import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import {
@@ -47,30 +54,72 @@ function ToolLine({ e }: { e: Extract<Entry, { kind: "tool" }> }) {
   );
 }
 
+// One staged-change card. It captures the generation when it mounts, so a
+// decision that resolves after sign-out or New chat writes nothing.
+function StoredPreview({ e, autoFocus, emphasis }: {
+  e: Extract<Entry, { kind: "preview" }>; autoFocus: boolean; emphasis: boolean;
+}) {
+  const gen = useRef(generation()).current;
+  return (
+    <PreviewCard
+      tool={e.tool}
+      action={e.action}
+      outcome={e.outcome as Outcome | undefined}
+      autoFocus={autoFocus}
+      emphasis={emphasis}
+      onSwap={(action) => updateEntries(gen, (p) => p.map((x) => (x.id === e.id && x.kind === "preview" ? { ...x, action } : x)))}
+      onDecided={(outcome) => updateEntries(gen, (p) => p.map((x) => (x.id === e.id && x.kind === "preview" ? { ...x, outcome } : x)))}
+    />
+  );
+}
+
 export default function AssistantChat() {
   useBalancesHidden(); // repaint model text on Hide balances (TBD-527)
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const { user } = useAuth();
+  const owner = user ? `${user.id}:${user.org_id}` : null;
+  const { entries } = useSyncExternalStore(subscribe, () => getSnapshot(owner), getServerSnapshot);
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
+  // The server decides every restored card's label; until it answers, the
+  // undecided cards it may contradict (id <= seq) are held back.
+  const [rehydr, setRehydr] = useState<{ seq: number; gen: number } | null>(null);
   const turnRef = useRef<Turn | null>(null);
   const turnBusy = useRef(false);
   const stoppedRef = useRef(false);
-  const seq = useRef(0);
+  const freshIds = useRef(new Set<string>());
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
-  const id = () => `e${++seq.current}`;
+  const id = nextId;
 
-  // Cancel a running turn when the page goes away, so it frees the org's
-  // turn lock instead of running on unseen.
+  // Leaving the page cancels a running turn, so it frees the org's turn lock
+  // instead of running on unseen; the turn's later writes still land in the store.
   const unmounted = useRef(false);
   useEffect(() => {
     unmounted.current = false; // StrictMode re-runs the effect after a test cleanup
     return () => {
       unmounted.current = true;
+      stoppedRef.current = true;
       turnRef.current?.cancel();
     };
   }, []);
+
+  function rehydrate() {
+    const gen = generation();
+    const seqAtSend = currentSeq();
+    setRehydr({ seq: seqAtSend, gen });
+    apiFetch<{ items: AgentActionRow[] }>("/api/v1/agent/actions?channel=in_app&limit=50")
+      .then((r) => { if (gen === generation()) mergeServerActions(gen, seqAtSend, r.items); })
+      .catch(() => {}) // stored cards render unchanged; confirm stays server-authoritative
+      .finally(() => setRehydr((p) => (p && p.gen === gen ? null : p)));
+  }
+
+  useEffect(() => {
+    if (owner === null) return;
+    adoptOwner(owner);
+    if (isExpired()) resetConversation();
+    rehydrate();
+  }, [owner]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const last = entries[entries.length - 1];
@@ -78,18 +127,27 @@ export default function AssistantChat() {
     if (last && last.kind !== "preview") endRef.current?.scrollIntoView?.({ block: "end" });
   }, [entries]);
 
+  function newChat() {
+    if (streaming) return;
+    inputRef.current?.focus(); // first: the button unmounts when the transcript empties
+    resetConversation();
+    rehydrate();
+  }
+
   async function send(raw: string) {
     const text = raw.trim();
     if (!text || turnBusy.current) return;
     turnBusy.current = true;
-    const user: Entry = { kind: "user", id: id(), text };
-    const history = [...entries.filter((e) => !(e.kind === "user" && e.failed) && e.kind !== "error"), user];
-    setEntries(history);
+    const gen = generation();
+    const userEntry: Entry = { kind: "user", id: id(), text };
+    const history = [...entries.filter((e) => !(e.kind === "user" && e.failed) && e.kind !== "error"), userEntry];
+    updateEntries(gen, () => history, true);
     setDraft("");
     setStreaming(true);
     stoppedRef.current = false;
 
-    const add = (e: Entry) => setEntries((prev) => [...prev, e]);
+    const set = (fn: (prev: Entry[]) => Entry[]) => updateEntries(gen, fn);
+    const add = (e: Entry) => set((prev) => [...prev, e]);
     let produced = false;
     let done = false;
     let code: string | null = null;
@@ -118,7 +176,7 @@ export default function AssistantChat() {
           lastTool = String(data.name ?? "");
           add({ kind: "tool", id: id(), name: lastTool });
         } else if (ev.event === "tool_result") {
-          setEntries((prev) => {
+          set((prev) => {
             const i = prev.findLastIndex((e) => e.kind === "tool" && e.name === data.name && e.ok === undefined);
             if (i === -1) return prev;
             const next = [...prev];
@@ -133,11 +191,16 @@ export default function AssistantChat() {
         } else if (ev.event === "preview") {
           produced = true;
           const tool = lastTool;
-          // The staged write replaces its own "working" activity line.
-          setEntries((prev) => [
-            ...prev.filter((e) => !(e.kind === "tool" && e.name === tool && e.ok === undefined)),
-            { kind: "preview", id: id(), tool, action: data.action as StagedAction },
-          ]);
+          const action = data.action as StagedAction;
+          // The staged write replaces its own "working" activity line; a card
+          // the store already holds (rehydrated) is not added twice.
+          set((prev) => {
+            const rest = prev.filter((e) => !(e.kind === "tool" && e.name === tool && e.ok === undefined));
+            if (prev.some((e) => e.kind === "preview" && e.action.action_id === action.action_id)) return rest;
+            const entry: Entry = { kind: "preview", id: id(), tool, action };
+            freshIds.current.add(entry.id);
+            return [...rest, entry];
+          });
         } else if (ev.event === "error") {
           code = String(data.code ?? "internal_error");
         } else if (ev.event === "done") {
@@ -153,16 +216,16 @@ export default function AssistantChat() {
       turnBusy.current = false;
       setStreaming(false);
       // A lookup the turn never answered did not finish; do not leave it "working".
-      setEntries((prev) => prev.map((e) => (e.kind === "tool" && e.ok === undefined ? { ...e, ok: false, code: "stopped" } : e)));
+      set((prev) => prev.map((e) => (e.kind === "tool" && e.ok === undefined ? { ...e, ok: false, code: "stopped" } : e)));
     }
     if (stoppedRef.current && !produced) {
-      setEntries((prev) => prev.map((e) => (e.id === user.id ? { ...user, failed: true } : e)));
+      set((prev) => prev.map((e) => (e.id === userEntry.id ? { ...userEntry, failed: true } : e)));
       return;
     }
     if (code) {
       const failed = !produced;
-      setEntries((prev) => [
-        ...prev.map((e) => (failed && e.id === user.id ? { ...user, failed: true } : e)),
+      set((prev) => [
+        ...prev.map((e) => (failed && e.id === userEntry.id ? { ...userEntry, failed: true } : e)),
         { kind: "error", id: id(), code: status ? `${status}:${code}` : code },
       ]);
     }
@@ -185,10 +248,9 @@ export default function AssistantChat() {
     }
   }
 
-  function decided(entryId: string, outcome: Outcome) {
-    setEntries((prev) => prev.map((e) => (e.id === entryId && e.kind === "preview" ? { ...e, outcome } : e)));
-  }
-
+  // Undecided cards the pending GET may still contradict are not shown yet.
+  const shown = rehydr ? entries.filter((e) => !(e.kind === "preview" && !e.outcome && idNum(e.id) <= rehydr.seq)) : entries;
+  const canReset = entries.some((e) => e.kind !== "preview" || e.outcome);
   const lastFailed = [...entries].reverse().find((e) => e.kind === "user" && e.failed);
   // Only the newest undecided card carries the brass Apply.
   const newestOpen = [...entries].reverse().find((e) => e.kind === "preview" && !e.outcome)?.id;
@@ -221,9 +283,9 @@ export default function AssistantChat() {
         </div>
       )}
 
-      <div role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation">
+      <div role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation" aria-busy={(rehydr !== null && !streaming) || undefined}>
       <ol className="space-y-5 pb-6">
-        {entries.map((e, i) => {
+        {shown.map((e, i) => {
           if (e.kind === "user") {
             return (
               <li key={e.id} className="flex flex-col items-end">
@@ -250,19 +312,13 @@ export default function AssistantChat() {
           }
           if (e.kind === "tool") {
             // Consecutive lookups read as one compact group.
-            const grouped = entries[i - 1]?.kind === "tool";
+            const grouped = shown[i - 1]?.kind === "tool";
             return <li key={e.id} className={grouped ? "!mt-1.5" : undefined}><ToolLine e={e} /></li>;
           }
           if (e.kind === "preview") {
             return (
               <li key={e.id}>
-                <PreviewCard
-                  tool={e.tool}
-                  action={e.action}
-                  autoFocus
-                  emphasis={e.id === newestOpen}
-                  onDecided={(o) => decided(e.id, o)}
-                />
+                <StoredPreview e={e} autoFocus={freshIds.current.has(e.id)} emphasis={e.id === newestOpen} />
               </li>
             );
           }
@@ -295,7 +351,7 @@ export default function AssistantChat() {
 
       <form onSubmit={onSubmit} className="border-t border-border pt-3">
         <label htmlFor="assistant-input" className="sr-only">Message the assistant</label>
-        <div className="flex items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2">
           <textarea
             id="assistant-input"
             ref={inputRef}
@@ -317,9 +373,20 @@ export default function AssistantChat() {
           >
             {streaming ? "Stop response" : "Send"}
           </button>
+          {canReset && (
+            <button
+              type="button"
+              onClick={newChat}
+              aria-disabled={streaming}
+              className={`${btnSecondary} min-h-[44px] shrink-0 aria-disabled:opacity-60`}
+            >
+              New chat
+            </button>
+          )}
         </div>
         <p className="mt-1.5 text-xs text-text-muted">
-          Enter sends, Shift+Enter starts a new line. The conversation is not saved when you leave this page.
+          Enter sends, Shift+Enter starts a new line. The conversation stays in this tab until you sign out.
+          It starts fresh when you come back after 2 hours without a message.
           What you send goes to your organization&rsquo;s AI provider. We remove the IBANs, card numbers,
           emails and phone numbers we recognize first; names are sent as you type them.
         </p>

@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "October 5, 2026";
-const LAST_UPDATED = "October 16, 2026";
+const LAST_UPDATED = "October 23, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -98,7 +98,9 @@ export default function PrivacyPolicyPage() {
                 to keep you logged in, a short-lived <code>oauth_state</code>{" "}
                 cookie issued during Google sign-in (deleted within 10 minutes
                 of the sign-in flow completing or being cancelled), a theme
-                preference in local storage, and a bot-management cookie set
+                preference in local storage, the current assistant
+                conversation in the tab&rsquo;s session storage, and a
+                bot-management cookie set
                 by Cloudflare. On our public marketing pages (never once you
                 are signed in to the app), we use Google Analytics 4. It runs
                 only after you opt in: a consent banner lets you accept or
@@ -283,8 +285,11 @@ export default function PrivacyPolicyPage() {
               <strong>Assistant conversations.</strong> What you send to the
               assistant goes to your organization&rsquo;s AI provider, which is
               a cloud service unless your organization runs its own AI
-              server. We do not store your conversations with the assistant. A conversation lives in your
-              browser tab and is gone when you close it.
+              server. We do not store your conversations with the assistant on our
+              servers. A conversation is kept in your browser tab until you
+              sign out or start a new chat, and it is not restored once 2
+              hours have passed since your last message. A browser that
+              reopens closed tabs can bring it back within that time.
             </p>
             <p>
               <strong>Changes the assistant proposes.</strong> The

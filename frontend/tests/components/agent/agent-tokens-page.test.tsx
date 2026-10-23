@@ -60,7 +60,8 @@ const DONE: AgentActionRow = {
     changes: [{ entity: "budgets", id: 12, field: "amount", before: "400.00", after: "450.00", currency: "EUR" }],
     warnings: [], context: { category_name: { untrusted: "Groceries" } },
   },
-  error_code: null, created_at: "2026-10-08T09:00:00", decided_at: "2026-10-08T09:00:01",
+  error_code: null, created_at: "2026-10-08T09:00:00", expires_at: "2026-10-08T09:10:00",
+  decided_at: "2026-10-08T09:00:01", live: false,
 };
 
 type Route = (init: RequestInit) => Response;

@@ -33,6 +33,10 @@ interface Props {
   // The brass Apply belongs to one card per screen (the One Brass Rule).
   emphasis?: boolean;
   applyLabel?: string;
+  // A restored decision: a card that was already applied shows no Apply.
+  outcome?: Outcome;
+  // A stale swap replaced the action; the host records the fresh one.
+  onSwap?: (action: StagedAction) => void;
   onDecided?: (outcome: Outcome, action: StagedAction) => void;
   // The action the card currently holds (a stale swap replaces it) and
   // whether a decision is in flight, for a host that may close the card.
@@ -62,11 +66,12 @@ function timeOf(iso: string): string {
 }
 
 export default function PreviewCard({
-  tool, action: initial, drift, autoFocus, emphasis = true, applyLabel = "Apply change", onDecided, onState,
+  tool, action: initial, drift, autoFocus, emphasis = true, applyLabel = "Apply change", outcome: seeded,
+  onSwap, onDecided, onState,
 }: Props) {
   const hidden = useBalancesHidden(); // repaints amounts on Hide balances (TBD-527)
   const [action, setAction] = useState(initial);
-  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(seeded ?? null);
   const [busy, setBusy] = useState<"confirm" | "cancel" | null>(null);
   const [notice, setNotice] = useState("");
   const [failure, setFailure] = useState("");
@@ -116,6 +121,7 @@ export default function PreviewCard({
         | null;
       if (code === "preview_stale" && detail?.action_id) {
         setAction({ ...detail });
+        onSwap?.({ ...detail });
         setNotice("The data changed since this was proposed. Review the updated change.");
         armedAt.current = Date.now() + REARM_MS;
         focusCard();
@@ -232,6 +238,11 @@ export default function PreviewCard({
         {blind && !outcome && (
           <p id={`${headingId}-hidden`} className="text-sm text-text-secondary">
             Amounts are hidden. Show balances to review this change before applying it.
+          </p>
+        )}
+        {outcome === "expired" && (
+          <p className="text-sm text-text-secondary">
+            This change expired before it was applied. Ask again for a fresh one.
           </p>
         )}
         {failure && <p role="alert" className={errorCls}>{failure}</p>}
