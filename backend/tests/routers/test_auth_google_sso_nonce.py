@@ -100,3 +100,35 @@ async def test_an_error_redirect_clears_the_nonce(session_factory, google_config
         )
     assert "sso_error=cancelled" in res.headers["location"]
     assert _cleared(res, "oauth_nonce")
+
+
+# ── FE-03: the MFA challenge rides in the fragment, never a query ───────────
+
+
+@pytest.mark.asyncio
+async def test_an_mfa_account_gets_its_challenge_in_the_callback_fragment(
+    session_factory, google_config, monkeypatch
+) -> None:
+    from sqlalchemy import update
+
+    from app.models.user import User
+    from app.security import decode_token
+
+    await _seed_default_plan(session_factory)
+    user_id = await _seed_existing_sso_user(session_factory, email="returning@example.com")
+    async with session_factory() as db:
+        await db.execute(update(User).where(User.id == user_id).values(mfa_enabled=True))
+        await db.commit()
+    _patch_httpx(monkeypatch, userinfo_email="returning@example.com")
+    with TestClient(_make_app(session_factory)) as client:
+        client.cookies.set("oauth_nonce", NONCE)
+        res = _drive_callback(client)
+    assert res.status_code == 302, res.text
+    parts = urlsplit(res.headers["location"])
+    assert parts.path == "/auth/google/callback"
+    assert parts.query == ""  # nothing a server or Referer would see
+    fragment = parse_qs(parts.fragment)
+    assert decode_token(fragment["mfa_token"][0])["type"] == "mfa_challenge"
+    assert fragment["nonce"] == [NONCE]
+    assert "token" not in fragment
+    assert _cleared(res, "oauth_nonce")

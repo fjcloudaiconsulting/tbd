@@ -165,4 +165,31 @@ describe("GoogleCallbackPage", () => {
       expect(setAccessTokenMock).not.toHaveBeenCalled();
     });
   });
+
+  describe("FE-03: the Google MFA challenge arrives in the fragment", () => {
+    it("hands the challenge to /mfa-verify through sessionStorage", async () => {
+      startedSignIn();
+      window.history.replaceState(null, "", `/auth/google/callback#mfa_token=challenge.jwt.x&nonce=${NONCE}`);
+
+      render(<GoogleCallbackPage />);
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/mfa-verify");
+      });
+      expect(window.sessionStorage.getItem("mfa_token")).toBe("challenge.jwt.x");
+      expect(window.location.hash).toBe("");
+      expect(setAccessTokenMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses a planted challenge like a planted token", async () => {
+      window.history.replaceState(null, "", "/auth/google/callback#mfa_token=planted.jwt.x&nonce=guess-nonce-value");
+
+      render(<GoogleCallbackPage />);
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/login?sso_error=state");
+      });
+      expect(window.sessionStorage.getItem("mfa_token")).toBeNull();
+    });
+  });
 });

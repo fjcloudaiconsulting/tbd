@@ -4406,8 +4406,16 @@ async def google_callback(
 
     if user.mfa_enabled:
         mfa_token = create_mfa_challenge_token(user.id)
+        # FE-03. The challenge rides in the callback page's FRAGMENT, never a
+        # query string: a fragment is not sent to any server, so it stays out
+        # of access logs, Referer headers and the CSP report sink. The page
+        # checks the nonce (FE-02) and hands the challenge to /mfa-verify
+        # through sessionStorage, as the password login does.
         resp = RedirectResponse(
-            url=f"{app_settings.app_url}/mfa-verify?mfa_token={mfa_token}",
+            url=(
+                f"{app_settings.app_url}/auth/google/callback"
+                f"#mfa_token={mfa_token}{_sso_nonce_param(oauth_nonce)}"
+            ),
             status_code=302,
         )
         resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
