@@ -3,8 +3,17 @@
 Every mutating route in the RUNNING app (not an AST) is exactly one of: mirrored
 by a registered tool that covers all its body fields, never exposable,
 in AGENT_PARITY_GAPS (a ticket owns the tool), or in PARITY_EXEMPT (UI-only).
-Stale entries fail too. F-R4 body-role scan: a mirrored handler's inline role
-checks must not be stricter than the tool's ``min_role``.
+Stale entries fail too. F-R4 body-role scan: a mirrored route's role gates (inline
+in the handler, or Depends() on the route) must not be stricter than the tool's
+``min_role``.
+
+If RED: add a tool mirroring the route; or add an AGENT_PARITY_GAPS entry with the
+owning ticket (and lower MAX_GAPS in the same PR when you CLOSE a gap); or add a
+PARITY_EXEMPT entry with a reviewed reason (UI-only routes).
+
+Limits: nested body models are compared by top-level field name only; role checks
+inside other helpers or services are not seen; fail-closed covers literal
+``.role`` uses only.
 """
 from __future__ import annotations
 
@@ -23,7 +32,8 @@ from app.models.user import Role
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
-# lowers this number in the same PR; raising it needs an architect ruling.
+# lowers this number in the same PR (equality, so a silent deletion fails);
+# raising it needs an architect ruling.
 MAX_GAPS = 78
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
@@ -136,15 +146,16 @@ def _live_mutating() -> dict[tuple[str, str], object]:
 
 
 def _body_fields(route) -> set[str]:
-    out: set[str] = set()
+    out: set[str] = {f.alias for f in route.dependant.query_params}
     for f in route.dependant.body_params:
         model = f.field_info.annotation
         out |= set(getattr(model, "model_fields", None) or {f.alias})
     return out
 
 
-def _problems(routes, tools, gaps, exempt, never=registry._never_exposable) -> list[str]:
-    """routes: {key: body-field set}. Every returned string is a failure."""
+def _problems(routes, tools, gaps, exempt, never=registry._never_exposable, live=None) -> list[str]:
+    """routes: {key: body+query field set}; live: every live (method, path), reads included. Every returned string is a failure."""
+    live = set(routes) if live is None else live
     mirrored = {
         t.mirrors_route
         for t in tools
@@ -169,27 +180,40 @@ def _problems(routes, tools, gaps, exempt, never=registry._never_exposable) -> l
     for name, ledger in (("gap", gaps), ("exempt", exempt)):
         out += [f"{k}: stale {name} entry, no such route" for k in sorted(ledger) if k not in routes]
     out += [
-        f"{t.name}: mirrors {t.mirrors_route}, which is not a live mutating route"
+        f"{t.name}: mirrors {t.mirrors_route}, which is not a live mutating route (or, for a read tool, the route is gone)"
         for t in tools
-        if t.risk != "read" and t.mirrors_route not in routes
+        if t.mirrors_route not in live
     ]
     return out
 
 
+def _live_all() -> set[tuple[str, str]]:
+    from app.main import app
+    from tests.app_routes import effective_routes
+
+    return {(m, r.path) for r in effective_routes(app) for m in (r.methods or ())}
+
+
 def test_every_mutating_route_is_classified_exactly_once():
     routes = {k: _body_fields(r) for k, r in _live_mutating().items()}
-    assert _problems(routes, registry.all_tools(), AGENT_PARITY_GAPS, PARITY_EXEMPT) == []
+    assert _problems(routes, registry.all_tools(), AGENT_PARITY_GAPS, PARITY_EXEMPT, live=_live_all()) == []
 
 
 def test_gaps_ratchet_only_goes_down():
-    assert len(AGENT_PARITY_GAPS) <= MAX_GAPS
+    assert len(AGENT_PARITY_GAPS) == MAX_GAPS, (
+        f"{len(AGENT_PARITY_GAPS)} gaps vs MAX_GAPS={MAX_GAPS}: lower MAX_GAPS when you "
+        "close a gap; raising it needs an architect ruling"
+    )
     assert all(v.startswith("TBD-") for v in AGENT_PARITY_GAPS.values())
 
 
-def test_partial_mirror_stays_a_gap():
-    # transactions_set_category covers 'category_id' only, so the route is a gap.
-    assert ("PUT", "/api/v1/transactions/{transaction_id}") in AGENT_PARITY_GAPS
-    assert AGENT_PARITY_GAPS[("PUT", "/api/v1/transactions/{transaction_id}")] == "TBD-664"
+def test_exempt_list_is_pinned():
+    assert set(PARITY_EXEMPT) == {
+        ("PATCH", "/api/v1/dashboard"),
+        ("POST", "/api/v1/announcements/{announcement_id}/dismiss"),
+        ("POST", "/api/v1/notifications/mark-seen"),
+        ("PATCH", "/api/v1/notifications/{notification_id}"),
+    }, "a new exemption needs a reviewed reason (and an update to this pin)"
 
 
 # -- the fence's own defects (synthetic inputs) -----------------------------
@@ -269,11 +293,31 @@ def _handler_required_role(fn) -> Role:
     return need
 
 
+def _dependant_required_role(dep) -> Role:
+    """Strictest role any Depends() in the route's flattened dependant tree
+    enforces (decorator-, router- and parameter-level alike)."""
+    need = Role.MEMBER
+    for sub in dep.dependencies:
+        name = getattr(sub.call, "__name__", "")
+        if name == "require_permission" or name.startswith("require_permission_"):
+            raise AssertionError(f"{name}: permission gate not mapped to a role")
+        r = {"require_org_admin": Role.ADMIN, "require_org_owner": Role.OWNER}.get(name, Role.MEMBER)
+        need = max(need, r, _dependant_required_role(sub), key=ROLE_RANK.__getitem__)
+    return need
+
+
+def _route_required_role(route) -> Role:
+    return max(_handler_required_role(route.endpoint), _dependant_required_role(route.dependant), key=ROLE_RANK.__getitem__)
+
+
 @pytest.mark.parametrize("tool", [t for t in registry.all_tools() if t.risk != "read"], ids=lambda t: t.name)
 def test_fr4_min_role_covers_handler_body_checks(tool):
     route = _live_mutating()[tool.mirrors_route]
-    need = _handler_required_role(route.endpoint)
-    assert ROLE_RANK[tool.min_role] >= ROLE_RANK[need], (tool.name, need)
+    need = _route_required_role(route)
+    assert ROLE_RANK[tool.min_role] >= ROLE_RANK[need], (
+        f"{tool.name} has min_role={tool.min_role.value} but its route enforces {need.value}: "
+        "raise the tool's min_role"
+    )
 
 
 def _fake_admin_checked(current_user):
@@ -295,5 +339,18 @@ def test_body_role_scan_classifies_and_fails_closed():
     assert _handler_required_role(_fake_role_cmp) == Role.ADMIN
     with pytest.raises(AssertionError, match="unclassifiable"):
         _handler_required_role(_fake_role_opaque)
-    # a MEMBER tool mirroring an admin-checked handler is exactly what the test above rejects
-    assert ROLE_RANK[Role.MEMBER] < ROLE_RANK[_handler_required_role(_fake_admin_checked)]
+
+
+def test_depends_gate_is_seen_on_a_real_route():
+    r = _live_mutating()[("POST", "/api/v1/categories/restore-recommended")]
+    assert _handler_required_role(r.endpoint) == Role.MEMBER  # the gate is a Depends, not in the body
+    assert _route_required_role(r) != Role.MEMBER
+    # a MEMBER tool mirroring it fails the same comparison the F-R4 test makes
+    assert ROLE_RANK[Role.MEMBER] < ROLE_RANK[_route_required_role(r)]
+
+
+def test_query_params_count_as_fields_on_a_real_route():
+    key = ("DELETE", "/api/v1/categories/{category_id}")
+    fields = _body_fields(_live_mutating()[key])
+    assert fields, "expected query params on this route"
+    assert _problems({key: fields}, [_T(key, ["category_id"])], {}, {}, never=lambda p: False)
