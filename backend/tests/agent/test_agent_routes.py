@@ -130,6 +130,46 @@ async def test_list_is_own_rows_newest_first_with_filters(factory, w, client):
     assert (await client.get("/api/v1/agent/actions", params={"limit": 51})).status_code == 422
 
 
+async def test_b1_pending_means_live_and_live_agrees(factory, w, client, monkeypatch):
+    """FENCE B1 (TBD-614). status=pending excludes a row with expires_at == now
+    and a past one; each row's ``live`` agrees. Wrong implementations: no
+    filter; ``>=``; ``live`` computed with a different ``now``."""
+    import datetime as dt
+
+    from app.models.agent_pending_action import AgentPendingAction as Action
+    a = w["A"]
+    t = dt.datetime(2026, 10, 20, 12, 0, 0)
+    monkeypatch.setattr("app.routers.agent.utcnow_naive", lambda: t)
+    past, edge, live = [(await _stage(factory, w, f"{101 + i}.00"))["action_id"] for i in range(3)]
+    async with factory() as db:
+        for aid, exp in ((past, t - dt.timedelta(minutes=1)), (edge, t), (live, t + dt.timedelta(minutes=5))):
+            await db.execute(update(Action).where(Action.id == aid).values(expires_at=exp))
+        await db.commit()
+    _as(factory, a["member"])
+    got = (await client.get("/api/v1/agent/actions", params={"status": "pending"})).json()["items"]
+    assert [x["action_id"] for x in got] == [live]
+    allrows = {x["action_id"]: x["live"] for x in (await client.get("/api/v1/agent/actions")).json()["items"]}
+    assert allrows == {past: False, edge: False, live: True}
+
+
+async def test_b2_channel_filter_excludes_mcp_pending(factory, w, client):
+    """FENCE B2 (TBD-614). channel=in_app excludes the same user's MCP pending
+    row. Wrong implementation: no channel filter."""
+    from tests.agent.test_actions import _seed_pending
+    a = w["A"]
+    chat_id = (await _stage(factory, w, "111.00"))["action_id"]
+    async with factory() as db:
+        mcp = _seed_pending(a["org"], a["member"], 1, channel="mcp", token=a["t1"])
+        db.add_all(mcp)
+        await db.commit()
+    _as(factory, a["member"])
+    both = (await client.get("/api/v1/agent/actions", params={"status": "pending"})).json()["items"]
+    assert len(both) == 2
+    got = (await client.get("/api/v1/agent/actions", params={"status": "pending", "channel": "in_app"})).json()["items"]
+    assert [x["action_id"] for x in got] == [chat_id]
+    assert (await client.get("/api/v1/agent/actions", params={"channel": "bogus"})).status_code == 422
+
+
 def test_routes_carry_the_interactive_and_entitlement_guards():
     """A PAT must never confirm (F-L7 shape) and the plan key gates the surface."""
     seen = {}

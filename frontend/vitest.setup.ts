@@ -30,6 +30,7 @@ if (typeof Blob !== "undefined" && typeof Blob.prototype.text !== "function") {
 beforeEach(() => {
   if (typeof window !== "undefined") {
     window.localStorage.clear();
+    window.sessionStorage.clear();
   }
 });
 

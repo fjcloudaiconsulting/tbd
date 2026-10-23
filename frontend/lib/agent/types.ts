@@ -44,7 +44,10 @@ export interface AgentActionRow {
   preview: { summary: string; changes: ActionChange[]; warnings: string[]; context: Record<string, unknown> };
   error_code: string | null;
   created_at: string;
+  expires_at: string;
   decided_at: string | null;
+  // pending AND not past expires_at, decided server-side in one clock
+  live: boolean;
 }
 
 export type AgentScope = "agent:read" | "agent:write" | "agent:auto";
