@@ -24,7 +24,7 @@
 #   SMOKE_PASSWORD     — password for the smoke user
 #
 # The smoke user must be a dedicated, email-verified account with no real
-# data, and must be able to log in without an MFA challenge.
+# data. Its required state is in infra private ops notes (owner-held).
 #
 # Exit codes:
 #   0  every check passed
