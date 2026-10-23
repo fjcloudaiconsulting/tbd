@@ -1,6 +1,6 @@
 """TBD-390: the SSO step-up proof is scoped to ONE action.
 
-``users.stepup_token`` stores ``f"{action}:{token}"``; the fragment carries
+``users.stepup_token`` stores ``f"{action}:{sha256(token)}"`` (DB-06); the fragment carries
 the bare token; each consumer only accepts a proof issued for its own action
 and spends it with an atomic compare-and-clear. Fences F1-F11 + D1 from the
 spec; every rejection has a positive control on the same fixture shape.
@@ -34,7 +34,7 @@ from sqlalchemy.pool import StaticPool
 
 import app as app_pkg
 from tests.factories.ai import AI_ALL, ai_on_rows
-from app.auth.stepup import STEPUP_ACTIONS, consume_stepup, issue_stepup, stepup_valid
+from app.auth.stepup import STEPUP_ACTIONS, consume_stepup, issue_stepup, stepup_valid, stored_proof
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
@@ -359,7 +359,7 @@ async def test_f2_legacy_bare_token_is_rejected_everywhere(factory, action):
     _assert_rejected(await _call(factory, uid, action, tok), action)
 
     control = await _seed(factory)
-    await _set_raw(factory, control, f"{action}:{tok}")
+    await _set_raw(factory, control, stored_proof(action, tok))
     _assert_ok(await _call(factory, control, action, tok), action)
 
 
@@ -371,6 +371,20 @@ async def test_f3_presenting_the_stored_prefixed_value_is_rejected(factory, acti
     tok = await _issue(factory, uid, action)
     _assert_rejected(await _call(factory, uid, action, f"{action}:{tok}"), action)
     _assert_ok(await _call(factory, uid, action, tok), action)
+
+
+async def test_db06_the_row_never_holds_the_presentable_token(factory):
+    """DB-06: the row keeps only the token's SHA-256, and the digest read
+    off the row is not itself a proof."""
+    import hashlib
+
+    uid = await _seed(factory)
+    tok = await _issue(factory, uid, "email_change")
+    stored, _ = await _row(factory, uid)
+    assert tok not in stored
+    assert stored == "email_change:" + hashlib.sha256(tok.encode()).hexdigest()
+    _assert_rejected(await _call(factory, uid, "email_change", stored.split(":", 1)[1]), "email_change")
+    _assert_ok(await _call(factory, uid, "email_change", tok), "email_change")
 
 
 @pytest.mark.parametrize("action", list(CONSUMERS))
@@ -511,7 +525,7 @@ async def test_f7_callback_issues_a_scoped_proof_and_audits_success(
     base, frag = location.split("#stepup_token=", 1)
     assert base == f"http://localhost{STEPUP_ACTIONS[action]}"
     assert frag and ":" not in frag
-    assert (await _row(factory, uid))[0] == f"{action}:{frag}"
+    assert (await _row(factory, uid))[0] == stored_proof(action, frag)
 
     rows = await _all_audit_rows(factory)
     succeeded = [r for r in rows if r.event_type == SUCCEEDED_EVENT]
