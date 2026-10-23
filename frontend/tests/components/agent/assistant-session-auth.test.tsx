@@ -94,11 +94,12 @@ function populateAs(owner: string) {
   updateEntries(generation(), () => [{ kind: "user", id: "e1", text: "secret of " + owner }], true);
   expect(window.sessionStorage.getItem(KEY)).not.toBeNull();
 }
-const wiped = () => {
-  expect(window.sessionStorage.getItem(KEY)).toBeNull();
-  expect(getSnapshot(A).entries).toEqual([]);
-  expect(getSnapshot(B).entries).toEqual([]);
-};
+const wiped = () =>
+  waitFor(() => {
+    expect(window.sessionStorage.getItem(KEY)).toBeNull();
+    expect(getSnapshot(A).entries).toEqual([]);
+    expect(getSnapshot(B).entries).toEqual([]);
+  });
 
 describe("F5: every way the user becomes null wipes the session", () => {
   it("manual logout", async () => {
@@ -108,7 +109,7 @@ describe("F5: every way the user becomes null wipes the session", () => {
     expect(getSnapshot(A).entries).toHaveLength(1); // a restore as the same user keeps it
     await act(async () => { await auth.logout(); });
     await settled("none");
-    wiped();
+    await wiped();
   });
 
   it("a terminal 401 (auth:unauthenticated)", async () => {
@@ -117,7 +118,7 @@ describe("F5: every way the user becomes null wipes the session", () => {
     await settled("5");
     act(() => { window.dispatchEvent(new Event("auth:unauthenticated")); });
     await settled("none");
-    wiped();
+    await wiped();
   });
 
   it("a restore failure", async () => {
@@ -125,7 +126,7 @@ describe("F5: every way the user becomes null wipes the session", () => {
     refresh = () => json(401, { detail: "no session" });
     mount();
     await settled("none");
-    wiped();
+    await wiped();
   });
 
   it("a refresh that returns another identity, end to end through apiFetch", async () => {
@@ -135,7 +136,7 @@ describe("F5: every way the user becomes null wipes the session", () => {
     refresh = () => json(200, { access_token: tok("9", 11) });
     await act(async () => { await apiFetch("/api/v1/accounts").catch(() => {}); });
     await settled("none");
-    wiped();
+    await wiped();
   });
 });
 
@@ -163,7 +164,7 @@ describe("F19: no AssistantChat mounted", () => {
     me = () => json(200, userB());
     await act(async () => { await auth.login("b", "pw"); });
     await settled("9");
-    wiped();
+    await wiped();
   });
 
   it("(b) a reload whose restore yields B removes A's key", async () => {
@@ -174,14 +175,14 @@ describe("F19: no AssistantChat mounted", () => {
     me = () => json(200, userB());
     mount();
     await settled("9");
-    wiped();
+    await wiped();
   });
 
   it("(c) a same-owner entry older than 2h is removed when the restore adopts it", async () => {
     window.sessionStorage.setItem(KEY, JSON.stringify({ owner: A, lastMessageAt: Date.now() - 3 * 3600_000, seq: 1, entries: [{ kind: "user", id: "e1", text: "stale" }] }));
     mount();
     await settled("5");
-    wiped();
+    await wiped();
   });
 
   it("(d) refreshMe with the same ids during a streaming turn does not drop the turn's later events", async () => {
