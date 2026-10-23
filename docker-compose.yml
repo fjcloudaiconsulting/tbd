@@ -70,6 +70,10 @@ services:
       # missing inside the container, `docker compose up -d --force-recreate
       # backend` is the fix, not a rebuild.
       - ./backend/seed.py:/app/seed.py
+      # INF-11: .dockerignore keeps seed.py out of every image, so the mount above is now the
+      # only copy in the container. tests/test_backend_image_excludes_seed.py reads this file;
+      # mounted so it does not read the copy baked at build time.
+      - ./backend/.dockerignore:/app/.dockerignore:ro
       # TBD-421: the shard-balance timing file. NOT covered by any directory
       # mount (it sits at the backend root), so without this line a fence that
       # reads it inside the container evaluates the copy baked in at image
