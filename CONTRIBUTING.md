@@ -549,7 +549,7 @@ in a test can no longer merge green.
 
 ### Manual smoke testing
 
-Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`, post-deploy smoke runs from cloud-infra `post-deploy-smoke.yml` (INFRA-114); credentials per cloud-infra `docs/runbooks.md`, "TBD smoke account".
+Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`, post-deploy smoke runs from cloud-infra `post-deploy-smoke.yml` (INFRA-114); credentials per infra private ops notes (owner-held).
 
 ## Branching and pull requests
 

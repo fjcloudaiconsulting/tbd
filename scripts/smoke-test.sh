@@ -2,8 +2,7 @@
 # Post-deploy smoke tests (L0.5).
 #
 # Verifies the live app can serve traffic after a deploy. Run by hand
-# after a production rollout (cloud-infra docs/runbooks.md, "TBD smoke
-# account"): a rollout going Ready is necessary but not sufficient.
+# after a production rollout (see infra private ops notes, owner-held): a rollout going Ready is necessary but not sufficient.
 # This script asserts the actual surface a real user would touch first.
 #
 # Surface (intentionally minimal — full E2E is project_functional_tests.md):
@@ -24,16 +23,8 @@
 #   SMOKE_USERNAME     — login for the dedicated smoke user (NOT a real user)
 #   SMOKE_PASSWORD     — password for the smoke user
 #
-# The smoke user must:
-#   - live in a DEDICATED smoke-only org with no real financial data.
-#     MEMBER is NOT read-only in this app — many data-plane routes (POST
-#     /transactions, /accounts, /budgets, /categories) only require
-#     get_current_user. A smoke credential with MFA off, sitting in
-#     GitHub Actions secrets, MUST NOT have access to real customer or
-#     household data. OWNER of an empty smoke org is fine; MEMBER of a
-#     real customer org is NOT acceptable.
-#   - have email_verified = True
-#   - have MFA disabled (otherwise login returns a challenge, not a token)
+# The smoke user must be a dedicated, email-verified account with no real
+# data. Its required state is in infra private ops notes (owner-held).
 #
 # Exit codes:
 #   0  every check passed
@@ -135,7 +126,7 @@ check_status "GET /health/dependencies" 200 GET "/health/dependencies" || true
 #       headers. This is exactly the FastAPI cookie merge gotcha that
 #       broke SSO in PR #78 — a passing /login that silently fails to
 #       set the refresh cookie still looks green from the body alone.
-#   (c) MFA invariant: smoke user has MFA disabled.
+#   (c) The login returns a token, not an MFA challenge.
 #
 # Build the JSON body via python3's json.dumps so a password containing
 # ", \, or a newline doesn't produce invalid JSON. Pass credentials via
