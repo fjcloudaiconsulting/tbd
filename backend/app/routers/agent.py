@@ -20,8 +20,9 @@ from app.auth.feature_deps import require_feature, require_meter_open
 from app.auth.pat import require_interactive_session
 from app.database import get_db
 from app.deps import get_session_factory
+from app._time import utcnow_naive
 from app.models.agent_pending_action import (
-    ActionMode, ActionStatus, AgentPendingAction as Action,
+    ActionChannel, ActionMode, ActionStatus, AgentPendingAction as Action,
 )
 from app.models.user import User
 from app.services import agent_chat as chat
@@ -115,15 +116,22 @@ async def list_actions(
     db: AsyncSession = Depends(get_db),
     mode: Literal["confirm", "auto"] | None = None,
     status: Literal["pending", "executing", "done", "failed", "stale", "cancelled"] | None = None,
+    channel: Literal["in_app", "mcp"] | None = None,
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0, le=10_000),
 ):
-    """The caller's own actions (org and user), newest first."""
+    """The caller's own actions (org and user), newest first. ``pending`` means
+    live (same predicate as cancel and confirm); ``live`` says so per row."""
+    now = utcnow_naive()
     stmt = select(Action).where(Action.org_id == user.org_id, Action.user_id == user.id)
     if mode is not None:
         stmt = stmt.where(Action.mode == ActionMode(mode))
     if status is not None:
         stmt = stmt.where(Action.status == ActionStatus(status))
+        if status == "pending":
+            stmt = stmt.where(Action.expires_at > now)
+    if channel is not None:
+        stmt = stmt.where(Action.channel == ActionChannel(channel))
     rows = (await db.scalars(
         stmt.order_by(Action.created_at.desc(), Action.id.desc()).limit(limit).offset(offset)
     )).all()
@@ -135,6 +143,7 @@ async def list_actions(
                 "preview": r.preview_json, "result": r.result_json, "error_code": r.error_code,
                 "created_at": r.created_at.isoformat(), "expires_at": r.expires_at.isoformat(),
                 "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+                "live": r.status == ActionStatus.PENDING and r.expires_at > now,
             })
             for r in rows
         ],
