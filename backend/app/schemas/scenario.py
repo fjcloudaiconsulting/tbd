@@ -22,6 +22,7 @@ from typing import Annotated, Any, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.scenario import ScenarioType
+from app.schemas.common import BoundedDecimal
 
 
 # Horizon caps per scenario type. Architect-locked 2026-05-22:
@@ -64,13 +65,17 @@ def validate_horizon(scenario_type: str, horizon_months: int) -> None:
 
 
 # ── Plan-type params ────────────────────────────────────────────────────
+#
+# Every decimal here is ``BoundedDecimal`` (BE-01): what-if inputs the engine
+# computes with and stores as JSON, never a money column, so they keep their
+# precision but are still finite and of bounded size.
 
 
 class _TripExtra(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     label: str = Field(min_length=1, max_length=120)
-    amount: Decimal
+    amount: BoundedDecimal
     on_date: date
 
 
@@ -90,9 +95,9 @@ class TripParams(BaseModel):
     start_date: date
     duration_days: int = Field(ge=1, le=365)
     currency: str = Field(min_length=3, max_length=3)
-    transport_cost: Decimal = Field(ge=0)
-    accommodation_per_night: Decimal = Field(ge=0)
-    daily_budget: Decimal = Field(ge=0)
+    transport_cost: BoundedDecimal = Field(ge=0)
+    accommodation_per_night: BoundedDecimal = Field(ge=0)
+    daily_budget: BoundedDecimal = Field(ge=0)
     one_off_extras: list[_TripExtra] = Field(default_factory=list)
     source_account_id: int
 
@@ -100,8 +105,8 @@ class TripParams(BaseModel):
 class _PurchaseFinancing(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    principal: Decimal = Field(ge=0)
-    annual_rate_pct: Decimal = Field(ge=0)
+    principal: BoundedDecimal = Field(ge=0)
+    annual_rate_pct: BoundedDecimal = Field(ge=0)
     term_months: int = Field(ge=1, le=480)
     first_payment_date: date
     payment_account_id: int
@@ -124,8 +129,8 @@ class PurchaseParams(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     target_date: date
     currency: str = Field(min_length=3, max_length=3)
-    total_price: Decimal = Field(ge=0)
-    down_payment: Decimal = Field(ge=0)
+    total_price: BoundedDecimal = Field(ge=0)
+    down_payment: BoundedDecimal = Field(ge=0)
     down_payment_account_id: int
     financing: Optional[_PurchaseFinancing] = None
 
@@ -145,7 +150,7 @@ class _RetirementCurveStep(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     from_date: date = Field(alias="from")
-    monthly: Decimal = Field(ge=0)
+    monthly: BoundedDecimal = Field(ge=0)
 
 
 class RetirementParams(BaseModel):
@@ -169,11 +174,11 @@ class RetirementParams(BaseModel):
     scenario_type: Literal["retirement"]
     target_retirement_date: date
     currency: str = Field(min_length=3, max_length=3)
-    monthly_contribution: Decimal = Field(ge=0)
+    monthly_contribution: BoundedDecimal = Field(ge=0)
     contribution_account_id: int
-    target_balance: Decimal = Field(ge=0)
-    annual_return_pct: Decimal = Field(ge=0, le=100)
-    inflation_pct: Decimal = Field(default=Decimal("2.5"), ge=0, le=100)
+    target_balance: BoundedDecimal = Field(ge=0)
+    annual_return_pct: BoundedDecimal = Field(ge=0, le=100)
+    inflation_pct: BoundedDecimal = Field(default=Decimal("2.5"), ge=0, le=100)
     contribution_curve: list[_RetirementCurveStep] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -276,7 +281,7 @@ class _CustomEventOneOffIncome(BaseModel):
 
     type: Literal["one_off_income"]
     month: int = Field(ge=0)
-    amount: Decimal = Field(ge=0)
+    amount: BoundedDecimal = Field(ge=0)
     account_id: int
     category_id: Optional[int] = None
 
@@ -288,7 +293,7 @@ class _CustomEventOneOffExpense(BaseModel):
 
     type: Literal["one_off_expense"]
     month: int = Field(ge=0)
-    amount: Decimal = Field(ge=0)
+    amount: BoundedDecimal = Field(ge=0)
     account_id: int
     category_id: Optional[int] = None
 

@@ -92,3 +92,34 @@ def test_parse_csv_wraps_invalid_amount_errors_with_row_number() -> None:
         parse_csv(content)
 
     assert exc.value.row_number == 1
+
+
+# ── BE-01: amounts the ledger cannot store ──
+
+
+@pytest.mark.parametrize(
+    "raw", ["1E+100000", "1E-100000", "NaN", "Infinity", "12345678901,00", "12,345"]
+)
+def test_parse_csv_rejects_unstorable_amounts_with_row_number(raw: str) -> None:
+    """A huge-exponent or non-finite amount is a row error, not a Decimal the
+    preview detectors would bind as a SQL literal as long as its exponent."""
+    content = f"""Date;Name / Description;Debit/credit;Amount (EUR)
+20260406;Groceries;Debit;12,34
+20260407;Groceries;Debit;{raw}
+"""
+
+    with pytest.raises(ParseError, match="Amount out of range") as exc:
+        parse_csv(content)
+
+    assert exc.value.row_number == 2
+
+
+def test_parse_csv_still_accepts_largest_storable_amount() -> None:
+    content = """Date;Name / Description;Debit/credit;Amount (EUR)
+20260406;House;Debit;9.999.999.999,99
+20260407;Coffee;Debit;0,01
+"""
+
+    rows = parse_csv(content)
+
+    assert [r.amount for r in rows] == [Decimal("9999999999.99"), Decimal("0.01")]

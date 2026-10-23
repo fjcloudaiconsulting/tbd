@@ -69,6 +69,18 @@ def _decode_tab_bytes(raw: bytes) -> str:
             raise ValidationError("File is not valid UTF-8 or Windows-1252 text")
 
 
+def _decode_csv_bytes(raw: bytes) -> str:
+    """Decode CSV upload bytes as UTF-8, tolerating a BOM.
+
+    Undecodable bytes are a clean 400, as on the TAB path, rather than an
+    unhandled ``UnicodeDecodeError`` 500.
+    """
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValidationError("File is not valid UTF-8 text")
+
+
 async def _preview_text_upload(
     *,
     file: UploadFile,
@@ -135,7 +147,7 @@ async def preview_import(
         account_id=account_id,
         current_user=current_user,
         db=db,
-        decode=lambda raw: raw.decode("utf-8-sig"),  # handles BOM
+        decode=_decode_csv_bytes,
         parse=parse_csv,
         source_format="csv",
     )

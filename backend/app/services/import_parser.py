@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from app.schemas.common import money_or_none
+
 
 @dataclass
 class ParsedRow:
@@ -57,6 +59,23 @@ def detect_delimiter(content: str) -> str:
     return ","
 
 
+def check_amount_in_range(amount: Decimal) -> Decimal:
+    """Return ``amount`` if the ledger can store it, else raise ``ParseError``.
+
+    BE-01: the bound is ``Money`` (``Numeric(12, 2)``: finite, at most 12
+    digits, 2 decimals). A value outside it can never be confirmed, and the
+    preview's duplicate and transfer detectors would bind it as a SQL literal
+    as long as its exponent. Callers attach the row number.
+    """
+    bounded = money_or_none(amount)
+    if bounded is None:
+        raise ParseError(
+            "Amount out of range (at most 10 digits before and 2 after the "
+            "decimal point)"
+        )
+    return bounded
+
+
 def _parse_amount(value: str) -> Decimal:
     """Parse European-format amount: '63,97' -> Decimal('63.97').
 
@@ -66,9 +85,10 @@ def _parse_amount(value: str) -> Decimal:
     # European format: period = thousands, comma = decimal
     cleaned = cleaned.replace(".", "").replace(",", ".")
     try:
-        return Decimal(cleaned)
+        parsed = Decimal(cleaned)
     except InvalidOperation:
         raise ParseError(f"Cannot parse amount: '{value}'")
+    return check_amount_in_range(parsed)
 
 
 def _parse_date_yyyymmdd(value: str) -> date:

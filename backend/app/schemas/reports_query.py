@@ -30,10 +30,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    TypeAdapter,
     conint,
     field_validator,
     model_validator,
 )
+from pydantic import ValidationError as PydanticValidationError
+
+from app.schemas.common import BoundedDecimal
 
 # Dataset / Aggregation / MeasureField / Dimension are the shared closed
 # enum atoms — defined once in ``reports_enums`` so the live ``/query`` AST
@@ -461,13 +465,28 @@ def _coerce_date(value):
     raise ValueError(f"expected date or ISO string, got {type(value).__name__}")
 
 
+# BE-01. The driver renders a ``Decimal`` bind as a plain-notation literal,
+# one character per unit of exponent, so a filter bound must be finite and of
+# bounded size. It need not be a storable amount, hence ``BoundedDecimal``
+# rather than ``Money``.
+_FILTER_DECIMAL = TypeAdapter(BoundedDecimal)
+
+
 def _coerce_decimal(value):
     if isinstance(value, Decimal):
-        return value
+        d = value
+    else:
+        try:
+            d = Decimal(str(value))
+        except Exception as exc:
+            raise ValueError(f"invalid decimal: {value!r}") from exc
     try:
-        return Decimal(str(value))
-    except Exception as exc:
-        raise ValueError(f"invalid decimal: {value!r}") from exc
+        return _FILTER_DECIMAL.validate_python(d)
+    except PydanticValidationError as exc:
+        raise ValueError(
+            "numeric filter value must be finite, with at most 14 digits "
+            "before and 20 after the decimal point"
+        ) from exc
 
 
 def _coerce_filter_scalar(field: FilterField, value):

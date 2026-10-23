@@ -325,3 +325,19 @@ def test_parse_tab_empty_description_raises_with_row_number() -> None:
         parse_tab(f"{good}\r\n{blank}")
     assert exc.value.row_number == 2
     assert "description" in str(exc.value).lower()
+
+
+# ── BE-01: amounts the ledger cannot store ──
+
+
+@pytest.mark.parametrize("raw", ["-1E+100000", "1E-100000", "NaN", "-Infinity", "-12,345"])
+def test_parse_tab_rejects_unstorable_amounts_with_row_number(raw: str) -> None:
+    good = _line(
+        "845455273", "EUR", "20260220", "0,00", "0,00", "20260220", "-1,00", "x"
+    )
+    bad = _line(
+        "845455273", "EUR", "20260220", "0,00", "0,00", "20260220", raw, "x"
+    )
+    with pytest.raises(ParseError, match="Amount out of range") as exc:
+        parse_tab(f"{good}\r\n{bad}")
+    assert exc.value.row_number == 2

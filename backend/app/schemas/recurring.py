@@ -4,12 +4,14 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import Money
+
 
 class RecurringCreate(BaseModel):
     account_id: int
     category_id: int
     description: str
-    amount: Decimal = Field(gt=0)
+    amount: Money = Field(gt=0)
     type: Literal["income", "expense"]
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_due_date: datetime.date
@@ -26,7 +28,7 @@ class RecurringUpdate(BaseModel):
     account_id: Optional[int] = None
     category_id: Optional[int] = None
     description: Optional[str] = None
-    amount: Optional[Decimal] = Field(default=None, gt=0)
+    amount: Optional[Money] = Field(default=None, gt=0)
     type: Optional[Literal["income", "expense"]] = None
     frequency: Optional[Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]] = None
     next_due_date: Optional[datetime.date] = None

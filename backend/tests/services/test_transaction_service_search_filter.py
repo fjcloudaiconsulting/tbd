@@ -123,6 +123,18 @@ def test_parse_search_amount_non_numeric():
     assert transaction_service._parse_search_amount("12abc") is None
 
 
+def test_parse_search_amount_ignores_values_no_row_can_hold():
+    """BE-01. An unbounded exponent would be bound as a SQL literal as long as
+    the exponent; a value outside ``Numeric(12, 2)`` can match no row anyway,
+    so the amount predicate is skipped and the text search still runs."""
+    for raw in ("1E+100000", "1e999999", "1E-100000", "NaN", "Infinity",
+                "12.345", "99999999999"):
+        assert transaction_service._parse_search_amount(raw) is None, raw
+    # Exponent notation that fits a stored amount still parses.
+    assert transaction_service._parse_search_amount("1e5") == Decimal("100000")
+    assert transaction_service._parse_search_amount("12.340") == Decimal("12.34")
+
+
 # ── list_transactions(search=...) ────────────────────────────────────────────
 
 async def test_search_pure_text_matches_description(db_session, world):

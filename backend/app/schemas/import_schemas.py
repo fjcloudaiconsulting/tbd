@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import Money
 from app.schemas.transaction import DuplicateCandidate, TransferCandidate
 
 
@@ -85,7 +86,7 @@ class ImportConfirmRow(BaseModel):
     row_number: int
     date: datetime.date
     description: str
-    amount: Decimal = Field(gt=0)
+    amount: Money = Field(gt=0)
     type: Literal["income", "expense"]
     category_id: int | None = None  # None → use default_category_id
     skip: bool = False

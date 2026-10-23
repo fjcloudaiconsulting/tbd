@@ -2758,8 +2758,13 @@ def _parse_search_amount(raw: str) -> Decimal | None:
     - Strip common currency markers ("$", "€", "£") and whitespace.
     - Strip thousands separators (commas). Decimal point stays ".".
 
-    Anything else that isn't a valid Decimal yields ``None``.
+    Anything else that isn't a valid Decimal yields ``None``, and so does a
+    Decimal that is not a storable amount (``Money``, BE-01): it can match no
+    ``Numeric(12, 2)`` row, and binding it unbounded would render a literal
+    as long as its exponent.
     """
+    from app.schemas.common import money_or_none
+
     if not raw:
         return None
     s = raw.strip()
@@ -2774,7 +2779,7 @@ def _parse_search_amount(raw: str) -> Decimal | None:
     if not s:
         return None
     try:
-        return Decimal(s)
+        return money_or_none(Decimal(s))
     except (InvalidOperation, ValueError):
         return None
 
