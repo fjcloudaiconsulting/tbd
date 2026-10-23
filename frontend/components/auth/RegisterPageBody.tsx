@@ -8,6 +8,7 @@ import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { useAuth } from "@/components/auth/AuthProvider";
 import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
 import { apiFetch, ApiResponseError } from "@/lib/api";
+import { startGoogleSignIn } from "@/lib/google-sso";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls, success } from "@/lib/styles";
@@ -157,8 +158,8 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
   async function handleGoogleLogin() {
     setGoogleLoading(true);
     try {
-      const data = await apiFetch<{ redirect_url: string }>("/api/v1/auth/google");
-      window.location.href = data.redirect_url;
+      // FE-02: also stores the nonce the callback page checks.
+      await startGoogleSignIn();
     } catch (err) {
       setGoogleLoading(false);
       setError(err instanceof Error ? err.message : "Google sign-in is not available");

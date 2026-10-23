@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { signInWithAccessToken } from "@/lib/api";
+import { takeGoogleSsoNonce } from "@/lib/google-sso";
 import { useAuth } from "@/components/auth/AuthProvider";
 
 // sessionStorage flag the onboarding wizard reads to know it should
@@ -33,6 +34,9 @@ export default function GoogleCallbackPage() {
     const params = new URLSearchParams(hash);
     const token = params.get("token");
     const createdUser = params.get("created_user") === "true";
+    // FE-02: read (and spend) the nonce this tab stored when it started the
+    // sign-in, whatever the fragment holds.
+    const expectedNonce = takeGoogleSsoNonce();
 
     if (!token) {
       router.replace("/login");
@@ -41,6 +45,14 @@ export default function GoogleCallbackPage() {
 
     // Clear the fragment from the URL immediately
     window.history.replaceState(null, "", window.location.pathname);
+
+    // Only the result of a sign-in THIS tab started is accepted. A link that
+    // lands here with someone else's token (login CSRF) carries no nonce this
+    // tab stored, so the token is never used.
+    if (!expectedNonce || params.get("nonce") !== expectedNonce) {
+      router.replace("/login?sso_error=state");
+      return;
+    }
 
     signInWithAccessToken(token);
 

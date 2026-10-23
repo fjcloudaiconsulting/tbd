@@ -3058,6 +3058,20 @@ def _google_token_body_detail(tokens: dict[str, Any] | None) -> dict[str, Any]:
     return detail
 
 
+SSO_NONCE_COOKIE = "oauth_nonce"
+_SSO_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
+def _sso_nonce_param(cookie_value: str | None) -> str:
+    """``&nonce=<value>`` for the Google success fragment (FE-02), or "" when
+    the cookie is absent or not the shape ``google_login`` writes. A cookie
+    can be set by a sibling host, so only a bare token is ever echoed: it
+    cannot add a second ``token=`` to the fragment."""
+    if cookie_value and _SSO_NONCE_RE.fullmatch(cookie_value):
+        return f"&nonce={cookie_value}"
+    return ""
+
+
 def _google_error_redirect(
     reason: str,
     *,
@@ -3077,6 +3091,7 @@ def _google_error_redirect(
         status_code=307,
     )
     resp.delete_cookie("oauth_state", path=cookie_path)
+    resp.delete_cookie(SSO_NONCE_COOKIE, path=cookie_path)
     return resp
 
 
@@ -3928,6 +3943,21 @@ async def google_login(request: Request, response: Response):
         max_age=1800,  # 30 minutes
         path="/api/v1/auth/google",
     )
+    # FE-02. A second random value, kept by the page that started the flow
+    # (sessionStorage, from this response body) and echoed back by the
+    # callback in the success fragment from this httpOnly cookie. The
+    # callback page refuses a fragment whose nonce its own tab did not
+    # store, so a link that plants someone else's token is turned away.
+    nonce = secrets.token_urlsafe(16)
+    response.set_cookie(
+        key=SSO_NONCE_COOKIE,
+        value=nonce,
+        httponly=True,
+        secure=app_settings.cookie_secure,
+        samesite="lax",
+        max_age=1800,
+        path="/api/v1/auth/google",
+    )
 
     params = {
         "client_id": app_settings.google_client_id,
@@ -3938,7 +3968,10 @@ async def google_login(request: Request, response: Response):
         "prompt": "select_account",
         "state": state,
     }
-    return {"redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"}
+    return {
+        "redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}",
+        "nonce": nonce,
+    }
 
 
 @router.get("/google/callback")
@@ -3952,6 +3985,7 @@ async def google_callback(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
     oauth_state: str | None = Cookie(default=None),
+    oauth_nonce: str | None = Cookie(default=None),
 ):
     """Handle Google OAuth callback — exchange code for tokens, create or login user.
 
@@ -4377,6 +4411,7 @@ async def google_callback(
             status_code=302,
         )
         resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
+        resp.delete_cookie(SSO_NONCE_COOKIE, path="/api/v1/auth/google")
         return resp
 
     access_token = create_access_token(user.id, user.org_id, user.role.value)
@@ -4426,11 +4461,13 @@ async def google_callback(
     fragment = f"token={access_token}"
     if created_user:
         fragment = f"{fragment}&created_user=true"
+    fragment += _sso_nonce_param(oauth_nonce)  # FE-02
     resp = RedirectResponse(
         url=f"{app_settings.app_url}/auth/google/callback#{fragment}",
         status_code=302,
     )
     resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
+    resp.delete_cookie(SSO_NONCE_COOKIE, path="/api/v1/auth/google")
     resp.set_cookie(
         key="refresh_token",
         value=refresh_token,
