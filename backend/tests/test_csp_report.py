@@ -10,6 +10,7 @@ POST /api/v1/security/csp-report — covers:
   the same snake_case keys; oversized fields truncated).
 - Malformed / unknown shapes never 500 and write no audit row.
 - ``client_ip`` and ``request_id`` land on the audit row.
+- URL fields lose their query string and fragment (FE-03).
 """
 from __future__ import annotations
 
@@ -376,3 +377,71 @@ async def test_csp_row_is_hidden_from_the_default_audit_view(
 
     # And the complete log still contains it.
     assert [r.id for r in complete_rows] == [written[0].id]
+
+
+# ── FE-03: one-time tokens in report URLs are never persisted ───────────────
+
+TOKEN = "tok-FE03-SENTINEL"
+
+
+@pytest.mark.asyncio
+async def test_legacy_url_fields_lose_query_and_fragment(client, session_factory):
+    body = {
+        "csp-report": {
+            "document-uri": f"https://app.example.com/reset-password?token={TOKEN}#x",
+            "referrer": f"https://app.example.com/accept-invite?token={TOKEN}",
+            "blocked-uri": f"https://cdn.example.com/x.js?sig={TOKEN}",
+            "source-file": f"https://app.example.com/_next/a.js#{TOKEN}",
+            "violated-directive": "script-src",
+        }
+    }
+    resp = await client.post(
+        "/api/v1/security/csp-report",
+        json=body,
+        headers={"content-type": "application/csp-report"},
+    )
+    assert resp.status_code == 204
+    [row] = await _audit_rows(session_factory)
+    assert TOKEN not in repr(row.detail)
+    assert row.detail["document_uri"] == "https://app.example.com/reset-password"
+    assert row.detail["referrer"] == "https://app.example.com/accept-invite"
+    assert row.detail["blocked_uri"] == "https://cdn.example.com/x.js"
+    assert row.detail["source_file"] == "https://app.example.com/_next/a.js"
+    assert row.detail["violated_directive"] == "script-src"
+
+
+@pytest.mark.asyncio
+async def test_reporting_api_url_fields_lose_query_and_fragment(client, session_factory):
+    payload = [
+        {
+            "type": "csp-violation",
+            "body": {
+                "documentURL": f"https://app.example.com/verify-email?token={TOKEN}",
+                "referrer": f"https://app.example.com/mfa-verify?mfa_token={TOKEN}",
+                "blockedURL": f"https://evil.example.com/?q={TOKEN}",
+                "sourceFile": f"https://app.example.com/b.js?{TOKEN}",
+                "effectiveDirective": "img-src",
+            },
+        }
+    ]
+    resp = await client.post(
+        "/api/v1/security/csp-report",
+        json=payload,
+        headers={"content-type": "application/reports+json"},
+    )
+    assert resp.status_code == 204
+    [row] = await _audit_rows(session_factory)
+    assert TOKEN not in repr(row.detail)
+    assert row.detail["document_uri"] == "https://app.example.com/verify-email"
+    assert row.detail["blocked_uri"] == "https://evil.example.com/"
+
+
+@pytest.mark.asyncio
+async def test_keyword_blocked_uri_is_kept(client, session_factory):
+    resp = await client.post(
+        "/api/v1/security/csp-report",
+        json={"csp-report": {"blocked-uri": "inline", "violated-directive": "x"}},
+    )
+    assert resp.status_code == 204
+    [row] = await _audit_rows(session_factory)
+    assert row.detail["blocked_uri"] == "inline"

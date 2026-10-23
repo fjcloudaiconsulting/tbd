@@ -27,12 +27,14 @@ Each parsed violation is persisted to ``audit_events`` via the shared
 definition a policy breach worth recording). Only a **bounded
 allowlist** of fields is copied into ``detail``; full report bodies can
 carry user-bearing URLs (``document-uri``, ``blocked-uri``,
-``source-file``) so we truncate each to a fixed cap and never log the
-raw payload at INFO.
+``source-file``, ``referrer``) so we cut their query string and fragment
+(where one-time tokens live, FE-03), truncate each to a fixed cap and
+never log the raw payload at INFO.
 """
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 import logging
@@ -106,6 +108,16 @@ _FIELD_ALIASES: dict[str, str] = {
     "sample": "script_sample",
 }
 
+# Normalized keys whose value is a URL. Reset, verification and invite links
+# carry one-time tokens in the query string, so only the part before the
+# first ``?`` or ``#`` is kept (FE-03).
+_URL_FIELDS = frozenset({"document_uri", "blocked_uri", "referrer", "source_file"})
+_QUERY_OR_FRAGMENT = re.compile(r"[?#]")
+
+
+def _without_query(value: str) -> str:
+    return _QUERY_OR_FRAGMENT.split(value, maxsplit=1)[0]
+
 
 def _bounded(value: Any) -> Any:
     """Coerce a single report field to a JSON-safe, bounded value.
@@ -132,7 +144,10 @@ def _extract_detail(report_body: Any) -> Optional[dict[str, Any]]:
     for raw_key, norm_key in _FIELD_ALIASES.items():
         if raw_key not in report_body:
             continue
-        bounded = _bounded(report_body[raw_key])
+        value = report_body[raw_key]
+        if norm_key in _URL_FIELDS and isinstance(value, str):
+            value = _without_query(value)
+        bounded = _bounded(value)
         if bounded is None:
             continue
         # Skip empty/blank strings so an empty legacy alias (e.g.
