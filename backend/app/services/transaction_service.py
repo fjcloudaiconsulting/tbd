@@ -2160,6 +2160,17 @@ async def convert_and_create_leg(
         raise ValidationError(
             "Cannot convert a manual balance adjustment to a transfer leg"
         )
+    # BE-17: a SKIPPED / REJECTED row's amount was already reverted out of
+    # its account, so a NEW partner leg would move the destination balance
+    # with no matching outflow while both legs sit outside every report
+    # (the TBD-385 invariant). Pairing with an EXISTING row stays allowed:
+    # it moves no money (see pair_existing_transactions).
+    if source_pre.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+        raise ValidationError(
+            "This row was skipped or rejected in import review, so it is not "
+            "part of the account balance. Pair it with the matching existing "
+            "transaction on the other account instead of creating a new one."
+        )
     if pre_account_id == destination_account_id:
         raise ValidationError("Source and destination accounts must differ")
 
@@ -2196,6 +2207,8 @@ async def convert_and_create_leg(
     if source.recurring_id is not None:
         raise ConflictError("Source row state changed; refresh and retry")
     if source.account_id == destination_account_id:
+        raise ConflictError("Source row state changed; refresh and retry")
+    if source.reconciliation_state in REVERTED_RECONCILIATION_STATES:
         raise ConflictError("Source row state changed; refresh and retry")
 
     # 5. Lock both accounts in sorted-ID order using the locked source's
