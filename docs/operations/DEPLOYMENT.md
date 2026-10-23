@@ -49,7 +49,7 @@ Two jobs run in parallel:
 
 | Job | Steps | Failure means |
 |---|---|---|
-| **Backend Checks** | Python 3.12, `uv sync --locked` (uv version pinned in `backend/.tool-versions`), `pytest`, then `python -m compileall backend/app` | Pytest failed, or a syntax error slipped in that pytest didn't reach |
+| **Backend Checks** | Python 3.15, `uv sync --locked` (uv version pinned in `backend/.tool-versions`), `pytest`, then `python -m compileall backend/app` | Pytest failed, or a syntax error slipped in that pytest didn't reach |
 | **Frontend Checks** | Node 22, `pnpm install --frozen-lockfile`, `scripts/check-design-tokens.sh`, `pnpm lint --quiet`, `pnpm test`, `pnpm build` | One of: design-token violation, lint error, test failure, production build failure |
 
 Both must pass for merge (branch protection rule).

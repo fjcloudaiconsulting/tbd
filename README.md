@@ -33,7 +33,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2 |
+| Backend | Python 3.15, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2 |
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, Recharts |
 | Database | MySQL 8.4 LTS everywhere; in production a StatefulSet on the k3s cluster run from [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra) |
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
