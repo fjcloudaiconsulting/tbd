@@ -196,34 +196,35 @@ export function getAccessToken(): string | null {
  * exp is unknown drives the reactive 401 path as today, not a silent
  * forever-stale session.
  */
+export function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    // JWT payload is base64url-encoded. Normalize to standard base64
+    // then pad to a length divisible by 4 so ``atob`` accepts it.
+    let payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (payloadB64.length % 4 !== 0) payloadB64 += "=";
+    const p = JSON.parse(atob(payloadB64));
+    return p && typeof p === "object" ? (p as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 function decodeJwtClaims(token: string): {
   exp: number | null;
   sub: string | null;
   org_id: string | null;
 } {
-  const none = { exp: null, sub: null, org_id: null };
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return none;
-    // JWT payload is base64url-encoded. Normalize to standard base64
-    // then pad to a length divisible by 4 so ``atob`` accepts it.
-    let payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    while (payloadB64.length % 4 !== 0) payloadB64 += "=";
-    const p = JSON.parse(atob(payloadB64)) as {
-      exp?: unknown;
-      sub?: unknown;
-      org_id?: unknown;
-    };
-    const str = (v: unknown) =>
-      typeof v === "string" || typeof v === "number" ? String(v) : null;
-    return {
-      exp: typeof p.exp === "number" ? p.exp : null,
-      sub: str(p.sub),
-      org_id: str(p.org_id),
-    };
-  } catch {
-    return none;
-  }
+  const p = decodeJwtPayload(token);
+  if (!p) return { exp: null, sub: null, org_id: null };
+  const str = (v: unknown) =>
+    typeof v === "string" || typeof v === "number" ? String(v) : null;
+  return {
+    exp: typeof p.exp === "number" ? p.exp : null,
+    sub: str(p.sub),
+    org_id: str(p.org_id),
+  };
 }
 
 // "|" for an undecodable or claim-less token, so opaque fixtures match each

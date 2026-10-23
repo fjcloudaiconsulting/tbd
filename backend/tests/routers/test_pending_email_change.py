@@ -299,7 +299,9 @@ async def test_bootstrap_verification_does_not_invalidate_sessions(session_facto
     token = create_email_verification_token(user_id, OLD_EMAIL)
     app = _make_app(session_factory, user_id)
     with TestClient(app) as client:
-        res = client.post("/api/v1/auth/verify-email", json={"token": token})
+        res = client.post(
+            "/api/v1/auth/verify-email", json={"token": token, "password": PASSWORD}
+        )
     assert res.status_code == 200, res.text
 
     user = await _reload(session_factory, user_id)

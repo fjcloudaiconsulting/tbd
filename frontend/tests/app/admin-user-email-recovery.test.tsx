@@ -272,7 +272,7 @@ describe("TBD-362 admin email recovery UI", () => {
     // Named explicitly so a silent re-word is a failure, not a passing
     // paraphrase: the sentence is the ruling, rendered.
     expect(cardCopy).toHaveTextContent(
-      /This does not verify the account\. A confirmation link is sent to the new address; the account stays locked out until the user opens it\./,
+      /This does not verify the account\. A confirmation link is sent to the new address; the account stays locked out until the user opens it and enters their password\./,
     );
     // The Google-SSO consequence rides with it.
     expect(cardCopy).toHaveTextContent(/Google/);
@@ -280,7 +280,7 @@ describe("TBD-362 admin email recovery UI", () => {
     const { dialog } = await openModal();
     expect(dialog).toHaveTextContent(EMAIL_RECOVERY_NOTICE);
     expect(dialog).toHaveTextContent(
-      /This does not verify the account\. A confirmation link is sent to the new address; the account stays locked out until the user opens it\./,
+      /This does not verify the account\. A confirmation link is sent to the new address; the account stays locked out until the user opens it and enters their password\./,
     );
     expect(dialog).toHaveTextContent(/Google/);
   });

@@ -280,7 +280,8 @@ def admin_initiated_email_change_requested(
         f"{actor_email} started a change of the login email on your account "
         f"to {pending_email}. Your account is currently locked out because "
         "its email address has never been confirmed, and it stays locked out "
-        f"until someone opens the confirmation link sent to {pending_email}. "
+        f"until someone opens the confirmation link sent to {pending_email} and "
+        "enters the account password. "
         "Nothing about your account has changed yet. If you did not ask for "
         "this, do not open that link and contact support immediately."
     )
@@ -312,7 +313,8 @@ def admin_initiated_email_change_requested_old_address(
         f"of the login email on your account to {pending_email}. This notice "
         "was sent to the address currently on the account. Your account is "
         "locked out until someone opens the confirmation link sent to that "
-        "new address; nothing has changed yet. If you did not ask for this, "
+        "new address and enters the account password; nothing has changed "
+        "yet. If you did not ask for this, "
         "do NOT open that link, and contact support straight away so the "
         "pending change can be cancelled."
     )

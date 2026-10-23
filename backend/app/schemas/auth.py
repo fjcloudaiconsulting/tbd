@@ -120,6 +120,7 @@ class ResetPasswordRequest(BaseModel):
 
 class VerifyEmailRequest(BaseModel):
     token: str
+    password: str | None = Field(default=None, max_length=128)
 
 
 # ── MFA ─────────────────────────────────────────────────────────────────────
