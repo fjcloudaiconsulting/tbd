@@ -15,7 +15,14 @@ import axe from "axe-core";
 import AssistantChat from "@/components/agent/AssistantChat";
 import { setAccessToken, signInWithAccessToken } from "@/lib/api";
 import { setBalancesHidden } from "@/lib/format";
+import { adoptOwner, clearAssistantSession } from "@/lib/agent/session";
 import type { StagedAction } from "@/lib/agent/types";
+
+// TBD-614: the chat reads its owner from the session user.
+vi.mock("@/components/auth/AuthProvider", () => {
+  const user = { id: 1, org_id: 1 };
+  return { useAuth: () => ({ user }) };
+});
 
 const enc = new TextEncoder();
 
@@ -71,6 +78,9 @@ beforeEach(() => {
   setAccessToken("test-token");
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
+  clearAssistantSession();
+  adoptOwner("1:1");
+  fetchMock.mockResolvedValueOnce(json(200, { items: [] })); // the mount GET (TBD-614)
 });
 
 afterEach(() => {
@@ -281,7 +291,7 @@ describe("transport and accessibility", () => {
     const { container } = render(<AssistantChat />);
     await ask("raise it");
 
-    const [url, init] = fetchMock.mock.calls[0];
+    const [url, init] = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/api/v1/agent/chat"))!;
     expect(String(url)).toMatch(/\/api\/v1\/agent\/chat$/);
     expect(new Headers((init as RequestInit).headers).get("Authorization")).toBe("Bearer test-token");
     expect(getReader).toHaveBeenCalled();
@@ -366,6 +376,7 @@ describe("transport and accessibility", () => {
   });
 
   it("under StrictMode (effects mount twice) a turn still streams to the end", async () => {
+    fetchMock.mockResolvedValueOnce(json(200, { items: [] })); // StrictMode mounts the effect twice: a second GET
     fetchMock.mockResolvedValueOnce(sse([["message", { text: "strict ok" }]]));
     render(<StrictMode><AssistantChat /></StrictMode>);
     await ask("hi");

@@ -296,7 +296,10 @@ async def test_f2_minted_token_actually_promotes_end_to_end(factory, sent_mail):
         recipient, token = sent_mail[0]
         assert recipient == GOOD_EMAIL
 
-        clicked = client.post("/api/v1/auth/verify-email", json={"token": token})
+        clicked = client.post(
+            "/api/v1/auth/verify-email",
+            json={"token": token, "password": TARGET_PASSWORD},
+        )
 
     assert clicked.status_code == 200, (
         "the operator's link 400'd. This is the L4.4 dead end: a token minted "
@@ -332,7 +335,10 @@ async def test_f2b_mixed_case_input_still_promotes(factory, sent_mail):
         assert res.status_code == 200, res.text
         recipient, token = sent_mail[0]
         assert recipient == GOOD_EMAIL, "the dispatch must go to the normalized form"
-        clicked = client.post("/api/v1/auth/verify-email", json={"token": token})
+        clicked = client.post(
+            "/api/v1/auth/verify-email",
+            json={"token": token, "password": TARGET_PASSWORD},
+        )
 
     assert clicked.status_code == 200, (
         "token minted from raw body input — the promote-time comparison is "
@@ -375,7 +381,8 @@ async def test_f3_login_still_403s_before_the_click(factory, sent_mail):
 
         _, token = sent_mail[0]
         assert client.post(
-            "/api/v1/auth/verify-email", json={"token": token}
+            "/api/v1/auth/verify-email",
+            json={"token": token, "password": TARGET_PASSWORD},
         ).status_code == 200
 
         allowed = client.post(
@@ -766,7 +773,8 @@ async def test_f10_mail_goes_only_to_the_new_address_at_request_time(
         security_emails.clear()
         _, token = sent_mail[0]
         assert client.post(
-            "/api/v1/auth/verify-email", json={"token": token}
+            "/api/v1/auth/verify-email",
+            json={"token": token, "password": TARGET_PASSWORD},
         ).status_code == 200
 
     assert sorted(security_emails) == sorted([TYPO_EMAIL, GOOD_EMAIL]), (
@@ -840,11 +848,15 @@ async def test_admin_cancel_kills_the_live_link(factory, sent_mail):
         assert client.delete(
             f"/api/v1/admin/users/{user_id}/pending-email"
         ).json() == {"cleared": True}
-        clicked = client.post("/api/v1/auth/verify-email", json={"token": token})
+        clicked = client.post(
+            "/api/v1/auth/verify-email",
+            json={"token": token, "password": TARGET_PASSWORD},
+        )
 
     assert clicked.status_code == 400, (
         f"a cancelled claim's link still promoted. body={clicked.text}"
     )
+    assert clicked.json()["detail"] == "Invalid or expired verification token"
     after = await _row(factory, user_id)
     assert after["email"] == TYPO_EMAIL
     assert after["email_verified"] is False

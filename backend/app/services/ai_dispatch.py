@@ -2165,6 +2165,7 @@ async def call_llm_function(
         )
         failed = AIDispatchFailed(exc.code)
         failed.ledger_id = row.id  # lets the chat loop report which ledger row it was
+        failed.billing_source = row.billing_source  # lets the chat loop hide a house-key failure
         raise failed from None
 
     latency_ms = int((time.perf_counter() - start) * 1000)

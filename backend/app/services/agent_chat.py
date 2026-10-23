@@ -301,6 +301,7 @@ async def stream_turn(
     spent, input_tokens, ledger_ids, said = 0, 0, [], False
     sse_code: str | None = None  # the code of the SSE error event actually sent
     rd: dict[str, Any] | None = None  # the dispatched round not yet reported
+    platform_failed = False
 
     async def emit(stop: str | None) -> None:
         """One INFO event per DISPATCHED round, ids and counts only (never content)."""
@@ -350,6 +351,7 @@ async def stream_turn(
             except ai_dispatch.AIDispatchError as exc:
                 outcome = exc.code
                 rd["ledger_id"] = getattr(exc, "ledger_id", None)  # set on a ledgered failure
+                platform_failed = getattr(exc, "billing_source", None) == "platform"
                 await emit(outcome)
                 break
             except (ai_dispatch.PlatformConsentRequired, ai_dispatch.AIFeatureNotEntitled) as exc:
@@ -426,8 +428,11 @@ async def stream_turn(
                 break
             await emit(None)
         if outcome not in ("ok", "preview"):
-            yield _sse("error", {"code": outcome})
-            sse_code = outcome
+            # A house-key provider failure is not the user's to fix; ``outcome`` keeps the
+            # original code for the operator log.
+            sse_code = ("platform_ai_unavailable"
+                        if platform_failed and outcome.startswith("provider_status_") else outcome)
+            yield _sse("error", {"code": sse_code})
         # Free the org before ``done``: a client may send its next turn on it.
         await release_lock(org_id, nonce)
         yield _sse("done", {})

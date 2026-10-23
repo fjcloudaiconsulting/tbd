@@ -28,6 +28,7 @@ workflow we don't have yet. Out of scope here.
 from __future__ import annotations
 
 import logging
+import secrets
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +39,7 @@ from app.models.invitation import Invitation
 from app.models.org_data_reset_lock import OrgDataResetLock
 from app.models.tag import Tag
 from app.models.user import Role, User
+from app.security import hash_password
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -191,6 +193,10 @@ async def merge_users(
     # the Google callback.
     if source.email_verified and not target.email_verified:
         target.email_verified = True
+        # TBD-651: nobody proved the target's password belongs to the email
+        # owner, so verifying the row must not keep it (same as Google link).
+        target.password_hash = hash_password(secrets.token_urlsafe(32))
+        target.password_set = False
 
     # agent_pending_actions is NOT reassigned: the source user's rows are dropped
     # by ON DELETE CASCADE on purpose (proposals: 10 minute confirm window, purged after 48h).

@@ -328,3 +328,38 @@ async def test_privacy_nothing_user_supplied_is_ever_logged(
     assert r.status_code == 400
     assert logs.named("http.client_error")
     assert SENT not in logs.text(), "a log line carried user-supplied content"
+
+
+async def test_platform_provider_failure_is_not_the_users_to_fix(
+    factory, w, client, provider, monkeypatch, log_lines,
+):
+    """FENCE TBD-662. A house-key (platform) provider_status_* must reach the user as
+    ``platform_ai_unavailable`` (the key is not theirs), while the operator log keeps the
+    original code. A BYOK turn keeps its provider code. Wrong implementation: mapping every
+    provider_status_* regardless of who paid, or rewriting the logged outcome."""
+    from app.services import ai_dispatch
+    from app.services.ai_providers import AIProviderError
+
+    logs = LogView(log_lines)
+    _as(factory, w["user"])
+
+    async def platform_429(*a, **k):
+        exc = ai_dispatch.AIDispatchFailed("provider_status_429")
+        exc.billing_source = "platform"
+        raise exc
+
+    real = ai_dispatch.call_llm_function
+    monkeypatch.setattr("app.services.ai_dispatch.call_llm_function", platform_429)
+    seq, done = await _run(client, logs)
+    assert done["sse_code"] == "platform_ai_unavailable"
+    assert logs.named("agent.turn.completed")[-1]["outcome"] == "provider_status_429"
+
+    monkeypatch.setattr("app.services.ai_dispatch.call_llm_function", real)
+    limiter.reset()
+
+    async def boom(n):
+        raise AIProviderError(code="provider_status_429", status_code=429)
+
+    provider(boom)
+    seq, done = await _run(client, logs)
+    assert done["sse_code"] == "provider_status_429"

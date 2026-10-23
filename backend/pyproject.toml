@@ -9,7 +9,7 @@ dependencies = []
 
 [dependency-groups]
 app = [
-    "fastapi==0.143.5",
+    "fastapi==0.161.1",
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.14.1",
     "pydantic-settings==2.16.1",
@@ -22,7 +22,7 @@ app = [
     # ``AsyncAdapt_aiomysql_connection.ping()`` raise a TypeError. 1.1.3 is
     # known good against sqlalchemy==2.0.41 + aiomysql==0.2.0.
     "PyMySQL==1.2.3",
-    "alembic==1.20.0",
+    "alembic==1.20.1",
     "PyJWT[crypto]==2.15.1",
     "bcrypt==5.0.0",
     "python-multipart==0.0.32",
@@ -50,7 +50,7 @@ dev = [
 # MCP server component (backend/Dockerfile.mcp): a subset of `app`, SAME pins.
 # Excluded on purpose: alembic, ofxtools, pyotp, qrcode, python-multipart.
 mcp = [
-    "fastapi==0.143.5",
+    "fastapi==0.161.1",
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.14.1",
     "pydantic-settings==2.16.1",

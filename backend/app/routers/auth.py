@@ -2487,6 +2487,25 @@ async def verify_email(
             detail="Invalid or expired verification token",
         )
 
+    # TBD-657. An UNVERIFIED row only becomes verified by someone who knows
+    # its password. Otherwise an attacker who registered the victim's address
+    # with their own password P gets it verified by the victim's click and
+    # then logs in with P. Keyed on ROW STATE and placed after the token
+    # binding (a bad token stays an undifferentiated 400, no password oracle)
+    # and before `promoting` so admin-initiated promotion is covered too.
+    # Nothing is written on a refusal, so a pending claim survives it.
+    if not user.email_verified and not (
+        body.password and verify_password(body.password, user.password_hash)
+    ):
+        code = "password_incorrect" if body.password else "password_required"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": code,
+                "message": "Enter your password to confirm this email address.",
+            },
+        )
+
     if not promoting:
         # Bootstrap: verify the address the account already holds. No
         # identity change, so deliberately NO session cutoff and no
@@ -4012,6 +4031,14 @@ async def google_callback(
         mutated = False
         if not user.email_verified:
             user.email_verified = True
+            # TBD-651: Google proved control of the email, but nobody proved
+            # the stored password belongs to that person (a pre-account
+            # attacker may have registered it). Discard it, as the new-user
+            # branch does. No credential other than the password can exist on an
+            # unverified row (login 403s it); attacker-chosen username, profile
+            # and org name can survive.
+            user.password_hash = hash_password(secrets.token_urlsafe(32))
+            user.password_set = False
             mutated = True
         # Backfill profile fields from Google only when ours are empty so
         # we never overwrite values the user has edited themselves. Useful

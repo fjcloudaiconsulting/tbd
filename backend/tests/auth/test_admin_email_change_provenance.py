@@ -187,7 +187,9 @@ async def _verify_via_bootstrap(factory, client, target_id, org_id, monkeypatch)
     async with factory() as db:
         current = await db.scalar(select(User.email).where(User.id == target_id))
     token = create_email_verification_token(target_id, current)
-    res = client.post("/api/v1/auth/verify-email", json={"token": token})
+    res = client.post(
+        "/api/v1/auth/verify-email", json={"token": token, "password": PASSWORD}
+    )
     assert res.status_code == 200, res.text
 
 
@@ -430,7 +432,8 @@ async def test_admin_claim_promotes_normally_while_the_row_stays_unverified(
         ).status_code == 200
         _recipient, admin_token = sent_mail[0]
         clicked = client.post(
-            "/api/v1/auth/verify-email", json={"token": admin_token}
+            "/api/v1/auth/verify-email",
+            json={"token": admin_token, "password": PASSWORD},
         )
     assert clicked.status_code == 200, clicked.text
     email, verified, pending = await _read(factory, target_id)

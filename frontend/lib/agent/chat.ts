@@ -97,10 +97,21 @@ const ERRORS: Record<string, string> = {
   input_budget_exceeded: "Your message is too long for the assistant. Shorten it and try again.",
   input_budget: "This question needed more lookups than one reply allows. Ask in smaller steps or start a new chat.",
   empty_reply: "The assistant returned no answer. Try again.",
+  provider_status_429:
+    "Your AI provider is rate-limiting requests or is out of credit. An admin can check the provider account or pick another model in Settings, AI providers.",
+  provider_status_402:
+    "Your AI provider account is out of credit. An admin can top it up or pick another model in Settings, AI providers.",
+  provider_status_401: "Your AI provider rejected the key. An admin can reconnect it in Settings, AI providers.",
+  provider_status_403:
+    "Your AI provider refused this request. An admin can check the key's access or pick another model in Settings, AI providers.",
+  platform_ai_unavailable: "The assistant's AI service isn't available right now. Try again later.",
 };
+
+const PROVIDER_5XX = "Your AI provider is having trouble. Try again shortly.";
 
 export function errorText(code: string, status?: number): string {
   if (ERRORS[code]) return ERRORS[code];
+  if (/^provider_status_5\d\d$/.test(code)) return PROVIDER_5XX;
   if (status === 412) return ERRORS.ai_routing_not_configured;
   if (status === 402) return ERRORS.ai_hard_cap_exceeded;
   return "Something went wrong. Try again.";

@@ -14,6 +14,7 @@ import {
   setAccessToken,
   signInWithAccessToken,
 } from "@/lib/api";
+import { adoptOwner, clearAssistantSession } from "@/lib/agent/session";
 import type { User, TokenResponse, MfaChallengeResponse } from "@/lib/types";
 import {
   DEFAULT_FEATURES,
@@ -343,6 +344,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener("auth:unauthenticated", handler);
     return () => window.removeEventListener("auth:unauthenticated", handler);
   }, []);
+
+  // The assistant transcript belongs to one (user, org): follow the user object
+  // (TBD-614). Gated on !loading so a reload's initial null does not wipe it.
+  useEffect(() => {
+    if (loading) return;
+    if (!user) clearAssistantSession();
+    else adoptOwner(`${user.id}:${user.org_id}`);
+  }, [loading, user]);
 
   const login = async (loginId: string, password: string) => {
     const data = await apiFetch<TokenResponse | MfaChallengeResponse>("/api/v1/auth/login", {
