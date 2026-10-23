@@ -258,6 +258,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 3. **Tokens issued.** Access token (15 min, response body) + refresh token (7 day, httpOnly cookie).
 4. **Silent refresh.** Frontend auto-refreshes via `POST /api/v1/auth/refresh` on 401.
 5. **Absolute session lifetime.** Sessions expire after `SESSION_LIFETIME_DAYS` (default 30) regardless of refresh activity.
+6. **Credential changes end sessions.** A password reset or change and a proven email change delete every session family of the user and write a cutoff at the next whole second, so no token minted before the change (even earlier in the same second) survives it; a sign-in in that second waits it out. Enabling or disabling MFA deletes every other session family and keeps the caller's (BE-04).
 
 ### SSO password security
 

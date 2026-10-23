@@ -70,9 +70,11 @@ from app.security import (
     get_org_session_ttl_seconds,
     hash_password,
     mfa_email_code_hmac,
+    session_cutoff,
     token_cutoff,
     verify_password,
     verify_password_or_dummy,
+    wait_out_cutoff,
 )
 from app.captcha import verify_captcha
 from app.models.notification import NotificationCategory
@@ -569,6 +571,41 @@ async def _record_attempts_locked(
     )
 
 
+async def _revoke_sessions(user_id: int) -> None:
+    """Delete every refresh-session family of ``user_id`` after a committed
+    credential change (BE-04). The whole-second cutoff written with the change
+    already refuses every earlier token, so a store failure here is logged,
+    not raised: the change itself must not turn into a 5xx."""
+    try:
+        await state_db.session_revoke_user(user_id)
+    except SQLAlchemyError:
+        _LOGGER.warning("auth.sessions.revoke_user_failed", exc_info=True)
+
+
+async def _revoke_other_sessions(request: Request, user_id: int) -> None:
+    """Delete every session family of ``user_id`` except the one(s) the
+    caller's own refresh cookie names (BE-04: MFA enable / disable end the
+    user's other sessions and keep this one). Runs BEFORE the change commits
+    and fails closed: here nothing else would end those sessions."""
+    keep: set[str] = set()
+    for raw in _extract_refresh_cookies(request):
+        payload = decode_token(raw)
+        if (
+            payload is not None
+            and payload.get("type") == "refresh"
+            and payload.get("sub") == str(user_id)
+            and isinstance(payload.get("sid"), str)
+        ):
+            keep.add(payload["sid"])
+    try:
+        await state_db.session_revoke_user(user_id, frozenset(keep))
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+
+
 async def _require_session_store() -> None:
     """Probe the session store before any credential check, so every
     branch answers the same 503 while it is unreachable (INFRA-121,
@@ -654,6 +691,10 @@ async def login(
                 "message": "Please verify your email to sign in.",
             },
         )
+
+    # A sign-in in the second after a credential change waits for it, so
+    # the tokens minted below are not refused by that change's cutoff (BE-04).
+    await wait_out_cutoff(user)
 
     # If MFA is enabled, return a challenge token instead of access tokens.
     # The login.success audit fires AFTER MFA completes (in /mfa/*), not
@@ -2147,7 +2188,9 @@ async def reset_password(
                 detail="Invalid or expired reset token",
             )
 
-    now = datetime.now(timezone.utc)
+    # Whole-second cutoff past this second (BE-04): every token minted
+    # before the reset is refused, whatever MySQL's rounding does.
+    cutoff = session_cutoff()
     user.password_hash = hash_password(body.new_password)
     # Flip `password_set` so an SSO user who reset via token lands in
     # the standard branch on every future /users/me/password call and
@@ -2155,9 +2198,10 @@ async def reset_password(
     # account has working local credentials but the row still claims
     # no password has ever been chosen. (Finding 2 from PR #138.)
     user.password_set = True
-    user.password_changed_at = now
-    user.sessions_invalidated_at = now
+    user.password_changed_at = cutoff
+    user.sessions_invalidated_at = cutoff
     await db.commit()
+    await _revoke_sessions(user.id)
 
     # A reset is the way out of a full per-account login window (BE-02):
     # the owner can sign in with the new password straight away. Best-effort,
@@ -2339,16 +2383,17 @@ async def _promote_pending_email(
     user.email_verified = True
     # Identity changed, so every token minted under the OLD address dies.
     #
-    # ⚠ DELIBERATELY NOT FLOORED to whole seconds. Every validator compares
-    # with a strict `<` (deps.py, and _validate_refresh_cookie) and
-    # `create_access_token` already floors `iat`, so a cutoff floored to T.0
-    # fails to invalidate a token minted at T.2 whose `iat` is T -- `T < T`
-    # is False and the token survives an identity change. Unfloored, MySQL's
-    # fsp-0 rounding stores T+1 and the token is correctly rejected. If this
-    # endpoint is ever changed to mint a session, adopt
+    # ⚠ NOT FLOORED to whole seconds. Every validator compares with a strict
+    # `<` (deps.py, and _validate_refresh_cookie) and `create_access_token`
+    # already floors `iat`, so a cutoff floored to T.0 fails to invalidate a
+    # token minted at T.2 whose `iat` is T -- `T < T` is False and the token
+    # survives an identity change. Left unfloored, MySQL's fsp-0 rounding
+    # floors a sub-.5 fraction just the same, so the cutoff is the NEXT whole
+    # second (`session_cutoff`, BE-04), and the families are deleted too. If
+    # this endpoint is ever changed to mint a session, adopt
     # `invitation_service.accept_invitation`'s pattern WHOLESALE: its comment
     # requires BOTH columns floored, because `token_cutoff` maxes two.
-    user.sessions_invalidated_at = datetime.now(timezone.utc)
+    user.sessions_invalidated_at = session_cutoff()
 
     user_id_snapshot = user.id
     try:
@@ -2370,6 +2415,8 @@ async def _promote_pending_email(
                 "address."
             ),
         )
+
+    await _revoke_sessions(user_id_snapshot)
 
     # Additive discriminator. Both branches used to return an identical
     # body, so the verify-email page could not tell a first-time
@@ -2681,6 +2728,10 @@ async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> tuple[User, str
     # Reject if MFA was disabled after the challenge token was issued
     if not user.mfa_enabled:
         raise HTTPException(status_code=401, detail="MFA is no longer enabled for this account")
+    # A challenge from before a password reset or change dies with it (BE-04).
+    iat = payload.get("iat")
+    if not isinstance(iat, int) or datetime.fromtimestamp(iat, tz=timezone.utc) < token_cutoff(user):
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
     try:
         retry_after = await attempts.mfa_user_retry_after(user.id)
         exhausted = await attempts.mfa_challenge_exhausted(jti)
@@ -2754,6 +2805,7 @@ async def _issue_tokens(
     and applied to the JWT exp, the cookie Max-Age, AND the session store
     primary-key TTL in lockstep (2026-05-18 session-stability fix).
     """
+    await wait_out_cutoff(user)  # BE-04, as in ``login``
     access_token = create_access_token(user.id, user.org_id, user.role.value)
     ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
     refresh_token, _jti, _sid = await _issue_refresh_session(
@@ -3408,6 +3460,8 @@ async def mfa_enable(
         raise HTTPException(status_code=400, detail="Invalid TOTP code")
 
     codes = generate_recovery_codes()
+    # The user's other sessions end; this one stays (BE-04).
+    await _revoke_other_sessions(request, current_user.id)
     current_user.mfa_enabled = True
     current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
     await db.commit()
@@ -3481,6 +3535,8 @@ async def mfa_disable(
     if not verify_password(body.password, current_user.password_hash):
         raise HTTPException(status_code=403, detail="Invalid password")
 
+    # The user's other sessions end; this one stays (BE-04).
+    await _revoke_other_sessions(request, current_user.id)
     current_user.mfa_enabled = False
     current_user.totp_secret = None
     current_user.recovery_codes = None
@@ -4290,6 +4346,7 @@ async def google_callback(
 
     # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])
+    await wait_out_cutoff(user)  # BE-04, as in ``login``
 
     if user.mfa_enabled:
         mfa_token = create_mfa_challenge_token(user.id)

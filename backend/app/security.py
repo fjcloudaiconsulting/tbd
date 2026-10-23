@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac as _hmac
@@ -426,6 +427,31 @@ def decode_token(token: str) -> dict | None:
         )
     except jwt.PyJWTError:
         return None
+
+
+def session_cutoff(now: datetime | None = None) -> datetime:
+    """The cutoff a credential change writes to ``password_changed_at`` /
+    ``sessions_invalidated_at``: the start of the NEXT whole second (BE-04).
+
+    Token ``iat`` is floored to the second and every validator rejects
+    ``iat < cutoff``. Inside the event's own second a token minted just before
+    it and one minted just after carry the same ``iat``, so the cutoff has to
+    reject that whole second: rounding up does. Having no fraction also keeps
+    MySQL's fsp-0 columns from moving it; they round on insert, and a sub-.5
+    fraction rounded DOWN used to let a token from earlier in that second
+    survive. A sign-in inside that second waits it out (``wait_out_cutoff``).
+    """
+    now = now or datetime.now(timezone.utc)
+    return now.replace(microsecond=0) + timedelta(seconds=1)
+
+
+async def wait_out_cutoff(user: User) -> None:
+    """Sleep until ``user``'s session cutoff has passed, so a token minted next
+    carries an ``iat`` the cutoff accepts. Only a sign-in in the second after a
+    credential change waits, and for under a second."""
+    delay = (token_cutoff(user) - datetime.now(timezone.utc)).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 def token_cutoff(user: User) -> datetime:
