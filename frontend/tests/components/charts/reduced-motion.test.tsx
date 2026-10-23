@@ -304,8 +304,10 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
   }
 
   /** `<Area>` animates by growing a clip rect from width 0, so at first paint
-   *  an animating area is fully clipped and a committed one is not. */
-  function areaClipWidth(active?: boolean): number {
+   *  an animating area is fully clipped. Since recharts 3.9 (`AreaRevealShape`)
+   *  a committed area renders no reveal clip at all, so this returns `null`
+   *  for an unclipped area. F11/F12 prove the selector finds the rect. */
+  function areaClipWidth(active?: boolean): number | null {
     render(
       <div data-testid="host">
         <AreaChart width={300} height={100} data={SERIES}>
@@ -317,13 +319,12 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
     const host = screen.getByTestId("host");
     expect(host.querySelector(".recharts-area-area"), "area path did not render").not.toBeNull();
     const rect = host.querySelector(".recharts-area clipPath rect");
-    expect(rect, "area animation clip rect did not render").not.toBeNull();
-    return Number(rect!.getAttribute("width"));
+    return rect === null ? null : Number(rect.getAttribute("width"));
   }
 
   it("F10 fence: <Area> with the app's prop shape does not animate under reduce", () => {
     mockMatchMedia(true);
-    expect(areaClipWidth()).toBeGreaterThan(0);
+    expect(areaClipWidth()).toBeNull();
   });
 
   it("F11 fence + positive control: <Area isAnimationActive={true}> animates even under reduce", () => {
