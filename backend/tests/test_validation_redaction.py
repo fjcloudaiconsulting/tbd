@@ -327,3 +327,14 @@ def test_ai_credential_secrets_are_not_echoed(client: TestClient, path, body):
 
 def test_ai_credential_names_are_in_the_sensitive_set():
     assert {"api_key", "bearer_token", "nonce"} <= _SENSITIVE_FIELD_NAMES
+
+
+def test_refused_base_url_userinfo_is_not_echoed(client: TestClient):
+    """DB-02: the 422 that refuses URL credentials must not repeat them."""
+    res = client.post(
+        "/ai-create",
+        json={"provider": "ollama", "base_url": f"https://u:{AI_SECRET}@nas.example.com"},
+    )
+    assert res.status_code == 422
+    assert "username or password" in res.text
+    assert AI_SECRET not in res.text, res.text

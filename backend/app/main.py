@@ -506,6 +506,9 @@ _SENSITIVE_FIELD_NAMES = frozenset({
     "code_verifier",
     "access_token",
     "id_token",
+    # AI provider base URLs are refused when they carry userinfo (DB-02);
+    # the 422 for that must not echo the password it refused.
+    "base_url",
 })
 
 _REDACTED = "<redacted>"
