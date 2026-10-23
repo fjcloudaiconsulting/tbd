@@ -43,7 +43,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Role
 from app.services.category_rules_service import normalize_description
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    AUTO, P_START, _confirm, _invoke, engine, factory, w,
+    P_START, _confirm, _invoke, engine, factory, w,
 )
 
 # Counters are named only as signed nonzero deltas, never as absolutes.
@@ -111,12 +111,10 @@ def windows(monkeypatch):
         await db.flush()
         pre = await _snap(await db.connection())
         res = await real(fn, *a)
-        if kind == "preview":
-            await db.flush()
-            post = await _snap(await db.connection())
-        else:  # execute commits: read the outcome from a fresh connection
-            async with db.bind.connect() as conn:
-                post = await _snap(conn)
+        # Same connection for both windows: a write execute leaves uncommitted
+        # (confirm's finish() commits it later) must still be seen.
+        await db.flush()
+        post = await _snap(await db.connection())
         out.append(Window(kind, spec.name, pre, post))
         return res
 
@@ -418,7 +416,7 @@ class _Args(BaseModel):
 def mutant():
     added: list[str] = []
 
-    def _add_tool(name, changes, execute, *, risk="write", preview_hook=None):
+    def _add_tool(name, changes, execute, *, risk="write", preview_hook=None, commit=True):
         async def _preview(ctx, args):
             if preview_hook:
                 await preview_hook(ctx)
@@ -426,7 +424,8 @@ def mutant():
 
         async def _execute(ctx, args):
             await execute(ctx, args)
-            await ctx.db.commit()
+            if commit:
+                await ctx.db.commit()
             return {"ok": True}
 
         registry.register(ToolSpec(
@@ -546,6 +545,17 @@ def double_insert(a):
     async def ex(ctx, args):
         ctx.db.add_all([_tx_row(a), _tx_row(a)])
     return _tx_changes(a), ex, {}
+
+
+@_mutant("rule 2: undisclosed insert into transactions")
+def undisclosed_insert_left_uncommitted(a):
+    """Wrong implementation: execute adds a row and never commits; confirm's
+    finish() commits it later. Invisible to a fresh-connection snapshot."""
+    async def ex(ctx, args):
+        await _b(ctx, a["b1"], amount=Decimal("120.00"))
+        await ctx.db.commit()
+        ctx.db.add(_tx_row(a))
+    return _b1(a), ex, {"commit": False}
 
 
 @_mutant("rule 4")

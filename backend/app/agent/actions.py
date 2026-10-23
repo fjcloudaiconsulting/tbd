@@ -228,7 +228,7 @@ async def propose(
     pv = _preview_dict(await registry.call_mapped(spec.preview, ctx, args))
     if reverts is not None:
         pv["context"]["reverts"] = reverts
-    # exclude_unset: confirm re-validates this dict, so set-ness must survive (TBD-664 W13)
+    # keep only the fields the caller set, so a confirm never writes an omitted field as null
     row = _new_row(
         ctx, user_id, spec, args.model_dump(mode="json", exclude_unset=True), pv,
         ActionMode.AUTO if auto else ActionMode.CONFIRM,
