@@ -541,6 +541,10 @@ describe("F17-F18, F22, F23, G2: New chat", () => {
 
 describe("F21: a card staged while the mount GET is out is never contradicted", () => {
   const X = { ...BUDGET_ACTION, action_id: "x" };
+  const undecided = () => {
+    const p = getSnapshot(OWNER).entries.filter((e) => e.kind === "preview");
+    return p.length === 1 && p[0].kind === "preview" && !p[0].outcome;
+  };
 
   it("(a) the SSE preview arrives before the GET resolves with X live", async () => {
     const d = deferred();
@@ -553,6 +557,7 @@ describe("F21: a card staged while the mount GET is out is never contradicted", 
     expect(cards()).toHaveLength(1);
     expect(apply()).toBeInTheDocument();
     expect(screen.queryByText("Already decided")).toBeNull();
+    expect(undecided()).toBe(true); // a mounted card ignores a late relabel, so read the store
   });
 
   it("(b) the GET resolves with X live (appended) before the SSE preview arrives", async () => {
@@ -570,6 +575,7 @@ describe("F21: a card staged while the mount GET is out is never contradicted", 
     expect(cards()).toHaveLength(1);
     expect(apply()).toBeInTheDocument();
     expect(screen.queryByText("Already decided")).toBeNull();
+    expect(undecided()).toBe(true);
   });
 
   it("(c) the GET was sent before X was staged and resolves WITHOUT X after its SSE preview", async () => {
@@ -582,6 +588,7 @@ describe("F21: a card staged while the mount GET is out is never contradicted", 
     expect(cards()).toHaveLength(1);
     expect(apply()).toBeInTheDocument();
     expect(screen.queryByText("Already decided")).toBeNull();
+    expect(undecided()).toBe(true);
   });
 });
 

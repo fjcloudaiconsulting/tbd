@@ -53,7 +53,11 @@ describe("F7: an ownerless store drops writes", () => {
     adoptOwner(A);
     clearAssistantSession();
     const g = generation();
+    const heard = vi.fn();
+    const off = subscribe(heard);
     updateEntries(g, () => [user("e1")], true);
+    off();
+    expect(heard).not.toHaveBeenCalled(); // no store change, so no emit either
     expect(window.sessionStorage.getItem(KEY)).toBeNull();
     expect(getSnapshot(A).entries).toEqual([]);
   });
