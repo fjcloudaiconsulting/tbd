@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
 from app.auth.pat import require_interactive_session
+from app.auth.second_factor import consume_recovery_code
 from app.auth.stepup import STEPUP_ACTIONS, issue_stepup
 from app.deps import get_current_user, get_current_user_optional, get_session_factory
 from app.services.feature_gate import Feature, resolve_features
@@ -93,7 +94,6 @@ from app.services.mfa_service import (
     generate_totp_secret,
     get_totp_uri,
     hash_recovery_code,
-    verify_recovery_code,
     verify_totp,
 )
 from app import logs
@@ -3512,20 +3512,15 @@ async def mfa_recovery(
     if not user.recovery_codes:
         raise HTTPException(status_code=400, detail="No recovery codes available")
 
-    hashed_codes = user.recovery_codes.split(",")
-    idx = verify_recovery_code(body.code, hashed_codes)
-    if idx is None:
+    # Remove the used code with a compare-and-swap on the stored list, so
+    # two concurrent requests carrying one code cannot both get a session
+    # (BE-21). Architect P1 finding on PR #306: hold the commit until AFTER
+    # the store-backed session-issue inside ``_issue_tokens`` succeeds.
+    # Otherwise a store 503 would consume the recovery code (durable side
+    # effect on a tiny finite pool) without giving the user a session,
+    # forcing them to burn another code on retry.
+    if not await consume_recovery_code(db, user, body.code):
         raise HTTPException(status_code=401, detail="Invalid recovery code")
-
-    # Remove the used code. Architect P1 finding on PR #306: hold the
-    # commit until AFTER the store-backed session-issue inside
-    # ``_issue_tokens`` succeeds. Otherwise a store 503 would consume
-    # the recovery code (durable side effect on a tiny finite pool)
-    # without giving the user a session, forcing them to burn another
-    # code on retry.
-    hashed_codes.pop(idx)
-    user.recovery_codes = ",".join(hashed_codes) if hashed_codes else None
-    await db.flush()
 
     tokens = await _issue_tokens(user, response, db)
     await db.commit()
