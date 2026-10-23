@@ -14,7 +14,7 @@ import AssistantChat from "@/components/agent/AssistantChat";
 import { setAccessToken, signInWithAccessToken } from "@/lib/api";
 import type { Entry } from "@/lib/agent/chat";
 import {
-  adoptOwner, clearAssistantSession, getSnapshot, resetConversation, updateEntries, generation,
+  adoptOwner, clearAssistantSession, getSnapshot, resetConversation, subscribe, updateEntries, generation,
 } from "@/lib/agent/session";
 import type { AgentActionRow, StagedAction } from "@/lib/agent/types";
 
@@ -219,6 +219,21 @@ describe("F7: sign-out while a turn streams", () => {
   });
 });
 
+describe("D3: a turn captures the generation when it starts", () => {
+  it("sign out mid-stream, adopt the SAME owner again, release the stream: no late write lands", async () => {
+    const held = heldStream([["message", { text: "part one" }]], [["message", { text: "part two" }], ["tool_call", { name: "budgets_list" }]]);
+    chats.push(() => held.res);
+    render(<AssistantChat />);
+    send("hi");
+    await screen.findByText("part one");
+    act(() => { clearAssistantSession(); adoptOwner(OWNER); });
+    await act(async () => { held.release(); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
+    expect(getSnapshot(OWNER).entries).toEqual([]);
+    expect(window.sessionStorage.getItem(KEY)).toBeNull();
+  });
+});
+
 describe("F9: the idle window, through the component", () => {
   const T0 = new Date("2026-10-20T10:00:00Z");
 
@@ -252,6 +267,20 @@ describe("F9: the idle window, through the component", () => {
     unmount();
     vi.setSystemTime(new Date(T0.getTime() + (2 * 60 + 1) * 60_000));
 
+    render(<AssistantChat />);
+    await waitFor(() => expect(getSnapshot(OWNER).entries).toEqual([]));
+    expect(cards()).toHaveLength(0);
+  });
+
+  it("a store holding only server-appended cards expires too (the clock starts at the first write)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(T0);
+    actions = () => json(200, { items: [row({ action_id: "srv" })] });
+    const { unmount } = render(<AssistantChat />);
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    unmount();
+    vi.setSystemTime(new Date(T0.getTime() + (2 * 60 + 1) * 60_000));
+    actions = () => json(200, { items: [] });
     render(<AssistantChat />);
     await waitFor(() => expect(getSnapshot(OWNER).entries).toEqual([]));
     expect(cards()).toHaveLength(0);
@@ -383,6 +412,31 @@ describe("F10-F14: the server decides every label", () => {
   });
 });
 
+describe("restore hardening", () => {
+  it("a stored card without warnings renders instead of crashing the page", async () => {
+    const { warnings: _w, ...noWarnings } = BUDGET_ACTION;
+    void _w;
+    seed([{ kind: "preview", id: "e1", tool: "budgets_update_amount", action: { ...noWarnings, action_id: "x1" } as StagedAction }]);
+    actions = () => json(200, { items: [row({ action_id: "x1" })] });
+    render(<AssistantChat />);
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(apply()).toBeInTheDocument();
+  });
+
+  it("send builds its history from the live store: a failed mark written since the last paint keeps the orphan out of the body", async () => {
+    seed([{ kind: "user", id: "e1", text: "orphan" }]);
+    render(<AssistantChat />);
+    await screen.findByText("orphan");
+    chats.push(() => sse([["message", { text: "ok" }]]));
+    await act(async () => {
+      updateEntries(generation(), (p) => p.map((e) => (e.kind === "user" ? { ...e, failed: true } : e)));
+      send("second");
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
+    expect(chatBodies().at(-1).messages).toEqual([{ role: "user", content: "second" }]);
+  });
+});
+
 describe("F15: ids", () => {
   it("restored ids plus a new turn stay unique; deciding the new card leaves the restored ones alone; a new card is never relabelled by an older GET", async () => {
     seed([pv(9, "x9"), pv(12, "x12")]);
@@ -391,8 +445,10 @@ describe("F15: ids", () => {
     chats.push(() => stage({ ...BUDGET_ACTION, action_id: "fresh" }));
     render(<AssistantChat />);
     await ask("go"); // the new card arrives while the mount GET is still out
-    await act(async () => d.resolve(json(200, { items: [row({ action_id: "x9" }), row({ action_id: "x12" })] })));
+    expect(cards()).toHaveLength(1); // e9 and e12 are held until the GET answers
+    await act(async () => d.resolve(json(200, { items: [row({ action_id: "x9", status: "done", live: false }), row({ action_id: "x12" })] })));
     await waitFor(() => expect(cards()).toHaveLength(3));
+    expect(within(cards().find((c) => c.getAttribute("aria-labelledby") === "preview-x9")!).getByText("Applied")).toBeInTheDocument(); // numeric, not string, order
 
     const ids = idsOf();
     expect(new Set(ids).size).toBe(ids.length);
@@ -404,7 +460,7 @@ describe("F15: ids", () => {
     fireEvent.click(within(fresh).getByRole("button", { name: "Apply change" }));
     await within(fresh).findByText("Applied");
     const after = getSnapshot(OWNER).entries.filter((e) => e.kind === "preview");
-    expect(after.filter((e) => e.kind === "preview" && e.outcome).map((e) => e.kind === "preview" && e.action.action_id)).toEqual(["fresh"]);
+    expect(after.filter((e) => e.kind === "preview" && e.outcome).map((e) => e.kind === "preview" && e.action.action_id)).toEqual(["x9", "fresh"]); // x12 stays untouched
   });
 });
 
@@ -607,7 +663,11 @@ describe("F16: a card decision resolving after the session moved writes nothing"
     act(() => move());
     act(() => updateEntries(generation(), () => [{ kind: "user", id: "e900", text: "fresh" }], true));
     const before = window.sessionStorage.getItem(KEY);
+    const heard = vi.fn();
+    const off = subscribe(heard);
     await act(async () => d.resolve(json(200, { status: "done" })));
+    off();
+    expect(heard).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem(KEY)).toBe(before);
     expect(getSnapshot(OWNER).entries.some((e) => e.kind === "preview")).toBe(false);
   });
@@ -657,6 +717,7 @@ describe("G3: the footer", () => {
       "The conversation stays in this tab until you sign out. It starts fresh when you come back after 2 hours without a message.",
     );
     expect(foot).not.toMatch(/close the tab/i);
+    expect(foot).not.toContain("The conversation is not saved when you leave this page.");
     expect(foot).not.toContain("—");
     expect(foot).toContain("What you send goes to your organization");
   });

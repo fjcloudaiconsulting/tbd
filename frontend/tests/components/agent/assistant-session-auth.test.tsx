@@ -75,17 +75,17 @@ afterEach(() => {
   signInWithAccessToken(null);
 });
 
-function Harness({ chat = false }: { chat?: boolean }) {
+function Harness({ chat = false, keyed = true }: { chat?: boolean; keyed?: boolean }) {
   const ctx = useAuth();
   useEffect(() => { auth = ctx; });
   return (
     <>
       <div data-testid="state">{ctx.loading ? "loading" : ctx.user ? String(ctx.user.id) : "none"}</div>
-      {chat && ctx.user ? <AssistantChat key={ctx.user.id} /> : null}
+      {chat && ctx.user ? <AssistantChat key={keyed ? ctx.user.id : undefined} /> : null}
     </>
   );
 }
-const mount = (chat = false) => render(<AuthProvider><Harness chat={chat} /></AuthProvider>);
+const mount = (chat = false, keyed = true) => render(<AuthProvider><Harness chat={chat} keyed={keyed} /></AuthProvider>);
 const settled = (who: string) => waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent(who));
 
 /** A's populated store and key, as if the assistant had been used. */
@@ -213,32 +213,37 @@ describe("F19: no AssistantChat mounted", () => {
 });
 
 describe("F20: a late turn of the previous owner cannot touch the next owner's store", () => {
-  it("A's openTurn rejects after A switched to B and B sent one message: B's store and key are unchanged", async () => {
-    const heldA = deferred();
-    chats.push(() => heldA.p, () => sse([["message", { text: "hello B" }]]));
-    mount(true);
+  it("A's stream releases a late event after A switched to B (same chat instance): B's store and key are unchanged", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    chats.push(() => new Response(
+      new ReadableStream({
+        async start(c) {
+          c.enqueue(enc.encode('event: message\ndata: {"text":"A early"}\n\n'));
+          await gate;
+          c.enqueue(enc.encode('event: message\ndata: {"text":"A late"}\n\nevent: done\ndata: {}\n\n'));
+          c.close();
+        },
+      }),
+      { status: 200 },
+    ));
+    mount(true, false); // no remount key: the same instance, and its turn, lives on across the switch
     await settled("5");
     fireEvent.change(screen.getByLabelText("Message the assistant"), { target: { value: "from A" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(chats).toHaveLength(1)); // A's request is out
+    await screen.findByText("A early");
 
     me = () => json(200, userB());
     await act(async () => { await auth.login("b", "pw"); });
     await settled("9");
-    fireEvent.change(await screen.findByLabelText("Message the assistant"), { target: { value: "from B" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await screen.findByText("hello B");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
-
+    act(() => updateEntries(generation(), () => [{ kind: "user", id: "e900", text: "B's own" }], true));
     const snap = JSON.stringify(getSnapshot(B).entries);
     const key = window.sessionStorage.getItem(KEY);
-    expect(getSnapshot(B).entries.length).toBeGreaterThan(0);
 
-    await act(async () => heldA.resolve(json(409, { detail: { code: "agent_busy" } })));
+    await act(async () => release());
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
     expect(JSON.stringify(getSnapshot(B).entries)).toBe(snap);
     expect(window.sessionStorage.getItem(KEY)).toBe(key);
-    expect(screen.queryByText("Not sent")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry message" })).toBeNull();
+    expect(screen.queryByText("A late")).toBeNull();
   });
 });

@@ -140,8 +140,9 @@ export default function AssistantChat() {
     turnBusy.current = true;
     const gen = generation();
     const userEntry: Entry = { kind: "user", id: id(), text };
-    const history = [...entries.filter((e) => !(e.kind === "user" && e.failed) && e.kind !== "error"), userEntry];
-    updateEntries(gen, () => history, true);
+    // From the live store (not the render-time list), so a mark written since the last paint counts.
+    let history: Entry[] = [userEntry];
+    updateEntries(gen, (prev) => (history = [...prev.filter((e) => !(e.kind === "user" && e.failed) && e.kind !== "error"), userEntry]), true);
     setDraft("");
     setStreaming(true);
     stoppedRef.current = false;

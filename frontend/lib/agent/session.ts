@@ -150,7 +150,7 @@ export function updateEntries(g: number, fn: (prev: Entry[]) => Entry[], userMes
   if (store.owner === null || g !== gen) return;
   const next = fn(store.entries);
   if (next === store.entries && !userMessage) return;
-  store = { ...store, entries: next, lastMessageAt: userMessage ? Date.now() : store.lastMessageAt };
+  store = { ...store, entries: next, lastMessageAt: userMessage || store.lastMessageAt === null ? Date.now() : store.lastMessageAt };
   persist();
   emit();
 }

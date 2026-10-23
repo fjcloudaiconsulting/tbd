@@ -194,7 +194,7 @@ export default function PreviewCard({
       </dl>
 
       <div className="space-y-3 px-5 py-4">
-        {action.warnings.map((w) => (
+        {(action.warnings ?? []).map((w) => (
           <p key={w} className={`${warningCls} flex gap-2`}>
             <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} />
             <span>{text(w)}</span>
