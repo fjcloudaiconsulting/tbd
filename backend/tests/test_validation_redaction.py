@@ -26,6 +26,11 @@ from app.main import (
     _redact_sensitive,
     request_validation_handler,
 )
+from app.schemas.org_ai_credential import (
+    OpenRouterOAuthComplete,
+    OrgAICredentialCreate,
+    OrgAICredentialRotate,
+)
 
 
 # Module-level models (FastAPI/pydantic introspection can be flaky on
@@ -66,6 +71,19 @@ def app() -> FastAPI:
 
     @a.post("/mfa")
     async def mfa(body: _MfaLike):
+        return {"ok": True}
+
+    # The real AI credential bodies (BE-12).
+    @a.post("/ai-create")
+    async def ai_create(body: OrgAICredentialCreate):
+        return {"ok": True}
+
+    @a.post("/ai-rotate")
+    async def ai_rotate(body: OrgAICredentialRotate):
+        return {"ok": True}
+
+    @a.post("/openrouter-complete")
+    async def openrouter_complete(body: OpenRouterOAuthComplete):
         return {"ok": True}
 
     return a
@@ -280,3 +298,32 @@ def test_field_level_mfa_code_scalar_is_redacted(client: TestClient):
     for err in code_errors:
         if "input" in err:
             assert err["input"] == _REDACTED, err
+
+
+# ── BE-12: AI provider credentials are never echoed ────────────────────────
+
+AI_SECRET = "sk-BE12-SENTINEL-0123456789"
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        # Body-level: the create model validator fails with both secrets set.
+        ("/ai-create", {"provider": "openai", "api_key": AI_SECRET, "bearer_token": AI_SECRET}),
+        # Field-level: the secret itself fails its own constraint.
+        ("/ai-create", {"provider": "openai", "api_key": AI_SECRET * 200}),
+        ("/ai-create", {"provider": "ollama", "base_url": "https://o.example", "bearer_token": AI_SECRET * 200}),
+        ("/ai-rotate", {"api_key": AI_SECRET * 200}),
+        ("/ai-rotate", {"api_key": AI_SECRET, "bearer_token": AI_SECRET * 200}),
+        ("/ai-rotate", {"api_key": AI_SECRET, "unexpected": 1}),
+        ("/openrouter-complete", {"code": "c", "state": "s", "nonce": AI_SECRET[:20]}),
+    ],
+)
+def test_ai_credential_secrets_are_not_echoed(client: TestClient, path, body):
+    res = client.post(path, json=body)
+    assert res.status_code == 422
+    assert AI_SECRET[:20] not in res.text, res.text
+
+
+def test_ai_credential_names_are_in_the_sensitive_set():
+    assert {"api_key", "bearer_token", "nonce"} <= _SENSITIVE_FIELD_NAMES
