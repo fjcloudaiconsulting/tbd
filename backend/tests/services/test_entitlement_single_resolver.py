@@ -223,7 +223,8 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("schemas/subscription.py", "PlanUpdate._usage_limits_not_null"):
         "validator on the request body's own field; reads no stored plan.",
     ("services/admin_orgs_service.py", "delete_org_cascade"): "erasure: deletes both override tables' rows.",
-    ("services/user_merge_service.py", "merge_users"): "reassigns set_by attribution on both override tables.",
+    ("services/user_merge_service.py", "<module>"):
+        "REASSIGNED (used by merge_users) moves set_by attribution on both override tables.",
     ("services/admin_subscription_service.py", "_plan_to_dict"):
         "display-only plan serialisation for the admin subscription view (its own "
         "is_expired stays; follow-up only if it matters).",
