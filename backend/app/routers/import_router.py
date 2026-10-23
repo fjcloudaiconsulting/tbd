@@ -83,6 +83,16 @@ def _decode_csv_bytes(raw: bytes) -> str:
         raise ValidationError("File is not valid UTF-8 text")
 
 
+async def _read_upload(file: UploadFile) -> bytes:
+    """Read an upload, never more than one byte past ``MAX_UPLOAD_BYTES``.
+
+    BE-13: a bare ``file.read()`` copied the whole spooled part into memory
+    before the size check ran. One byte past the cap is all the callers'
+    ``>`` check needs, so an oversized upload costs at most the cap.
+    """
+    return await file.read(MAX_UPLOAD_BYTES + 1)
+
+
 async def _preview_text_upload(
     *,
     file: UploadFile,
@@ -105,10 +115,12 @@ async def _preview_text_upload(
     413 (not 400) from inside ``parse_ofx``, and it runs under an async
     parse timeout, so it keeps its own handler below.
     """
-    raw = await file.read()
+    raw = await _read_upload(file)
     if len(raw) > MAX_UPLOAD_BYTES:
+        # The capped read no longer sees the whole file; Starlette counted it.
+        size = file.size if file.size is not None else len(raw)
         raise ValidationError(
-            f"File too large ({len(raw)} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)"
+            f"File too large ({size} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)"
         )
     content = decode(raw)
 
@@ -244,7 +256,7 @@ async def preview_ofx_import(
     ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
     §1. Bounds enforced in ``app.services.import_ofx_service``.
     """
-    raw = await file.read()
+    raw = await _read_upload(file)
     try:
         parsed_rows = await parse_ofx(raw, org_id=current_user.org_id)
     except ParseError as exc:

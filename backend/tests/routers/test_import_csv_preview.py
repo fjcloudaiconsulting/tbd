@@ -1,4 +1,5 @@
-"""CSV preview endpoint (``POST /api/v1/import/preview``) input bounds.
+"""Import router input bounds: the CSV preview (``POST /api/v1/import/preview``)
+and, through the same app, the TAB / OFX previews and the confirm body.
 
 Mirrors ``test_import_tab.py`` (DB / app fixtures + seeding): the CSV and
 TAB routes share one upload scaffold in ``routers/import_router.py``.
@@ -32,6 +33,7 @@ from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
+from app.routers.import_router import MAX_UPLOAD_BYTES
 from app.routers.import_router import router as import_router
 from app.schemas.import_schemas import MAX_CONFIRM_ROWS
 from app.security import hash_password
@@ -251,3 +253,54 @@ async def test_confirm_with_an_overlong_description_is_a_422(session_factory):
     assert resp.json()["detail"][0]["loc"] == ["body", "rows", 0, "description"]
     ok = _confirm(session_factory, seed, [_confirm_row(1, "x" * 255)])
     assert ok.status_code == 200, ok.text
+
+
+# ── BE-13: uploads are read at most one byte past the cap ──
+
+
+@pytest.mark.parametrize(
+    "path, status",
+    [
+        ("/api/v1/import/preview", 400),
+        ("/api/v1/import/tab/preview", 400),
+        ("/api/v1/import/ofx/preview", 413),
+    ],
+)
+@pytest.mark.asyncio
+async def test_oversized_upload_is_rejected_without_reading_it_whole(
+    session_factory, monkeypatch, path, status
+):
+    """Wrong implementation: ``await file.read()`` (size -1), which copies the
+    whole part into memory before the cap is checked. The status codes and
+    "too large" wording are the existing contract per route."""
+    from starlette.datastructures import UploadFile
+
+    sizes: list[int] = []
+    real_read = UploadFile.read
+
+    async def spy_read(self, size: int = -1) -> bytes:
+        sizes.append(size)
+        return await real_read(self, size)
+
+    monkeypatch.setattr(UploadFile, "read", spy_read)
+    seed = await _seed(session_factory)
+    total = MAX_UPLOAD_BYTES + 512 * 1024
+    app = _make_app(session_factory, user_id=seed["user_id"])
+    with TestClient(app) as client:
+        resp = client.post(
+            path,
+            files={"file": ("big.txt", io.BytesIO(b"x" * total), "text/plain")},
+            data={"account_id": str(seed["account_id"])},
+        )
+    assert resp.status_code == status
+    assert "too large" in resp.json()["detail"].lower()
+    assert sizes == [MAX_UPLOAD_BYTES + 1]
+    if status == 400:
+        # The text routes still report the real size, not the capped read.
+        assert f"({total} bytes" in resp.json()["detail"]
+
+
+def test_router_and_ofx_service_share_the_upload_cap():
+    from app.services import import_ofx_service
+
+    assert MAX_UPLOAD_BYTES == import_ofx_service.MAX_UPLOAD_BYTES == 5 * 1024 * 1024
