@@ -24,7 +24,7 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "npm non-major updates in one PR. recharts gets its own PR: any move trips the TBD-528 version tripwire (chart-animation-gate.test.ts).",
+      "description": "npm non-major updates in one PR. recharts gets its own PR: reduced-motion.test.tsx and line-geometry.test.tsx pin its real animation output, so a move is reviewed on its own (TBD-528).",
       "matchManagers": [
         "npm"
       ],
