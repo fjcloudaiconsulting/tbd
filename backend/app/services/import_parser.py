@@ -18,6 +18,11 @@ from app.schemas.common import money_or_none
 # subprocess and has its own cap (``settings.ofx_max_rows``).
 MAX_ROWS = 2000
 
+# ``transactions.description`` is String(255). A longer bank description could
+# never be confirmed (BE-08), so every parser's rows are clipped to it here;
+# the full text stays in ``raw_data``.
+MAX_DESCRIPTION_LENGTH = 255
+
 
 @dataclass
 class ParsedRow:
@@ -43,6 +48,9 @@ class ParsedRow:
     fitid: str | None = None
     bank_id: str | None = None
     account_type_ofx: str | None = None  # CHECKING / SAVINGS / CREDITLINE / MONEYMRKT
+
+    def __post_init__(self) -> None:
+        self.description = self.description[:MAX_DESCRIPTION_LENGTH]
 
 
 class ParseError(Exception):

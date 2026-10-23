@@ -142,3 +142,21 @@ def test_csv_and_tab_share_one_row_cap() -> None:
     from app.services import import_abn_tab
 
     assert import_abn_tab.MAX_ROWS is MAX_ROWS == 2000
+
+
+# ── BE-08: descriptions clipped to the column every parser feeds ──
+
+
+def test_parse_csv_clips_long_descriptions_to_the_column() -> None:
+    """A confirm row's description is capped at String(255); a longer bank
+    description is clipped at parse time so its file stays importable. The
+    full text survives in ``raw_data``."""
+    long = "Groceries " + "x" * 400
+    content = f"""Date;Name / Description;Debit/credit;Amount (EUR)
+20260406;{long};Debit;12,34
+"""
+
+    rows = parse_csv(content)
+
+    assert rows[0].description == long[:255]
+    assert rows[0].raw_data["Name / Description"] == long

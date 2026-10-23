@@ -8,6 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import Money
 from app.schemas.transaction import DuplicateCandidate, TransferCandidate
+from app.services.import_parser import MAX_DESCRIPTION_LENGTH
+
+# BE-08. The largest preview any parser returns: OFX's ``ofx_max_rows``
+# default (the CSV and TAB parsers stop at 2000). A confirm is one
+# transaction with a savepoint per row, so it must not be larger than a
+# preview can be. Raising ``OFX_MAX_ROWS`` past this needs this raised too.
+MAX_CONFIRM_ROWS = 10_000
 
 
 # ── Preview Response ─────────────────────────────────────────────────────────
@@ -85,7 +92,8 @@ class ImportConfirmRow(BaseModel):
 
     row_number: int
     date: datetime.date
-    description: str
+    # ``transactions.description`` is String(255); the parsers clip to it.
+    description: str = Field(max_length=MAX_DESCRIPTION_LENGTH)
     amount: Money = Field(gt=0)
     type: Literal["income", "expense"]
     category_id: int | None = None  # None → use default_category_id
@@ -128,7 +136,7 @@ class ImportConfirmRequest(BaseModel):
 
     account_id: int
     default_category_id: int
-    rows: list[ImportConfirmRow]
+    rows: list[ImportConfirmRow] = Field(max_length=MAX_CONFIRM_ROWS)
     file_name: str = Field(min_length=1, max_length=255)
     # ``Literal`` so Pydantic surfaces a typed 422 at the wire boundary
     # instead of letting the service reach a ValidationError on unknown

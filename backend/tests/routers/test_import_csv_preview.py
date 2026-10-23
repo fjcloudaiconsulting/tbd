@@ -33,6 +33,7 @@ from app.models.category import Category, CategoryType
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.import_router import router as import_router
+from app.schemas.import_schemas import MAX_CONFIRM_ROWS
 from app.security import hash_password
 from app.services.exceptions import ValidationError
 from app.services.import_parser import MAX_ROWS
@@ -208,3 +209,45 @@ async def test_text_previews_are_rate_limited(session_factory, path, payload):
             assert post().status_code == 429
     finally:
         limiter.reset()
+
+
+# ── BE-08: confirm body bounds at the wire ──
+
+
+def _confirm(session_factory, seed, rows):
+    app = _make_app(session_factory, user_id=seed["user_id"])
+    with TestClient(app) as client:
+        return client.post(
+            "/api/v1/import/confirm",
+            json={
+                "account_id": seed["account_id"], "default_category_id": 1,
+                "file_name": "bank.csv", "source_format": "csv", "rows": rows,
+            },
+        )
+
+
+def _confirm_row(n, description="Groceries"):
+    return {
+        "row_number": n, "date": "2026-04-06", "description": description,
+        "amount": "1.00", "type": "expense", "skip": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_confirm_with_more_rows_than_any_preview_is_a_422(session_factory):
+    seed = await _seed(session_factory)
+    resp = _confirm(
+        session_factory, seed, [_confirm_row(i) for i in range(MAX_CONFIRM_ROWS + 1)]
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["body", "rows"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_with_an_overlong_description_is_a_422(session_factory):
+    seed = await _seed(session_factory)
+    resp = _confirm(session_factory, seed, [_confirm_row(1, "x" * 256)])
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["body", "rows", 0, "description"]
+    ok = _confirm(session_factory, seed, [_confirm_row(1, "x" * 255)])
+    assert ok.status_code == 200, ok.text

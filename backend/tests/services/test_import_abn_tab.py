@@ -341,3 +341,13 @@ def test_parse_tab_rejects_unstorable_amounts_with_row_number(raw: str) -> None:
     with pytest.raises(ParseError, match="Amount out of range") as exc:
         parse_tab(f"{good}\r\n{bad}")
     assert exc.value.row_number == 2
+
+
+def test_parse_tab_clips_long_fallback_descriptions_to_the_column() -> None:
+    long = "SEPA Overboeking " + "Omschrijving " * 40
+    line = _line(
+        "845455273", "EUR", "20260220", "0,00", "0,00", "20260220", "-1,00", long
+    )
+    rows = parse_tab(line)
+    assert len(rows[0].description) == 255
+    assert rows[0].raw_data["description"] == long.strip()
