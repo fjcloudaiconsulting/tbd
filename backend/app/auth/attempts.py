@@ -1,10 +1,15 @@
 """Failed sign-in attempts counted per account and per MFA challenge (BE-02).
 
 The per-IP limits on ``/login`` and the ``/mfa/*`` legs are multiplied by every
-address a client can use. These counters are keyed on the account (the
-submitted login, or the user id) and on the challenge token's ``jti`` instead,
-in the rate-limit store (``rate_limit_db``: fixed windows, shared by every
-replica). Only failures count.
+address a client can use. These counters are keyed on the account and on the
+challenge token's ``jti`` instead, in the rate-limit store (``rate_limit_db``:
+fixed windows, shared by every replica). Only failures count.
+
+Wrong passwords are counted twice: under the login as typed (checked before
+the account is looked up, so an unknown login is refused like a real one) and
+under the user id once the account is known. The user-id window is the real
+per-account budget: it is shared by ``/login`` and the settings re-auth
+gates, and no spelling of the login, rename or email change opens a new one.
 
 Windows are short and nothing locks permanently: a full window refuses that
 account's attempts until it ends (``Retry-After``), a success empties it, and
@@ -48,6 +53,16 @@ def _login_key(login: str) -> str:
     return f"auth:login_fail:{login.strip().lower()}"
 
 
+def _password_user_key(user_id: int | None, login: str | None) -> str:
+    # An unknown account reads and writes a key no check ever blocks on, so a
+    # login does the same store work whether or not the account exists
+    # (BE-25). One per typed login, never one shared row every failed login
+    # would queue on.
+    if user_id is not None:
+        return f"auth:password_fail:user:{user_id}"
+    return f"auth:password_fail:unknown:{(login or '').strip().lower()}"
+
+
 def _mfa_user_key(user_id: int) -> str:
     return f"auth:mfa_fail:user:{user_id}"
 
@@ -70,16 +85,30 @@ async def _fail(key: str, limit: int) -> bool:
 
 
 async def login_retry_after(login: str) -> int | None:
-    """Seconds to wait when ``login`` has used its failure budget, else None."""
+    """Seconds to wait when the typed ``login`` has used its failure budget."""
     return await _retry_after(_login_key(login), LOGIN_FAILURES_PER_ACCOUNT)
 
 
-async def record_login_failure(login: str) -> bool:
-    """Count a wrong password for ``login``; True when the window just filled."""
-    return await _fail(_login_key(login), LOGIN_FAILURES_PER_ACCOUNT)
+async def password_retry_after(user_id: int | None, login: str | None = None) -> int | None:
+    """Seconds to wait when the account has used its password budget. Always
+    None for an unknown account (``user_id=None``), after the same store read."""
+    retry_after = await _retry_after(_password_user_key(user_id, login), LOGIN_FAILURES_PER_ACCOUNT)
+    return retry_after if user_id is not None else None
 
 
-async def clear_login_failures(*logins: str) -> None:
+async def record_password_failure(login: str | None, user_id: int | None) -> bool:
+    """Count a wrong password under the typed ``login`` (None at a settings
+    re-auth, where nothing was typed) and under the account. True when the
+    ACCOUNT window just filled (the caller audits that once)."""
+    if login is not None:
+        await _fail(_login_key(login), LOGIN_FAILURES_PER_ACCOUNT)
+    filled = await _fail(_password_user_key(user_id, login), LOGIN_FAILURES_PER_ACCOUNT)
+    return filled and user_id is not None
+
+
+async def clear_password_failures(user_id: int, *logins: str) -> None:
+    """Empty the account's password window and those of ``logins``."""
+    await asyncio.to_thread(rate_limit_db.clear, _password_user_key(user_id, None))
     for login in logins:
         await asyncio.to_thread(rate_limit_db.clear, _login_key(login))
 

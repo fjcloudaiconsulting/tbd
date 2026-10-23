@@ -603,9 +603,10 @@ async def login(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     await _require_session_store()
-    # Per-account failure budget beside the per-IP limit (BE-02). Keyed on
-    # what was typed and checked before the lookup, so an unknown login is
-    # refused exactly like a real one.
+    # Per-account failure budgets beside the per-IP limit (BE-02): the login
+    # as typed, checked before the lookup so an unknown login is refused
+    # exactly like a real one; then, once the account is known, its user id,
+    # which no other spelling of the login, rename or email change reopens.
     try:
         retry_after = await attempts.login_retry_after(body.login)
     except SQLAlchemyError as exc:
@@ -623,12 +624,23 @@ async def login(
         )
     )
     user = result.scalar_one_or_none()
+    user_id = user.id if user is not None else None
+    try:
+        retry_after = await attempts.password_retry_after(user_id, body.login)
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=attempts.TOO_MANY_LOGIN_ATTEMPTS_DETAIL,
+            headers={"Retry-After": str(retry_after)},
+        )
 
     if not verify_password_or_dummy(
         body.password, user.password_hash if user is not None else None
     ):
         try:
-            filled = await attempts.record_login_failure(body.login)
+            filled = await attempts.record_password_failure(body.login, user_id)
         except SQLAlchemyError as exc:
             raise _attempt_store_unavailable() from exc
         if filled and user is not None:
@@ -646,7 +658,7 @@ async def login(
             detail="Invalid credentials",
         )
     try:
-        await attempts.clear_login_failures(body.login)
+        await attempts.clear_password_failures(user.id, body.login)
     except SQLAlchemyError as exc:
         raise _attempt_store_unavailable() from exc
 
@@ -2180,7 +2192,7 @@ async def reset_password(
     # the owner can sign in with the new password straight away. Best-effort,
     # the reset itself is committed.
     try:
-        await attempts.clear_login_failures(user.username, user.email)
+        await attempts.clear_password_failures(user.id, user.username, user.email)
     except SQLAlchemyError:
         _LOGGER.warning("auth.reset_password.clear_login_failures_failed", exc_info=True)
 

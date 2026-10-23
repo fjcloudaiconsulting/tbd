@@ -304,3 +304,27 @@ async def test_email_change_without_mfa_is_unchanged(session_factory) -> None:
         )
     assert res.status_code == 200, res.text
     assert (await _row(session_factory, user_id)).pending_email == "new@example.com"
+
+
+@pytest.mark.asyncio
+async def test_a_rename_does_not_reopen_the_password_budget(session_factory) -> None:
+    """The budget is keyed on the user id: changing the username from the
+    same session leaves it full, at re-auth and at /login."""
+    _, _, secret, auth = await _mfa_user(session_factory)
+    with TestClient(_app(session_factory)) as client:
+        for _ in range(attempts.LOGIN_FAILURES_PER_ACCOUNT):
+            assert client.post(
+                "/api/v1/auth/mfa/disable",
+                json={"password": "guess", "mfa_code": _wrong_totp(secret)},
+                headers=auth,
+            ).status_code == 403
+        renamed = client.put("/api/v1/users/me", json={"username": "alice-renamed"}, headers=auth)
+        assert renamed.status_code == 200, renamed.text
+        assert client.post(
+            "/api/v1/auth/mfa/disable",
+            json={"password": PASSWORD, "mfa_code": pyotp.TOTP(secret).now()},
+            headers=auth,
+        ).status_code == 429
+        assert client.post(
+            "/api/v1/auth/login", json={"login": "alice-renamed", "password": PASSWORD}
+        ).status_code == 429

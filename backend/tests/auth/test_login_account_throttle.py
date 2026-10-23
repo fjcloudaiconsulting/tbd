@@ -102,8 +102,8 @@ async def test_a_password_reset_reopens_the_window(session_factory) -> None:
     seed = await _seed_user(session_factory)
     with TestClient(_make_app(session_factory)) as client:
         _fill(client, "alice")
-        _fill(client, "alice@example.com")
         assert _login(client, "alice", PASSWORD).status_code == 429
+        assert _login(client, "alice@example.com", PASSWORD).status_code == 429
         reset = client.post(
             "/api/v1/auth/reset-password",
             json={"token": create_password_reset_token(seed["user_id"]), "new_password": "a-new-passw0rd"},
@@ -111,3 +111,17 @@ async def test_a_password_reset_reopens_the_window(session_factory) -> None:
         assert reset.status_code == 200, reset.text
         assert _login(client, "alice", "a-new-passw0rd").status_code == 200
         assert _login(client, "alice@example.com", "a-new-passw0rd").status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_another_spelling_of_the_login_shares_the_account_budget(session_factory) -> None:
+    """The typed-login window is per spelling; the account's own window is
+    keyed on the user id, so switching to the email (or any spelling the
+    database matches) opens no new budget."""
+    await _seed_user(session_factory)
+    with TestClient(_make_app(session_factory)) as client:
+        for i in range(attempts.LOGIN_FAILURES_PER_ACCOUNT):
+            login = "alice" if i % 2 else "alice@example.com"
+            assert _login(client, login, "wrong-password").status_code == 401
+        assert _login(client, "alice", PASSWORD).status_code == 429
+        assert _login(client, "alice@example.com", PASSWORD).status_code == 429

@@ -109,14 +109,14 @@ async def reauth_password(
     detail: str = "Invalid password",
 ) -> None:
     """Re-authenticate a signed-in user by password before an MFA change
-    (BE-32). Wrong passwords draw from the account's ``/login`` failure budget
-    (keyed on the username), so a stolen session cannot guess the password
-    here without limit. ``status_code`` / ``detail`` on a wrong password, 429
-    when the budget is full.
+    (BE-32). Wrong passwords draw from the account's password budget, the one
+    ``/login`` uses, keyed on the user id: a stolen session cannot guess the
+    password here without limit, nor reopen the budget by renaming the
+    account. ``status_code`` / ``detail`` on a wrong password, 429 when the
+    budget is full.
     """
-    login = user.username
     try:
-        retry_after = await attempts.login_retry_after(login)
+        retry_after = await attempts.password_retry_after(user.id)
     except SQLAlchemyError as exc:
         raise _unavailable() from exc
     if retry_after is not None:
@@ -128,7 +128,7 @@ async def reauth_password(
     if password and verify_password(password, user.password_hash):
         return
     try:
-        filled = await attempts.record_login_failure(login)
+        filled = await attempts.record_password_failure(None, user.id)
     except SQLAlchemyError as exc:
         raise _unavailable() from exc
     if filled:
