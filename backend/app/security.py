@@ -58,6 +58,26 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode()[:_BCRYPT_MAX_BYTES], hashed.encode())
 
 
+_dummy_password_hash: str | None = None
+
+
+def verify_password_or_dummy(plain: str, hashed: str | None) -> bool:
+    """``verify_password``, or the same bcrypt work against a throwaway hash
+    when there is no stored one (BE-25): a login for a missing account then
+    takes as long as a wrong password, so the response time does not say
+    whether the username or email exists. Always False without a hash.
+
+    The throwaway hash is made once per process with ``hash_password``, so it
+    carries the current bcrypt cost."""
+    global _dummy_password_hash
+    if hashed is not None:
+        return verify_password(plain, hashed)
+    if _dummy_password_hash is None:
+        _dummy_password_hash = hash_password(secrets.token_urlsafe(16))
+    verify_password(plain, _dummy_password_hash)
+    return False
+
+
 def create_access_token(subject: int, org_id: int, role: str) -> str:
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=settings.jwt_access_token_expire_minutes)
