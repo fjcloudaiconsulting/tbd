@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.import_parser import ParseError, detect_delimiter, parse_csv
+from app.services.import_parser import MAX_ROWS, ParseError, detect_delimiter, parse_csv
 
 
 SEMICOLON_CSV = """Date;Name / Description;Account;Counterparty;Code;Debit/credit;Amount (EUR);Transaction type;Notifications
@@ -123,3 +123,22 @@ def test_parse_csv_still_accepts_largest_storable_amount() -> None:
     rows = parse_csv(content)
 
     assert [r.amount for r in rows] == [Decimal("9999999999.99"), Decimal("0.01")]
+
+
+# ── BE-07: row cap shared with the ABN .TAB parser ──
+
+
+def test_parse_csv_enforces_the_shared_row_cap() -> None:
+    header = "Date;Name / Description;Debit/credit;Amount (EUR)\n"
+    line = "20260406;Groceries;Debit;1,00\n"
+
+    assert len(parse_csv(header + line * MAX_ROWS)) == MAX_ROWS
+    with pytest.raises(ParseError, match=f"maximum of {MAX_ROWS} transactions") as exc:
+        parse_csv(header + line * (MAX_ROWS + 1))
+    assert exc.value.row_number == MAX_ROWS + 1
+
+
+def test_csv_and_tab_share_one_row_cap() -> None:
+    from app.services import import_abn_tab
+
+    assert import_abn_tab.MAX_ROWS is MAX_ROWS == 2000

@@ -14,6 +14,8 @@ import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
@@ -29,9 +31,11 @@ from app.models import Base
 from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
 from app.models.user import Organization, Role, User
+from app.rate_limit import limiter
 from app.routers.import_router import router as import_router
 from app.security import hash_password
 from app.services.exceptions import ValidationError
+from app.services.import_parser import MAX_ROWS
 
 HEADER = "Date;Name / Description;Debit/credit;Amount (EUR)\n"
 
@@ -156,3 +160,51 @@ async def test_csv_preview_undecodable_returns_400(session_factory):
     resp = _post_csv(session_factory, seed, b"\xff\xfe\x81")
     assert resp.status_code == 400
     assert "utf-8" in resp.json()["detail"].lower()
+
+
+# ── BE-07: row cap and preview rate limit ──
+
+
+@pytest.mark.asyncio
+async def test_csv_preview_over_the_row_cap_is_a_400_like_tab(session_factory):
+    """Same cap and wording as ``.TAB``: the parser stops at row
+    ``MAX_ROWS + 1`` instead of previewing (and querying for) every row."""
+    seed = await _seed(session_factory)
+    rows = "".join("20260406;Groceries;Debit;1,00\n" for _ in range(MAX_ROWS + 1))
+    resp = _post_csv(session_factory, seed, (HEADER + rows).encode())
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        f"Row {MAX_ROWS + 1}: File exceeds the maximum of {MAX_ROWS} transactions"
+    )
+
+
+@pytest.mark.parametrize(
+    "path, payload",
+    [
+        ("/api/v1/import/preview", HEADER.encode()),
+        ("/api/v1/import/tab/preview", b"\r\n"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_text_previews_are_rate_limited(session_factory, path, payload):
+    """30/minute per client, the 31st is a 429. The payloads fail parsing on
+    purpose: the limit counts requests, not successful previews."""
+    seed = await _seed(session_factory)
+    app = _make_app(session_factory, user_id=seed["user_id"])
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    limiter.reset()
+    try:
+        with TestClient(app) as client:
+            def post():
+                return client.post(
+                    path,
+                    files={"file": ("f.txt", io.BytesIO(payload), "text/plain")},
+                    data={"account_id": str(seed["account_id"])},
+                )
+
+            statuses = [post().status_code for _ in range(30)]
+            assert set(statuses) == {400}
+            assert post().status_code == 429
+    finally:
+        limiter.reset()

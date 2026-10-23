@@ -12,6 +12,12 @@ from decimal import Decimal, InvalidOperation
 
 from app.schemas.common import money_or_none
 
+# DoS stopgap shared by the text parsers that run in the request handler (CSV
+# and ABN ``.TAB``): a row past the cap raises ``ParseError`` rather than
+# parsing, and previewing, unbounded input. OFX parses in a killable
+# subprocess and has its own cap (``settings.ofx_max_rows``).
+MAX_ROWS = 2000
+
 
 @dataclass
 class ParsedRow:
@@ -116,7 +122,8 @@ def parse_csv(content: str) -> list[ParsedRow]:
       [| Resulting balance | Tag]
 
     Returns a list of ParsedRow in file order.
-    Raises ParseError on structural issues (missing columns, unparseable values).
+    Raises ParseError on structural issues (missing columns, unparseable values)
+    and on a file with more than ``MAX_ROWS`` rows.
     """
     content = _strip_bom(content)
     delimiter = detect_delimiter(content)
@@ -133,6 +140,11 @@ def parse_csv(content: str) -> list[ParsedRow]:
 
     rows: list[ParsedRow] = []
     for i, row in enumerate(reader, start=1):
+        if i > MAX_ROWS:
+            raise ParseError(
+                f"File exceeds the maximum of {MAX_ROWS} transactions",
+                row_number=i,
+            )
         # Normalize keys (strip quotes and whitespace from DictReader keys)
         row = {k.strip().strip('"'): v.strip().strip('"') if v else "" for k, v in row.items()}
 

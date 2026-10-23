@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
 from app.models.user import User
+from app.rate_limit import limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.import_reconciliation import (
     ImportBatchDetail,
     ReconcileBatchRequest,
@@ -131,8 +133,18 @@ async def _preview_text_upload(
         raise _missing_category_type_response(exc) from exc
 
 
-@router.post("/preview", response_model=ImportPreviewResponse)
+# BE-07. A preview parses up to ``MAX_ROWS`` rows (OFX: ``ofx_max_rows``) and
+# runs the duplicate / transfer detectors on each, so the three preview routes
+# carry a per-client limit: generous for a person re-previewing a file, and
+# tunable per org or user through the rate-limit override catalogue.
+@router.post(
+    "/preview",
+    response_model=ImportPreviewResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("import.preview", "30/minute"))
 async def preview_import(
+    request: Request,
     file: UploadFile = File(...),
     account_id: int = Form(...),
     current_user: User = Depends(get_current_user),
@@ -153,8 +165,14 @@ async def preview_import(
     )
 
 
-@router.post("/tab/preview", response_model=ImportPreviewResponse)
+@router.post(
+    "/tab/preview",
+    response_model=ImportPreviewResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("import.tab_preview", "30/minute"))
 async def preview_tab_import(
+    request: Request,
     file: UploadFile = File(...),
     account_id: int = Form(...),
     current_user: User = Depends(get_current_user),
@@ -205,8 +223,14 @@ async def confirm_import(
 # org-scoping are wired so contract tests can assert them.
 
 
-@router.post("/ofx/preview", response_model=ImportPreviewResponse)
+@router.post(
+    "/ofx/preview",
+    response_model=ImportPreviewResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("import.ofx_preview", "30/minute"))
 async def preview_ofx_import(
+    request: Request,
     file: UploadFile = File(...),
     account_id: int = Form(...),
     current_user: User = Depends(get_current_user),
