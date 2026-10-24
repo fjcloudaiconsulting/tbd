@@ -280,7 +280,7 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 
 ### Rate limiting
 
-All limits are per client IP via slowapi. Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
+All limits are per client IP via slowapi, except `/auth/refresh`, which is per session (below). Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
 
 Failed sign-in attempts are also counted per account, beside the per-IP limits (BE-02, `backend/app/auth/attempts.py`), so a client spread over many addresses gets no larger budget:
 
@@ -306,6 +306,7 @@ Only failures count. A success empties the account's window, a completed passwor
 | `POST /api/v1/auth/mfa/email-code` | 3/minute |
 | `POST /api/v1/auth/mfa/email-verify` | 10/minute |
 | `POST /api/v1/auth/logout` | 120/minute |
+| `POST /api/v1/auth/refresh` | 30/minute per session family (the refresh cookie's `sid`); per IP when the cookie does not verify |
 | `POST /api/v1/auth/reset-password` | 10/minute |
 | `GET /api/v1/auth/google` | 60/minute |
 | `GET /api/v1/auth/google/callback` | 60/minute |
@@ -344,10 +345,16 @@ they are stored (FE-03). The default `/admin/audit` view hides these rows
 BE-10), in batches of 1000 with one short transaction each, and logs only the
 count; no other event type is purged.
 
-`POST /api/v1/auth/refresh` remains **unlimited**, deliberately (TBD-353): it
-writes no audit row for an anonymous caller, and a 429 there wedges the
-frontend's mount-path session restore into a permanent spinner whose only
-recovery — reload — re-issues the request. Tracked separately.
+`POST /api/v1/auth/refresh` is limited to **30 a minute per session** (BE-10).
+The key is the session family (`sid`) of the newest refresh cookie that
+verifies, which every rotation keeps, so one session has one budget wherever it
+calls from and sessions behind a shared address do not pool theirs. A request
+whose cookie is missing or does not verify (garbage, forged, expired, another
+token type) is bucketed per IP instead.
+⚠ The frontend does not back off on a 429 yet (TBD-353): a session past its
+budget, or a signed-out visitor on an address past the per-IP one, sees the
+mount-path restore spinner until the minute is over, then a reload recovers.
+Legitimate use stays far below 30 a minute.
 
 ### Public endpoints (no auth required)
 

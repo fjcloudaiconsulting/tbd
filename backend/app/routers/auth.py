@@ -85,7 +85,7 @@ from app.security import (
 )
 from app.captcha import verify_captcha
 from app.models.notification import NotificationCategory
-from app.rate_limit import get_client_ip, limiter
+from app.rate_limit import get_client_ip, limiter, rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service, notification_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
@@ -1536,7 +1536,34 @@ async def _validate_refresh_cookie(
     return successes[0]
 
 
+def _refresh_rate_limit_key(request: Request) -> str:
+    """Bucket for ``POST /refresh`` (BE-10): the session family (``sid``) of
+    the refresh cookie, which every rotation keeps, so one session gets 30 a
+    minute wherever it calls from and sessions behind one address
+    do not share a budget. Of several cookies, the newest by ``iat`` (the one
+    ``_validate_refresh_cookie`` prefers). A request with no cookie that
+    verifies as a refresh token carrying a ``sid`` (none, garbage, forged,
+    expired, another token type) is bucketed per IP instead. The stored key
+    is hashed (``rate_limit_db``)."""
+    best: tuple[int, str] | None = None
+    for token in _extract_refresh_cookies(request):
+        payload = decode_token(token)
+        if payload is None or payload.get("type") != "refresh":
+            continue
+        sid = payload.get("sid")
+        if not isinstance(sid, str) or not sid:
+            continue
+        iat = payload.get("iat")
+        iat = iat if isinstance(iat, int) else 0
+        if best is None or iat > best[0]:
+            best = (iat, sid)
+    if best is None:
+        return rate_limit_key(request)
+    return f"refresh-session:{best[1]}"
+
+
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/minute", key_func=_refresh_rate_limit_key)
 async def refresh(
     request: Request,
     response: Response,
