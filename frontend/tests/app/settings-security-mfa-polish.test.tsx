@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import SecurityPage from "@/app/settings/security/page";
 import { apiFetch, ApiResponseError } from "@/lib/api";
@@ -62,6 +62,22 @@ function mockUser(mfaEnabled: boolean) {
   } as never);
 }
 
+// BE-32: setup re-authenticates first. Open the form, confirm the password,
+// start setup.
+async function startSetup(password = "correctPassword") {
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
+  );
+  fireEvent.change(screen.getByLabelText(/^Account password$/i), {
+    target: { value: password },
+  });
+  // The helper returns before the next findBy starts, so let the setup
+  // request settle inside act.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /^Start setup$/i }));
+  });
+}
+
 describe("Security page MFA polish: copy, validation, error mapping", () => {
   beforeEach(() => {
     vi.mocked(apiFetch).mockReset();
@@ -80,10 +96,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     }) as never);
 
     render(<SecurityPage />);
-    const setupBtn = await screen.findByRole("button", {
-      name: /Set Up Two-Factor Authentication/i,
-    });
-    fireEvent.click(setupBtn);
+    await startSetup();
 
     const busyBtn = await screen.findByRole("button", { name: /Setting up/i });
     expect(busyBtn).toBeDisabled();
@@ -108,10 +121,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     }) as never);
 
     render(<SecurityPage />);
-    const setupBtn = await screen.findByRole("button", {
-      name: /Set Up Two-Factor Authentication/i,
-    });
-    fireEvent.click(setupBtn);
+    await startSetup();
 
     // Advance to the verify step.
     fireEvent.click(await screen.findByRole("button", { name: /^Continue$/i }));
@@ -138,9 +148,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     }) as never);
 
     render(<SecurityPage />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
-    );
+    await startSetup();
     fireEvent.click(await screen.findByRole("button", { name: /^Continue$/i }));
 
     const codeInput = await screen.findByLabelText(/Verification Code/i);
@@ -163,9 +171,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     }) as never);
 
     render(<SecurityPage />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
-    );
+    await startSetup();
     fireEvent.click(await screen.findByRole("button", { name: /^Continue$/i }));
     const codeInput = await screen.findByLabelText(/Verification Code/i);
     fireEvent.change(codeInput, { target: { value: "123456" } });
@@ -196,6 +202,9 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     );
     const pwd = await screen.findByLabelText(/Confirm password/i);
     fireEvent.change(pwd, { target: { value: "wrongPassword" } });
+    fireEvent.change(screen.getByLabelText(/Authenticator or recovery code/i), {
+      target: { value: "123456" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /^Regenerate$/i }));
 
     const err = await screen.findByRole("alert");
@@ -236,9 +245,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     }) as never);
 
     render(<SecurityPage />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
-    );
+    await startSetup();
     fireEvent.click(await screen.findByRole("button", { name: /^Continue$/i }));
     const codeInput = await screen.findByLabelText(/Verification Code/i);
     fireEvent.change(codeInput, { target: { value: "123456" } });
@@ -280,9 +287,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     Object.assign(navigator, { clipboard: { writeText } });
 
     render(<SecurityPage />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
-    );
+    await startSetup();
     // Expand the manual-key disclosure and trigger the copy.
     fireEvent.click(await screen.findByText(/Enter this key manually/i));
     fireEvent.click(await screen.findByRole("button", { name: /^Copy key$/i }));
@@ -308,9 +313,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     }) as never);
 
     render(<SecurityPage />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
-    );
+    await startSetup();
     const qr = await screen.findByAltText(/Scan with your authenticator app/i);
     expect(qr.tagName).toBe("IMG");
     // Sighted caption restates the action; both must be present so
@@ -334,9 +337,7 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     Object.assign(navigator, { clipboard: { writeText } });
 
     render(<SecurityPage />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
-    );
+    await startSetup();
     fireEvent.click(await screen.findByRole("button", { name: /^Continue$/i }));
     const codeInput = await screen.findByLabelText(/Verification Code/i);
     fireEvent.change(codeInput, { target: { value: "123456" } });
@@ -375,6 +376,9 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     );
     const pwd = await screen.findByLabelText(/^Password$/i);
     fireEvent.change(pwd, { target: { value: "correctPassword" } });
+    fireEvent.change(screen.getByLabelText(/Authenticator or recovery code/i), {
+      target: { value: "123456" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /^Disable two-factor$/i }));
 
     await waitFor(() => {
