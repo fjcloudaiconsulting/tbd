@@ -6,7 +6,7 @@ Agents with Jira access use it to create, update and close the Jira issues.
 Every agent working on this effort keeps it current, so the next one starts from
 the real state and nobody needs a live conversation to catch up.
 
-Last updated: 2026-10-24 by the Jira agent, after creating and reconciling the Jira issues
+Last updated: 2026-10-24 by the Jira agent, after the owner-decision PRs and the cloud-infra changes
 
 ## Disclosure note
 
@@ -22,16 +22,26 @@ exploit detail into public issues, PRs or commit messages.
 
 - **Merged to `main` on 2026-10-24:** #1006, #1009, #1005, #1008 and #1004
   (security), #1003, #978, #1002, #872 and #941 (dependencies), and #1010 (this
-  file). Every check passed on each one before it merged. That covers 35 of the
-  58 findings; see the Merged column.
+  file). Later the same day, the owner-decision PRs #1019, #1020 and #1021
+  (security) and #1016 (this file). Every check passed on each one before it
+  merged. That covers 41 of the 58 findings; see the Merged column.
+- **Live in `cloud-infra` (2026-10-24):** the production CORS list (FE-01), the
+  edge request body limit (BE-13), tunnel-only access to the API with a
+  network policy (INF-01), the client-IP header on the MCP workload (INF-02)
+  and the readiness probes off the public route (INF-09). Each was checked from
+  outside or with a read-only cluster check.
 - **Waiting on the owner:** #1007 (check the production secrets first, item 1 of
   the owner decision queue; its 9 findings are not merged) and #929 (PyYAML
   builds from source on Python 3.15). #937 was closed in favour of #1003.
-- **Release:** the app is not released yet. The merged fixes ship in the
-  release that the open release-please PR
+- **Release:** the app is not released yet; production runs 0.302.0. The merged
+  fixes ship in the release that the open release-please PR
   [#1011](https://github.com/fjcloudaiconsulting/tbd/pull/1011) prepares (0.303.1
-  when this was written), once the owner merges it and then the image bump in `cloud-infra`. The apex landing site is
-  the exception: it deploys from `main` on its own, so #1004's apex changes
+  when this was written), once the owner merges it and then the image bump in
+  `cloud-infra`. That release carries three migrations: two additive `users`
+  columns and one batched data clean-up of the tag dictionary. After it
+  deploys, `cloud-infra` can drop the backend's `--forwarded-allow-ips`
+  argument, because `FORWARDED_ALLOW_IPS` now sets the same list (#1021). The
+  apex landing site deploys from `main` on its own, so #1004's apex changes
   (connect-src and `security.txt`) have been live there since 2026-10-24.
 - **Follow-ups merged:** #1014 (tracker refresh) and #1015 (test durations).
 - **Jira:** every finding has an issue (Jira column), labelled
@@ -109,6 +119,9 @@ exploit detail into public issues, PRs or commit messages.
 | [#1004](https://github.com/fjcloudaiconsulting/tbd/pull/1004) | `security/frontend` | CSV export, token URLs, apex CSP, security.txt | FE-01, FE-03, FE-04, INF-14 | Merged 2026-10-24 as `47b8e9f0` |
 | [#1007](https://github.com/fjcloudaiconsulting/tbd/pull/1007) | `security/config-infra` | Production config, compose, export CLI, apex deploy, dependencies | INF-01, INF-03, INF-04, INF-05, INF-07, INF-10, INF-11, INF-15, DB-05 | Open: waiting on the production secret check |
 | [#1010](https://github.com/fjcloudaiconsulting/tbd/pull/1010) | `docs/security-assessment-tracker` | This file | none | Merged 2026-10-24 as `35caaab9` |
+| [#1019](https://github.com/fjcloudaiconsulting/tbd/pull/1019) | `security/auth-audit-decisions` | Owner decisions: MFA email fallback, audit growth | BE-03, BE-10 | Merged 2026-10-24 as `a131686a` |
+| [#1020](https://github.com/fjcloudaiconsulting/tbd/pull/1020) | `security/tenant-data-decisions` | Owner decisions: billing entitlements, org names, email addresses, tag dictionary | BE-05, DB-03, DB-01, BE-18 | Merged 2026-10-24 as `9c6f8148` |
+| [#1021](https://github.com/fjcloudaiconsulting/tbd/pull/1021) | `security/infra-followups` | Public-only smoke test, proxy trust list, environment docs | INF-09, INF-01, INF-02 | Merged 2026-10-24 as `1fe8adaf` |
 
 Dependency PRs handled in the same pass:
 
@@ -119,7 +132,7 @@ Dependency PRs handled in the same pass:
 | [#1002](https://github.com/fjcloudaiconsulting/tbd/pull/1002) | FastAPI 0.162.0 (routine Renovate update, not from the assessment) | Merged 2026-10-24 as `0e6fe9a7` |
 | [#872](https://github.com/fjcloudaiconsulting/tbd/pull/872) | recharts 3.10.1; line charts animate unless the user prefers reduced motion | Merged 2026-10-24 as `238c793a` |
 | [#941](https://github.com/fjcloudaiconsulting/tbd/pull/941) | react-resizable 4 | Merged 2026-10-24 as `effc9098` |
-| [#929](https://github.com/fjcloudaiconsulting/tbd/pull/929) | Python 3.15 runtime | Open: waiting on the PyYAML build decision (owner queue item 12) |
+| [#929](https://github.com/fjcloudaiconsulting/tbd/pull/929) | Python 3.15 runtime | Open: waiting on the PyYAML build decision (owner queue item 9) |
 | [#937](https://github.com/fjcloudaiconsulting/tbd/pull/937) | TypeScript 7 (replaced by #1003) | Closed |
 
 ## Merge notes
@@ -142,36 +155,36 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | Severity | Total | Fixed | Partial | Needs owner | Not fixed | Accepted |
 |---|---|---|---|---|---|---|
 | High | 1 | 1 | 0 | 0 | 0 | 0 |
-| Medium | 11 | 7 | 3 | 1 | 0 | 0 |
-| Low | 33 | 17 | 8 | 8 | 0 | 0 |
+| Medium | 11 | 8 | 3 | 0 | 0 | 0 |
+| Low | 33 | 23 | 7 | 3 | 0 | 0 |
 | Info | 13 | 4 | 5 | 2 | 1 | 1 |
-| **All** | **58** | **29** | **16** | **11** | **1** | **1** |
+| **All** | **58** | **36** | **15** | **5** | **1** | **1** |
 
 | ID | Title | Severity | Status | PR | Merged | Commit | Owner action | Jira |
 |---|---|---|---|---|---|---|---|---|
 | BE-01 | Bound decimal inputs on amount fields | High | Fixed | #1006 | 2026-10-24 | `10dd5a3d` | | TBD-672 |
 | BE-02 | Per-account limits on password and second-factor attempts | Medium | Fixed | #1009 | 2026-10-24 | `82c7c52e`, `591c50fe` | Follow-up: route the remaining password re-checks (password change, email change, token-minting step-ups) through the per-user window | TBD-677, follow-up TBD-735 |
-| BE-03 | Email-code MFA fallback policy | Medium | Needs owner | | – | | Decide the email fallback policy for accounts with TOTP (options in the private report) | TBD-680 |
+| BE-03 | Email-code MFA fallback policy | Medium | Fixed | #1019 | 2026-10-24 | `4c5bf67e`, `3117581e` | After the release, tell MFA users that email codes are now opt-in | TBD-680 |
 | BE-04 | End sessions on password reset and change | Medium | Fixed | #1009 | 2026-10-24 | `7ceb5679` | | TBD-685 |
-| BE-05 | Self-service plan change restrictions | Medium | Partial | #1005 | 2026-10-24 | `f862b6c2` | Decide whether paid plans require payment once billing is live, and what canceled or past-due orgs are entitled to | TBD-689 |
+| BE-05 | Self-service plan change restrictions | Medium | Partial | #1005, #1020 | 2026-10-24 | `f862b6c2`, `5f1b4f04` | Decide whether paid plans require payment, and enforce seat limits, once billing is live | TBD-689 |
 | BE-06 | Invitation limits and response uniformity | Medium | Fixed | #1005 | 2026-10-24 | `933b79a1` | | TBD-693 |
 | BE-07 | CSV import preview row cap | Medium | Fixed | #1006 | 2026-10-24 | `a90b05b6` | Follow-up: batch the per-row preview detectors | TBD-697, follow-up TBD-736 |
 | BE-08 | Import confirm row cap | Medium | Fixed | #1006 | 2026-10-24 | `17e3630e` | Follow-up: chunked commits and an idempotent confirm | TBD-701, follow-up TBD-737 |
 | BE-09 | Size cap on AI provider responses | Medium | Fixed | #1008 | 2026-10-24 | `c55f200a` | | TBD-705 |
-| BE-10 | Audit-log growth controls | Medium | Partial | #1008 | 2026-10-24 | `9db358e9` | Set a retention period for `audit_events`; alert on `tbd.security.csp_reports{outcome="global_budget"}`; decide on deduplicating routine session-rotation audit rows and a per-session refresh limit | TBD-709 |
+| BE-10 | Audit-log growth controls | Medium | Partial | #1008, #1019 | 2026-10-24 | `9db358e9`, `1fe1b17c`, `56dfe283`, `42d419f0` | Alert on `tbd.security.csp_reports{outcome="global_budget"}` | TBD-709 |
 | BE-11 | Reports filter list bounds | Medium | Fixed | #1006 | 2026-10-24 | `18a5a090` | | TBD-713 |
-| INF-01 | Origin client-IP trust | Medium | Partial | #1007 | no | `adb3004e` | Run the edge and origin checks listed in #1007 (cloud-infra) | TBD-717 |
-| FE-01 | CORS origin list for the apex and www hosts | Low | Partial | #1004 | 2026-10-24 | `d4b157be` | Set the production `BACKEND_CORS_ORIGINS` to the app origin only (cloud-infra) | TBD-720 |
+| INF-01 | Origin client-IP trust | Medium | Partial | #1007, #1021 | partly | `adb3004e`, `0f243931` | Release #1007 after the production secret check (owner item 1); the cloud-infra checks are done | TBD-717 |
+| FE-01 | CORS origin list for the apex and www hosts | Low | Fixed | #1004 | 2026-10-24 | `d4b157be` | | TBD-720 |
 | FE-02 | Google SSO callback token binding | Low | Fixed | #1009 | 2026-10-24 | `ff722648` | Deploy the backend before or with the frontend | TBD-728 |
 | FE-03 | One-time tokens in URLs | Low | Partial | #1004, #1008, #1009 | 2026-10-24 | `33543891`, `3f00189c`, `582f71f9` | Delete existing stored CSP report rows; follow-up: send the invitation preview token in a request body | TBD-729, follow-up TBD-738 |
 | FE-04 | CSV export formula neutralisation | Low | Fixed | #1004 | 2026-10-24 | `3385f921` | | TBD-730 |
 | BE-12 | Secret fields in validation error bodies | Low | Fixed | #1008 | 2026-10-24 | `1254d326` | | TBD-731 |
-| BE-13 | Upload size enforcement while reading | Low | Fixed | #1006 | 2026-10-24 | `cf41e6e8` | Set a request body size limit at the edge (cloud-infra) | TBD-732 |
+| BE-13 | Upload size enforcement while reading | Low | Fixed | #1006 | 2026-10-24 | `cf41e6e8` | | TBD-732 |
 | BE-14 | Role check on balance-moving account edits | Low | Fixed | #1005 | 2026-10-24 | `601acc54` | | TBD-733 |
 | BE-15 | Concurrent balance update safety | Low | Fixed | #1005 | 2026-10-24 | `a8b9b95a` | | TBD-734 |
 | BE-16 | Loan input validation | Low | Fixed | #1006 | 2026-10-24 | `e70cb11b` | | TBD-674 |
 | BE-17 | Balance tracking when converting skipped import rows | Low | Fixed | #1005 | 2026-10-24 | `e5e3a023` | | TBD-676 |
-| BE-18 | Shared tag dictionary contribution threshold | Low | Needs owner | | – | | Decide the contributor-counting policy (options in the private report) | TBD-678 |
+| BE-18 | Shared tag dictionary contribution threshold | Low | Fixed | #1020 | 2026-10-24 | `dee1418e` | | TBD-678 |
 | BE-19 | Reserved settings key normalisation | Low | Fixed | #1005 | 2026-10-24 | `1e55827e` | Check production `org_settings` for non-ASCII keys | TBD-682 |
 | BE-20 | Interactive session for admin subscription and announcement writes | Low | Fixed | #1008 | 2026-10-24 | `519234eb` | | TBD-684 |
 | BE-21 | Atomic recovery-code consumption | Low | Fixed | #1009 | 2026-10-24 | `cf2ea62c` | | TBD-687 |
@@ -180,19 +193,19 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | BE-24 | Mailgun webhook input validation | Low | Fixed | #1008 | 2026-10-24 | `f504ae4e` | | TBD-699 |
 | BE-25 | Login timing uniformity | Low | Fixed | #1009 | 2026-10-24 | `b813f523` | | TBD-702 |
 | BE-32 | Second factor for MFA management and email change | Low | Fixed | #1009 | 2026-10-24 | `4091ef92`, `44740681` | | TBD-706 |
-| DB-01 | Email collation for identity matching | Low | Needs owner | | – | | Decide on a collation migration for `users.email` | TBD-708 |
+| DB-01 | Email collation for identity matching | Low | Fixed | #1020 | 2026-10-24 | `83803591` | | TBD-708 |
 | DB-02 | Credentials in AI provider base URLs | Low | Partial | #1008 | 2026-10-24 | `29cefd9e` | Find stored base URLs with credentials and ask those orgs to rotate | TBD-711 |
-| DB-03 | Org-name uniqueness scope | Low | Needs owner | | – | | Decide whether org names stay globally unique | TBD-715 |
+| DB-03 | Org-name uniqueness scope | Low | Fixed | #1020 | 2026-10-24 | `8cc501b0` | | TBD-715 |
 | DB-04 | Database principal separation | Low | Needs owner | | – | | Split migrator and runtime database users (cloud-infra) | TBD-721 |
 | DB-05 | Export CLI file permissions | Low | Fixed | #1007 | no | `d803ce12` | | TBD-722 |
-| INF-02 | MCP failed-auth ceiling keying | Low | Needs owner | | – | | Set `CLIENT_IP_HEADER` on the MCP workload (cloud-infra) | TBD-723 |
+| INF-02 | MCP failed-auth ceiling keying | Low | Fixed | #1021 | 2026-10-24 | `e06d770a` | Carry the same setting to the production MCP when it deploys (TBD-610) | TBD-723 |
 | INF-03 | Production secret validation coverage | Low | Fixed | #1007 | no | `f5d32fec` | Deploy gate: check production secrets before releasing #1007 | TBD-724 |
-| INF-04 | `APP_ENV` default | Low | Partial | #1007 | no | `6c668014` | Confirm every production workload sets `APP_ENV`, then make the default fail-safe | TBD-725 |
+| INF-04 | `APP_ENV` default | Low | Partial | #1007 | no | `6c668014` | Make the default fail-safe; every production workload already sets `APP_ENV` | TBD-725 |
 | INF-05 | Captcha and first-user bootstrap defaults | Low | Partial | #1007 | no | `588344e3` | Decide on fail-closed captcha and a bootstrap token | TBD-673 |
 | INF-06 | Reusable workflow pinning and secret inheritance | Low | Needs owner | | – | | Pin org workflows to SHAs; replace `secrets: inherit` | TBD-675 |
 | INF-07 | Deploy secret isolation and wrangler pinning | Low | Partial | #1007 | no | `700aa0f3` | Split the apex build and deploy jobs | TBD-679 |
 | INF-08 | Smoke-account identifier in history | Low | Needs owner | | – | | Rotate the smoke account identifier | TBD-681 |
-| INF-09 | Health probe exposure | Low | Needs owner | | – | | Keep readiness probes off the public route (cloud-infra) | TBD-683 |
+| INF-09 | Health probe exposure | Low | Fixed | #1021 | 2026-10-24 | `f846e6e7` | | TBD-683 |
 | INF-10 | Dev compose network exposure | Low | Fixed | #1007 | no | `0751d31d` | | TBD-686 |
 | BE-26 | TOTP step reuse | Info | Partial | #1009 | 2026-10-24 | `82c7c52e` | Follow-up: apply the TOTP replay guard to the MFA checks on token minting | TBD-688, follow-up TBD-716 |
 | BE-27 | LIKE escaping and free-text bounds | Info | Partial | #1006 | 2026-10-24 | `331053c0` | Follow-up: escape the tag-suggestion prefix | TBD-691, follow-up TBD-718 |
@@ -216,19 +229,27 @@ Ordered by urgency. Each item is also an **Owner action** above.
    in `_PUBLIC_SECRET_VALUES` or starts with `dev-only`. The backend Deployment
    uses `strategy: Recreate`, so a match stops the API until that secret is
    rotated.
-2. (TBD-740) INF-01 and INF-02: the edge and origin checks in #1007.
-3. (TBD-680) BE-03: the email-code MFA fallback policy.
-4. (TBD-741) BE-05 and BE-23: billing-related enforcement.
-5. (TBD-742) BE-10: audit retention and the CSP drop alert.
-6. (TBD-743) FE-01: the production CORS list.
-7. (TBD-744) Production data clean-ups: stored CSP rows (FE-03), AI base URLs (DB-02),
+2. (TBD-745) INF-05: decide on fail-closed captcha and a bootstrap token. The
+   rest of the production configuration item (BE-13, INF-04, INF-09) is done.
+3. (TBD-744) Production data clean-ups: stored CSP rows (FE-03), AI base URLs (DB-02),
    settings keys (BE-19).
-8. (TBD-745) BE-13, INF-04, INF-05, INF-09: production configuration.
-9. (TBD-746) INF-06, INF-07, INF-16: CI and Renovate settings.
-10. BE-18, DB-01, DB-03, DB-04 (each finding's own issue): data-model and product decisions.
-11. (TBD-747) INF-08, INF-12, INF-13, INF-14: repository and disclosure housekeeping.
-12. (TBD-748) Dependencies: PyYAML has no Python 3.15 wheels yet, so it builds from source
-    in the image (#929); the TypeScript 7 hold (#1003).
+4. (TBD-742) BE-10: the CSP drop alert. Retention, rotation dedupe and the
+   refresh limit shipped in #1019.
+5. (TBD-741) BE-05 and BE-23: payment for paid plans and seat limits, once
+   billing is live. Entitlements for lapsed subscriptions shipped in #1020.
+6. (TBD-746) INF-06, INF-07, INF-16: CI and Renovate settings.
+7. DB-04 (TBD-721): separate migrator and runtime database users.
+8. (TBD-747) INF-08, INF-12, INF-13, INF-14: repository and disclosure housekeeping.
+9. (TBD-748) Dependencies: PyYAML has no Python 3.15 wheels yet, so it builds from source
+   in the image (#929); the TypeScript 7 hold (#1003).
+10. Monitoring: the production uptime check now calls `/health`, which does not
+    touch the database. Decide whether to add a database check from inside the
+    cluster.
+11. After the release: tell MFA users that email codes are now opt-in (BE-03).
+
+Done and removed from this queue on 2026-10-24: the edge and origin checks
+(TBD-740), the email-code MFA fallback policy (BE-03), the production CORS list
+(TBD-743), and the BE-18, DB-01 and DB-03 decisions.
 
 ## Incoming from Jira
 
@@ -242,18 +263,35 @@ titles only; the detail is in Jira.
 | TBD-654 | Auth hardening lows (earlier audit) | BE-25, FE-03 | Partly shipped in #1009; check each item, then narrow or close |
 | TBD-609 | AI credential base URL handling | DB-02 | Shipped in #1008; confirm and close |
 | TBD-655 | Database user separation | DB-04 | Same work as DB-04; keep one |
-| TBD-477, TBD-401, TBD-475 | CSP report writer, audit retention, audit UI | BE-10 | The writer is bounded by #1008; retention is owner item 5 |
+| TBD-477, TBD-401, TBD-475 | CSP report writer, audit retention, audit UI | BE-10 | The writer is bounded by #1008, and CSP rows have a 30-day retention since #1019; check each, then narrow or close |
 | TBD-607 | AI adapter error handling | BE-09 | Related hardening in the same code; still open |
 | TBD-661 | Founder-count endpoint and apex connect-src | FE-01 | Follows the CORS narrowing |
-| TBD-656 | Supply-chain and CI settings | INF-06, INF-07 | Same area as owner item 9 |
-| TBD-442 | First-user setup | INF-05 | Same area as owner item 8 |
-| TBD-610 | MCP server deployment | INF-02 | Set the client-IP header when it deploys |
-| TBD-658, TBD-659, TBD-639 | Python, Renovate and toolchain upgrades | INF-15 | Same decision as owner item 12 |
+| TBD-656 | Supply-chain and CI settings | INF-06, INF-07 | Same area as owner item 6 |
+| TBD-442 | First-user setup | INF-05 | Same area as owner item 2 |
+| TBD-610 | MCP server deployment | INF-02 | When it deploys: the same client-IP settings and network policy as staging, and the OAuth discovery paths routed to the backend |
+| TBD-658, TBD-659, TBD-639 | Python, Renovate and toolchain upgrades | INF-15 | Same decision as owner item 9 |
 | TBD-749 | A KPI test fails between local and UTC midnight | none | Raised during the assessment; small test fix |
 
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-10-24, live state: Jira agent (Claude Code, with Jira access)
+
+- **Did:** recorded #1019, #1020 and #1021 in Jira and closed BE-03, BE-18,
+  DB-01 and DB-03. With the infra session, verified the `cloud-infra` changes
+  from outside and with read-only cluster checks: the CORS list, the edge body
+  limit, tunnel-only API access, the network policy, the narrowed proxy trust
+  list, `APP_ENV` on every backend process, the MCP client-IP header and the
+  probe routes. Closed TBD-740, TBD-743, INF-02 and INF-09, and narrowed
+  TBD-741, TBD-742 and TBD-745.
+- **Changed here:** the rows for BE-03, BE-05, BE-10, BE-13, BE-18, DB-01,
+  DB-03, FE-01, INF-01, INF-02, INF-04 and INF-09, the counts, Current state,
+  the PR table, the owner queue (renumbered, with two new items: the uptime
+  check and the MFA notice) and the "Incoming from Jira" rows that point at it.
+- **Next:** owner item 1, then the release (#1011) and the image bump. Once
+  that is live, set the fix version on the closed issues.
+- **Questions for the owner:** the queue, item 1 first.
 
 ### 2026-10-24, Jira reconciliation: Jira agent (Claude Code, with Jira access)
 
