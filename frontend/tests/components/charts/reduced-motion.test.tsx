@@ -59,9 +59,8 @@ import {
  * F3/F6  over-correction — disabling animation for EVERYONE (what
  *        ``isAnimationActive={false}`` does) rather than only for users who
  *        asked. TBD-382 did exactly that to the report widgets.
- * F10-F15 the same three shapes for ``<Area>`` and ``<Line>`` (TBD-437).
- *        ⚠ F13 pins a recharts 3.8.1 DEFECT, not a correct state: see its
- *        note, line-geometry.test.tsx, and TBD-528.
+ * F10-F15 the same three shapes for ``<Area>`` and ``<Line>`` (TBD-437,
+ *        TBD-528).
  *
  * ## Discriminator
  *
@@ -286,9 +285,9 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
   // ---- Area and Line (TBD-437). TBD-437 re-enabled animation on the report
   // and scenario Area marks by deleting `isAnimationActive={false}`, so "auto"
   // is now what stands between those charts and a reduced-motion user. The
-  // app's Lines stay hard-off (TBD-528, see F13). Neither mark can use the
-  // Bar/Pie "no path yet" discriminator: both render their path at t === 0
-  // and animate something else.
+  // app's Lines followed with the recharts bump (TBD-528). Neither mark can
+  // use the Bar/Pie "no path yet" discriminator: both render their path at
+  // t === 0 and animate something else.
 
   const SERIES = [
     { name: "a", v: 10 },
@@ -304,8 +303,10 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
   }
 
   /** `<Area>` animates by growing a clip rect from width 0, so at first paint
-   *  an animating area is fully clipped and a committed one is not. */
-  function areaClipWidth(active?: boolean): number {
+   *  an animating area is fully clipped. Since recharts 3.9 (`AreaRevealShape`)
+   *  a committed area renders no reveal clip at all, so this returns `null`
+   *  for an unclipped area. F11/F12 prove the selector finds the rect. */
+  function areaClipWidth(active?: boolean): number | null {
     render(
       <div data-testid="host">
         <AreaChart width={300} height={100} data={SERIES}>
@@ -317,13 +318,12 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
     const host = screen.getByTestId("host");
     expect(host.querySelector(".recharts-area-area"), "area path did not render").not.toBeNull();
     const rect = host.querySelector(".recharts-area clipPath rect");
-    expect(rect, "area animation clip rect did not render").not.toBeNull();
-    return Number(rect!.getAttribute("width"));
+    return rect === null ? null : Number(rect.getAttribute("width"));
   }
 
   it("F10 fence: <Area> with the app's prop shape does not animate under reduce", () => {
     mockMatchMedia(true);
-    expect(areaClipWidth()).toBeGreaterThan(0);
+    expect(areaClipWidth()).toBeNull();
   });
 
   it("F11 fence + positive control: <Area isAnimationActive={true}> animates even under reduce", () => {
@@ -379,19 +379,15 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
      *  of the whole path. */
     const ANIMATING = `0px ${LENGTH}px`;
 
-    it("F13 pin: under reduce, 'auto' does not start the draw-on, but commits the recharts 3.8.1 stale dash", () => {
-      // ⚠ NOT an acceptable committed state. Animation resolves OFF, so there
-      // is no `0px <length>px` first frame, but recharts 3.8.1 gates its dash
-      // override on the RAW prop (`"auto"` is truthy) and builds the dash from
-      // the length of the PREVIOUS commit's path, which on mount is 0. A real
-      // Line should carry no dash here. Review measured the same bug leaving
-      // 46% of a line undrawn after a resize, which is why the app's four
-      // Lines stay `isAnimationActive={false}` (line-geometry.test.tsx).
-      //
-      // Pinned exactly so a recharts bump that fixes it goes red HERE too,
-      // pointing at TBD-528 rather than passing silently.
+    it("F13 fence: <Line> with the app's prop shape does not animate under reduce, and commits no dash", () => {
+      // recharts 3.8.1 committed a stale `"0px 0px"` dash here: it gated its
+      // dash override on the RAW prop (`"auto"` is truthy), which is why the
+      // app's four Lines were hard-off until TBD-528. Since 3.9.0
+      // `LineDrawShape` applies the dash only while the draw-on runs, so a
+      // committed Line carries none (line-geometry.test.tsx covers resize and
+      // new data on the app's real Lines).
       mockMatchMedia(true);
-      expect(lineDash()).toBe("0px 0px");
+      expect(lineDash()).toBeNull();
     });
 
     it("F14 fence + positive control: <Line isAnimationActive={true}> animates even under reduce", () => {
