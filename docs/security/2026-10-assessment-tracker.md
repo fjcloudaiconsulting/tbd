@@ -172,7 +172,7 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | BE-07 | CSV import preview row cap | Medium | Fixed | #1006 | 2026-10-24 | `a90b05b6` | Follow-up: batch the per-row preview detectors | TBD-697, follow-up TBD-736 |
 | BE-08 | Import confirm row cap | Medium | Fixed | #1006 | 2026-10-24 | `17e3630e` | Follow-up: chunked commits and an idempotent confirm | TBD-701, follow-up TBD-737 |
 | BE-09 | Size cap on AI provider responses | Medium | Fixed | #1008 | 2026-10-24 | `c55f200a` | | TBD-705 |
-| BE-10 | Audit-log growth controls | Medium | Partial | #1008, #1019 | 2026-10-24 | `9db358e9`, `1fe1b17c`, `56dfe283`, `42d419f0` | Alert on `tbd.security.csp_reports{outcome="global_budget"}` | TBD-709 |
+| BE-10 | Audit-log growth controls | Medium | Partial | #1008, #1019 | 2026-10-24 | `9db358e9`, `1fe1b17c`, `56dfe283`, `42d419f0` | Confirm the CSP drop alert (cloud-infra #281) once the release runs | TBD-709 |
 | BE-11 | Reports filter list bounds | Medium | Fixed | #1006 | 2026-10-24 | `18a5a090` | | TBD-713 |
 | INF-01 | Origin client-IP trust | Medium | Partial | #1007, #1021 | partly | `adb3004e`, `0f243931` | Release #1007 after the production secret check (owner item 1); the cloud-infra checks are done | TBD-717 |
 | FE-01 | CORS origin list for the apex and www hosts | Low | Fixed | #1004 | 2026-10-24 | `d4b157be` | | TBD-720 |
@@ -234,8 +234,9 @@ Ordered by urgency. Each item is also an **Owner action** above.
    rest of the production configuration item (BE-13, INF-04, INF-09) is done.
 3. (TBD-744) Production data clean-ups: stored CSP rows (FE-03), AI base URLs (DB-02),
    settings keys (BE-19).
-4. (TBD-742) BE-10: the CSP drop alert. Retention, rotation dedupe and the
-   refresh limit shipped in #1019.
+4. (TBD-742) BE-10: the CSP drop alert is applied (cloud-infra #281); confirm
+   it once the release runs. Retention, rotation dedupe and the refresh limit
+   shipped in #1019.
 5. (TBD-741) BE-05 and BE-23: payment for paid plans and seat limits, once
    billing is live. Entitlements for lapsed subscriptions shipped in #1020.
 6. (TBD-746) INF-06, INF-07, INF-16: CI and Renovate settings.
@@ -243,8 +244,7 @@ Ordered by urgency. Each item is also an **Owner action** above.
 8. (TBD-747) INF-08, INF-12, INF-13, INF-14: repository and disclosure housekeeping.
 9. (TBD-748) Dependencies: PyYAML has no Python 3.15 wheels yet, so it builds from source
    in the image (#929); the TypeScript 7 hold (#1003).
-10. Monitoring: decide whether to add a deeper production health check.
-11. After the release: tell MFA users that email codes are now opt-in (BE-03).
+10. After the release: tell MFA users that email codes are now opt-in (BE-03).
 
 Done and removed from this queue on 2026-10-24: the edge and origin checks
 (TBD-740), the email-code MFA fallback policy (BE-03), the production CORS list
@@ -287,7 +287,8 @@ Newest first. Add your entry at the top; keep entries short and public-safe.
 - **Changed here:** the rows for BE-03, BE-05, BE-10, BE-13, BE-18, DB-01,
   DB-03, FE-01, INF-01, INF-02, INF-04 and INF-09, the counts, Current state,
   the PR table, the owner queue (renumbered, so item numbers in older entries
-  refer to the old order; two new items: monitoring and the MFA notice) and the "Incoming from Jira" rows that point at it.
+  refer to the old order; one new item: the MFA notice) and the "Incoming from
+  Jira" rows that point at it.
 - **Next:** owner item 1, then the release (#1011) and the image bump. Once
   that is live, set the fix version on the closed issues.
 - **Questions for the owner:** the queue, item 1 first.
