@@ -311,6 +311,9 @@ Only failures count. A success empties the account's window, a completed passwor
 | `GET /api/v1/auth/google/callback` | 60/minute |
 | `GET /api/v1/auth/sso-stepup/callback` | 60/hour |
 | `POST /api/v1/orgs/invitations` | 20/hour, plus per-org caps of 20 pending and 50 created per day |
+| `POST /api/v1/tags` | 30/minute (BE-18: a new tag can feed the shared tag dictionary) |
+| `PUT /api/v1/transactions/{id}/tags` | 60/minute, one budget across all transactions (it creates missing tags) |
+| New tags, on any route (the two above and `POST /api/v1/transactions/bulk-update`) | 30 per org per minute, counted per tag created (`tag_service.TAG_CREATE_LIMIT`); the tag routes answer 429, bulk update skips the row |
 
 ⚠ This table is a reader's summary of the auth surface, not the inventory.
 The authoritative one is `backend/app/rate_limit_endpoint_catalogue.py`, and

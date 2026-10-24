@@ -37,7 +37,7 @@ from app.schemas.settings import (
     PlanningToolResponse,
     PlanningToolToggle,
 )
-from app.services import audit_service, billing_service, currency_service
+from app.services import audit_service, billing_service, currency_service, tag_service
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.feature_gate import (
     Feature,
@@ -276,6 +276,18 @@ async def upsert_setting(
         )
         db.add(setting)
 
+    # BE-18: turning tag sharing off withdraws the org's contributions to the
+    # shared tag dictionary, in the same commit as the setting. The write is
+    # flushed first: its row lock is what a concurrent tag create waits on
+    # (``tag_service._share_tag_data_still_enabled``).
+    stops_tag_sharing = (
+        key_cf == tag_service.SHARE_TAG_DATA_KEY
+        and not tag_service.share_tag_data_value_enabled(body.value)
+    )
+    if stops_tag_sharing:
+        await db.flush()
+        await tag_service.withdraw_dictionary_contributions(db, org_id=current_user.org_id)
+
     try:
         await db.commit()
     except IntegrityError:
@@ -289,6 +301,11 @@ async def upsert_setting(
         )
         setting = result.scalar_one()
         setting.value = body.value
+        if stops_tag_sharing:
+            await db.flush()
+            await tag_service.withdraw_dictionary_contributions(
+                db, org_id=current_user.org_id
+            )
         await db.commit()
 
     await db.refresh(setting)
@@ -326,6 +343,11 @@ async def delete_setting(
         )
 
     await db.delete(setting)
+    # BE-18: no ``share_tag_data`` row means sharing is off. The DELETE is
+    # flushed before the withdrawal reads, so the row lock is held throughout.
+    if setting.key.casefold() == tag_service.SHARE_TAG_DATA_KEY:
+        await db.flush()
+        await tag_service.withdraw_dictionary_contributions(db, org_id=current_user.org_id)
     await db.commit()
 
 

@@ -17,20 +17,34 @@ Three responsibilities:
 The dictionary write side uses a separate ``tag_dictionary_contributors``
 row insert with a unique constraint to enforce "one contribution per
 (org, tag) name" and increments the denormalized
-``tag_dictionary.contributor_org_count`` only when that insert created a
-new row. Both mutations run in the same transaction as the org-local
-tag create so the count cannot drift from
+``tag_dictionary.contributor_org_count`` (and ``usage_count``) only when
+that insert created a new row. Both mutations run in the same transaction
+as the org-local tag create so the count cannot drift from
 ``COUNT(DISTINCT contributor_org_id)``.
+
+BE-18: a contribution lasts only while the org has a tag of that name and
+shares tag data. Deleting or renaming the tag, or turning sharing off,
+withdraws it (``withdraw_dictionary_contributions``). The suggestion floor
+counts only contributors whose org is at least
+``SHARED_DICTIONARY_MIN_ORG_AGE_DAYS`` old, and no cross-org count is ever
+returned. Every new tag, whatever route creates it, draws on one per-org
+budget (``TAG_CREATE_LIMIT`` per ``TAG_CREATE_WINDOW_SECONDS``).
 """
 from __future__ import annotations
 
+import asyncio
+import math
 import re
+import time
+from datetime import timedelta
 from typing import Iterable, Literal, Optional
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import rate_limit_db
+from app._time import utcnow_naive
 from app.models.category import Category
 from app.models.settings import OrgSetting
 from app.models.tag import (
@@ -40,9 +54,11 @@ from app.models.tag import (
     TransactionTag,
 )
 from app.models.transaction import Transaction
+from app.models.user import Organization
 from app.schemas.tag import (
     MAX_TAGS_PER_TRANSACTION,
     SHARED_DICTIONARY_MIN_CONTRIBUTORS,
+    SHARED_DICTIONARY_MIN_ORG_AGE_DAYS,
     TAG_NAME_MAX_LENGTH,
     SuggestionSource,
     TagSuggestion,
@@ -66,6 +82,34 @@ _WHITESPACE_RUN_RE = re.compile(r"\s+")
 # dictionary contribution entirely.
 _DICTIONARY_NAME_MAX_LENGTH = 16
 _DICTIONARY_MAX_HYPHEN_GROUPS = 1
+
+
+# BE-18: new tags per org per window, counted where a tag row is created, so
+# POST /tags, PUT /transactions/{id}/tags and the bulk update all draw on the
+# same budget. Kept in the shared ``rate_limits`` counters.
+TAG_CREATE_LIMIT = 30
+TAG_CREATE_WINDOW_SECONDS = 60
+_TAG_CREATE_KEY = "tag_create:org:{org_id}"
+
+
+class TagCreationLimited(ValidationError):
+    """The org has created ``TAG_CREATE_LIMIT`` tags in this window (BE-18).
+
+    A ``ValidationError`` so the bulk update skips the row with this reason;
+    the tag routes answer 429 with ``Retry-After``.
+    """
+
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+        super().__init__(f"Too many new tags; try again in {retry_after} seconds")
+
+
+async def _admit_tag_creation(org_id: int) -> None:
+    key = _TAG_CREATE_KEY.format(org_id=org_id)
+    hits = await asyncio.to_thread(rate_limit_db.hit, key, TAG_CREATE_WINDOW_SECONDS)
+    if hits > TAG_CREATE_LIMIT:
+        expires_at = await asyncio.to_thread(rate_limit_db.get_expiry, key)
+        raise TagCreationLimited(max(1, math.ceil(expires_at - time.time())))
 
 
 def normalize_tag_name(raw: str) -> str:
@@ -113,7 +157,12 @@ def _is_dictionary_eligible(name_normalized: str) -> bool:
 # Org-settings helpers
 # ---------------------------------------------------------------------------
 
-_SHARE_TAG_DATA_KEY = "share_tag_data"
+SHARE_TAG_DATA_KEY = "share_tag_data"
+
+
+def share_tag_data_value_enabled(value: Optional[str]) -> bool:
+    """The one reading of a stored ``share_tag_data`` value: only ``"true"``."""
+    return value == "true"
 
 
 async def is_share_tag_data_enabled(db: AsyncSession, org_id: int) -> bool:
@@ -125,11 +174,27 @@ async def is_share_tag_data_enabled(db: AsyncSession, org_id: int) -> bool:
     row = await db.execute(
         select(OrgSetting.value).where(
             OrgSetting.org_id == org_id,
-            OrgSetting.key == _SHARE_TAG_DATA_KEY,
+            OrgSetting.key == SHARE_TAG_DATA_KEY,
         )
     )
-    val = row.scalar_one_or_none()
-    return val == "true"
+    return share_tag_data_value_enabled(row.scalar_one_or_none())
+
+
+async def _share_tag_data_still_enabled(db: AsyncSession, org_id: int) -> bool:
+    """Re-read ``share_tag_data`` under a row lock before contributing (BE-18).
+
+    Turning sharing off updates (or deletes) that row and withdraws the
+    org's contributions in one transaction. The lock makes the two
+    exclusive: a contribution either waits for the opt-out to commit and
+    then sees it, or commits first and is then withdrawn by it (the
+    withdrawal reads contributor rows with a locking read too).
+    """
+    row = await db.execute(
+        select(OrgSetting.value)
+        .where(OrgSetting.org_id == org_id, OrgSetting.key == SHARE_TAG_DATA_KEY)
+        .with_for_update()
+    )
+    return share_tag_data_value_enabled(row.scalar_one_or_none())
 
 
 # ---------------------------------------------------------------------------
@@ -195,15 +260,17 @@ async def create_tag(
     """Create a new tag for the org, normalizing first.
 
     Raises ``ConflictError`` if an existing tag in this org has the same
-    normalized form. Triggers the dictionary contribution path when the
-    org has ``share_tag_data=true`` and the tag passes the eligibility
-    filter, both inside the same transaction.
+    normalized form, and ``TagCreationLimited`` past the org's budget of
+    new tags (BE-18). Triggers the dictionary contribution path when the
+    org has ``share_tag_data=true`` (re-checked under a row lock) and the
+    tag passes the eligibility filter, both inside the same transaction.
     """
     name_normalized = normalize_tag_name(name)
     display_name = _WHITESPACE_RUN_RE.sub(" ", name.strip())
     existing = await _get_tag_by_normalized(db, org_id, name_normalized)
     if existing is not None:
         raise ConflictError(f"Tag '{name_normalized}' already exists")
+    await _admit_tag_creation(org_id)
     tag = Tag(
         org_id=org_id,
         name=display_name,
@@ -219,7 +286,10 @@ async def create_tag(
     # exception which rolls back the whole create, that's the right
     # behaviour because the caller asked for an atomic "create + maybe
     # contribute" operation.
-    if await is_share_tag_data_enabled(db, org_id):
+    # The plain read keeps non-sharing orgs (the default) lock-free.
+    if await is_share_tag_data_enabled(db, org_id) and await _share_tag_data_still_enabled(
+        db, org_id
+    ):
         await _record_dictionary_contribution(
             db, org_id=org_id, name_normalized=name_normalized
         )
@@ -238,7 +308,8 @@ async def rename_tag(
     No dictionary contribution is triggered on rename (the new name was
     not "first seen" in the dictionary sense, it could equally be a
     typo correction; we don't want to inflate dictionary counts on
-    typo).
+    typo). The org no longer has a tag of the OLD name, so its
+    contribution to that name is withdrawn (BE-18).
     """
     new_name_normalized = normalize_tag_name(new_name)
     new_display = _WHITESPACE_RUN_RE.sub(" ", new_name.strip())
@@ -255,6 +326,9 @@ async def rename_tag(
     collision = await _get_tag_by_normalized(db, org_id, new_name_normalized)
     if collision is not None and collision.id != tag.id:
         raise ConflictError(f"Tag '{new_name_normalized}' already exists")
+    await withdraw_dictionary_contributions(
+        db, org_id=org_id, names=[tag.name_normalized]
+    )
     tag.name = new_display
     tag.name_normalized = new_name_normalized
     return tag
@@ -269,6 +343,9 @@ async def delete_tag(
     """Delete a tag. Cascade detaches it from every transaction via the
     DB-side ``ON DELETE CASCADE`` on ``transaction_tags``.
 
+    The org's dictionary contribution for the name is withdrawn in the
+    same transaction (BE-18).
+
     Returns the deleted tag (still in-memory so the caller can include
     its name in audit details).
     """
@@ -278,6 +355,9 @@ async def delete_tag(
     tag = row.scalar_one_or_none()
     if tag is None:
         raise NotFoundError("tag")
+    await withdraw_dictionary_contributions(
+        db, org_id=org_id, names=[tag.name_normalized]
+    )
     await db.delete(tag)
     return tag
 
@@ -376,8 +456,9 @@ async def _record_dictionary_contribution(
        The unique constraint makes this a no-op when the org has
        contributed before.
     4. If the contributor row was newly created, increment
-       ``contributor_org_count`` on the dictionary row.
-    5. Always increment ``usage_count`` (popularity signal).
+       ``contributor_org_count`` and ``usage_count`` on the dictionary row.
+       An org counts once per tag (BE-18): creating the same tag again
+       adds nothing.
 
     All mutations are staged on the caller's session: commit is the
     caller's job (typically the router after the org-local tag create).
@@ -404,9 +485,58 @@ async def _record_dictionary_contribution(
     )
     if contributor_was_new:
         dictionary_tag.contributor_org_count += 1
+        dictionary_tag.usage_count += 1
 
-    # Step 5: usage_count increment is unconditional.
-    dictionary_tag.usage_count += 1
+
+async def withdraw_dictionary_contributions(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    names: Optional[Iterable[str]] = None,
+) -> int:
+    """Remove ``org_id``'s dictionary contributions (BE-18).
+
+    ``names`` limits it to those normalized tag names; None withdraws every
+    contribution (sharing turned off, org reset or deleted). Each dictionary
+    row loses this org's one count from both ``contributor_org_count`` and
+    ``usage_count``, then the contributor rows go. Staged on the caller's
+    session; the caller commits. Returns the number of rows removed.
+
+    Subtracts straight, without a floor at zero: counts are non-negative by
+    invariant, and a drift should surface rather than hide. The rows are
+    read with a locking read, so a contribution committed while this
+    transaction waited for the org's ``share_tag_data`` row is seen too.
+    """
+    query = (
+        select(TagDictionaryContributor.id, TagDictionaryContributor.dictionary_tag_id)
+        .where(TagDictionaryContributor.contributor_org_id == org_id)
+        .with_for_update()
+    )
+    if names is not None:
+        names = list(names)
+        if not names:
+            return 0
+        query = query.join(
+            TagDictionary, TagDictionary.id == TagDictionaryContributor.dictionary_tag_id
+        ).where(TagDictionary.name_normalized.in_(names))
+    rows = (await db.execute(query)).all()
+    if not rows:
+        return 0
+    for _, dictionary_tag_id in rows:
+        await db.execute(
+            update(TagDictionary)
+            .where(TagDictionary.id == dictionary_tag_id)
+            .values(
+                contributor_org_count=TagDictionary.contributor_org_count - 1,
+                usage_count=TagDictionary.usage_count - 1,
+            )
+        )
+    await db.execute(
+        delete(TagDictionaryContributor).where(
+            TagDictionaryContributor.id.in_([row_id for row_id, _ in rows])
+        )
+    )
+    return len(rows)
 
 
 async def _get_or_create_dictionary_row(
@@ -550,7 +680,10 @@ async def suggest_tags(
 
     Pass 3 (``shared_dictionary``): cross-org dictionary entries past
     the k-anonymity floor (or seeded). Skipped if the org has not opted
-    into ``share_tag_data``.
+    into ``share_tag_data``. The floor counts only contributors whose org
+    is at least ``SHARED_DICTIONARY_MIN_ORG_AGE_DAYS`` old (BE-18), and
+    these suggestions carry no weight: a cross-org count is never
+    returned.
 
     The three passes are deduped against each other by tag *name*.
     """
@@ -637,16 +770,30 @@ async def suggest_tags(
     # Pass 3: shared_dictionary (gated on opt-in + k-anonymity floor).
     remaining = limit - len(suggestions)
     if remaining > 0 and await is_share_tag_data_enabled(db, org_id):
-        dict_query = (
-            select(
-                TagDictionary.name_normalized,
-                TagDictionary.usage_count,
+        # Contributors whose org is old enough to count. The denormalized
+        # ``contributor_org_count`` (every contributor) stays as a cheap
+        # pre-filter: it is never below this count.
+        aged_before = utcnow_naive() - timedelta(days=SHARED_DICTIONARY_MIN_ORG_AGE_DAYS)
+        aged_contributors = (
+            select(func.count(TagDictionaryContributor.id))
+            .join(Organization, Organization.id == TagDictionaryContributor.contributor_org_id)
+            .where(
+                TagDictionaryContributor.dictionary_tag_id == TagDictionary.id,
+                Organization.created_at <= aged_before,
             )
+            .correlate(TagDictionary)
+            .scalar_subquery()
+        )
+        dict_query = (
+            select(TagDictionary.name_normalized)
             .where(
                 TagDictionary.name_normalized.like(like_clause),
                 or_(
-                    TagDictionary.contributor_org_count
-                    >= SHARED_DICTIONARY_MIN_CONTRIBUTORS,
+                    and_(
+                        TagDictionary.contributor_org_count
+                        >= SHARED_DICTIONARY_MIN_CONTRIBUTORS,
+                        aged_contributors >= SHARED_DICTIONARY_MIN_CONTRIBUTORS,
+                    ),
                     TagDictionary.is_seed.is_(True),
                 ),
             )
@@ -656,15 +803,15 @@ async def suggest_tags(
             )
             .limit(remaining + len(seen_names))
         )
-        rows = (await db.execute(dict_query)).all()
-        for name_normalized, usage_count in rows:
+        rows = (await db.execute(dict_query)).scalars().all()
+        for name_normalized in rows:
             if name_normalized in seen_names:
                 continue
             seen_names.add(name_normalized)
             suggestions.append(TagSuggestion(
                 name=name_normalized,
                 source="shared_dictionary",
-                weight=int(usage_count or 0),
+                weight=None,
             ))
             if len(suggestions) >= limit:
                 return suggestions
