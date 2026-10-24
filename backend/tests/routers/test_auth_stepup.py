@@ -1109,8 +1109,10 @@ def _drive_stepup_callback(app, client_kwargs: dict | None = None):
 
 
 # Comfortably past CPython's nesting limit, which is a C-stack check
-# and therefore not a fixed number. ~40 KB of brackets.
-_JSON_NEST_DEPTH = 20_000
+# and therefore not a fixed number: since 3.14 it scales with the real
+# thread stack, and 3.14 decoded 20_000 levels on an 8 MB stack without
+# tripping it. ~2 MB of brackets; the trip itself stays fast.
+_JSON_NEST_DEPTH = 1_000_000
 
 
 def _json_decode_error() -> ValueError:
