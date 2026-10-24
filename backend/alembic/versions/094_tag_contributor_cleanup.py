@@ -1,7 +1,7 @@
 """Withdraw stale shared tag dictionary contributions and recount (BE-18).
 
-Revision ID: 092_tag_contributor_cleanup
-Revises: 091_micro_usd_metering
+Revision ID: 094_tag_contributor_cleanup
+Revises: 093_password_reset_at
 Create Date: 2026-10-24
 
 Until BE-18 a contribution to the shared tag dictionary outlived its tag:
@@ -36,8 +36,8 @@ from alembic import op
 from sqlalchemy.sql import column, table
 
 
-revision: str = "092_tag_contributor_cleanup"
-down_revision: Union[str, None] = "091_micro_usd_metering"
+revision: str = "094_tag_contributor_cleanup"
+down_revision: Union[str, None] = "093_password_reset_at"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

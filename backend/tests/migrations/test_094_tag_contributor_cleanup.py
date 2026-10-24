@@ -1,4 +1,4 @@
-"""Migration 092 (BE-18): withdraw stale shared tag dictionary contributions.
+"""Migration 094 (BE-18): withdraw stale shared tag dictionary contributions.
 
 Runs the real migration code on SQLite against hand-built tables holding the
 states the pre-BE-18 app left behind: a contribution whose tag was deleted or
@@ -27,7 +27,7 @@ def _load(name: str, file: str):
     return mod
 
 
-m092 = _load("_m092", "092_tag_contributor_cleanup.py")
+m094 = _load("_m094", "094_tag_contributor_cleanup.py")
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def test_cleanup_keeps_only_contributions_the_app_would_keep(conn):
     """FENCE. Kills a migration that keeps rows of deleted tags, keeps orgs
     that stopped sharing, reads "True" as sharing, or leaves the old counts."""
     _seed(conn)
-    deleted, recounted = m092.cleanup(conn)
+    deleted, recounted = m094.cleanup(conn)
     contributors, counts = _state(conn)
     assert contributors == {(1, 1), (1, 2), (2, 1), (3, 2)}
     assert counts == {"insurance": (2, 2), "gym": (1, 1), "untouched": (1, 1)}
@@ -95,32 +95,32 @@ def test_cleanup_keeps_only_contributions_the_app_would_keep(conn):
 
 def test_cleanup_is_idempotent(conn):
     _seed(conn)
-    m092.cleanup(conn)
+    m094.cleanup(conn)
     before = _state(conn)
-    assert m092.cleanup(conn) == (0, 0)
+    assert m094.cleanup(conn) == (0, 0)
     assert _state(conn) == before
 
 
 def test_cleanup_deletes_in_batches(conn, monkeypatch):
     _seed(conn)
-    monkeypatch.setattr(m092, "BATCH", 2)
-    assert m092.cleanup(conn)[0] == 4
+    monkeypatch.setattr(m094, "BATCH", 2)
+    assert m094.cleanup(conn)[0] == 4
     assert _state(conn)[0] == {(1, 1), (1, 2), (2, 1), (3, 2)}
 
 
 def test_upgrade_runs_the_cleanup_and_downgrade_writes_nothing(conn):
     _seed(conn)
     with Operations.context(MigrationContext.configure(conn)):
-        m092.upgrade()
+        m094.upgrade()
         after = _state(conn)
-        m092.downgrade()
+        m094.downgrade()
     assert after[0] == {(1, 1), (1, 2), (2, 1), (3, 2)}
     assert _state(conn) == after
 
 
 def test_literals_match_the_app():
     """Migrations never import ``app``; pin the copied literals instead."""
-    assert m092.SHARE_TAG_DATA_KEY == tag_service.SHARE_TAG_DATA_KEY
-    assert tag_service.share_tag_data_value_enabled(m092.SHARING_VALUE) is True
-    assert m092.revision == "092_tag_contributor_cleanup"
-    assert m092.down_revision == "091_micro_usd_metering"
+    assert m094.SHARE_TAG_DATA_KEY == tag_service.SHARE_TAG_DATA_KEY
+    assert tag_service.share_tag_data_value_enabled(m094.SHARING_VALUE) is True
+    assert m094.revision == "094_tag_contributor_cleanup"
+    assert m094.down_revision == "093_password_reset_at"
