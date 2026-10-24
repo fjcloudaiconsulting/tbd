@@ -60,6 +60,7 @@ from app.schemas.auth import (
     VerifyEmailRequest,
     VerifyResponse,
 )
+from app.schemas.email_address import google_sign_in_allowed
 from app.config import settings as app_settings
 from app import state_db
 from app.security import (
@@ -4314,6 +4315,18 @@ async def google_callback(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     _phase("db_user_lookup_ok")
+
+    # DB-01: no new account under a non-ASCII address, and the
+    # accent-insensitive lookup above must not hand a look-alike address
+    # someone else's account. See ``google_sign_in_allowed``.
+    if not google_sign_in_allowed(email, user.email if user else None):
+        await _record_google_callback_failure(
+            session_factory,
+            request=request,
+            reason="email_unsupported",
+            actor_email=email,
+        )
+        return _google_error_redirect("email_unsupported")
 
     # Track whether this callback created a new local user. The flag
     # drives two downstream effects: an audit row distinct from the

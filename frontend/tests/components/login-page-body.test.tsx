@@ -184,6 +184,7 @@ describe("LoginPageBody — SSO error banner", () => {
     { code: "unverified", needle: /isn't verified/i },
     { code: "deactivated", needle: /account is deactivated/i },
     { code: "no_email", needle: /didn't return an email/i },
+    { code: "email_unsupported", needle: /accented letters or an international domain/i },
     { code: "cancelled", needle: /You cancelled the Google sign-in/i },
     {
       code: "provider_error",

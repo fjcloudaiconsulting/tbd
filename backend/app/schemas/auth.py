@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.schemas.display_name import check_display_name, reject_control_characters
+from app.schemas.email_address import reject_non_ascii_email
 
 # Single source of truth for username rules. Re-used by `RegisterRequest`
 # below and by the `/check-username` Query constraint so the two stay
@@ -38,6 +39,8 @@ class RegisterRequest(BaseModel):
     # BE-06: names reach other people's inboxes (see schemas/display_name.py).
     _check_names = field_validator("first_name", "last_name")(check_display_name)
     _check_org_name = field_validator("org_name")(reject_control_characters)
+    # DB-01: new addresses are ASCII only (see schemas/email_address.py).
+    _check_email = field_validator("email")(reject_non_ascii_email)
 
 
 class LoginRequest(BaseModel):

@@ -22,6 +22,7 @@ from app.schemas.auth import (
     UserResponse,
 )
 from app.models.notification import NotificationCategory
+from app.schemas.email_address import NON_ASCII_EMAIL_DETAIL, is_ascii_email
 from app.schemas.user import PasswordChange, ProfileUpdate
 from app.security import (
     create_email_verification_token,
@@ -130,6 +131,13 @@ async def update_profile(
     email_changing = (
         new_email_norm is not None and new_email_norm != normalize_email(current_user.email)
     )
+    # DB-01: a NEW address must be ASCII. Checked only on a change, so an
+    # account already stored under a non-ASCII address can still send it.
+    if email_changing and not is_ascii_email(new_email_norm):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=NON_ASCII_EMAIL_DETAIL,
+        )
     # Submitting your CURRENT address while a claim is live cancels the
     # claim. Without this the natural undo gesture silently does nothing and
     # the mistyped address stays clickable for its full 24 hours -- whoever

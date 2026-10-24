@@ -4,9 +4,10 @@ from __future__ import annotations
 import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.schemas.auth import USERNAME_MAX_LENGTH
+from app.schemas.email_address import reject_non_ascii_email
 
 
 class InvitationCreateRequest(BaseModel):
@@ -17,6 +18,9 @@ class InvitationCreateRequest(BaseModel):
     # enforce ``VARCHAR(n)``, so the shards cannot see this class at all.
     email: EmailStr = Field(max_length=120)
     role: Literal["admin", "member"]
+
+    # DB-01: new addresses are ASCII only (see schemas/email_address.py).
+    _check_email = field_validator("email")(reject_non_ascii_email)
 
 
 class InvitationAcceptRequest(BaseModel):
