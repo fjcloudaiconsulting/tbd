@@ -41,6 +41,7 @@ from app.config import settings
 from app.deps import get_session_factory
 from app.models.email_broadcast import EmailBroadcastRecipient
 from app.rate_limit import limiter
+from app.request_body import read_capped_body
 from app.services.mailgun_webhook import (
     DELIVERY_RANK,
     VERIFY_BAD_SIGNATURE,
@@ -191,10 +192,11 @@ async def mailgun_webhook(request: Request) -> Response:
         except ValueError:
             pass
 
-    # 2. Read the body, capped.
-    raw = await request.body()
-    if len(raw) > _MAX_BODY_BYTES:
-        logger.info("webhook.mailgun.oversized", extra={"byte_len": len(raw)})
+    # 2. Read the body, capped while it streams: the precheck misses a body
+    #    with no declared length (chunked), which stops at the cap here.
+    raw = await read_capped_body(request, _MAX_BODY_BYTES)
+    if raw is None:
+        logger.info("webhook.mailgun.oversized")
         return Response(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
 
     # 3. JSON parse → 400 on failure.

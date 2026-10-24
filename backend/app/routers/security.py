@@ -60,6 +60,7 @@ from opentelemetry import metrics
 from app import rate_limit_db, tracing
 from app.deps import get_session_factory
 from app.rate_limit import get_client_ip, limiter, rate_limit_key
+from app.request_body import read_capped_body
 from app.services import audit_service
 
 # ⚠ Re-exported, NOT redefined (TBD-439). The default-view exclusion in
@@ -79,9 +80,10 @@ router = APIRouter(prefix="/api/v1/security", tags=["security"])
 
 
 # Hard cap on the request body we will read. CSP reports are small
-# JSON blobs; anything past this is either malformed or hostile. We
-# read at most this many bytes and drop the rest, so a giant POST can
-# never blow up memory on this unauthenticated route.
+# JSON blobs; anything past this is either malformed or hostile. A
+# body past it is dropped, declared length or not, and reading stops at
+# the cap, so a giant POST can never blow up memory on this
+# unauthenticated route.
 _MAX_BODY_BYTES = 16 * 1024  # 16 KiB
 
 # Cap on how many violation envelopes we record from a single
@@ -360,9 +362,12 @@ async def csp_report(request: Request) -> Response:
         except ValueError:
             pass
 
-    raw = await request.body()
-    if len(raw) > _MAX_BODY_BYTES:
-        raw = raw[:_MAX_BODY_BYTES]
+    # The pre-check misses a body with no declared length (chunked), so
+    # count while reading and stop at the cap.
+    raw = await read_capped_body(request, _MAX_BODY_BYTES)
+    if raw is None:
+        logger.info("security.csp_report.oversized")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     payload: Any = None
     if raw:
