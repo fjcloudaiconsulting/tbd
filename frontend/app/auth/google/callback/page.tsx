@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { signInWithAccessToken } from "@/lib/api";
+import { takeGoogleSsoNonce } from "@/lib/google-sso";
 import { useAuth } from "@/components/auth/AuthProvider";
 
 // sessionStorage flag the onboarding wizard reads to know it should
@@ -32,15 +33,46 @@ export default function GoogleCallbackPage() {
     const hash = window.location.hash.substring(1); // remove #
     const params = new URLSearchParams(hash);
     const token = params.get("token");
+    // FE-03: an account with two-factor gets its MFA challenge here, in the
+    // fragment, instead of in a /mfa-verify query string.
+    const mfaToken = params.get("mfa_token");
     const createdUser = params.get("created_user") === "true";
+    // FE-02: read (and spend) the nonce this tab stored when it started the
+    // sign-in, whatever the fragment holds.
+    const expectedNonce = takeGoogleSsoNonce();
 
-    if (!token) {
+    if (!token && !mfaToken) {
       router.replace("/login");
       return;
     }
 
     // Clear the fragment from the URL immediately
     window.history.replaceState(null, "", window.location.pathname);
+
+    // Only the result of a sign-in THIS tab started is accepted. A link that
+    // lands here with someone else's token (login CSRF) carries no nonce this
+    // tab stored, so the token is never used.
+    if (!expectedNonce || params.get("nonce") !== expectedNonce) {
+      router.replace("/login?sso_error=state");
+      return;
+    }
+
+    if (mfaToken) {
+      // Same hand-off as the password login: /mfa-verify reads the challenge
+      // from sessionStorage, so it never appears in a URL.
+      try {
+        window.sessionStorage.setItem("mfa_token", mfaToken);
+      } catch {
+        router.replace("/login?sso_error=state");
+        return;
+      }
+      router.replace("/mfa-verify");
+      return;
+    }
+    if (!token) {
+      router.replace("/login");
+      return;
+    }
 
     signInWithAccessToken(token);
 

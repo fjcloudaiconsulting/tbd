@@ -31,7 +31,7 @@ from app.services.account_type_change_service import (
 )
 from app.services.credit_card_service import validate_credit_card_fields
 from app.services.currency_service import assert_org_currency_allows
-from app.services.loan_service import compute_loan_metrics, validate_loan_fields
+from app.services.loan_service import loan_metrics_or_none, validate_loan_fields
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.payment_source_service import validate_payment_source_account
 from app.services.transaction_service import (
@@ -72,7 +72,7 @@ def _loan_metrics_for(account: Account) -> Optional[LoanMetrics]:
         or account.first_payment_date is None
     ):
         return None
-    m = compute_loan_metrics(
+    m = loan_metrics_or_none(
         principal_amount=account.principal_amount,
         interest_rate_apr=account.interest_rate_apr,
         term_months=account.term_months,
@@ -80,6 +80,8 @@ def _loan_metrics_for(account: Account) -> Optional[LoanMetrics]:
         first_payment_date=account.first_payment_date,
         balance=account.balance,
     )
+    if m is None:  # stored values the projection cannot handle (BE-16)
+        return None
     return LoanMetrics(
         expected_monthly_payment=m.expected_monthly_payment,
         maturation_date=m.maturation_date,

@@ -35,6 +35,7 @@ from fastapi import FastAPI, Request
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.auth.stepup import stored_proof
 from app.rate_limit import limiter
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -451,7 +452,7 @@ async def test_callback_with_password_set_state_redirects_with_issued_token(
     async with session_factory() as db:
         user = await db.get(User, user_id)
         assert user is not None
-        assert user.stepup_token == f"password_set:{fragment_token}"
+        assert user.stepup_token == stored_proof("password_set", fragment_token)
         assert user.stepup_token_expires_at is not None
 
 

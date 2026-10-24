@@ -105,6 +105,11 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
+    # import router (BE-07): the three file-preview routes, no path params,
+    # so a plain ``limit`` each.
+    "import.ofx_preview",
+    "import.preview",
+    "import.tab_preview",
     # oauth router (TBD-587). The consent decision is a credential mint,
     # JWT + interactive session; no path param, so a plain ``limit``.
     "oauth.authorize",

@@ -158,7 +158,12 @@ async def list_org_tags(
     if q:
         q_norm = q.strip().lower()
         if q_norm:
-            base = base.where(Tag.name_normalized.like(f"%{q_norm}%"))
+            # BE-27: ``%`` / ``_`` in ``q`` are literal, not wildcards.
+            from app.services.admin_users_search_service import _normalize_like
+
+            base = base.where(
+                Tag.name_normalized.like(f"%{_normalize_like(q_norm)}%", escape="\\")
+            )
     base = base.group_by(Tag.id).order_by(
         func.count(TransactionTag.tag_id).desc(),
         Tag.name_normalized.asc(),

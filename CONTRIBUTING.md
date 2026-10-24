@@ -258,6 +258,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 3. **Tokens issued.** Access token (15 min, response body) + refresh token (7 day, httpOnly cookie).
 4. **Silent refresh.** Frontend auto-refreshes via `POST /api/v1/auth/refresh` on 401.
 5. **Absolute session lifetime.** Sessions expire after `SESSION_LIFETIME_DAYS` (default 30) regardless of refresh activity.
+6. **Credential changes end sessions.** A password reset or change and a proven email change delete every session family of the user and write a cutoff at the next whole second, so no token minted before the change (even earlier in the same second) survives it; a sign-in in that second waits it out. Enabling or disabling MFA deletes every other session family and keeps the caller's (BE-04).
 
 ### SSO password security
 
@@ -270,15 +271,27 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 
 ### MFA
 
-- TOTP via authenticator app (Google Authenticator, Authy, 1Password).
-- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable).
+- TOTP via authenticator app (Google Authenticator, Authy, 1Password). A code is accepted once per user: its time step, and the two before it, are claimed in `used_tokens` (BE-26).
+- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable), spent with a compare-and-swap on the stored list.
 - Email fallback with 6-digit code (10-minute expiry).
+- The 5-minute challenge token from the first leg carries a `jti`: it is claimed on success (single-use) and burned after 5 wrong codes, so the next try starts from the password.
 - TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY`).
-- Setup and disable via `/settings/security`.
+- Setup and disable via `/settings/security`. Setup asks for the password first (an account created with Google, `password_set=False`, uses a Google step-up for the `mfa_setup` action). Disabling MFA, regenerating recovery codes and changing the email of an MFA account also take a current TOTP code or an unused recovery code; wrong codes and passwords there draw from the per-account budgets below (BE-32).
 
 ### Rate limiting
 
 All limits are per client IP via slowapi. Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
+
+Failed sign-in attempts are also counted per account, beside the per-IP limits (BE-02, `backend/app/auth/attempts.py`), so a client spread over many addresses gets no larger budget:
+
+| Counter | Budget per 15 minutes | When full |
+|---------|-----------------------|-----------|
+| Wrong password, keyed on the login as typed (lower-cased), checked before the lookup | 10 | `/login` answers 429 with `Retry-After`, even for the right password |
+| Wrong password, keyed on the user id: `/login` under any spelling, and the password re-auth on the MFA settings routes | 10 | `/login` stops checking that account's password and answers the usual 401 (a 429 would show the login exists); re-auth answers 429. A rename or email change does not reopen it |
+| Wrong second factor (TOTP, recovery or email code), per user | 10 | every `/mfa/*` challenge leg answers 429 with `Retry-After` |
+| Wrong second factor, per challenge token | 5 | the challenge is burned: 401, sign in again |
+
+Only failures count. A success empties the account's window, a completed password reset empties its login window, and nothing locks permanently. The failure that fills an account's window writes one `auth.login.locked` or `auth.mfa.locked` audit row (for a real account only).
 
 | Endpoint | Limit |
 |----------|-------|

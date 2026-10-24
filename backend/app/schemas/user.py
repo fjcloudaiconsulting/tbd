@@ -33,6 +33,9 @@ class ProfileUpdate(BaseModel):
     # /api/v1/auth/sso-stepup/initiate → callback flow, lives 5 minutes,
     # and is consumed (cleared on `users`) on first successful use.
     stepup_token: str | None = Field(default=None, max_length=128)
+    # Also required to change the email of an account with MFA on (BE-32):
+    # a current TOTP code or an unused recovery code (spent).
+    mfa_code: str | None = Field(default=None, max_length=32)
 
     @field_validator("avatar_url")
     @classmethod

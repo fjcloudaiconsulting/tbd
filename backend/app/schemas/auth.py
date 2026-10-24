@@ -132,6 +132,14 @@ class VerifyEmailRequest(BaseModel):
 # ── MFA ─────────────────────────────────────────────────────────────────────
 
 
+class MfaSetupRequest(BaseModel):
+    # Re-authentication before a new authenticator secret is shown (BE-32):
+    # the password, or for an SSO account without one (``password_set=False``)
+    # a step-up proof issued for the ``mfa_setup`` action.
+    current_password: str | None = Field(default=None, max_length=128)
+    stepup_token: str | None = Field(default=None, max_length=128)
+
+
 class MfaSetupResponse(BaseModel):
     qr_code: str  # base64 PNG
     secret: str  # for manual entry
@@ -148,6 +156,8 @@ class MfaEnableResponse(BaseModel):
 
 class MfaDisableRequest(BaseModel):
     password: str = Field(max_length=128)
+    # A current TOTP code or an unused recovery code (BE-32).
+    mfa_code: str = Field(min_length=6, max_length=32)
 
 
 class MfaVerifyRequest(BaseModel):
@@ -172,6 +182,8 @@ class MfaEmailVerifyRequest(BaseModel):
 
 class MfaRegenerateRequest(BaseModel):
     password: str = Field(max_length=128)
+    # A current TOTP code or an unused recovery code (BE-32).
+    mfa_code: str = Field(min_length=6, max_length=32)
 
 
 class StepUpInitiateRequest(BaseModel):

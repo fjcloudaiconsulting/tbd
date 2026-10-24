@@ -10,6 +10,7 @@ Hard caps enforced at the schema layer (spec §6 "Hard caps"):
 
 - ``limit`` between 1 and 500.
 - ``filters`` list at most 20 entries.
+- an ``in`` filter's value list at most 200 entries.
 - ``dimensions`` list at most 2 entries.
 - Date BETWEEN window at most 5 years.
 
@@ -30,10 +31,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    TypeAdapter,
     conint,
     field_validator,
     model_validator,
 )
+from pydantic import ValidationError as PydanticValidationError
+
+from app.schemas.common import BoundedDecimal
 
 # Dataset / Aggregation / MeasureField / Dimension are the shared closed
 # enum atoms — defined once in ``reports_enums`` so the live ``/query`` AST
@@ -51,6 +56,11 @@ from app.schemas.reports_enums import (
 MAX_LIMIT = 500
 DEFAULT_LIMIT = 100
 MAX_FILTERS = 20
+# BE-11. Values in one ``in`` filter. Every value is a bind the statement
+# compiles and the driver escapes synchronously, so without a cap a single
+# request body could hold the worker for every tenant on it. Far above any
+# hand-picked list of categories, accounts or tags.
+MAX_IN_VALUES = 200
 MAX_DIMENSIONS = 2
 MAX_DATE_WINDOW_DAYS = 5 * 365 + 2  # 5 years inclusive of two leap days.
 MAX_TOP_N = 100  # Upper bound for SankeyQuery.top_n (frontend clamps min=2).
@@ -219,6 +229,11 @@ class Filter(BaseModel):
         elif op is FilterOp.IN:
             if not isinstance(self.value, list) or not self.value:
                 raise ValueError("op='in' requires a non-empty list")
+            if len(self.value) > MAX_IN_VALUES:
+                raise ValueError(
+                    f"op='in' accepts at most {MAX_IN_VALUES} values; "
+                    f"got {len(self.value)}"
+                )
             self.value = [_coerce_filter_scalar(f, v) for v in self.value]
 
         elif op in (FilterOp.EQ, FilterOp.GTE, FilterOp.LTE):
@@ -461,13 +476,28 @@ def _coerce_date(value):
     raise ValueError(f"expected date or ISO string, got {type(value).__name__}")
 
 
+# BE-01. The driver renders a ``Decimal`` bind as a plain-notation literal,
+# one character per unit of exponent, so a filter bound must be finite and of
+# bounded size. It need not be a storable amount, hence ``BoundedDecimal``
+# rather than ``Money``.
+_FILTER_DECIMAL = TypeAdapter(BoundedDecimal)
+
+
 def _coerce_decimal(value):
     if isinstance(value, Decimal):
-        return value
+        d = value
+    else:
+        try:
+            d = Decimal(str(value))
+        except Exception as exc:
+            raise ValueError(f"invalid decimal: {value!r}") from exc
     try:
-        return Decimal(str(value))
-    except Exception as exc:
-        raise ValueError(f"invalid decimal: {value!r}") from exc
+        return _FILTER_DECIMAL.validate_python(d)
+    except PydanticValidationError as exc:
+        raise ValueError(
+            "numeric filter value must be finite, with at most 14 digits "
+            "before and 20 after the decimal point"
+        ) from exc
 
 
 def _coerce_filter_scalar(field: FilterField, value):
