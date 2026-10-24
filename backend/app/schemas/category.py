@@ -3,17 +3,23 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
+# BE-27: the ``categories.name`` / ``.description`` column lengths, so an
+# over-long value is a 422 rather than a database error.
+CATEGORY_NAME_MAX_LENGTH = 100
+CATEGORY_DESCRIPTION_MAX_LENGTH = 255
+
+
 class CategoryCreate(BaseModel):
-    name: str
+    name: str = Field(max_length=CATEGORY_NAME_MAX_LENGTH)
     type: Literal["income", "expense", "both"] = "both"
     parent_id: Optional[int] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=CATEGORY_DESCRIPTION_MAX_LENGTH)
 
 
 class CategoryUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, max_length=CATEGORY_NAME_MAX_LENGTH)
     type: Optional[Literal["income", "expense", "both"]] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=CATEGORY_DESCRIPTION_MAX_LENGTH)
 
 
 class CategoryResponse(BaseModel):

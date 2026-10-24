@@ -2160,6 +2160,17 @@ async def convert_and_create_leg(
         raise ValidationError(
             "Cannot convert a manual balance adjustment to a transfer leg"
         )
+    # BE-17: a SKIPPED / REJECTED row's amount was already reverted out of
+    # its account, so a NEW partner leg would move the destination balance
+    # with no matching outflow while both legs sit outside every report
+    # (the TBD-385 invariant). Pairing with an EXISTING row stays allowed:
+    # it moves no money (see pair_existing_transactions).
+    if source_pre.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+        raise ValidationError(
+            "This row was skipped or rejected in import review, so it is not "
+            "part of the account balance. Pair it with the matching existing "
+            "transaction on the other account instead of creating a new one."
+        )
     if pre_account_id == destination_account_id:
         raise ValidationError("Source and destination accounts must differ")
 
@@ -2196,6 +2207,8 @@ async def convert_and_create_leg(
     if source.recurring_id is not None:
         raise ConflictError("Source row state changed; refresh and retry")
     if source.account_id == destination_account_id:
+        raise ConflictError("Source row state changed; refresh and retry")
+    if source.reconciliation_state in REVERTED_RECONCILIATION_STATES:
         raise ConflictError("Source row state changed; refresh and retry")
 
     # 5. Lock both accounts in sorted-ID order using the locked source's
@@ -2758,8 +2771,13 @@ def _parse_search_amount(raw: str) -> Decimal | None:
     - Strip common currency markers ("$", "€", "£") and whitespace.
     - Strip thousands separators (commas). Decimal point stays ".".
 
-    Anything else that isn't a valid Decimal yields ``None``.
+    Anything else that isn't a valid Decimal yields ``None``, and so does a
+    Decimal that is not a storable amount (``Money``, BE-01): it can match no
+    ``Numeric(12, 2)`` row, and binding it unbounded would render a literal
+    as long as its exponent.
     """
+    from app.schemas.common import money_or_none
+
     if not raw:
         return None
     s = raw.strip()
@@ -2774,7 +2792,7 @@ def _parse_search_amount(raw: str) -> Decimal | None:
     if not s:
         return None
     try:
-        return Decimal(s)
+        return money_or_none(Decimal(s))
     except (InvalidOperation, ValueError):
         return None
 
@@ -3068,12 +3086,18 @@ def _apply_transaction_filters(
         # parent's). A subquery, not a join: sort_by=category_name already
         # joins Category onto the page query, and a join would also land in
         # the count query.
+        #
+        # BE-27: ``%``, ``_`` and ``\`` in the search are literal characters,
+        # not wildcards.
+        from app.services.admin_users_search_service import _normalize_like
+
+        like = f"%{_normalize_like(search)}%"
         predicates = [
-            Transaction.description.ilike(f"%{search}%"),
+            Transaction.description.ilike(like, escape="\\"),
             Transaction.category_id.in_(
                 select(Category.id).where(
                     Category.org_id == org_id,
-                    Category.name.ilike(f"%{search}%"),
+                    Category.name.ilike(like, escape="\\"),
                 )
             ),
         ]

@@ -106,6 +106,9 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("auth", "verify"): ("auth.verify", "120/minute"),
     ("auth", "verify_email"): ("auth.verify_email", "10/minute"),
     ("feedback", "submit_feedback"): ("feedback.submit", "5/hour"),
+    ("import_router", "preview_import"): ("import.preview", "30/minute"),
+    ("import_router", "preview_ofx_import"): ("import.ofx_preview", "30/minute"),
+    ("import_router", "preview_tab_import"): ("import.tab_preview", "30/minute"),
     ("oauth", "authorize_decision"): ("oauth.authorize", "30/hour"),
     ("oauth", "register_client"): ("oauth.register", "1000/hour"),
     ("oauth", "token_endpoint"): ("oauth.token", "600/minute"),
@@ -113,6 +116,7 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("onboarding", "restart_tour"): ("onboarding.restart_tour", "10/hour"),
     ("onboarding", "seed_demo"): ("onboarding.seed_demo", "3/hour"),
     ("org_members", "accept_invitation"): ("org_members.accept_invitation", "10/minute"),
+    ("org_members", "create_invitation"): ("org_members.invite", "20/hour"),
     ("org_members", "preview_invitation"): (
         "org_members.preview_invitation",
         "30/minute",

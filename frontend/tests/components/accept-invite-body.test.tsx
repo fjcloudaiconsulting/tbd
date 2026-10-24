@@ -17,9 +17,11 @@ vi.mock("@/components/auth/AuthProvider", async () => {
 });
 
 const pushMock = vi.fn();
+// Reads the live URL, as Next.js does: once the page strips ?token= from the
+// address bar (FE-03), useSearchParams no longer returns it.
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock, replace: vi.fn() }),
-  useSearchParams: () => new URLSearchParams("token=valid-token"),
+  useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
 
@@ -34,6 +36,7 @@ describe("AcceptInviteBody", () => {
     setAccessTokenMock.mockReset();
     refreshMeMock.mockReset();
     pushMock.mockReset();
+    window.history.replaceState(null, "", "/accept-invite?token=valid-token");
     useAuthMock.mockReturnValue({
       user: null,
       loading: false,
@@ -83,6 +86,29 @@ describe("AcceptInviteBody", () => {
       expect(setAccessTokenMock).toHaveBeenCalledWith("fresh-jwt");
       expect(pushMock).toHaveBeenCalledWith("/dashboard");
     });
+  });
+
+  it("drops the invite token from the address bar before the preview request (FE-03)", async () => {
+    let urlAtPreview = "";
+    apiFetchMock.mockImplementationOnce(async () => {
+      urlAtPreview = window.location.href;
+      return {
+        org_name: "Acme",
+        email: "newbie@acme.io",
+        role: "member",
+        is_reactivation: false,
+      } as never;
+    });
+
+    render(<AcceptInviteBody />);
+
+    await screen.findByText(/Acme/);
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/orgs/invitations/preview?token=valid-token",
+    );
+    expect(urlAtPreview).not.toContain("valid-token");
+    expect(window.location.pathname).toBe("/accept-invite");
+    expect(window.location.search).toBe("");
   });
 
   it("shows the unavailable message when preview returns 410", async () => {

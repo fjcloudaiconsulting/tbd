@@ -207,6 +207,89 @@ async def test_post_invitations_duplicate_returns_409(session_factory):
     assert dup.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_post_invitations_registered_elsewhere_answers_like_a_new_address(
+    session_factory, monkeypatch
+):
+    """BE-06: no cross-tenant oracle. Same status, same body shape, the row is
+    listed like any other, and no email goes out."""
+    await _seed(session_factory)
+    async with session_factory() as db:
+        other = Organization(name="Elsewhere", billing_cycle_day=1)
+        db.add(other)
+        await db.flush()
+        db.add(User(
+            org_id=other.id, username="elsewhere", email="taken@else.io",
+            password_hash="x", role=Role.OWNER, is_active=True,
+        ))
+        await db.commit()
+
+    sent = []
+    import app.routers.org_members as m
+
+    async def fake_send(to, **kwargs):
+        sent.append(to)
+    monkeypatch.setattr(m, "send_invitation_email", fake_send)
+
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        taken = client.post(
+            "/api/v1/orgs/invitations", json={"email": "taken@else.io", "role": "member"},
+        )
+        fresh = client.post(
+            "/api/v1/orgs/invitations", json={"email": "fresh@acme.io", "role": "member"},
+        )
+        listed = client.get("/api/v1/orgs/invitations")
+    assert taken.status_code == fresh.status_code == 201, taken.text
+    assert set(taken.json()) == set(fresh.json())
+    assert {i["email"] for i in listed.json()["items"]} == {"taken@else.io", "fresh@acme.io"}
+    assert sent == ["fresh@acme.io"]
+
+
+@pytest.mark.asyncio
+async def test_post_invitations_rate_limited(session_factory, monkeypatch):
+    await _seed(session_factory)
+    import app.routers.org_members as m
+
+    async def fake_send(*args, **kwargs):
+        return None
+    monkeypatch.setattr(m, "send_invitation_email", fake_send)
+
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        codes = [
+            client.post(
+                "/api/v1/orgs/invitations",
+                json={"email": f"rl{i}@acme.io", "role": "member"},
+            ).status_code
+            for i in range(21)
+        ]
+    assert codes[:20] == [201] * 20
+    assert codes[20] == 429
+
+
+@pytest.mark.asyncio
+async def test_post_invitations_daily_cap_is_429(session_factory, monkeypatch):
+    await _seed(session_factory)
+    import app.routers.org_members as m
+
+    async def fake_send(*args, **kwargs):
+        return None
+    monkeypatch.setattr(m, "send_invitation_email", fake_send)
+    monkeypatch.setattr(invitation_service, "MAX_INVITATIONS_PER_DAY", 1)
+
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/v1/orgs/invitations", json={"email": "d1@acme.io", "role": "member"},
+        )
+        second = client.post(
+            "/api/v1/orgs/invitations", json={"email": "d2@acme.io", "role": "member"},
+        )
+    assert first.status_code == 201, first.text
+    assert second.status_code == 429, second.text
+
+
 # ── GET /invitations ───────────────────────────────────────────────────────
 
 

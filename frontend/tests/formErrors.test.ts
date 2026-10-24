@@ -130,6 +130,30 @@ describe("mapMfaRegenerateError", () => {
   });
 });
 
+describe("BE-32 second-factor and re-auth errors", () => {
+  it("maps a wrong authentication code on disable and regenerate to the code message", () => {
+    const err = new ApiResponseError(403, "Invalid authentication code");
+    for (const msg of [mapMfaDisableError(err), mapMfaRegenerateError(err)]) {
+      expect(msg).toMatch(/code did not match/i);
+      expect(msg).not.toMatch(/password/i);
+    }
+  });
+
+  it("maps the setup re-auth refusals", () => {
+    expect(mapMfaSetupError(new ApiResponseError(400, "Current password is incorrect"))).toMatch(
+      /password did not match/i,
+    );
+    expect(
+      mapMfaSetupError(
+        new ApiResponseError(
+          400,
+          "Step-up verification with Google is required to set up two-factor authentication",
+        ),
+      ),
+    ).toMatch(/Verify with Google again/i);
+  });
+});
+
 describe("mapBillingCycleError", () => {
   it("maps 422 to a clear field-rule sentence", () => {
     expect(mapBillingCycleError(new ApiResponseError(422, "validation"))).toMatch(

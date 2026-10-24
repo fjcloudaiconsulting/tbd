@@ -1,4 +1,6 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.schemas.display_name import check_display_name, reject_control_characters
 
 # Single source of truth for username rules. Re-used by `RegisterRequest`
 # below and by the `/check-username` Query constraint so the two stay
@@ -32,6 +34,10 @@ class RegisterRequest(BaseModel):
     # POST with an unbounded payload. The field is treated as sensitive
     # by ``main.py`` 422 redaction (`_SENSITIVE_FIELD_NAMES`).
     captcha_token: str | None = Field(default=None, max_length=2048)
+
+    # BE-06: names reach other people's inboxes (see schemas/display_name.py).
+    _check_names = field_validator("first_name", "last_name")(check_display_name)
+    _check_org_name = field_validator("org_name")(reject_control_characters)
 
 
 class LoginRequest(BaseModel):
@@ -126,6 +132,14 @@ class VerifyEmailRequest(BaseModel):
 # ── MFA ─────────────────────────────────────────────────────────────────────
 
 
+class MfaSetupRequest(BaseModel):
+    # Re-authentication before a new authenticator secret is shown (BE-32):
+    # the password, or for an SSO account without one (``password_set=False``)
+    # a step-up proof issued for the ``mfa_setup`` action.
+    current_password: str | None = Field(default=None, max_length=128)
+    stepup_token: str | None = Field(default=None, max_length=128)
+
+
 class MfaSetupResponse(BaseModel):
     qr_code: str  # base64 PNG
     secret: str  # for manual entry
@@ -142,6 +156,8 @@ class MfaEnableResponse(BaseModel):
 
 class MfaDisableRequest(BaseModel):
     password: str = Field(max_length=128)
+    # A current TOTP code or an unused recovery code (BE-32).
+    mfa_code: str = Field(min_length=6, max_length=32)
 
 
 class MfaVerifyRequest(BaseModel):
@@ -166,6 +182,8 @@ class MfaEmailVerifyRequest(BaseModel):
 
 class MfaRegenerateRequest(BaseModel):
     password: str = Field(max_length=128)
+    # A current TOTP code or an unused recovery code (BE-32).
+    mfa_code: str = Field(min_length=6, max_length=32)
 
 
 class StepUpInitiateRequest(BaseModel):
