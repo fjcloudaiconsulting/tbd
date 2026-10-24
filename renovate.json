@@ -46,6 +46,21 @@
         "typescript"
       ],
       "allowedVersions": "<7"
+    },
+    {
+      "description": "Hold the Python runtime below 3.15: the python image in backend/Dockerfile and backend/Dockerfile.mcp, backend/.python-version, requires-python in backend/pyproject.toml, and a setup-python python-version input if one is ever set (actions/python-versions). PyYAML, which uvicorn[standard] pulls in, ships no cp315 wheels, so on 3.15 the image builds compile it from source with unpinned setuptools and Cython. Lift once PyYAML publishes cp315 wheels and every package in backend/uv.lock has a cp315 or abi3/py3 wheel.",
+      "matchManagers": [
+        "dockerfile",
+        "pyenv",
+        "pep621",
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "python",
+        "mirror.gcr.io/library/python",
+        "actions/python-versions"
+      ],
+      "allowedVersions": "<3.15"
     }
   ]
 }
