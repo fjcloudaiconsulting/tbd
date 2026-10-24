@@ -883,7 +883,8 @@ async def _rotate_refresh_session(
     or ``"jti_collision"``. The router dispatches on the value per
     §5.1 step 6:
 
-    * ``"ok"`` — issue cookie, emit ``auth.session.rotated`` audit.
+    * ``"ok"`` — issue cookie. No audit row: a routine rotation happens on
+      every refresh of every session (BE-10).
     * ``"session_revoked"`` — concurrent logout deleted the family
       set; router returns 401, no audit (terminal — frontend redirects).
     * ``"already_rotated"`` — concurrent ``/refresh`` won the race;
@@ -1677,7 +1678,7 @@ async def _refresh_impl(
         return TokenResponse(access_token=access_token)
 
     # ── Normal rotation path: Lua script is the authority ───────────────
-    new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
+    new_refresh_token, _new_jti, _sid, lua_result = await _rotate_refresh_session(
         user.id,
         old_jti,
         sid,
@@ -1688,7 +1689,7 @@ async def _refresh_impl(
     if lua_result == state_db.SESSION_ROTATE_JTI_COLLISION:
         # 128-bit collision — regenerate jti once and retry. If the second
         # attempt also collides, the RNG is broken: 503 + log flag.
-        new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
+        new_refresh_token, _new_jti, _sid, lua_result = await _rotate_refresh_session(
             user.id,
             old_jti,
             sid,
@@ -1806,15 +1807,9 @@ async def _refresh_impl(
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
-    await _record_session_rotated(
-        session_factory,
-        user=user,
-        request=request,
-        old_jti=old_jti,
-        new_jti=new_jti,
-        sid=sid,
-    )
-
+    # No audit row for a routine rotation (BE-10): one per refresh of every
+    # live session buried the events that matter. Grace acceptances, reuse
+    # detection and rotation failures above are still audited.
     return TokenResponse(access_token=access_token)
 
 
@@ -3230,36 +3225,6 @@ async def _record_login_success(
 
 
 # ── PR 3 session-rotation audit events (spec §5.1 step 8) ───────────────────
-
-
-async def _record_session_rotated(
-    session_factory: async_sessionmaker[AsyncSession],
-    *,
-    user: User,
-    request: Request,
-    old_jti: str,
-    new_jti: str,
-    sid: str,
-) -> None:
-    """Persist an ``auth.session.rotated`` audit event on the happy-path
-    rotation (Lua returned ``"ok"``).
-
-    Detail carries the predecessor + successor ``jti`` plus the stable
-    ``sid`` so operators can reconstruct the rotation chain offline.
-    """
-    request_id = logs.CONTEXT.get({}).get("request_id")
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="auth.session.rotated",
-        actor_user_id=user.id,
-        actor_email=user.email,
-        target_org_id=user.org_id,
-        target_org_name=None,
-        request_id=request_id,
-        ip_address=get_client_ip(request),
-        outcome="success",
-        detail={"old_jti": old_jti, "new_jti": new_jti, "sid": sid},
-    )
 
 
 async def _record_session_grace_accept(
