@@ -9,6 +9,8 @@ POST /api/v1/security/csp-report — covers:
 - Audit detail is bounded + normalized (kebab + camel keys collapse to
   the same snake_case keys; oversized fields truncated).
 - Malformed / unknown shapes never 500 and write no audit row.
+- A body past the cap is dropped, whether it declares its length or
+  arrives chunked (BE-13); a chunked body within the cap is recorded.
 - ``client_ip`` and ``request_id`` land on the audit row.
 - URL fields lose their query string and fragment (FE-03).
 - Growth bounds (BE-10): duplicate reports dropped per client network,
@@ -18,6 +20,7 @@ POST /api/v1/security/csp-report — covers:
 """
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 
 import pytest
@@ -250,6 +253,61 @@ async def test_oversized_content_length_rejected_before_buffering(
     )
     assert resp.status_code == 204
     assert await _audit_rows(session_factory) == []
+
+
+class _ChunkedBody:
+    """A request body sent chunked (no Content-Length) that fails the test
+    if the route asks for another chunk once it holds more than ``cap``
+    bytes, so an over-cap body can never have been read in full."""
+
+    def __init__(self, body: bytes, cap: int, chunk: int = 1024) -> None:
+        self.body, self.cap, self.chunk, self.sent = body, cap, chunk, 0
+
+    async def __aiter__(self):
+        for start in range(0, len(self.body), self.chunk):
+            if self.sent > self.cap:
+                raise AssertionError(f"body read past the {self.cap}-byte cap")
+            piece = self.body[start:start + self.chunk]
+            self.sent += len(piece)
+            yield piece
+
+
+_REPORT = json.dumps({"csp-report": {"violated-directive": "script-src"}}).encode()
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_over_the_cap_is_dropped_unread(client, session_factory):
+    # No Content-Length, so only the running count can stop it. The bytes
+    # before the cap alone would parse as a valid report.
+    cap = security_router_module._MAX_BODY_BYTES
+    body = _ChunkedBody(_REPORT + b" " * (4 * cap), cap)
+    resp = await client.post(
+        "/api/v1/security/csp-report",
+        content=body,
+        headers={"content-type": "application/csp-report"},
+    )
+    assert "content-length" not in resp.request.headers
+    assert resp.status_code == 204
+    assert resp.content == b""
+    assert cap < body.sent <= cap + body.chunk
+    assert await _audit_rows(session_factory) == []
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_within_the_cap_is_recorded(client, session_factory):
+    cap = security_router_module._MAX_BODY_BYTES
+    body = _ChunkedBody(_REPORT + b" " * (cap - len(_REPORT)), cap)
+    resp = await client.post(
+        "/api/v1/security/csp-report",
+        content=body,
+        headers={"content-type": "application/csp-report"},
+    )
+    assert "content-length" not in resp.request.headers
+    assert resp.status_code == 204
+    assert body.sent == cap
+    rows = await _audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["violated_directive"] == "script-src"
 
 
 @pytest.mark.asyncio

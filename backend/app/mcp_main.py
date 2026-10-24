@@ -49,6 +49,7 @@ from app.database import async_session, engine
 from app import logs, tracing
 from app.middleware.request_context import RequestContextMiddleware
 from app.rate_limit import rate_limit_key
+from app.request_body import read_capped_body
 from app.services import ai_consent_service, ai_scrub, feature_service
 from app.services.ai_consent_service import AI_OFF_MESSAGE
 
@@ -108,17 +109,6 @@ def _bearer(request: Request) -> str | None:
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
     token = token.strip()
     return token if scheme.lower() == "bearer" and token else None
-
-
-async def _read_body(request: Request) -> bytes | None:
-    """The body, or None past :data:`MAX_BODY` (never buffered whole)."""
-    chunks, size = [], 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > MAX_BODY:
-            return None
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 # ── tools/list ────────────────────────────────────────────────────────────
@@ -285,7 +275,10 @@ async def mcp_endpoint(request: Request) -> Response:
             return _rpc_error(400, INVALID_REQUEST, f"unsupported protocol version {version}")
 
         declared = request.headers.get("content-length", "")
-        body = None if declared.isdigit() and int(declared) > MAX_BODY else await _read_body(request)
+        body = (
+            None if declared.isdigit() and int(declared) > MAX_BODY
+            else await read_capped_body(request, MAX_BODY)
+        )
         if body is None:
             return _rpc_error(413, INVALID_REQUEST, "request body too large")
         try:
