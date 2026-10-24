@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.303.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.303.0...v0.303.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **auth:** opt-in email MFA fallback with a reset lock, and bound audit growth (BE-03, BE-10) ([#1019](https://github.com/fjcloudaiconsulting/tbd/issues/1019)) ([a131686](https://github.com/fjcloudaiconsulting/tbd/commit/a131686a2d8724ceea079e2ab3e2b316b2690c2f))
+* **deps:** update dependency react-resizable to v4 ([#941](https://github.com/fjcloudaiconsulting/tbd/issues/941)) ([effc909](https://github.com/fjcloudaiconsulting/tbd/commit/effc9098a32f630d6e1770a6793523d58a214474))
+* **infra:** public-only post-deploy smoke and FORWARDED_ALLOW_IPS for the proxy trust list (INF-09, INF-01, INF-02) ([#1021](https://github.com/fjcloudaiconsulting/tbd/issues/1021)) ([1fe8ada](https://github.com/fjcloudaiconsulting/tbd/commit/1fe8adaf1cf21804f2c72b7d39800857c6efa7ac))
+* **security:** billing entitlements, default org names, email addresses and the tag dictionary (BE-05, DB-03, DB-01, BE-18) ([#1020](https://github.com/fjcloudaiconsulting/tbd/issues/1020)) ([9c6f814](https://github.com/fjcloudaiconsulting/tbd/commit/9c6f8148c955aa31b6b9c9865528ad8800416d6c))
+* **security:** bound AI provider responses and the CSP sink, tighten admin and webhook edges ([#1008](https://github.com/fjcloudaiconsulting/tbd/issues/1008)) ([7f47868](https://github.com/fjcloudaiconsulting/tbd/commit/7f4786814504caa13df734ceedaad5a0713d567d))
+* **security:** bound request inputs across imports, reports, loans, plans and search ([#1006](https://github.com/fjcloudaiconsulting/tbd/issues/1006)) ([2f36594](https://github.com/fjcloudaiconsulting/tbd/commit/2f36594975d9777bf56f1800d84f774b7e078142))
+* **security:** harden CSV export, one-time token URLs and apex CSP, add security.txt ([#1004](https://github.com/fjcloudaiconsulting/tbd/issues/1004)) ([47b8e9f](https://github.com/fjcloudaiconsulting/tbd/commit/47b8e9f0e175399e940fac893b96926d83d0ba57))
+* **security:** harden sign-in limits, session revocation, MFA changes and Google SSO ([#1009](https://github.com/fjcloudaiconsulting/tbd/issues/1009)) ([8b9c95a](https://github.com/fjcloudaiconsulting/tbd/commit/8b9c95a3ece9d89277928d26104ea88e1bb69c43))
+* **security:** tighten tenant billing, invitation, account and settings logic ([#1005](https://github.com/fjcloudaiconsulting/tbd/issues/1005)) ([772ab8e](https://github.com/fjcloudaiconsulting/tbd/commit/772ab8e3973fbc6ca2e9b307ab6719b407e24319))
+
 ## [0.303.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.302.0...v0.303.0) (2026-10-23)
 
 
