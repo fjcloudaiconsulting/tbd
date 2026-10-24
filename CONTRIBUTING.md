@@ -339,8 +339,10 @@ nothing. Every dropped report counts in the `tbd.security.csp_reports` metric
 by outcome (`duplicate`, `client_budget`, `global_budget`) and directive; alert
 on `global_budget`. URL fields lose their query string and fragment before
 they are stored (FE-03). The default `/admin/audit` view hides these rows
-(`include_csp=true` shows them, TBD-439). `audit_events` has no retention job
-yet, so the table still grows, at most at the global budget plus the reserve.
+(`include_csp=true` shows them, TBD-439). A scheduler job deletes these rows
+30 days after they were recorded (`services/scheduler/jobs/csp_audit_purge.py`,
+BE-10), in batches of 1000 with one short transaction each, and logs only the
+count; no other event type is purged.
 
 `POST /api/v1/auth/refresh` remains **unlimited**, deliberately (TBD-353): it
 writes no audit row for an anonymous caller, and a 429 there wedges the
