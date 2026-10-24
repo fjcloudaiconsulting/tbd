@@ -257,3 +257,106 @@ def test_payoff_anchored_to_next_scheduled_payment_date():
     m = _metrics(balance=Decimal("-5000.00"), today=date(2026, 1, 20))
     # n_rem = 28 -> payoff = 2026-02-15 + 27 months = 2028-05-15
     assert m.projected_payoff_date == date(2028, 5, 15)
+
+
+# ── BE-16: inputs that used to break the projection ─────────────────────────
+
+
+def test_zero_payment_terms_rejected():
+    """1.00 over 480 months at 0% rounds to a 0.00 payment."""
+    with pytest.raises(HTTPException) as exc:
+        validate_loan_fields(
+            **{**_VALID, "principal_amount": Decimal("1.00"),
+               "interest_rate_apr": Decimal("0"), "term_months": 480}
+        )
+    assert exc.value.status_code == 422
+    assert "0.00" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("origination_date", date(1899, 12, 31)),
+        ("first_payment_date", date(2201, 1, 1)),
+        ("first_payment_date", date(9999, 12, 1)),
+    ],
+)
+def test_loan_dates_out_of_range_rejected(field, value):
+    kwargs = {**_VALID, field: value}
+    if field == "origination_date":
+        kwargs["first_payment_date"] = date(1900, 1, 1)
+    with pytest.raises(HTTPException) as exc:
+        validate_loan_fields(**kwargs)
+    assert exc.value.status_code == 422
+    assert field in exc.value.detail
+
+
+def test_loan_date_boundaries_ok():
+    validate_loan_fields(
+        **{**_VALID, "origination_date": date(1900, 1, 1),
+           "first_payment_date": date(2200, 12, 31)}
+    )
+
+
+def test_zero_payment_legacy_row_is_interest_only_not_a_division_error():
+    """A row stored before the pmt check: r == 0 and pmt == 0.00."""
+    m = _metrics(
+        principal_amount=Decimal("1.00"), interest_rate_apr=Decimal("0"),
+        term_months=480, balance=Decimal("-1.00"),
+    )
+    assert m.expected_monthly_payment == Decimal("0.00")
+    assert m.status == "interest_only"
+    assert m.projected_payoff_date is None
+
+
+def test_payoff_beyond_the_calendar_is_on_track_without_a_date():
+    """A payment a hair above the interest on a big live balance amortizes
+    over hundreds of thousands of months: past ``date.max``."""
+    m = _metrics(
+        principal_amount=Decimal("1000.00"), interest_rate_apr=Decimal("0.01"),
+        term_months=480, balance=Decimal("-250000.00"),
+    )
+    assert m.status == "on_track"
+    assert m.projected_payoff_months > 12 * 8000
+    assert m.projected_payoff_date is None
+
+
+@pytest.mark.parametrize(
+    "first, today, expected",
+    [
+        (date(2026, 1, 15), date(2026, 1, 1), date(2026, 1, 15)),
+        (date(2026, 1, 15), date(2026, 1, 15), date(2026, 1, 15)),
+        (date(2026, 1, 15), date(2026, 1, 20), date(2026, 2, 15)),
+        (date(2026, 1, 31), date(2026, 2, 28), date(2026, 2, 28)),  # clamped day
+        (date(2026, 1, 31), date(2026, 3, 1), date(2026, 3, 31)),
+        (date(1900, 1, 31), date(2026, 10, 23), date(2026, 10, 31)),
+    ],
+)
+def test_next_payment_date_matches_the_monthly_walk(first, today, expected):
+    """BE-16 replaced the month-by-month walk from ``first_payment_date`` with
+    arithmetic; same answers, including relativedelta's end-of-month clamp."""
+    from dateutil.relativedelta import relativedelta
+
+    from app.services.loan_service import _first_payment_on_or_after
+
+    k = 0
+    while first + relativedelta(months=k) < today:
+        k += 1
+    assert first + relativedelta(months=k) == expected
+    assert _first_payment_on_or_after(first, today) == expected
+
+
+def test_loan_metrics_or_none_swallows_a_legacy_row_the_math_cannot_project():
+    from app.services.loan_service import loan_metrics_or_none
+
+    kwargs = dict(
+        principal_amount=Decimal("10000.00"), interest_rate_apr=Decimal("6.00"),
+        term_months=60, origination_date=date(9999, 1, 1),
+        first_payment_date=date(9999, 6, 1), balance=Decimal("-10000.00"),
+        today=date(2026, 1, 1),
+    )
+    with pytest.raises((OverflowError, ValueError)):
+        compute_loan_metrics(**kwargs)
+    assert loan_metrics_or_none(**kwargs) is None
+    assert loan_metrics_or_none(**{**kwargs, "origination_date": date(2026, 1, 1),
+                                   "first_payment_date": date(2026, 1, 15)}) is not None

@@ -3,9 +3,12 @@
 import hmac
 import io
 import secrets
+import time
 from base64 import b64encode
+from datetime import datetime, timezone
 
 import pyotp
+import pyotp.utils
 import qrcode
 import qrcode.constants
 from cryptography.fernet import Fernet, InvalidToken
@@ -57,8 +60,23 @@ def get_totp_uri(secret: str, email: str) -> str:
 
 def verify_totp(secret: str, code: str) -> bool:
     """Verify a TOTP code with +/- 1 window for clock drift."""
+    return match_totp_step(secret, code) is not None
+
+
+def match_totp_step(secret: str, code: str, for_time=None) -> int | None:
+    """The RFC 6238 time step ``code`` belongs to, within +/- 1 window of
+    ``for_time`` (default now), or None. Every candidate is compared, so the
+    timing does not say which step matched. Callers that must refuse a replay
+    record the step (``app.auth.second_factor.verify_totp_once``)."""
     totp = pyotp.TOTP(secret)
-    return totp.verify(code, valid_window=1)
+    if for_time is None:
+        for_time = time.time()
+    counter = totp.timecode(datetime.fromtimestamp(for_time, tz=timezone.utc))
+    matched: int | None = None
+    for step in (counter - 1, counter, counter + 1):
+        if pyotp.utils.strings_equal(str(code), totp.generate_otp(step)):
+            matched = step
+    return matched
 
 
 def generate_qr_base64(uri: str) -> str:

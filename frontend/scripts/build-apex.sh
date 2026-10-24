@@ -252,6 +252,16 @@ if [[ ! -f "${FRONTEND_DIR}/out-apex/index.html" ]]; then
   exit 1
 fi
 
+# RFC 9116 security.txt (INF-14). The `*` globs above skip dot-directories,
+# so public/.well-known never reaches out-apex/ on its own. Copy it here and
+# fail the build if the apex would ship without it.
+mkdir -p "${FRONTEND_DIR}/out-apex/.well-known"
+cp -R "${FRONTEND_DIR}/public/.well-known/." "${FRONTEND_DIR}/out-apex/.well-known/"
+if [[ ! -f "${FRONTEND_DIR}/out-apex/.well-known/security.txt" ]]; then
+  echo "build-apex: ERROR out-apex/.well-known/security.txt is missing" >&2
+  exit 1
+fi
+
 COMMIT_SHA="$(git -C "${FRONTEND_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 APEX_URL="${TBD_APEX_URL:-https://thebetterdecision.com}"

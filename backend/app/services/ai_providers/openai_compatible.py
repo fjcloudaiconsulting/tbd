@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.services.ai_providers import capped_http
 from app.services.ai_providers.base import (
     AIProviderError,
     EmbedResponse,
@@ -168,10 +169,16 @@ class OpenAICompatibleAdapter:
                 # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
                 # finding as ``captcha.py``, TBD-328).
                 async with asyncio.timeout(VALIDATE_TIMEOUT_S):
-                    resp = await client.get(url, headers=headers)
+                    resp = await capped_http.request(
+                        client, "GET", url, headers=headers
+                    )
         except BlockedAddressError:
             return ValidateResult(
                 ok=False, error=BLOCKED_ADDRESS_VALIDATION_ERROR
+            )
+        except AIProviderError as exc:
+            return ValidateResult(
+                ok=False, error=capped_http.validation_error(exc)
             )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             # NEVER ``str(exc)`` — exception reprs from httpx can include
@@ -229,8 +236,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -279,8 +286,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=EMBED_TIMEOUT_S) as client:
                 async with asyncio.timeout(EMBED_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -345,8 +352,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -405,8 +412,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -479,14 +486,16 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
-                    "POST", url, headers=headers, json=body
+                    "POST", url,
+                    headers=capped_http.identity_headers(headers),
+                    json=body,
                 ) as resp:
                     if resp.status_code != 200:
                         raise AIProviderError(
                             code=f"provider_status_{resp.status_code}",
                             status_code=resp.status_code,
                         )
-                    async for line in resp.aiter_lines():
+                    async for line in capped_http.aiter_lines(resp):
                         if not line:
                             continue
                         if not line.startswith("data:"):

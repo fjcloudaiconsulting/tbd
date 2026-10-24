@@ -67,3 +67,24 @@ describe("apex worker", () => {
     expect(config.assets.run_worker_first).toEqual([`${GA_GATEWAY_PATH}*`]);
   });
 });
+
+// FE-01: the apex is a static marketing export and never calls the API. Apex and
+// app are same-site, so the app's Lax refresh cookie would ride along on any
+// credentialed request from apex script; keep the app host out of connect-src.
+describe("apex _headers CSP", () => {
+  const headers = readFileSync(path.join(__dirname, "../apex-worker/_headers"), "utf8");
+  const csp = headers.match(/^\s*Content-Security-Policy:\s*(.+)$/m)?.[1] ?? "";
+  const directive = (name: string) =>
+    csp.split(";").map((d) => d.trim()).find((d) => d.startsWith(`${name} `)) ?? "";
+
+  it("does not let apex script connect to the app host or any other product host", () => {
+    expect(directive("connect-src")).toMatch(/^connect-src 'self' /);
+    expect(directive("connect-src")).not.toMatch(/thebetterdecision\.com/);
+  });
+
+  it("still sends violation reports to the app's CSP sink", () => {
+    expect(directive("report-uri")).toBe(
+      "report-uri https://app.thebetterdecision.com/api/v1/security/csp-report",
+    );
+  });
+});

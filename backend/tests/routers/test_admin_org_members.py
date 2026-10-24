@@ -34,6 +34,8 @@ from app.models.user import Organization, Role, User
 from app.models.notification import UserNotificationPreferences
 from app.routers.admin_orgs import router as admin_orgs_router
 from app.security import hash_password
+from app.services import admin_org_members_service
+from app.services.exceptions import ConflictError
 from app.services import notification_service
 
 
@@ -600,3 +602,37 @@ async def test_patch_member_in_wrong_org_404(session_factory):
 # deactivate flows now route through the PATCH path tested above; the
 # router-removal smoke check lives at
 # ``test_delete_member_endpoint_is_removed`` near the auth gates.
+
+
+# ── BE-30: the superadmin guard is recognised by its code, not its text ────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        # The guard, reworded: still 403.
+        (
+            ConflictError(
+                "Refused for this account",
+                code=admin_org_members_service.CODE_TARGET_IS_SUPERADMIN,
+            ),
+            403,
+        ),
+        # Another conflict that happens to mention superadmins: still 409.
+        (ConflictError("A superadmin holds the reset lock"), 409),
+    ],
+)
+async def test_superadmin_guard_is_matched_by_code(session_factory, monkeypatch, error, expected):
+    async def _raise(*_a, **_kw):
+        raise error
+
+    monkeypatch.setattr(admin_org_members_service, "update_member", _raise)
+    seed = await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/orgs/{seed['target_id']}/members/{seed['member_id']}",
+            json={"is_active": False},
+        )
+    assert res.status_code == expected
