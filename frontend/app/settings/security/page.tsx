@@ -12,6 +12,7 @@ import { isAdmin } from "@/lib/auth";
 import {
   mapMfaSetupError,
   mapMfaDisableError,
+  mapMfaEmailFallbackError,
   mapMfaRegenerateError,
 } from "@/lib/formErrors";
 import {
@@ -253,6 +254,15 @@ export default function SecurityPage() {
   const [showRegen, setShowRegen] = useState(false);
   const [regenCodes, setRegenCodes] = useState<string[]>([]);
 
+  // ── Email-code fallback (BE-03) ──────────────────────────────────────────
+  // Off unless the user turns it on. Turning it on lowers protection, so it
+  // takes a current authenticator or recovery code; turning it off does not.
+  const [showFallbackOn, setShowFallbackOn] = useState(false);
+  const [fallbackCode, setFallbackCode] = useState("");
+  const [fallbackErr, setFallbackErr] = useState("");
+  const [fallbackMsg, setFallbackMsg] = useState("");
+  const [fallbackSaving, setFallbackSaving] = useState(false);
+
   // ── Copy-to-clipboard ────────────────────────────────────────────────────
   // One small bit of UI state tracks which payload was most recently
   // copied so the button label can swap to "Copied" for a beat without
@@ -473,7 +483,41 @@ export default function SecurityPage() {
     finally { setRegenerating(false); }
   }
 
+  async function saveEmailFallback(enabled: boolean, e?: FormEvent) {
+    e?.preventDefault();
+    if (fallbackSaving) return;
+    if (enabled && !fallbackCode.trim()) {
+      setFallbackErr("Enter a code to confirm.");
+      return;
+    }
+    setFallbackErr(""); setFallbackMsg(""); setFallbackSaving(true);
+    try {
+      await apiFetch("/api/v1/auth/mfa/email-fallback", {
+        method: "PUT",
+        body: JSON.stringify(
+          enabled ? { enabled: true, mfa_code: fallbackCode.trim() } : { enabled: false },
+        ),
+      });
+      setShowFallbackOn(false);
+      setFallbackCode("");
+      setFallbackMsg(enabled ? "Email codes are on." : "Email codes are off.");
+      // The setting is saved; a failed profile refresh only leaves the
+      // card showing the old state until the page reloads.
+      await refreshMe().catch(() => {
+        setFallbackMsg(
+          enabled
+            ? "Email codes are on. Reload the page to refresh your profile state."
+            : "Email codes are off. Reload the page to refresh your profile state.",
+        );
+      });
+    } catch (err) {
+      setFallbackErr(mapMfaEmailFallbackError(err));
+    }
+    finally { setFallbackSaving(false); }
+  }
+
   const mfaEnabled = user?.mfa_enabled ?? false;
+  const emailFallbackOn = user?.mfa_email_fallback ?? false;
 
   return (
     <SettingsLayout activeTab="/settings/security">
@@ -1127,13 +1171,96 @@ export default function SecurityPage() {
               )}
             </div>
 
-            {/* ── Email Fallback Info ──────────────────────────────────── */}
+            {/* ── Email Fallback (BE-03) ───────────────────────────────── */}
             {mfaEnabled && mfaStep === "idle" && (
               <div className={`${card} p-6`}>
                 <h2 className={`mb-3 ${cardTitle}`}>Email fallback</h2>
-                <p className="text-sm text-text-muted">
-                  If you cannot access your authenticator app or recovery codes, a verification code can be sent to <span className="font-medium text-text-primary">{user?.email}</span>.
+                {fallbackMsg && (
+                  <div role="status" aria-live="polite" className={`mb-4 ${successCls}`}>
+                    {fallbackMsg}
+                  </div>
+                )}
+                <div className="mb-3 flex items-center gap-2">
+                  <div
+                    className={`h-2 w-2 rounded-full ${emailFallbackOn ? "bg-success" : "bg-border"}`}
+                  />
+                  <span className="text-sm font-medium text-text-primary">
+                    {emailFallbackOn ? "On" : "Off"}
+                  </span>
+                </div>
+                <p id="email-fallback-tradeoff" className="text-sm text-text-muted">
+                  If you lose your authenticator app and recovery codes, a sign-in code can be sent to <span className="font-medium text-text-primary">{user?.email}</span> instead. Anyone who gets into that mailbox could then sign in without your authenticator, so this stays off unless you turn it on. Email codes also stop working for 72 hours after a password reset by email.
                 </p>
+                {fallbackErr && (
+                  <div id="fallback-err" role="alert" aria-live="polite" className={`mt-4 ${errorCls}`}>
+                    {fallbackErr}
+                  </div>
+                )}
+                {emailFallbackOn ? (
+                  <button
+                    type="button"
+                    onClick={() => saveEmailFallback(false)}
+                    disabled={fallbackSaving}
+                    aria-busy={fallbackSaving}
+                    className={`${btnSecondary} mt-4 w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    {fallbackSaving ? "Turning off..." : "Turn off email codes"}
+                  </button>
+                ) : !showFallbackOn ? (
+                  <button
+                    type="button"
+                    onClick={() => { setShowFallbackOn(true); setFallbackErr(""); setFallbackMsg(""); }}
+                    className={`${btnSecondary} mt-4 w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    Turn on email codes
+                  </button>
+                ) : (
+                  <form
+                    onSubmit={(e) => saveEmailFallback(true, e)}
+                    className="mt-4 space-y-3 rounded-lg border border-border p-4"
+                    aria-busy={fallbackSaving}
+                  >
+                    <p className="text-sm text-text-primary font-medium">
+                      Confirm with a code from your authenticator app, or a recovery code, to turn on email codes.
+                    </p>
+                    <div>
+                      <label htmlFor="fallback-code" className={label}>Authenticator or recovery code</label>
+                      <input
+                        id="fallback-code"
+                        type="text"
+                        autoComplete="one-time-code"
+                        required
+                        maxLength={32}
+                        value={fallbackCode}
+                        onChange={(e) => setFallbackCode(e.target.value)}
+                        className={`${input} max-w-md`}
+                        aria-describedby={fallbackErr ? "fallback-err email-fallback-tradeoff" : "email-fallback-tradeoff"}
+                        aria-invalid={fallbackErr ? true : undefined}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={() => { setShowFallbackOn(false); setFallbackCode(""); setFallbackErr(""); }}
+                        disabled={fallbackSaving}
+                        className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={fallbackSaving || !fallbackCode.trim()}
+                        aria-busy={fallbackSaving}
+                        className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                      >
+                        {fallbackSaving && (
+                          <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                        )}
+                        {fallbackSaving ? "Turning on..." : "Turn on"}
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             )}
           </div>

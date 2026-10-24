@@ -135,6 +135,35 @@ export function mapMfaRegenerateError(
 }
 
 /**
+ * Email-code fallback toggle errors (BE-03).
+ *
+ * Endpoint: PUT /auth/mfa/email-fallback. Turning it on takes a current
+ * authenticator or recovery code, refused with 403 when it does not match.
+ */
+export function mapMfaEmailFallbackError(
+  err: unknown,
+  { fallback = "We could not change email codes. Try again." }: ErrorMapOptions = {},
+): string {
+  if (!(err instanceof ApiResponseError)) {
+    return err instanceof Error ? err.message : fallback;
+  }
+  switch (err.status) {
+    case 400:
+      if (/not enabled/i.test(err.message)) {
+        return "Two-factor authentication is not on. Turn it on first.";
+      }
+      return fallback;
+    case 401:
+    case 403:
+      return CODE_MISMATCH;
+    case 429:
+      return "Too many attempts. Wait a few minutes and try again.";
+    default:
+      return fallback;
+  }
+}
+
+/**
  * Billing-cycle save errors.
  *
  * Endpoint: PUT /settings/billing-cycle

@@ -159,6 +159,7 @@ SECRET_NAME_ALLOWLIST: dict[tuple[str, str], str] = {
     # datetimes, not credentials, and they are the subject's own security
     # history — Art. 15 material. An earlier brief wrongly forbade them.
     ("users", "password_changed_at"): "datetime, the subject's security history",
+    ("users", "password_reset_at"): "datetime, the subject's security history",
     ("users", "password_set"): "boolean flag, not a credential",
 }
 

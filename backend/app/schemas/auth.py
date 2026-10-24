@@ -86,6 +86,9 @@ class UserResponse(BaseModel):
     # (default True so existing tokens/responses stay valid).
     is_founder: bool = True
     mfa_enabled: bool = False
+    # BE-03. Whether the emailed sign-in code may stand in for TOTP. Off by
+    # default; the security settings page reads it to render the toggle.
+    mfa_email_fallback: bool = False
     # Track E: org-level toggle for the "set balance directly" admin escape
     # hatch. Off by default; mirrors `billing_cycle_day` storage pattern
     # (column on `organizations`).
@@ -161,6 +164,13 @@ class MfaDisableRequest(BaseModel):
     password: str = Field(max_length=128)
     # A current TOTP code or an unused recovery code (BE-32).
     mfa_code: str = Field(min_length=6, max_length=32)
+
+
+class MfaEmailFallbackRequest(BaseModel):
+    enabled: bool
+    # Turning the fallback on takes a current TOTP code or an unused recovery
+    # code (BE-03, as BE-32); turning it off takes none.
+    mfa_code: str | None = Field(default=None, min_length=6, max_length=32)
 
 
 class MfaVerifyRequest(BaseModel):

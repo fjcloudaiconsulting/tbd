@@ -42,6 +42,7 @@ from app.schemas.auth import (
     MfaChallengeResponse,
     MfaDisableRequest,
     MfaEmailCodeRequest,
+    MfaEmailFallbackRequest,
     MfaEmailVerifyRequest,
     MfaEnableRequest,
     MfaEnableResponse,
@@ -85,12 +86,13 @@ from app.security import (
 )
 from app.captcha import verify_captcha
 from app.models.notification import NotificationCategory
-from app.rate_limit import get_client_ip, limiter
+from app.rate_limit import get_client_ip, limiter, rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service, notification_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
 from app.services.notification_templates import (
     user_mfa_disabled as _tpl_user_mfa_disabled,
+    user_mfa_email_fallback_enabled as _tpl_user_mfa_email_fallback_enabled,
     user_mfa_enabled as _tpl_user_mfa_enabled,
     user_mfa_recovery_codes_regenerated as _tpl_user_mfa_recovery_codes_regenerated,
     user_password_reset as _tpl_user_password_reset,
@@ -153,6 +155,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         is_active=user.is_active,
         is_founder=user.is_founder,
         mfa_enabled=user.mfa_enabled,
+        mfa_email_fallback=user.mfa_email_fallback,
         password_set=user.password_set,
         onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
         allow_manual_balance_adjustment=org.allow_manual_balance_adjustment,
@@ -909,7 +912,8 @@ async def _rotate_refresh_session(
     or ``"jti_collision"``. The router dispatches on the value per
     §5.1 step 6:
 
-    * ``"ok"`` — issue cookie, emit ``auth.session.rotated`` audit.
+    * ``"ok"`` — issue cookie. No audit row: a routine rotation happens on
+      every refresh of every session (BE-10).
     * ``"session_revoked"`` — concurrent logout deleted the family
       set; router returns 401, no audit (terminal — frontend redirects).
     * ``"already_rotated"`` — concurrent ``/refresh`` won the race;
@@ -1561,7 +1565,34 @@ async def _validate_refresh_cookie(
     return successes[0]
 
 
+def _refresh_rate_limit_key(request: Request) -> str:
+    """Bucket for ``POST /refresh`` (BE-10): the session family (``sid``) of
+    the refresh cookie, which every rotation keeps, so one session gets 30 a
+    minute wherever it calls from and sessions behind one address
+    do not share a budget. Of several cookies, the newest by ``iat`` (the one
+    ``_validate_refresh_cookie`` prefers). A request with no cookie that
+    verifies as a refresh token carrying a ``sid`` (none, garbage, forged,
+    expired, another token type) is bucketed per IP instead. The stored key
+    is hashed (``rate_limit_db``)."""
+    best: tuple[int, str] | None = None
+    for token in _extract_refresh_cookies(request):
+        payload = decode_token(token)
+        if payload is None or payload.get("type") != "refresh":
+            continue
+        sid = payload.get("sid")
+        if not isinstance(sid, str) or not sid:
+            continue
+        iat = payload.get("iat")
+        iat = iat if isinstance(iat, int) else 0
+        if best is None or iat > best[0]:
+            best = (iat, sid)
+    if best is None:
+        return rate_limit_key(request)
+    return f"refresh-session:{best[1]}"
+
+
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/minute", key_func=_refresh_rate_limit_key)
 async def refresh(
     request: Request,
     response: Response,
@@ -1703,7 +1734,7 @@ async def _refresh_impl(
         return TokenResponse(access_token=access_token)
 
     # ── Normal rotation path: Lua script is the authority ───────────────
-    new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
+    new_refresh_token, _new_jti, _sid, lua_result = await _rotate_refresh_session(
         user.id,
         old_jti,
         sid,
@@ -1714,7 +1745,7 @@ async def _refresh_impl(
     if lua_result == state_db.SESSION_ROTATE_JTI_COLLISION:
         # 128-bit collision — regenerate jti once and retry. If the second
         # attempt also collides, the RNG is broken: 503 + log flag.
-        new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
+        new_refresh_token, _new_jti, _sid, lua_result = await _rotate_refresh_session(
             user.id,
             old_jti,
             sid,
@@ -1832,15 +1863,9 @@ async def _refresh_impl(
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
-    await _record_session_rotated(
-        session_factory,
-        user=user,
-        request=request,
-        old_jti=old_jti,
-        new_jti=new_jti,
-        sid=sid,
-    )
-
+    # No audit row for a routine rotation (BE-10): one per refresh of every
+    # live session buried the events that matter. Grace acceptances, reuse
+    # detection and rotation failures above are still audited.
     return TokenResponse(access_token=access_token)
 
 
@@ -2211,6 +2236,9 @@ async def reset_password(
     user.password_set = True
     user.password_changed_at = cutoff
     user.sessions_invalidated_at = cutoff
+    # Opens the 72-hour window in which the email-code MFA fallback is
+    # refused (BE-03): this reset was proven through the mailbox alone.
+    user.password_reset_at = cutoff
     await db.commit()
     await _revoke_sessions(user.id)
 
@@ -2759,6 +2787,41 @@ async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> tuple[User, str
     return user, jti
 
 
+EMAIL_FALLBACK_OFF_DETAIL = (
+    "Email codes are turned off for this account. "
+    "Use your authenticator app or a recovery code."
+)
+EMAIL_FALLBACK_PAUSED_DETAIL = (
+    "Email codes are unavailable for 72 hours after a password reset. "
+    "Use your authenticator app or a recovery code."
+)
+# How long after a reset through the emailed link the email code stays
+# refused, opt-in or not (BE-03).
+EMAIL_FALLBACK_RESET_LOCK = timedelta(hours=72)
+
+
+def _require_email_fallback(user: User, *, now: datetime | None = None) -> None:
+    """Refuse the emailed code for an account whose owner has not turned the
+    fallback on (BE-03): with TOTP enrolled, the mailbox alone must not stand
+    in for the authenticator. Also refused for 72 hours after a password
+    reset through the emailed link, so the sign-in after a reset takes TOTP
+    or a recovery code. An MFA account without a TOTP secret keeps it, as the
+    only code-based factor it would have (``mfa_enable`` needs a TOTP code, so
+    the app does not create one). 400 like the other challenge-leg refusals
+    that are not a wrong code."""
+    if not user.totp_secret:
+        return
+    if not user.mfa_email_fallback:
+        raise HTTPException(status_code=400, detail=EMAIL_FALLBACK_OFF_DETAIL)
+    reset_at = user.password_reset_at
+    if reset_at is None:
+        return
+    if reset_at.tzinfo is None:  # stored naive UTC
+        reset_at = reset_at.replace(tzinfo=timezone.utc)
+    if (now or datetime.now(timezone.utc)) < reset_at + EMAIL_FALLBACK_RESET_LOCK:
+        raise HTTPException(status_code=400, detail=EMAIL_FALLBACK_PAUSED_DETAIL)
+
+
 async def _second_factor_failed(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -3220,36 +3283,6 @@ async def _record_login_success(
 # ── PR 3 session-rotation audit events (spec §5.1 step 8) ───────────────────
 
 
-async def _record_session_rotated(
-    session_factory: async_sessionmaker[AsyncSession],
-    *,
-    user: User,
-    request: Request,
-    old_jti: str,
-    new_jti: str,
-    sid: str,
-) -> None:
-    """Persist an ``auth.session.rotated`` audit event on the happy-path
-    rotation (Lua returned ``"ok"``).
-
-    Detail carries the predecessor + successor ``jti`` plus the stable
-    ``sid`` so operators can reconstruct the rotation chain offline.
-    """
-    request_id = logs.CONTEXT.get({}).get("request_id")
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="auth.session.rotated",
-        actor_user_id=user.id,
-        actor_email=user.email,
-        target_org_id=user.org_id,
-        target_org_name=None,
-        request_id=request_id,
-        ip_address=get_client_ip(request),
-        outcome="success",
-        detail={"old_jti": old_jti, "new_jti": new_jti, "sid": sid},
-    )
-
-
 async def _record_session_grace_accept(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -3601,6 +3634,8 @@ async def mfa_disable(
     current_user.mfa_enabled = False
     current_user.totp_secret = None
     current_user.recovery_codes = None
+    # A later enrolment starts with the email fallback off again (BE-03).
+    current_user.mfa_email_fallback = False
     await db.commit()
 
     # Audit AFTER the business commit succeeds. This row is the trigger
@@ -3736,6 +3771,85 @@ async def mfa_regenerate_codes(
     return MfaEnableResponse(recovery_codes=codes)
 
 
+@router.put(
+    "/mfa/email-fallback",
+    dependencies=[Depends(require_interactive_session)],
+)
+async def mfa_email_fallback(
+    body: MfaEmailFallbackRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Turn the email-code sign-in fallback on or off (BE-03).
+
+    On lets the mailbox stand in for the authenticator, so it takes a current
+    TOTP code or an unused recovery code, as the BE-32 changes do; a recovery
+    code presented here is spent. Off raises protection and needs only the
+    session.
+    """
+    if not current_user.mfa_enabled or not current_user.totp_secret:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    if body.enabled:
+        await require_second_factor(
+            db, session_factory, request=request, user=current_user, code=body.mfa_code
+        )
+    changed = current_user.mfa_email_fallback != body.enabled
+    current_user.mfa_email_fallback = body.enabled
+    await db.commit()
+    if not changed:
+        return {"mfa_email_fallback": body.enabled}
+
+    event_type = (
+        "user.mfa.email_fallback.enabled"
+        if body.enabled
+        else "user.mfa.email_fallback.disabled"
+    )
+    audit_event_id = await audit_service.record_audit_event(
+        session_factory,
+        event_type=event_type,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=logs.CONTEXT.get({}).get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
+
+    # Turning it on is the direction that lowers protection: tell the user,
+    # in-app and by email, as for the other MFA changes. Best-effort.
+    if body.enabled and audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances.
+        recipient_user_id = current_user.id
+        recipient_email = current_user.email
+        title, notif_body, link_url = _tpl_user_mfa_email_fallback_enabled()
+        await notification_service.dispatch_notification_best_effort(
+            db,
+            user_id=recipient_user_id,
+            category=NotificationCategory.SECURITY,
+            event_type=event_type,
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=recipient_user_id,
+            email=recipient_email,
+            event_type=event_type,
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+        )
+
+    return {"mfa_email_fallback": body.enabled}
+
+
 @router.post("/mfa/verify", response_model=TokenResponse)
 @limiter.limit("10/minute")
 async def mfa_verify(
@@ -3833,6 +3947,7 @@ async def mfa_email_code(
 ):
     """Send a one-time code to the user's email as MFA fallback."""
     user, _jti = await _resolve_mfa_user(body.mfa_token, db)
+    _require_email_fallback(user)
 
     # Generate 6-digit numeric code
     code = f"{secrets.randbelow(1000000):06d}"
@@ -3859,6 +3974,9 @@ async def mfa_email_verify(
     """Verify an email-based MFA code to complete authentication."""
     await _require_session_store()
     user, challenge_jti = await _resolve_mfa_user(body.mfa_token, db)
+    # Checked again here: a code mailed before the fallback was turned off
+    # must not complete a sign-in after it (BE-03).
+    _require_email_fallback(user)
 
     # Validate the email_token and extract the code HMAC
     email_payload = decode_token(body.email_token)

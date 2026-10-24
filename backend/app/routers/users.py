@@ -76,6 +76,7 @@ def _user_response(user: User) -> UserResponse:
         is_active=user.is_active,
         is_founder=user.is_founder,
         mfa_enabled=user.mfa_enabled,
+        mfa_email_fallback=user.mfa_email_fallback,
         password_set=user.password_set,
         onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
         allow_manual_balance_adjustment=user.organization.allow_manual_balance_adjustment,
