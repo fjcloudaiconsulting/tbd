@@ -105,11 +105,17 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
+    # import router (BE-07): the three file-preview routes, no path params,
+    # so a plain ``limit`` each.
+    "import.ofx_preview",
+    "import.preview",
+    "import.tab_preview",
     # oauth router (TBD-587). The consent decision is a credential mint,
     # JWT + interactive session; no path param, so a plain ``limit``.
     "oauth.authorize",
     # org_members router. Backfilled by TBD-353: the decorator has
     # existed without a pattern, so no override for it could be stored.
+    "org_members.invite",  # BE-06, no path param: plain ``limit``
     "org_members.remove_member",
     # onboarding router
     "onboarding.complete",

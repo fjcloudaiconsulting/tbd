@@ -133,7 +133,8 @@ class User(Base):
     password_set: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="1")
     # Single-use, 5-minute step-up proof issued by the SSO step-up
     # callback (POST /api/v1/auth/sso-stepup/initiate → callback), stored
-    # as `f"{action}:{token}"` so it authorizes ONE action (TBD-390). Read
+    # as `f"{action}:{sha256(token)}"` so it authorizes ONE action (TBD-390)
+    # and the row never holds a presentable token (DB-06). Read
     # and written only through `app.auth.stepup`; consumed atomically on
     # first use; expiry is hard.
     stepup_token: Mapped[str | None] = mapped_column(String(128), nullable=True)

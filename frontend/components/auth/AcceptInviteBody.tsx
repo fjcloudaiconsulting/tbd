@@ -2,12 +2,13 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import Spinner from "@/components/ui/Spinner";
 import { ApiResponseError, apiFetch, signInWithAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useOneTimeQueryParam } from "@/lib/hooks/use-one-time-query-param";
 import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 
 type Preview = {
@@ -20,8 +21,7 @@ type Preview = {
 
 export default function AcceptInviteBody() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const token = searchParams.get("token") ?? "";
+  const token = useOneTimeQueryParam("token") ?? "";
   const { refreshMe } = useAuth();
 
   const [preview, setPreview] = useState<Preview | null>(null);

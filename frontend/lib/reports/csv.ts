@@ -19,11 +19,17 @@ export interface CsvDataset {
 /**
  * Serialize headers + rows to an RFC4180-ish CSV string.
  *
- * Fields containing a comma, double-quote, CR or LF are wrapped in
- * double quotes; interior double-quotes are doubled. Numbers render via
+ * Fields containing a comma, double-quote, CR or LF, or another list
+ * separator a spreadsheet may split on (``;``, TAB, ``|``), are wrapped
+ * in double quotes; interior double-quotes are doubled. Numbers render via
  * ``String(n)``; ``null``/``undefined`` render as an empty field. Rows
  * are joined with CRLF (the RFC4180 record separator); no trailing
  * newline is appended.
+ *
+ * Text cells (headers included) that a spreadsheet would read as a
+ * formula get a leading ``'`` (FE-04, CWE-1236): category, account and
+ * series names are user-controlled. Number cells, and text shaped like a
+ * plain number such as ``"-42.50"``, are left as they are.
  */
 export function toCsv(headers: string[], rows: CsvCell[][]): string {
   const lines = [headers.map(escapeField).join(",")];
@@ -33,10 +39,18 @@ export function toCsv(headers: string[], rows: CsvCell[][]): string {
   return lines.join("\r\n");
 }
 
+// OWASP CSV injection guidance: a leading = + - @ TAB or CR (and LF) starts
+// a formula. A plain numeric literal is read as a number, never a formula.
+const FORMULA_TRIGGER = /^[=+\-@\t\r\n]/;
+const NUMERIC_LITERAL = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
 function escapeField(value: CsvCell): string {
   if (value === null || value === undefined) return "";
-  const s = typeof value === "number" ? String(value) : String(value);
-  if (/[",\r\n]/.test(s)) {
+  let s = String(value);
+  if (typeof value === "string" && FORMULA_TRIGGER.test(s) && !NUMERIC_LITERAL.test(s)) {
+    s = `'${s}`;
+  }
+  if (/[",;|\t\r\n]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;

@@ -7,7 +7,7 @@ pipeline.
 
 Spec: ``specs/2026-06-09-abn-tab-import.md``.
 
-Reuses ``ParsedRow``, ``ParseError``, ``_parse_amount``,
+Reuses ``MAX_ROWS``, ``ParsedRow``, ``ParseError``, ``_parse_amount``,
 ``_parse_date_yyyymmdd`` and ``_strip_bom`` from :mod:`app.services.import_parser`
 (imported, never duplicated). The router decodes the upload bytes
 (UTF-8 → cp1252 fallback) before calling :func:`parse_tab`.
@@ -17,16 +17,13 @@ from __future__ import annotations
 import re
 
 from app.services.import_parser import (
+    MAX_ROWS,  # shared with the CSV parser; a non-blank line past it raises
     ParsedRow,
     ParseError,
     _parse_amount,
     _parse_date_yyyymmdd,
     _strip_bom,
 )
-
-# DoS stopgap, matches the #417 OFX posture. A non-blank line past the cap
-# raises ``ParseError`` rather than parsing unbounded input.
-MAX_ROWS = 2000
 
 # ABN AMRO lines have exactly 8 tab-separated fields (spec "File format").
 _FIELD_COUNT = 8

@@ -32,12 +32,13 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Optional, Protocol, runtime_checkable
-
-import httpx
+from typing import TYPE_CHECKING, AsyncIterator, Optional, Protocol, runtime_checkable
 
 from app.models.org_ai_credential import AiProvider
 from app.schemas.org_ai_routing import MODEL_NAME_MAX_LENGTH
+
+if TYPE_CHECKING:
+    from app.services.ai_providers.capped_http import CappedResponse
 
 
 @dataclass
@@ -210,10 +211,11 @@ class AIProviderError(Exception):
 _REASON_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 
 
-def provider_reason(resp: httpx.Response) -> Optional[str]:
+def provider_reason(resp: "CappedResponse") -> Optional[str]:
     """``error.type`` / ``error.code`` of a non-200 provider body, only when it
     is token-shaped: the value is provider-controlled text, and the message
-    field (which can echo the prompt) is never read."""
+    field (which can echo the prompt) is never read. The body is the capped
+    prefix ``capped_http.request`` kept (empty when it was too large)."""
     try:
         err = resp.json().get("error")
     except Exception:  # noqa: BLE001  (non-JSON body, or a stream not yet read)

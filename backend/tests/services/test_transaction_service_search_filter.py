@@ -123,6 +123,18 @@ def test_parse_search_amount_non_numeric():
     assert transaction_service._parse_search_amount("12abc") is None
 
 
+def test_parse_search_amount_ignores_values_no_row_can_hold():
+    """BE-01. An unbounded exponent would be bound as a SQL literal as long as
+    the exponent; a value outside ``Numeric(12, 2)`` can match no row anyway,
+    so the amount predicate is skipped and the text search still runs."""
+    for raw in ("1E+100000", "1e999999", "1E-100000", "NaN", "Infinity",
+                "12.345", "99999999999"):
+        assert transaction_service._parse_search_amount(raw) is None, raw
+    # Exponent notation that fits a stored amount still parses.
+    assert transaction_service._parse_search_amount("1e5") == Decimal("100000")
+    assert transaction_service._parse_search_amount("12.340") == Decimal("12.34")
+
+
 # ── list_transactions(search=...) ────────────────────────────────────────────
 
 async def test_search_pure_text_matches_description(db_session, world):
@@ -346,3 +358,21 @@ async def test_guard_amount_search_alongside_category_term(db_session, world):
         db_session, world["org"].id, search="42",
     )
     assert [r.description for r in rows] == ["Charge"]
+
+
+async def test_search_treats_like_wildcards_literally(db_session, world):
+    """BE-27: ``%`` / ``_`` are literal characters, so ``%`` alone is not a
+    match-everything search and ``a_c`` does not match ``abc``."""
+    db_session.add_all([
+        _make_tx(world, description="50% off sale", amount="5.00"),
+        _make_tx(world, description="abc store", amount="6.00"),
+        _make_tx(world, description="a_c store", amount="7.00"),
+    ])
+    await db_session.flush()
+
+    for search, expected in (("%", ["50% off sale"]), ("a_c", ["a_c store"]),
+                             ("50%", ["50% off sale"]), ("\\", [])):
+        rows, _ = await transaction_service.list_transactions(
+            db_session, world["org"].id, search=search,
+        )
+        assert sorted(r.description for r in rows) == expected, search

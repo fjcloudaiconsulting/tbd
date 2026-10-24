@@ -245,8 +245,7 @@ export function ProjectionChart({
               stroke="var(--color-danger)"
               strokeDasharray="4 2"
               dot={false}
-              // recharts 3.8.1 bug: Line gates its dash on the raw prop, so 'auto' draws a stale, partial stroke under reduced motion. Off until TBD-528.
-              isAnimationActive={false}
+              animationDuration={220}
             />
           )}
           {alertDots.map((d, i) => (

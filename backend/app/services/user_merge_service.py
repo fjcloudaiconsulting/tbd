@@ -12,13 +12,14 @@ source row to the target row and then deletes the source row. It
 is **only** used by the superadmin-only
 ``POST /api/v1/admin/users/merge`` endpoint.
 
-FK enumeration. All five tables carrying a ``users.id`` FK are
-handled below. The list mirrors the model definitions; adding a
-new FK to ``users.id`` must come with an update here. The
-``CASCADE`` / ``SET NULL`` semantics on each column govern what
-happens on the final ``DELETE FROM users WHERE id = source``, but
-we explicitly reassign every row first so no data is lost to a
-``SET NULL`` cascade and no row is destroyed by a ``CASCADE``.
+FK enumeration (BE-29). Every ``users.id`` FK is either moved to the
+target (``REASSIGNED``, plus ``dashboard_layouts`` handled on its own)
+or deliberately left to its ``ON DELETE`` (``LEFT_TO_ONDELETE``, each
+with its reason). A new FK to ``users.id`` must be added to one of them:
+``tests/services/test_user_merge_service.py`` compares both against the
+model metadata and fails otherwise. Reassigning first means no data is
+lost to a ``SET NULL`` or ``CASCADE``, and a ``RESTRICT`` or plain FK
+never blocks the final ``DELETE FROM users WHERE id = source``.
 
 The same-org constraint is intentional. Merging across orgs would
 silently transfer ownership of admin permissions and audit trails
@@ -32,11 +33,21 @@ import secrets
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.announcement import Announcement
 from app.models.audit_event import AuditEvent
+from app.models.dashboard import DashboardLayout
+from app.models.email_broadcast import EmailBroadcast
 from app.models.feature_override import OrgFeatureOverride
+from app.models.feedback import FeedbackEntry
+from app.models.import_batch import ImportBatch
 from app.models.limit_override import OrgLimitOverride
 from app.models.invitation import Invitation
+from app.models.notification import Notification
+from app.models.org_ai_consent import OrgAIConsent
 from app.models.org_data_reset_lock import OrgDataResetLock
+from app.models.rate_limit_override import RateLimitOverride
+from app.models.report import Report
+from app.models.scenario import Scenario
 from app.models.tag import Tag
 from app.models.user import Role, User
 from app.security import hash_password
@@ -44,6 +55,60 @@ from app.services.exceptions import ConflictError, NotFoundError, ValidationErro
 
 
 logger = logging.getLogger(__name__)
+
+
+# (column, key in the returned counts). Each moves from source to target.
+REASSIGNED = (
+    # audit_events.actor_user_id (SET NULL): the audit trail keeps its actor;
+    # the snapshot email stays as recorded at event time.
+    (AuditEvent.actor_user_id, "audit_events"),
+    # invitations.created_by (no ondelete): would block the delete.
+    (Invitation.created_by, "invitations"),
+    # Override attribution (SET NULL): keep who set it (TBD-585).
+    (OrgFeatureOverride.set_by, "org_feature_overrides"),
+    (OrgLimitOverride.set_by, "org_limit_overrides"),
+    (Tag.created_by_user_id, "tags"),
+    # org_data_reset_locks (CASCADE): a lock held by source passes to target,
+    # so it can be completed or released instead of silently freed.
+    (OrgDataResetLock.acquired_by_user_id, "org_data_reset_lock"),
+    # import_batches.created_by_user_id (no ondelete) and reports
+    # (RESTRICT): both would block the delete.
+    (ImportBatch.created_by_user_id, "import_batches"),
+    (Report.owner_user_id, "reports"),
+    # The same person's own data (CASCADE would destroy it).
+    (Scenario.user_id, "scenarios"),
+    (Notification.user_id, "notifications"),
+    # Attribution (SET NULL).
+    (FeedbackEntry.user_id, "feedback_entries"),
+    (Announcement.created_by_user_id, "announcements"),
+    (EmailBroadcast.created_by_user_id, "email_broadcasts"),
+    (OrgAIConsent.consented_by_user_id, "org_ai_consents"),
+    (RateLimitOverride.created_by_user_id, "rate_limit_overrides"),
+)
+
+# FKs whose ON DELETE is the intended merge outcome.
+LEFT_TO_ONDELETE: dict[str, str] = {
+    "agent_pending_actions.user_id": (
+        "CASCADE: proposals have a 10 minute confirm window and are purged after 48h"
+    ),
+    "api_tokens.created_by_user_id": (
+        "SET NULL: a token never moves to another identity; without an owner "
+        "it fails to authenticate"
+    ),
+    "email_broadcast_recipients.user_id": (
+        "SET NULL: delivery history keeps its snapshot email, and "
+        "(broadcast_id, user_id) is unique"
+    ),
+    "rate_limit_overrides.user_id": (
+        "CASCADE: a per-user limit is not granted to another identity silently"
+    ),
+    "user_dismissed_announcements.user_id": (
+        "CASCADE: one row per (user, announcement); the target keeps its own"
+    ),
+    "user_notification_preferences.user_id": (
+        "CASCADE: one row per user; the target keeps its own preferences"
+    ),
+}
 
 
 async def merge_users(
@@ -127,63 +192,34 @@ async def merge_users(
 
     counts: dict[str, int] = {}
 
-    # 1. audit_events.actor_user_id (SET NULL on user delete).
-    # Reassign so the audit trail attributes survive the source's
-    # deletion. The snapshot email column stays as-is — it pins the
-    # value at event time, which is the correct historical record.
-    res = await db.execute(
-        update(AuditEvent)
-        .where(AuditEvent.actor_user_id == source_user_id)
-        .values(actor_user_id=target_user_id)
-    )
-    counts["audit_events"] = res.rowcount or 0
+    for column, key in REASSIGNED:
+        res = await db.execute(
+            update(column.class_)
+            .where(column == source_user_id)
+            .values({column.key: target_user_id})
+        )
+        counts[key] = res.rowcount or 0
 
-    # 2. invitations.created_by (no ondelete; would raise FK error
-    # on source delete if left dangling). Reassign attribution.
-    res = await db.execute(
-        update(Invitation)
-        .where(Invitation.created_by == source_user_id)
-        .values(created_by=target_user_id)
+    # dashboard_layouts.owner_user_id (RESTRICT, one per user): the target
+    # keeps its own layout when it has one, else takes over the source's.
+    target_has_layout = await db.scalar(
+        select(func.count())
+        .select_from(DashboardLayout)
+        .where(DashboardLayout.owner_user_id == target_user_id)
     )
-    counts["invitations"] = res.rowcount or 0
-
-    # 3. org_feature_overrides.set_by (SET NULL). Reassign so we
-    # preserve who set the override.
-    res = await db.execute(
-        update(OrgFeatureOverride)
-        .where(OrgFeatureOverride.set_by == source_user_id)
-        .values(set_by=target_user_id)
-    )
-    counts["org_feature_overrides"] = res.rowcount or 0
-
-    # 3b. org_limit_overrides.set_by (SET NULL), same reasoning (TBD-585).
-    res = await db.execute(
-        update(OrgLimitOverride)
-        .where(OrgLimitOverride.set_by == source_user_id)
-        .values(set_by=target_user_id)
-    )
-    counts["org_limit_overrides"] = res.rowcount or 0
-
-    # 4. tags.created_by_user_id (SET NULL). Reassign so the
-    # creator attribution survives.
-    res = await db.execute(
-        update(Tag)
-        .where(Tag.created_by_user_id == source_user_id)
-        .values(created_by_user_id=target_user_id)
-    )
-    counts["tags"] = res.rowcount or 0
-
-    # 5. org_data_reset_lock.acquired_by_user_id (CASCADE). This
-    # lock is short-lived and held by exactly one user — if the
-    # source row holds the lock, transferring it lets the target
-    # complete or release it cleanly. Otherwise CASCADE would drop
-    # the lock and silently free another concurrent caller.
-    res = await db.execute(
-        update(OrgDataResetLock)
-        .where(OrgDataResetLock.acquired_by_user_id == source_user_id)
-        .values(acquired_by_user_id=target_user_id)
-    )
-    counts["org_data_reset_lock"] = res.rowcount or 0
+    if target_has_layout:
+        res = await db.execute(
+            delete(DashboardLayout).where(
+                DashboardLayout.owner_user_id == source_user_id
+            )
+        )
+    else:
+        res = await db.execute(
+            update(DashboardLayout)
+            .where(DashboardLayout.owner_user_id == source_user_id)
+            .values(owner_user_id=target_user_id)
+        )
+    counts["dashboard_layouts"] = res.rowcount or 0
 
     # Carry over the email-verified bit if the source row had it
     # and target didn't — the source row in the duplicate scenario
@@ -198,12 +234,9 @@ async def merge_users(
         target.password_hash = hash_password(secrets.token_urlsafe(32))
         target.password_set = False
 
-    # agent_pending_actions is NOT reassigned: the source user's rows are dropped
-    # by ON DELETE CASCADE on purpose (proposals: 10 minute confirm window, purged after 48h).
-    #
-    # Finally delete the source row. With all references reassigned,
-    # the delete succeeds without tripping any FK constraint or
-    # silently nulling out an audit/tag attribution.
+    # Finally delete the source row. With every reference reassigned or
+    # left to its ON DELETE on purpose (LEFT_TO_ONDELETE), the delete
+    # trips no FK constraint and nulls no attribution by accident.
     await db.execute(delete(User).where(User.id == source_user_id))
 
     logger.info(

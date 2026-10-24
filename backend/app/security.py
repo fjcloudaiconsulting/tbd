@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac as _hmac
@@ -56,6 +57,26 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode()[:_BCRYPT_MAX_BYTES], hashed.encode())
+
+
+_dummy_password_hash: str | None = None
+
+
+def verify_password_or_dummy(plain: str, hashed: str | None) -> bool:
+    """``verify_password``, or the same bcrypt work against a throwaway hash
+    when there is no stored one (BE-25): a login for a missing account then
+    takes as long as a wrong password, so the response time does not say
+    whether the username or email exists. Always False without a hash.
+
+    The throwaway hash is made once per process with ``hash_password``, so it
+    carries the current bcrypt cost."""
+    global _dummy_password_hash
+    if hashed is not None:
+        return verify_password(plain, hashed)
+    if _dummy_password_hash is None:
+        _dummy_password_hash = hash_password(secrets.token_urlsafe(16))
+    verify_password(plain, _dummy_password_hash)
+    return False
 
 
 def create_access_token(subject: int, org_id: int, role: str) -> str:
@@ -218,13 +239,22 @@ def create_password_reset_token(user_id: int) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+MFA_CHALLENGE_TTL_SECONDS = 5 * 60
+
+
 def create_mfa_challenge_token(user_id: int) -> str:
-    """Create a short-lived token for MFA challenge (5 minutes)."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    """Create a short-lived token for MFA challenge (5 minutes).
+
+    The ``jti`` makes it single-use (BE-02): the second-factor routes claim it
+    in ``used_tokens`` on success, and burn it after too many wrong codes.
+    """
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "type": "mfa_challenge",
-        "exp": expire,
+        "jti": secrets.token_urlsafe(16),
+        "iat": int(now.timestamp()),
+        "exp": now + timedelta(seconds=MFA_CHALLENGE_TTL_SECONDS),
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
@@ -397,6 +427,31 @@ def decode_token(token: str) -> dict | None:
         )
     except jwt.PyJWTError:
         return None
+
+
+def session_cutoff(now: datetime | None = None) -> datetime:
+    """The cutoff a credential change writes to ``password_changed_at`` /
+    ``sessions_invalidated_at``: the start of the NEXT whole second (BE-04).
+
+    Token ``iat`` is floored to the second and every validator rejects
+    ``iat < cutoff``. Inside the event's own second a token minted just before
+    it and one minted just after carry the same ``iat``, so the cutoff has to
+    reject that whole second: rounding up does. Having no fraction also keeps
+    MySQL's fsp-0 columns from moving it; they round on insert, and a sub-.5
+    fraction rounded DOWN used to let a token from earlier in that second
+    survive. A sign-in inside that second waits it out (``wait_out_cutoff``).
+    """
+    now = now or datetime.now(timezone.utc)
+    return now.replace(microsecond=0) + timedelta(seconds=1)
+
+
+async def wait_out_cutoff(user: User) -> None:
+    """Sleep until ``user``'s session cutoff has passed, so a token minted next
+    carries an ``iat`` the cutoff accepts. Only a sign-in in the second after a
+    credential change waits, and for under a second."""
+    delay = (token_cutoff(user) - datetime.now(timezone.utc)).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 def token_cutoff(user: User) -> datetime:

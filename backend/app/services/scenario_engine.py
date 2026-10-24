@@ -954,6 +954,11 @@ class _RecurringFilter:
 
     def __init__(self, events: list[dict[str, Any]]):
         self.events = events
+        # BE-22: each event's ``category_ids`` as a set, built once, instead
+        # of a list scanned for every recurring row in every month.
+        self._category_sets = [
+            frozenset(ev.get("category_ids") or ()) for ev in events
+        ]
 
     def should_apply(
         self,
@@ -962,7 +967,7 @@ class _RecurringFilter:
         month_index: int,
     ) -> bool:
         """Return True if the recurring should fire on this month_index."""
-        for ev in self.events:
+        for ev, cat_ids in zip(self.events, self._category_sets):
             ev_type = ev.get("type")
             if ev_type not in ("income_off", "expense_off"):
                 continue
@@ -978,7 +983,6 @@ class _RecurringFilter:
             if ev_type == "income_off" and recurring.type == "income":
                 return False
             if ev_type == "expense_off" and recurring.type == "expense":
-                cat_ids = ev.get("category_ids")
                 if not cat_ids:
                     return False
                 if category_id is not None and category_id in cat_ids:
