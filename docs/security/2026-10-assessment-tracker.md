@@ -40,7 +40,8 @@ exploit detail into public issues, PRs or commit messages.
   `cloud-infra`. That release carries three migrations: two additive `users`
   columns and one batched data clean-up of the tag dictionary. After it
   deploys, `cloud-infra` can drop the backend's `--forwarded-allow-ips`
-  argument, because `FORWARDED_ALLOW_IPS` now sets the same list (#1021). The
+  argument: the containers already set `FORWARDED_ALLOW_IPS` to the same list,
+  and the new images read it (#1021). The
   apex landing site deploys from `main` on its own, so #1004's apex changes
   (connect-src and `security.txt`) have been live there since 2026-10-24.
 - **Follow-ups merged:** #1014 (tracker refresh) and #1015 (test durations).
@@ -242,9 +243,7 @@ Ordered by urgency. Each item is also an **Owner action** above.
 8. (TBD-747) INF-08, INF-12, INF-13, INF-14: repository and disclosure housekeeping.
 9. (TBD-748) Dependencies: PyYAML has no Python 3.15 wheels yet, so it builds from source
    in the image (#929); the TypeScript 7 hold (#1003).
-10. Monitoring: the production uptime check now calls `/health`, which does not
-    touch the database. Decide whether to add a database check from inside the
-    cluster.
+10. Monitoring: decide whether to add a deeper production health check.
 11. After the release: tell MFA users that email codes are now opt-in (BE-03).
 
 Done and removed from this queue on 2026-10-24: the edge and origin checks
@@ -287,8 +286,8 @@ Newest first. Add your entry at the top; keep entries short and public-safe.
   TBD-741, TBD-742 and TBD-745.
 - **Changed here:** the rows for BE-03, BE-05, BE-10, BE-13, BE-18, DB-01,
   DB-03, FE-01, INF-01, INF-02, INF-04 and INF-09, the counts, Current state,
-  the PR table, the owner queue (renumbered, with two new items: the uptime
-  check and the MFA notice) and the "Incoming from Jira" rows that point at it.
+  the PR table, the owner queue (renumbered, so item numbers in older entries
+  refer to the old order; two new items: monitoring and the MFA notice) and the "Incoming from Jira" rows that point at it.
 - **Next:** owner item 1, then the release (#1011) and the image bump. Once
   that is live, set the fix version on the closed issues.
 - **Questions for the owner:** the queue, item 1 first.
