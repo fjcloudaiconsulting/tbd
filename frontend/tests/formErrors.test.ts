@@ -4,6 +4,7 @@ import {
   mapBillingCycleError,
   mapBillingPeriodCloseError,
   mapMfaDisableError,
+  mapMfaEmailFallbackError,
   mapMfaRegenerateError,
   mapMfaSetupError,
   validateBillingCycleDay,
@@ -151,6 +152,30 @@ describe("BE-32 second-factor and re-auth errors", () => {
         ),
       ),
     ).toMatch(/Verify with Google again/i);
+  });
+});
+
+describe("mapMfaEmailFallbackError (BE-03)", () => {
+  it("maps a wrong authentication code to the code message", () => {
+    const msg = mapMfaEmailFallbackError(new ApiResponseError(403, "Invalid authentication code"));
+    expect(msg).toMatch(/code did not match/i);
+    expect(msg).not.toMatch(/password/i);
+  });
+
+  it("maps 400 'not enabled', 429 and anything else", () => {
+    expect(mapMfaEmailFallbackError(new ApiResponseError(400, "MFA is not enabled"))).toMatch(
+      /not on/i,
+    );
+    expect(mapMfaEmailFallbackError(new ApiResponseError(429, "x"))).toMatch(/too many attempts/i);
+    expect(mapMfaEmailFallbackError(new ApiResponseError(500, "x"))).toMatch(
+      /could not change email codes/i,
+    );
+  });
+
+  it("contains no em-dashes", () => {
+    for (const status of [400, 403, 429, 500]) {
+      expect(mapMfaEmailFallbackError(new ApiResponseError(status, "x"))).not.toMatch(/—|–/);
+    }
   });
 });
 

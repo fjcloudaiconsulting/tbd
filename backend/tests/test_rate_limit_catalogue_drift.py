@@ -94,6 +94,7 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("auth", "mfa_email_verify"): ("auth.mfa_email_verify", "10/minute"),
     ("auth", "mfa_recovery"): ("auth.mfa_recovery", "10/minute"),
     ("auth", "mfa_verify"): ("auth.mfa_verify", "10/minute"),
+    ("auth", "refresh"): ("auth.refresh", "30/minute"),  # per session family (BE-10)
     ("auth", "register"): ("auth.register", "5/hour"),
     ("auth", "resend_verification"): ("auth.resend_verification", "3/hour"),
     ("auth", "resend_verification_public"): (
