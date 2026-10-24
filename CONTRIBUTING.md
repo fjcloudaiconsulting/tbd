@@ -326,12 +326,21 @@ renders bare JSON in the middle of a browser navigation. The anonymous
 `audit_events` writes those routes used to permit are bounded by suppressing
 the rows, not by the limits (TBD-353).
 
-⚠ That bounds **those three routes**, not the anonymous `audit_events` write
-surface as a whole. `POST /api/v1/security/csp-report` is still an open,
-unauthenticated writer at 20 rows per body × 60/minute = **1200 rows/min/IP**,
-and the `/admin/audit` and alerting exclusion its own docstring names as the
-mitigation does not exist. Tracked separately; do not describe the surface as
-bounded.
+⚠ That bounds **those three routes**. `POST /api/v1/security/csp-report`, the
+other anonymous `audit_events` writer, is bounded by what it keeps (BE-10): a
+report identical to one the same client network recorded in the last hour is
+not recorded again, every row of a request lands in one commit, and the sink
+records at most **50 rows per hour per client network** (IPv6 by /64) and
+**1000 rows per hour across all clients**. Once that budget is spent, a reserve
+still records one row per CSP directive per hour (unknown directives share one
+`other` slot), so a distributed flood cannot hide every genuine report. The
+counters live in `rate_limits`; when they are unreachable the sink records
+nothing. Every dropped report counts in the `tbd.security.csp_reports` metric
+by outcome (`duplicate`, `client_budget`, `global_budget`) and directive; alert
+on `global_budget`. URL fields lose their query string and fragment before
+they are stored (FE-03). The default `/admin/audit` view hides these rows
+(`include_csp=true` shows them, TBD-439). `audit_events` has no retention job
+yet, so the table still grows, at most at the global budget plus the reserve.
 
 `POST /api/v1/auth/refresh` remains **unlimited**, deliberately (TBD-353): it
 writes no audit row for an anonymous caller, and a 429 there wedges the
@@ -430,7 +439,8 @@ enumerates by *gate* rather than by path so those are covered.
 ⚠ **`require_interactive_session` is not an authorization gate.** It sits on many
 admin write routes (and on account and token routes outside `/api/v1/admin/`;
 the roster is `backend/tests/auth/test_interactive_session_enumeration.py`) and checks only that the caller used a browser session rather than
-a PAT — it authorizes nobody. A route carrying only that dependency is reachable
+a PAT — it authorizes nobody. Platform-wide writes carry it: plans, org
+subscriptions, announcements, broadcasts, features and overrides (BE-20). A route carrying only that dependency is reachable
 by every authenticated user.
 
 Enforced by `backend/tests/auth/test_admin_authorization_enumeration.py`, which

@@ -527,3 +527,141 @@ async def test_merge_keeps_password_of_verified_target(session_factory) -> None:
     t = await _merge_pw_case(session_factory, target_verified=True)
     assert t.password_set is True
     assert verify_password("pw", t.password_hash)
+
+
+# ── BE-29: every users.id foreign key is handled ────────────────────────────
+
+
+def _users_fks() -> dict[str, object]:
+    return {
+        f"{table.name}.{fk.parent.name}": fk
+        for table in Base.metadata.tables.values()
+        for fk in table.foreign_keys
+        if fk.column.table.name == "users" and fk.column.name == "id"
+    }
+
+
+def test_every_users_fk_is_reassigned_or_left_on_purpose() -> None:
+    """FENCE. A new FK to users.id must be added to REASSIGNED or to
+    LEFT_TO_ONDELETE (with its reason) in user_merge_service."""
+    reassigned = {
+        f"{col.class_.__tablename__}.{col.property.columns[0].name}"
+        for col, _key in user_merge_service.REASSIGNED
+    } | {"dashboard_layouts.owner_user_id"}
+    left = set(user_merge_service.LEFT_TO_ONDELETE)
+    fks = _users_fks()
+    assert not reassigned & left
+    assert set(fks) - (reassigned | left) == set(), "unhandled users.id FK"
+    assert (reassigned | left) - set(fks) == set(), "stale entry"
+    # Only an ON DELETE that lets the source row go can be relied on.
+    for name in left:
+        assert fks[name].ondelete in ("CASCADE", "SET NULL"), name
+
+
+@pytest_asyncio.fixture
+async def fk_session_factory():
+    from sqlalchemy import event
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _fk_on(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    try:
+        yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    finally:
+        await engine.dispose()
+
+
+async def _seed_owned_rows(db: AsyncSession, org_id: int, user_id: int) -> None:
+    from app.models.account import Account, AccountType
+    from app.models.dashboard import DashboardLayout
+    from app.models.import_batch import ImportBatch, ImportSourceFormat
+    from app.models.notification import Notification, NotificationCategory
+    from app.models.report import Report
+    from app.models.scenario import Scenario, ScenarioType
+
+    atype = AccountType(org_id=org_id, name="Checking", slug="checking", is_system=True)
+    db.add(atype)
+    await db.flush()
+    account = Account(org_id=org_id, account_type_id=atype.id, name="Main")
+    db.add(account)
+    await db.flush()
+    db.add_all([
+        ImportBatch(
+            org_id=org_id, account_id=account.id, source_format=ImportSourceFormat.CSV,
+            file_name="a.csv", created_by_user_id=user_id,
+        ),
+        Report(org_id=org_id, owner_user_id=user_id, name="R", layout_json=[], canvas_filters_json={}),
+        DashboardLayout(org_id=org_id, owner_user_id=user_id, layout_json=[], canvas_filters_json={}),
+        Scenario(
+            org_id=org_id, user_id=user_id, name="Trip", scenario_type=ScenarioType.TRIP,
+            params_json={},
+        ),
+        Notification(
+            user_id=user_id, category=NotificationCategory.ACCOUNT, event_type="e",
+            title="t", body="b",
+        ),
+    ])
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_merge_moves_restrict_and_cascade_rows_to_target(fk_session_factory) -> None:
+    """import_batches (no ondelete) and reports / dashboard_layouts (RESTRICT)
+    used to make the final delete fail; scenarios and notifications (CASCADE)
+    used to be destroyed."""
+    from app.models.dashboard import DashboardLayout
+    from app.models.import_batch import ImportBatch
+    from app.models.notification import Notification
+    from app.models.report import Report
+    from app.models.scenario import Scenario
+
+    async with fk_session_factory() as db:
+        org = await _seed_org(db)
+        source = await _seed_user(db, org_id=org.id, username="src", email="s@x.io", role=Role.MEMBER)
+        target = await _seed_user(db, org_id=org.id, username="tgt", email="t@x.io")
+        await _seed_owned_rows(db, org.id, source.id)
+        await db.commit()
+        counts = await user_merge_service.merge_users(
+            db, source_user_id=source.id, target_user_id=target.id
+        )
+        await db.commit()
+
+        assert counts["import_batches"] == counts["reports"] == 1
+        assert counts["scenarios"] == counts["notifications"] == counts["dashboard_layouts"] == 1
+        for column in (
+            ImportBatch.created_by_user_id, Report.owner_user_id, Scenario.user_id,
+            Notification.user_id, DashboardLayout.owner_user_id,
+        ):
+            owners = (await db.execute(select(column))).scalars().all()
+            assert owners == [target.id], column
+        assert await db.get(User, source.id) is None
+
+
+@pytest.mark.asyncio
+async def test_merge_keeps_the_targets_own_dashboard_layout(fk_session_factory) -> None:
+    from app.models.dashboard import DashboardLayout
+
+    async with fk_session_factory() as db:
+        org = await _seed_org(db)
+        source = await _seed_user(db, org_id=org.id, username="src", email="s@x.io", role=Role.MEMBER)
+        target = await _seed_user(db, org_id=org.id, username="tgt", email="t@x.io")
+        for uid, name in ((source.id, "source"), (target.id, "target")):
+            db.add(DashboardLayout(
+                org_id=org.id, owner_user_id=uid, layout_json=[name], canvas_filters_json={},
+            ))
+        await db.commit()
+        await user_merge_service.merge_users(db, source_user_id=source.id, target_user_id=target.id)
+        await db.commit()
+        rows = (await db.execute(select(DashboardLayout))).scalars().all()
+        assert [(r.owner_user_id, r.layout_json) for r in rows] == [(target.id, ["target"])]
