@@ -7,6 +7,8 @@ POST /api/v1/webhooks/mailgun — covers the required matrix (spec
 - invalid signature → 401 (no write); missing signature fields → 400;
 - unset signing key → 404 (fail closed);
 - oversized content-length → dropped (413);
+- chunked body past the cap → 413 without being read in full (BE-13);
+  chunked body within the cap → processed;
 - out-of-order: ``complained`` then late ``delivered`` stays ``complained``;
 - ``bounced_temporary`` then ``delivered`` → ``delivered``;
 - duplicate identical event → no-op (idempotent);
@@ -271,6 +273,60 @@ async def test_oversized_content_length_dropped(client):
         },
     )
     assert resp.status_code == 413
+
+
+class _ChunkedBody:
+    """A request body sent chunked (no Content-Length) that fails the test
+    if the route asks for another chunk once it holds more than ``cap``
+    bytes, so an over-cap body can never have been read in full."""
+
+    def __init__(self, body: bytes, cap: int, chunk: int = 16 * 1024) -> None:
+        self.body, self.cap, self.chunk, self.sent = body, cap, chunk, 0
+
+    async def __aiter__(self):
+        for start in range(0, len(self.body), self.chunk):
+            if self.sent > self.cap:
+                raise AssertionError(f"body read past the {self.cap}-byte cap")
+            piece = self.body[start:start + self.chunk]
+            self.sent += len(piece)
+            yield piece
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_over_the_cap_is_413_unread(client, session_factory):
+    # No Content-Length, so only the running count can stop it. The bytes
+    # before the cap alone would be a valid signed event.
+    bid, rid = await _seed(session_factory)
+    cap = webhooks_module._MAX_BODY_BYTES
+    event = json.dumps(_body(_event_data(broadcast_id=str(bid)))).encode()
+    body = _ChunkedBody(event + b" " * (2 * cap), cap)
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun",
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+    assert "content-length" not in resp.request.headers
+    assert resp.status_code == 413
+    assert resp.content == b""
+    assert cap < body.sent <= cap + body.chunk
+    assert await _status(session_factory, rid) is None
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_within_the_cap_is_processed(client, session_factory):
+    bid, rid = await _seed(session_factory)
+    cap = webhooks_module._MAX_BODY_BYTES
+    event = json.dumps(_body(_event_data(broadcast_id=str(bid)))).encode()
+    body = _ChunkedBody(event + b" " * (cap - len(event)), cap)
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun",
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+    assert "content-length" not in resp.request.headers
+    assert resp.status_code == 200
+    assert body.sent == cap
+    assert await _status(session_factory, rid) == "delivered"
 
 
 @pytest.mark.asyncio
