@@ -156,6 +156,10 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.mfa_email_verify",
     "auth.mfa_recovery",
     "auth.mfa_verify",
+    # BE-10. Keyed on the refresh cookie's session family, not the IP (the
+    # decorator passes its own ``key_func``); a cookie that does not verify
+    # falls back to the per-IP key.
+    "auth.refresh",
     "auth.register",
     "auth.resend_verification_public",
     "auth.reset_password",

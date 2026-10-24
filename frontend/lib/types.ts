@@ -29,6 +29,10 @@ export interface User {
   is_superadmin: boolean;
   is_active: boolean;
   mfa_enabled: boolean;
+  // BE-03. Whether a code sent to the account email may replace the
+  // authenticator at sign-in. Off unless the user turns it on. Optional so
+  // existing User fixtures keep compiling.
+  mfa_email_fallback?: boolean;
   // False for Google SSO users who have not yet set a real password.
   // The Settings UI flips Change Password into "Set a Password" mode and
   // swaps the email-change re-auth from "current password" to a Google
