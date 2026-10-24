@@ -4,14 +4,16 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.schemas.common import Money
+
 
 class BudgetCreate(BaseModel):
     category_id: int
-    amount: Decimal = Field(gt=0)
+    amount: Money = Field(gt=0)
 
 
 class BudgetUpdate(BaseModel):
-    amount: Optional[Decimal] = Field(default=None, gt=0)
+    amount: Optional[Money] = Field(default=None, gt=0)
 
 
 class BudgetRebalanceItem(BaseModel):
