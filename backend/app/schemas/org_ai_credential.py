@@ -2,15 +2,23 @@
 
 Write paths accept plaintext keys (``api_key`` / ``bearer_token``)
 but the response shape NEVER returns plaintext or ciphertext — only
-the last-4 + fingerprint + provider metadata.
+the last-4 + fingerprint + provider metadata. ``base_url`` is stored in
+plaintext, so it must not carry credentials (DB-02).
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from app.config import settings
 from app.models.org_ai_credential import AiProvider
@@ -80,8 +88,26 @@ def _validate_base_url(value: str) -> str:
     # fragment would swallow them. New writes only; stored rows untouched.
     if "?" in value or "#" in value:
         raise ValueError("base_url must not include a query string or fragment")
+    # The column is plaintext and listed back to every org admin, so URL
+    # credentials are refused for every provider (DB-02). An Ollama
+    # reverse proxy takes its secret through ``bearer_token``, which is
+    # encrypted. New writes only; stored rows untouched.
+    if "@" in parsed.netloc:
+        raise ValueError("base_url must not include a username or password")
     _reject_metadata_or_unsafe(parsed.hostname)
     return value
+
+
+def _mask_userinfo(value: Optional[str]) -> Optional[str]:
+    """``value`` with any URL userinfo replaced by ``***`` (rows stored
+    before DB-02 may still carry it)."""
+    if not value:
+        return value
+    parts = urlsplit(value)
+    if "@" not in parts.netloc:
+        return value
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parts._replace(netloc=f"***@{host}"))
 
 
 class OrgAICredentialCreate(BaseModel):
@@ -126,14 +152,6 @@ class OrgAICredentialCreate(BaseModel):
             parsed = urlparse(self.base_url)
             if parsed.hostname:
                 _reject_private_or_loopback(parsed.hostname)
-        # Userinfo would be echoed back in every credential listing. Ollama
-        # keeps it: URL userinfo is its only Basic-auth path (reverse proxy).
-        if (
-            self.provider == AiProvider.OPENAI_COMPATIBLE
-            and self.base_url
-            and "@" in (urlparse(self.base_url).netloc or "")
-        ):
-            raise ValueError("base_url must not include a username or password")
         if self.provider != AiProvider.OLLAMA and self.bearer_token:
             raise ValueError(
                 "bearer_token is only valid for the ollama provider"
@@ -197,6 +215,10 @@ class OrgAICredentialResponse(BaseModel):
     last_validated_at: Optional[datetime] = None
     validation_error: Optional[str] = None
     platform_provider: Optional[str] = None
+
+    @field_serializer("base_url")
+    def _serialize_base_url(self, value: Optional[str]) -> Optional[str]:
+        return _mask_userinfo(value)
 
 
 class OpenRouterOAuthStart(BaseModel):
