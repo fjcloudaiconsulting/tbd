@@ -44,7 +44,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--reload", "--proxy-headers"]
     volumes:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
@@ -123,6 +123,11 @@ services:
       # staying green in CI, which is how a fence gets weakened rather than
       # obeyed.
       - ./README.md:/app/README.md:ro
+      # INF-01: backend/tests/test_forwarded_allow_ips.py asserts no compose
+      # command pins --forwarded-allow-ips (it would hide FORWARDED_ALLOW_IPS
+      # from uvicorn). Read-only; recreate the container after a pull.
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.prod.yml:/app/docker-compose.prod.yml:ro
       # TBD-345: read-only mount so test_seed_determinism.py can assert that
       # `tbd`'s cmd_seed still forwards SEED_* generically. Without it that
       # guard is green on a bare CI checkout (where the repo root is present)
@@ -170,7 +175,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--reload", "--proxy-headers"]
     volumes:
       - ./backend/app:/app/app:ro
 

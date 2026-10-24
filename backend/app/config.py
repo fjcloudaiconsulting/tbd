@@ -1,5 +1,25 @@
+import ipaddress
+
 from pydantic import ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+
+def _parse_forwarded_allow_ips(
+    value: str,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """``FORWARDED_ALLOW_IPS`` as networks: comma-separated, trimmed, empty entries dropped.
+
+    Stricter than uvicorn, which turns an entry it cannot parse into a literal that
+    matches no peer, and trusts every peer for a bare ``*``: here both refuse to boot.
+    """
+    entries = [e.strip() for e in value.split(",") if e.strip()]
+    try:
+        return tuple(ipaddress.ip_network(e) for e in entries)
+    except ValueError:
+        raise ValueError(
+            "FORWARDED_ALLOW_IPS must be comma-separated IP addresses or CIDR networks "
+            "with no host bits set; '*' and other literals are refused."
+        ) from None
 
 
 class Settings(BaseSettings):
@@ -178,6 +198,13 @@ class Settings(BaseSettings):
 
     # CORS
     backend_cors_origins: str = "http://localhost:3000"
+
+    # INF-01: the peers whose X-Forwarded-For / X-Forwarded-Proto are believed.
+    # uvicorn reads the same variable itself (no --forwarded-allow-ips on the
+    # command line), and the backend and MCP images set this default as ENV, so
+    # one value sets both uvicorn's trust and rate_limit.get_client_ip's own
+    # X-Forwarded-For walk. A deployment narrows it to its proxies' addresses.
+    forwarded_allow_ips: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"
 
     # Founding-members program (2026-06-22).
     # Throttle for the per-user last_active_at stamp: only re-stamp when the
@@ -451,6 +478,12 @@ class Settings(BaseSettings):
     export_max_rows: int = 2_000_000
     export_max_bytes: int = 1_073_741_824  # 1 GiB
 
+    @field_validator("forwarded_allow_ips")
+    @classmethod
+    def _validate_forwarded_allow_ips(cls, v: str) -> str:
+        _parse_forwarded_allow_ips(v)
+        return v
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:
@@ -599,6 +632,12 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.backend_cors_origins.split(",")]
+
+    @property
+    def forwarded_allow_networks(
+        self,
+    ) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        return _parse_forwarded_allow_ips(self.forwarded_allow_ips)
 
     @property
     def founder_count_exclude_list(self) -> list[str]:

@@ -56,37 +56,22 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from typing import Iterable
 
 import logging
 from slowapi import Limiter
 from starlette.requests import Request
 
 from app import rate_limit_db  # noqa: F401  (registers tbd-db://)
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-# Kept in lockstep with ``--forwarded-allow-ips`` in backend/Dockerfile,
-# docker-compose.yml, and docker-compose.prod.yml. When that list changes,
-# update here too so the rate limiter's trust boundary matches uvicorn's.
-_TRUSTED_PROXY_CIDRS: tuple[str, ...] = (
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "fc00::/7",
-    "127.0.0.0/8",
-    "::1/128",
-)
-
-
-def _compile_networks(
-    cidrs: Iterable[str],
-) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-    return tuple(ipaddress.ip_network(cidr) for cidr in cidrs)
-
-
-_TRUSTED_PROXY_NETWORKS = _compile_networks(_TRUSTED_PROXY_CIDRS)
+# The peers uvicorn takes X-Forwarded-For from: ``FORWARDED_ALLOW_IPS``, the
+# variable uvicorn itself reads (the images pass no ``--forwarded-allow-ips``),
+# with the images' default (INF-01). One value, so the rate limiter's trust
+# boundary is uvicorn's and the two cannot drift.
+_TRUSTED_PROXY_NETWORKS = settings.forwarded_allow_networks
 
 
 def _is_trusted_proxy(host: str | None) -> bool:

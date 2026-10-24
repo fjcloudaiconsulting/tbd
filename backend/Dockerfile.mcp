@@ -36,5 +36,7 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8001
 
-# Same proxy trust list as the backend image (see backend/Dockerfile).
-CMD ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+# Same proxy trust list as the backend image, set the same way: FORWARDED_ALLOW_IPS
+# (see backend/Dockerfile).
+ENV FORWARDED_ALLOW_IPS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1
+CMD ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--proxy-headers"]
