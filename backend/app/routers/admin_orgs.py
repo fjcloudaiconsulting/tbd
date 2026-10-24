@@ -111,7 +111,11 @@ async def get_org_detail(org_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
 
 
-@router.put("/{org_id}/subscription")
+# BE-20: grants or removes paid entitlements, so a leaked write PAT must not.
+@router.put(
+    "/{org_id}/subscription",
+    dependencies=[Depends(require_interactive_session)],
+)
 async def update_org_subscription(
     org_id: int,
     body: SubscriptionUpdateRequest,
@@ -333,9 +337,8 @@ async def delete_org(
         # operator would see "delete failed" with no way to learn why, and the
         # audit row would say `internal_error` rather than the real reason.
         #
-        # ⚠ Branch on `e.code`, never on the message text. The role-change
-        # handler in this file matches `"superadmin" in msg.lower()` and that
-        # is a defect waiting to fire (TBD-374) — do not copy it.
+        # ⚠ Branch on `e.code`, never on the message text (TBD-374; the
+        # role-change handler in this file did, until BE-30).
         await db.rollback()
         logger.warning(
             "admin.org.delete.refused",
@@ -1183,9 +1186,9 @@ async def update_org_member(
         # The "platform superadmin" guard surfaces here as a
         # ConflictError; HTTP-wise it belongs at 403 because the
         # superadmin status is an authorization boundary, not a
-        # transient conflict. Detect by message.
+        # transient conflict. Detected by its code (BE-30, TBD-374).
         msg = str(e)
-        if "superadmin" in msg.lower():
+        if e.code == admin_org_members_service.CODE_TARGET_IS_SUPERADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail=msg
             )

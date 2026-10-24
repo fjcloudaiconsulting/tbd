@@ -79,7 +79,8 @@ async def list_transactions(
     status: Literal["settled", "pending"] | None = Query(default=None),
     date_from: datetime.date | None = Query(default=None),
     date_to: datetime.date | None = Query(default=None),
-    search: str | None = Query(default=None),
+    # BE-27: bounded like the agent's ``transactions_search`` mirror.
+    search: str | None = Query(default=None, max_length=200),
     tags: str | None = Query(
         default=None,
         description=(

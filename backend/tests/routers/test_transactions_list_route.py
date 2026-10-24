@@ -413,6 +413,12 @@ def test_guard_non_integer_account_id_is_422(client):
     assert client.get("/api/v1/transactions?account_id=abc").status_code == 422
 
 
+def test_guard_search_longer_than_200_chars_is_422(client):
+    """BE-27: bounded like the agent's ``transactions_search`` mirror."""
+    assert client.get("/api/v1/transactions?search=" + "x" * 200).status_code == 200
+    assert client.get("/api/v1/transactions?search=" + "x" * 201).status_code == 422
+
+
 def test_guard_tags_without_tag_match_stay_and(client, multi):
     """The side panel sends ``tag_match=any``; the API default stays ``all``."""
     assert _ids(client.get("/api/v1/transactions?tags=x,y")) == [multi["on_a1"]]

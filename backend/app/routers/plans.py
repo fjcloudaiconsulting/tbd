@@ -1,11 +1,15 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.feature_catalog import ALL_METER_KEYS, PlanUsageLimits
 from app.auth.pat import require_interactive_session
-from app.auth.permissions import require_permission, require_superadmin_for_platform_meter
+from app.auth.permissions import (
+    has_permission,
+    require_permission,
+    require_superadmin_for_platform_meter,
+)
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.subscription import Plan, Subscription
@@ -83,10 +87,25 @@ async def list_plans(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all plans. Any authenticated user can view (for plan selection UI)."""
-    result = await db.execute(
-        select(Plan).where(Plan.is_active == True).order_by(Plan.sort_order)
-    )
+    """List active plans for the plan selection UI. Any authenticated user can view.
+
+    Custom plans (``is_custom``) are made by a superadmin for one customer, so
+    a tenant sees only the public catalogue plus its own current plan.
+    Operators (``plans.manage`` / ``orgs.manage``) keep the full list: the
+    admin org page resolves a custom ``plan_slug`` to its name through it.
+    """
+    stmt = select(Plan).where(Plan.is_active == True)
+    if not (
+        has_permission(current_user, "plans.manage")
+        or has_permission(current_user, "orgs.manage")
+    ):
+        own_plan_id = (
+            select(Subscription.plan_id)
+            .where(Subscription.org_id == current_user.org_id)
+            .scalar_subquery()
+        )
+        stmt = stmt.where(or_(Plan.is_custom.is_(False), Plan.id == own_plan_id))
+    result = await db.execute(stmt.order_by(Plan.sort_order))
     return result.scalars().all()
 
 

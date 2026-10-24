@@ -184,6 +184,26 @@ async def test_create_tag_succeeds_and_persists(db_session):
 
 
 @pytest.mark.asyncio
+async def test_list_org_tags_search_treats_like_wildcards_literally(db_session):
+    """BE-27: tag names never contain ``%`` or ``_``, so a search for them
+    matches nothing (it used to match every tag, or any one character)."""
+    org, user = await _make_org_user(db_session, "wild")
+    await db_session.commit()
+    for name in ("insurance", "travel"):
+        await tag_service.create_tag(
+            db_session, org_id=org.id, name=name, created_by_user_id=user.id
+        )
+    await db_session.commit()
+
+    async def names(q):
+        return [t.name_normalized for t, _ in await tag_service.list_org_tags(db_session, org.id, q=q)]
+
+    assert await names("%") == []
+    assert await names("tr_vel") == []
+    assert await names("ravel") == ["travel"]
+
+
+@pytest.mark.asyncio
 async def test_create_tag_collision_within_org_raises_conflict(db_session):
     org, user = await _make_org_user(db_session, "alpha")
     await db_session.commit()
