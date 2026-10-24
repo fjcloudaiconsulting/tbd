@@ -211,7 +211,11 @@ async def change_plan(
 
 
 async def cancel_subscription(db: AsyncSession, org_id: int) -> Subscription:
-    """Cancel subscription. Access continues until current period ends."""
+    """Cancel subscription. Access continues until current period ends.
+
+    After ``current_period_end`` (at once when there is none) the org is
+    entitled to the Free plan (``feature_service.get_entitlements``, BE-05);
+    the plan row is kept."""
     sub = await get_subscription(db, org_id)
     if sub is None:
         raise NotFoundError("Subscription")
