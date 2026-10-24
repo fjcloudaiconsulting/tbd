@@ -4,6 +4,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import Money
+
 
 class ForecastPlanItemCreate(BaseModel):
     """Public-write shape for a forecast plan item.
@@ -14,11 +16,11 @@ class ForecastPlanItemCreate(BaseModel):
     """
     category_id: int
     type: Literal["income", "expense"]
-    planned_amount: Decimal = Field(gt=0)
+    planned_amount: Money = Field(gt=0)
 
 
 class ForecastPlanItemUpdate(BaseModel):
-    planned_amount: Decimal = Field(gt=0)
+    planned_amount: Money = Field(gt=0)
 
 
 class ForecastPlanItemResponse(BaseModel):
@@ -62,7 +64,7 @@ class BulkUpsertItem(BaseModel):
     """
     category_id: int
     type: Literal["income", "expense"]
-    planned_amount: Decimal = Field(gt=0)
+    planned_amount: Money = Field(gt=0)
 
 
 class BulkUpsertRequest(BaseModel):

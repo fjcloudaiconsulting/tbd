@@ -407,16 +407,21 @@ def _apply_currency_filter(stmt: Select, f: Filter, org_id: int) -> Select:
 def _apply_tag_filter(stmt: Select, f: Filter, org_id: int) -> Select:
     """Tag filter — mirrors transactions list semantics.
 
-    ``tag_match=all``: each named tag yields its own IN subquery,
-    AND-combined via repeated ``stmt.where(...)``.
+    ``tag_match=all``: one grouped IN subquery keeping the transactions
+    that carry every named tag (``COUNT(DISTINCT name) = n``).
     ``tag_match=any``: a single IN subquery against the union of
     named tags, OR-combined.
 
+    Names are deduplicated first. BE-11: ``all`` used to compile one
+    correlated subquery per name, so the statement grew with the list.
+
     Reference: ``backend/app/services/transaction_service.py:1697``.
     """
-    # Coerce to a list of normalized names.
+    # Coerce to a list of distinct normalized names, first occurrence wins.
     if f.op is FilterOp.IN:
-        names = [str(v).strip().lower() for v in f.value if str(v).strip()]
+        names = list(dict.fromkeys(
+            str(v).strip().lower() for v in f.value if str(v).strip()
+        ))
     elif f.op is FilterOp.EQ:
         names = [str(f.value).strip().lower()]
     else:
@@ -437,19 +442,19 @@ def _apply_tag_filter(stmt: Select, f: Filter, org_id: int) -> Select:
                 )
             )
         )
-    # ALL semantics: one IN-subquery per name, AND-combined.
-    for name in names:
-        stmt = stmt.where(
-            Transaction.id.in_(
-                select(TransactionTag.transaction_id)
-                .join(Tag, Tag.id == TransactionTag.tag_id)
-                .where(
-                    Tag.org_id == org_id,
-                    Tag.name_normalized == name,
-                )
+    # ALL semantics: the transaction carries every one of the n names.
+    return stmt.where(
+        Transaction.id.in_(
+            select(TransactionTag.transaction_id)
+            .join(Tag, Tag.id == TransactionTag.tag_id)
+            .where(
+                Tag.org_id == org_id,
+                Tag.name_normalized.in_(names),
             )
+            .group_by(TransactionTag.transaction_id)
+            .having(func.count(distinct(Tag.name_normalized)) == len(names))
         )
-    return stmt
+    )
 
 
 def _measure_expr(measure: Measure):

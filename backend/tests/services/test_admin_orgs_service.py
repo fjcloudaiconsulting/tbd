@@ -368,6 +368,19 @@ async def test_list_orgs_search_filters_by_name(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_list_orgs_search_treats_like_wildcards_literally(session_factory):
+    """BE-27: ``%`` and ``_`` in ``q`` match themselves, not any text."""
+    await _seed_full_org(session_factory, name="Acme")
+    await _seed_full_org(session_factory, name="100% Club")
+    await _seed_full_org(session_factory, name="Big_Co")
+    async with session_factory() as db:
+        for q, expected in (("%", ["100% Club"]), ("_", ["Big_Co"]), ("a_m", [])):
+            page = await admin_orgs_service.list_orgs(db, q=q, limit=10, offset=0)
+            assert [item["name"] for item in page["items"]] == expected, q
+            assert page["total"] == len(expected), q
+
+
+@pytest.mark.asyncio
 async def test_get_org_detail_returns_subscription_members_and_counts(session_factory):
     target = await _seed_full_org(session_factory, name="Detail")
     async with session_factory() as db:
