@@ -494,6 +494,21 @@ _SENSITIVE_FIELD_NAMES = frozenset({
     # an unspent SSO proof stays valid for 5 minutes.
     "stepup_token",
     "mfa_code",
+    # Org AI provider credentials (BE-12): create and rotate bodies. A
+    # body-level 422 (the create model validator) echoes the whole body.
+    "api_key",
+    "bearer_token",
+    # The OpenRouter OAuth completion nonce (its hash is public, the nonce
+    # is the proof). The rest are OAuth secrets no body carries today;
+    # listed so a future field with one of these names is covered.
+    "nonce",
+    "client_secret",
+    "code_verifier",
+    "access_token",
+    "id_token",
+    # AI provider base URLs are refused when they carry userinfo (DB-02);
+    # the 422 for that must not echo the password it refused.
+    "base_url",
 })
 
 _REDACTED = "<redacted>"

@@ -35,6 +35,10 @@ from app._time import utcnow_naive
 from app.models.user import Organization, Role, User
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
+# ``ConflictError.code`` of the platform-superadmin guard; the router answers
+# it with 403 (BE-30: branch on the code, never on the message text).
+CODE_TARGET_IS_SUPERADMIN = "target_is_superadmin"
+
 
 # Roles a superadmin can assign through this endpoint. Restricted to
 # the org-scoped set; platform roles (e.g. superadmin) are managed on
@@ -133,7 +137,8 @@ async def update_member(
 
     if target.is_superadmin:
         raise ConflictError(
-            "Cannot modify a platform superadmin via org-member admin"
+            "Cannot modify a platform superadmin via org-member admin",
+            code=CODE_TARGET_IS_SUPERADMIN,
         )
 
     before = {

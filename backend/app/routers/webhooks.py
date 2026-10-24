@@ -27,6 +27,7 @@ W2/W3/W5/W6/W7/W10/W11. Load-bearing points:
 from __future__ import annotations
 
 import json
+import math
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -56,6 +57,11 @@ from app.state_db import mark_webhook_token_seen
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks"])
+
+
+def _reject_constant(name: str) -> Any:
+    """``NaN`` / ``Infinity`` are not JSON (RFC 8259): a malformed body, 400."""
+    raise ValueError(name)
 
 # Extra TTL headroom over the signature freshness window for the replay
 # token key. The token can legitimately be re-presented only while the
@@ -193,7 +199,7 @@ async def mailgun_webhook(request: Request) -> Response:
 
     # 3. JSON parse → 400 on failure.
     try:
-        payload: Any = json.loads(raw)
+        payload: Any = json.loads(raw, parse_constant=_reject_constant)
     except (ValueError, UnicodeDecodeError):
         return Response(status_code=status.HTTP_400_BAD_REQUEST)
     if not isinstance(payload, dict):
@@ -267,7 +273,7 @@ async def mailgun_webhook(request: Request) -> Response:
     #    200-drop.
     try:
         broadcast_id = int(broadcast_id_raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         logger.info(
             "webhook.mailgun.bad_broadcast_id",
             extra={
@@ -286,10 +292,14 @@ async def mailgun_webhook(request: Request) -> Response:
         )
         return Response(status_code=status.HTTP_200_OK)
 
-    # ``event-data.timestamp`` is a float epoch (event occurrence time).
+    # ``event-data.timestamp`` is a float epoch (event occurrence time). One
+    # that is not finite or past what a datetime holds falls back to now.
     try:
         occurred_ts = float(event_ts)
-    except (TypeError, ValueError):
+        if not math.isfinite(occurred_ts):
+            raise ValueError("not finite")
+        datetime.fromtimestamp(occurred_ts, timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
         occurred_ts = time.time()
 
     # Structured breadcrumb — broadcast_id / event / severity only, NEVER the

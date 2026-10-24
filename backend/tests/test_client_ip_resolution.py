@@ -571,7 +571,10 @@ async def test_audit_endpoint_persists_real_client_ip_from_xff(
         async with _audit_session_factory() as session:
             yield session
 
-    async def override_current_user() -> User:
+    async def override_current_user(request: Request) -> User:
+        # An interactive (JWT) session, as get_current_user would stamp it:
+        # the route is require_interactive_session (BE-20).
+        request.state.auth_method = "jwt"
         async with _audit_session_factory() as db:
             return (
                 await db.execute(select(User).where(User.id == admin_user_id))

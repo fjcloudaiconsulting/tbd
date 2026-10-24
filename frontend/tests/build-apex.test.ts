@@ -173,6 +173,17 @@ describe("apex build target — scripts/build-apex.sh", () => {
     expect(script).toMatch(/GUARD FAIL .*api\/v1/i);
   });
 
+  it("copies public/.well-known into out-apex and fails without security.txt (INF-14)", () => {
+    // The copy loops use `*`, which never matches a dot-directory, so the
+    // security.txt would silently miss the apex without an explicit copy.
+    expect(script).toContain(
+      'cp -R "${FRONTEND_DIR}/public/.well-known/." "${FRONTEND_DIR}/out-apex/.well-known/"',
+    );
+    expect(script).toMatch(
+      /if \[\[ ! -f "\$\{FRONTEND_DIR\}\/out-apex\/\.well-known\/security\.txt" \]\]; then\n[^\n]*\n\s*exit 1/,
+    );
+  });
+
   it("avoids Bash 4+ features so macOS /bin/bash (3.2) can run it", () => {
     // The project is operated from macOS where /bin/bash is Bash 3.2.57.
     // None of these idioms exist in 3.2 and must not appear in code
