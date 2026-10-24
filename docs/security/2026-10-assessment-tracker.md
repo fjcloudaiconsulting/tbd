@@ -33,7 +33,7 @@ exploit detail into public issues, PRs or commit messages.
   when this was written), once the owner merges it and then the image bump in `cloud-infra`. The apex landing site is
   the exception: it deploys from `main` on its own, so #1004's apex changes
   (connect-src and `security.txt`) have been live there since 2026-10-24.
-- **Next:** the owner merges the test-durations refresh and this update; the
+- **Next:** the owner merges #1015 (test durations) and this update; the
   Jira agent creates and reconciles the issues and closes the merged Fixed
   ones; the owner works through the decision queue and releases.
 
@@ -119,7 +119,8 @@ Dependency PRs handled in the same pass:
 - Every backend PR regenerated `backend/.test_durations`, so later PRs
   conflicted on that file. The merge run combined both sides' entries, and the
   durations fence passes on `main`. A fresh harvest from the test-durations
-  workflow on `main` follows in its own PR.
+  workflow on `main` is in
+  [#1015](https://github.com/fjcloudaiconsulting/tbd/pull/1015).
 - When #1007 is merged after #1004, `docs/operations/ENVIRONMENT.md` conflicts
   on the `BACKEND_CORS_ORIGINS` row: keep #1004's row and append #1007's
   sentence about the `config.production_open_default` warning.
@@ -228,13 +229,13 @@ Newest first. Add your entry at the top; keep entries short and public-safe.
 ### 2026-10-24, after the merge run: assessment session
 
 - **Did:** the owner's merge run merged eleven PRs, each with every check
-  passing (see Current state). Started the test-durations harvest on `main`.
+  passing (see Current state). Harvested the test durations on `main` (#1015).
 - **Changed here:** refreshed the State and Merged columns, Current state,
   release notes and merge notes.
 - **Next:** the Jira agent can start now. Close the Fixed findings whose Merged
   column has a date, with the release from #1011 as the fix version once it ships. Keep the
   #1007 findings in review, and handle Partial and Needs owner as described
-  above. The owner merges this PR and the durations PR.
+  above. The owner merges this PR and #1015.
 - **Questions for the owner:** the release (#1011) and the queue items, item 1
   first.
 
