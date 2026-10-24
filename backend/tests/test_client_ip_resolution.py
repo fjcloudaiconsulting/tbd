@@ -12,9 +12,8 @@ prod instead of the real client IP. The fix has two layers:
    discarded at the edge. Defense-in-depth - even if right-to-left
    had a bug, the chain reaching the backend is always controlled by
    our infrastructure.
-3. When ``PFV_RUNTIME=app_platform`` is set, ``do-connecting-ip`` is
-   honoured unconditionally (DO ingress is the only writer; the env
-   var is set by us, not the request).
+3. ``do-connecting-ip`` is never read (INF-01): DigitalOcean App
+   Platform, its only writer, is gone, and anyone can send the header.
 
 These tests pin all three layers. They use synthetic ``Request``
 objects so they don't depend on uvicorn at all - the helper must be
@@ -98,14 +97,13 @@ def test_two_trusted_proxies_returns_first_non_proxy_entry():
     assert get_client_ip(request) == "203.0.113.7"
 
 
-# ── Scenario 4: DO App Platform — do-connecting-ip is authoritative ──────
+# ── Scenario 4: do-connecting-ip behind a trusted peer is ignored ────────
 
 
-def test_do_app_platform_uses_do_connecting_ip_when_peer_is_trusted():
-    """DO App Platform: ingress sets ``do-connecting-ip`` with the
-    real client and sets XFF to the DO ingress IP itself. The direct
-    TCP peer is in our trust list, so the header is authoritative.
-    """
+def test_do_connecting_ip_behind_a_trusted_peer_is_ignored():
+    """INF-01: an in-cluster caller (trusted peer, all-private XFF) used to
+    choose its audited and rate-limited IP through ``do-connecting-ip``. The
+    header is ignored and the peer is returned."""
     request = _make_request(
         client_host="10.0.0.5",
         headers={
@@ -113,7 +111,7 @@ def test_do_app_platform_uses_do_connecting_ip_when_peer_is_trusted():
             "do-connecting-ip": "203.0.113.7",
         },
     )
-    assert get_client_ip(request) == "203.0.113.7"
+    assert get_client_ip(request) == "10.0.0.5"
 
 
 # ── Scenario 5: forged do-connecting-ip from a public peer is REJECTED ────
@@ -183,27 +181,24 @@ def test_ipv6_client_in_xff_is_returned():
 # ── Regression: chain entirely inside trusted CIDRs ──────────────────────
 
 
-def test_xff_entirely_trusted_falls_back_to_do_or_peer():
+def test_xff_entirely_trusted_falls_back_to_peer():
     """All XFF entries are private IPs (the pathological dev case
     that originally surfaced the bug — Docker-bridge-only chain).
-    With no ``do-connecting-ip`` we return the direct peer because
-    there is genuinely no public client IP to surface.
+    We return the direct peer because there is genuinely no public
+    client IP to surface.
     """
     request = _make_request(
         client_host="172.18.0.5",
         headers={"X-Forwarded-For": "192.168.65.1, 172.18.0.5"},
     )
-    # No public entry in XFF and no DO header — peer is the best
-    # answer we have. Crucially we DON'T return one of the trusted
+    # No public entry in XFF — peer is the best answer we have. Crucially we DON'T return one of the trusted
     # CIDR entries as if it were the user.
     assert get_client_ip(request) == "172.18.0.5"
 
 
-def test_xff_entirely_trusted_with_do_connecting_ip_prefers_do():
-    """DO App Platform shape: XFF is private (the DO ingress hop)
-    and ``do-connecting-ip`` carries the real client. Must return
-    the DO header.
-    """
+def test_xff_entirely_trusted_ignores_do_connecting_ip():
+    """INF-01: the old DigitalOcean fallback, a private chain plus
+    ``do-connecting-ip``, no longer lets the header pick the IP."""
     request = _make_request(
         client_host="10.244.0.3",
         headers={
@@ -211,7 +206,7 @@ def test_xff_entirely_trusted_with_do_connecting_ip_prefers_do():
             "do-connecting-ip": "203.0.113.7",
         },
     )
-    assert get_client_ip(request) == "203.0.113.7"
+    assert get_client_ip(request) == "10.244.0.3"
 
 
 def test_empty_xff_header_falls_back_to_peer():
@@ -274,59 +269,20 @@ def test_xff_spoof_attempt_with_nginx_overwrite_is_blocked():
     assert get_client_ip(request) == "203.0.113.7"
 
 
-# ── DO App Platform runtime gate ─────────────────────────────────────────
+# ── The retired PFV_RUNTIME switch (INF-01) ──────────────────────────────
 
 
-def test_do_runtime_mode_returns_do_connecting_ip_unconditionally(monkeypatch):
-    """With ``PFV_RUNTIME=app_platform`` set, ``do-connecting-ip`` is
-    authoritative even when the direct TCP peer is OUTSIDE the
-    trusted-proxy CIDR list. This is the prod-fix path: the DO
-    ingress peer falls outside RFC 1918, so the old trusted-peer
-    gate skipped the header and audit logs got the ingress IP.
-    """
-    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
-    # DO ingress peer is NOT in any of our trusted CIDRs.
-    request = _make_request(
-        client_host="169.254.10.5",
-        headers={"do-connecting-ip": "203.0.113.7"},
-    )
-    assert get_client_ip(request) == "203.0.113.7"
-
-
-def test_do_runtime_mode_without_header_falls_back_to_peer(monkeypatch):
-    """In App Platform mode, if ``do-connecting-ip`` is somehow
-    missing (e.g. health check that does not hit the public ingress),
-    we fall back to the standard XFF / peer resolution rather than
-    crashing.
-    """
-    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
-    request = _make_request(client_host="169.254.10.5")
-    assert get_client_ip(request) == "169.254.10.5"
-
-
-def test_do_runtime_mode_unset_ignores_do_connecting_ip_from_public_peer(monkeypatch):
-    """Without ``PFV_RUNTIME=app_platform``, a request from a public
-    peer carrying a forged ``do-connecting-ip`` MUST be rejected.
-    Returns the peer IP, not the header.
-    """
-    monkeypatch.delenv("PFV_RUNTIME", raising=False)
-    request = _make_request(
-        client_host="198.51.100.99",
-        headers={"do-connecting-ip": "203.0.113.7"},
-    )
-    assert get_client_ip(request) == "198.51.100.99"
-
-
-def test_do_runtime_mode_case_insensitive(monkeypatch):
-    """``PFV_RUNTIME`` is matched case-insensitively to avoid spec-vs-
-    env quirks (DO docs use mixed case in examples).
-    """
-    monkeypatch.setenv("PFV_RUNTIME", "App_Platform")
-    request = _make_request(
-        client_host="169.254.10.5",
-        headers={"do-connecting-ip": "203.0.113.7"},
-    )
-    assert get_client_ip(request) == "203.0.113.7"
+def test_pfv_runtime_no_longer_makes_do_connecting_ip_authoritative(monkeypatch):
+    """``PFV_RUNTIME=app_platform`` (matched case-insensitively) used to trust
+    ``do-connecting-ip`` from any peer. A deployment that still sets it gets
+    the peer."""
+    for runtime in ("app_platform", "App_Platform"):
+        monkeypatch.setenv("PFV_RUNTIME", runtime)
+        request = _make_request(
+            client_host="169.254.10.5",
+            headers={"do-connecting-ip": "203.0.113.7"},
+        )
+        assert get_client_ip(request) == "169.254.10.5"
 
 
 # ── CLIENT_IP_HEADER (k3s behind Cloudflare, INFRA-83) ───────────────────
@@ -337,7 +293,6 @@ def test_do_runtime_mode_case_insensitive(monkeypatch):
 
 
 def test_client_ip_header_returns_cloudflare_visitor(monkeypatch):
-    monkeypatch.delenv("PFV_RUNTIME", raising=False)
     monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
     request = _make_request(
         client_host="172.70.1.1",  # a Cloudflare edge
@@ -350,7 +305,6 @@ def test_client_ip_header_returns_cloudflare_visitor(monkeypatch):
 
 
 def test_client_ip_header_accepts_ipv6_and_any_name_case(monkeypatch):
-    monkeypatch.delenv("PFV_RUNTIME", raising=False)
     monkeypatch.setenv("CLIENT_IP_HEADER", "CF-Connecting-IP")
     request = _make_request(
         client_host="10.42.0.9", headers={"cf-connecting-ip": "2001:db8::7"}
@@ -360,7 +314,6 @@ def test_client_ip_header_accepts_ipv6_and_any_name_case(monkeypatch):
 
 def test_client_ip_header_unset_ignores_forged_cf_connecting_ip(monkeypatch):
     """DigitalOcean and local dev: anyone can send CF-Connecting-IP."""
-    monkeypatch.delenv("PFV_RUNTIME", raising=False)
     monkeypatch.delenv("CLIENT_IP_HEADER", raising=False)
     request = _make_request(
         client_host="198.51.100.99", headers={"cf-connecting-ip": "203.0.113.7"}
@@ -374,7 +327,6 @@ def test_client_ip_header_unset_ignores_forged_cf_connecting_ip(monkeypatch):
 )
 def test_client_ip_header_with_invalid_value_falls_back(monkeypatch, value):
     """A value that is not one IP address is never used as a rate-limit key."""
-    monkeypatch.delenv("PFV_RUNTIME", raising=False)
     monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
     request = _make_request(
         client_host="198.51.100.99", headers={"cf-connecting-ip": value}
@@ -385,7 +337,6 @@ def test_client_ip_header_with_invalid_value_falls_back(monkeypatch, value):
 def test_client_ip_header_missing_falls_back_to_peer(monkeypatch):
     """In-cluster callers (the frontend's server-side fetches, probes) send no
     CF-Connecting-IP and resolve as before."""
-    monkeypatch.delenv("PFV_RUNTIME", raising=False)
     monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
     request = _make_request(client_host="10.42.0.12")
     assert get_client_ip(request) == "10.42.0.12"
@@ -590,7 +541,7 @@ async def test_audit_endpoint_persists_real_client_ip_from_xff(
     # would cause ``get_client_ip`` to ignore XFF. Wrap the app in a
     # thin ASGI middleware that rewrites ``client`` to a loopback
     # address — mimicking the post-uvicorn scope when the immediate
-    # TCP peer is a trusted proxy (nginx in dev, DO ingress in prod).
+    # TCP peer is a trusted proxy (nginx in dev).
     real_app = app
 
     async def trusted_peer_wrapper(scope, receive, send):

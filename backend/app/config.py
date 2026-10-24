@@ -1,5 +1,48 @@
+import logging
+
 from pydantic import ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
+
+# Cloudflare Turnstile's always-pass test secret, which .env.example ships for dev.
+TURNSTILE_ALWAYS_PASS_SECRET = "1x0000000000000000000000000000000AA"
+
+# INF-03: every secret-bearing setting. In production none may hold a value from
+# ``_PUBLIC_SECRET_VALUES`` or one starting "dev-only".
+SECRET_FIELDS = (
+    "jwt_secret_key",
+    "mfa_recovery_hmac_key",
+    "api_token_hmac_key",
+    "api_token_hmac_key_prev",
+    "mfa_encryption_key",
+    "ai_credential_encryption_key",
+    "ai_credential_encryption_key_prev",
+    "mailgun_api_key",
+    "mailgun_webhook_signing_key",
+    "google_client_secret",
+    "platform_ai_openrouter_api_key",
+)
+# Secret values committed to this public repository for dev, CI and tests. Anyone can read them,
+# so production refuses them. tests/test_public_secret_defaults.py scans docker-compose*.yml,
+# .env.example, the workflows and tests/conftest.py and fails on a literal missing here. Never
+# remove an entry when its source changes: git history keeps the value public.
+#
+# ⚠ compose.smoke.yaml's two values are deliberately absent. The release smoke boots the
+# published images with APP_ENV=production, and the shared smoke workflow passes it no secret,
+# so refusing them would fail every release. That fence pins them as the only exception.
+_PUBLIC_SECRET_VALUES = frozenset(
+    {
+        "change-me-generate-a-real-secret",  # .env.example, the field default
+        "dev-only-shared-api-token-hmac-key-not-for-prod",  # docker-compose.yml
+        "dev-only-mcp-jwt-secret-never-the-backend-value",  # docker-compose.yml, mcp
+        "dev-only-mcp-mfa-recovery-hmac-key-unused-here",  # docker-compose.yml, mcp
+        "ci-migration-smoke-jwt-key-not-a-real-secret",  # ci.yml, Backend Migrations
+        "ci-migration-smoke-mfa-key-distinct-01",  # ci.yml, Backend Migrations
+        "ci-migration-smoke-pat-key-distinct-02",  # ci.yml, Backend Migrations
+        "test-jwt-secret-that-is-long-enough-for-pytest-1234567890",  # tests/conftest.py
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -541,6 +584,35 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _warn_app_env_not_chosen(self) -> "Settings":
+        # INF-04: unset, APP_ENV means development (Swagger, lifespan migrations, none of the
+        # production checks). The backend image then fails its boot on the migration branch
+        # guard, but mcp_main has no such guard. A production default waits on cloud-infra
+        # confirming every component sets APP_ENV, so for now each process only says so. At
+        # import this precedes logs.configure() and reaches stderr through logging's last resort.
+        if "app_env" not in self.model_fields_set:
+            logger.warning("config.app_env_unset", extra={"default": self.app_env})
+        elif self.app_env not in ("development", "test", "production"):
+            logger.warning("config.app_env_unrecognised", extra={"app_env": self.app_env})
+        return self
+
+    @model_validator(mode="after")
+    def _validate_production_secrets_not_public(self) -> "Settings":
+        # INF-03. One key signs every token type, so a production boot on a committed value hands
+        # anyone who reads the repo every session. The message names the field, never the value.
+        # Applies to mcp_main too: it builds the same Settings.
+        if self.app_env != "production":
+            return self
+        for name in SECRET_FIELDS:
+            value = getattr(self, name) or ""
+            if value in _PUBLIC_SECRET_VALUES or value.startswith("dev-only"):
+                raise ValueError(
+                    f"{name.upper()} is a value committed to this public repository; "
+                    "set a real secret"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_captcha_timeouts(self) -> "Settings":
         # Enforce ``0 < per_phase <= total`` on the LIVE values, not on the
         # field defaults (TBD-328 review). Both are operator-tunable env
@@ -607,6 +679,38 @@ class Settings(BaseSettings):
         ]
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+def warn_open_production_defaults(settings_obj: Settings) -> list[str]:
+    """INF-05: log each registration safeguard production runs without; return the reasons.
+
+    A warning, not a validator: ``CAPTCHA_REQUIRED=false`` is the documented rollback during a
+    provider outage, and a boot refusal would take production down over it. The backend lifespan
+    calls this once per worker.
+    """
+    if settings_obj.app_env != "production":
+        return []
+    reasons: list[str] = []
+    if not settings_obj.captcha_required:
+        # The pins only matter once the captcha runs.
+        reasons.append("captcha_not_required")
+    else:
+        if settings_obj.captcha_secret == TURNSTILE_ALWAYS_PASS_SECRET:
+            reasons.append("captcha_test_secret")
+        if not settings_obj.captcha_expected_hostname:
+            reasons.append("captcha_hostname_unpinned")
+        if not settings_obj.captcha_expected_action:
+            reasons.append("captcha_action_unpinned")
+    for reason in reasons:
+        logger.warning("config.production_open_default", extra={"reason": reason})
+    for origin in settings_obj.cors_origins:
+        if origin == "*" or origin.startswith("http://"):
+            reasons.append("cors_origin_insecure")
+            logger.warning(
+                "config.production_open_default",
+                extra={"reason": "cors_origin_insecure", "origin": origin},
+            )
+    return reasons
 
 
 try:

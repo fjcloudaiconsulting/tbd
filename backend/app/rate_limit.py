@@ -1,7 +1,7 @@
 """Rate limiter and client-IP resolver shared across routers.
 
 The default ``slowapi.util.get_remote_address`` is wrong for this app's
-production topology. Three environments exist:
+production topology. Two environments exist:
 
 1. **Local / docker-compose - nginx in front of backend.** nginx sets
    ``X-Forwarded-For $remote_addr`` (the immediate peer ONLY, NOT
@@ -10,19 +10,7 @@ production topology. Three environments exist:
    chains are discarded at the edge. The backend resolves the real
    client IP by walking the (sanitized) chain right-to-left, skipping
    trusted-proxy hops, and returning the first non-trusted entry.
-2. **Production - DigitalOcean App Platform.** DO's ingress puts the
-   real client IP in the custom ``do-connecting-ip`` header and fills
-   ``X-Forwarded-For`` with the DO ingress server's own IP. The DO
-   ingress peer falls OUTSIDE our private-CIDR trust list (DO uses
-   its own runtime networking), so an XFF-only resolver cannot trust
-   anything in prod. When ``PFV_RUNTIME=app_platform`` is set in the
-   App Platform environment, the resolver consults
-   ``do-connecting-ip`` unconditionally as the primary source. This
-   is safe because (a) the header is only writable by DO's ingress
-   layer, (b) the env var is set by us (terraform / DO spec), not by
-   the request. Docs:
-   https://docs.digitalocean.com/support/where-can-i-find-the-client-ip-address-of-a-request-connecting-to-my-app/
-3. **Production - k3s on Lightsail behind Cloudflare (INFRA-83).**
+2. **Production - k3s behind Cloudflare (INFRA-83).**
    Cloudflare -> Traefik -> backend. The peer and the XFF chain hold
    Cloudflare edge and pod addresses; the visitor is in
    ``CF-Connecting-IP``. The deployment sets
@@ -41,10 +29,9 @@ Spoof resistance:
   trusted proxy. A caller reaching the backend over a public path
   (bypassing our proxy) cannot trigger the walk, so they cannot
   forge any value via XFF.
-- ``do-connecting-ip`` is honoured unconditionally only when
-  ``PFV_RUNTIME=app_platform`` is set. In any other runtime it is
-  ignored entirely (the trusted-peer gate from PR #82 no longer
-  applies because the XFF walk replaces it).
+- ``do-connecting-ip`` (DigitalOcean App Platform, decommissioned in
+  INFRA-44) is never read: anyone can send it, and nothing writes it now
+  (INF-01).
 - ``CLIENT_IP_HEADER`` is honoured only when set (by the deployment,
   never the request), and only for a value that parses as one IP.
   Set it only where the origin accepts requests from our own proxy zone
@@ -110,13 +97,6 @@ def _parse_xff(xff_header: str | None) -> list[str]:
     return [entry.strip() for entry in xff_header.split(",") if entry.strip()]
 
 
-def _is_app_platform_runtime() -> bool:
-    """Read at call time (not import time) so tests using
-    ``monkeypatch.setenv`` see the change without reloading the module.
-    """
-    return os.environ.get("PFV_RUNTIME", "").lower() == "app_platform"
-
-
 def _client_ip_from_configured_header(request: Request) -> str | None:
     """The visitor's IP from the header named by ``CLIENT_IP_HEADER``.
 
@@ -153,18 +133,14 @@ def get_client_ip(request: Request) -> str:
     0. **Configured edge header.** When ``CLIENT_IP_HEADER`` names a
        header (k3s: ``cf-connecting-ip``) holding one valid IP, use it.
        See ``_client_ip_from_configured_header`` for when that is safe.
-    1. **DO App Platform mode.** When ``PFV_RUNTIME=app_platform`` is
-       set, consult ``do-connecting-ip`` unconditionally. DO's ingress
-       is the only writer of that header in App Platform, and the env
-       var is set by us (not by the request) so this is not spoofable.
-    2. **XFF right-to-left walk** when the direct TCP peer is a
+    1. **XFF right-to-left walk** when the direct TCP peer is a
        trusted proxy. The rightmost entry was appended by our own
        nginx (set to ``$remote_addr``); walk leftward, skipping
        trusted-proxy hops, and return the first non-trusted entry.
        That is the IP immediately outside our trust boundary - the
        real client. Returns ``request.client.host`` if every entry
        in the chain is a trusted proxy.
-    3. **Direct peer** otherwise. A caller reaching the backend over
+    2. **Direct peer** otherwise. A caller reaching the backend over
        a public path is its own client IP; we refuse to honour any
        forwarded-by headers in that case.
     """
@@ -173,19 +149,11 @@ def get_client_ip(request: Request) -> str:
     if header_ip:
         return header_ip
 
-    # 1. DO App Platform runtime: do-connecting-ip is authoritative.
-    if _is_app_platform_runtime():
-        do_ip = request.headers.get("do-connecting-ip")
-        if do_ip:
-            return do_ip
-        # Header missing - fall through to the standard path so
-        # platform health checks etc. still resolve sensibly.
-
     client = request.client
     client_host = client.host if client else None
     peer_trusted = _is_trusted_proxy(client_host)
 
-    # 2. Trusted peer + XFF chain: walk RIGHT-to-LEFT.
+    # 1. Trusted peer + XFF chain: walk RIGHT-to-LEFT.
     # nginx's ``X-Forwarded-For $remote_addr`` plus any intermediate
     # proxies produce a chain where the rightmost entries are ours.
     # The first non-trusted entry from the right is the real client.
@@ -195,14 +163,9 @@ def get_client_ip(request: Request) -> str:
             if not _is_trusted_proxy(entry):
                 return entry
         # Every entry in the chain was a trusted proxy (or chain was
-        # empty). Fall back to ``do-connecting-ip`` for older DO
-        # deployments not yet running with PFV_RUNTIME set, then to
-        # the direct peer.
-        do_ip = request.headers.get("do-connecting-ip")
-        if do_ip:
-            return do_ip
+        # empty): the direct peer is the best answer.
 
-    # 3. Direct public peer (or no client). Return the peer IP and
+    # 2. Direct public peer (or no client). Return the peer IP and
     # refuse to honour any forwarded-by headers (they could be forged).
     return client_host or "127.0.0.1"
 

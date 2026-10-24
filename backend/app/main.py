@@ -21,7 +21,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 
-from app.config import settings as app_settings
+from app.config import settings as app_settings, warn_open_production_defaults
 from app.database import engine
 from app import logs
 from app.rate_limit import limiter
@@ -268,6 +268,8 @@ async def lifespan(app: FastAPI):
     # with the MFA KEK (covers _PREV rotation slots too). See
     # ``verify_ai_credential_kek_separation`` docstring.
     verify_ai_credential_kek_separation()
+    # INF-05: registration safeguards production runs without (captcha, its pins, CORS).
+    warn_open_production_defaults(app_settings)
     # Production runs migrations as a true init step (the `migrate` init
     # container, cloud-infra clusters/hetzner/tbd-prod) so they don't gate uvicorn's
     # port-bind. Dev runs them inline because the dev orchestrator

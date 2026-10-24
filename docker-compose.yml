@@ -70,6 +70,10 @@ services:
       # missing inside the container, `docker compose up -d --force-recreate
       # backend` is the fix, not a rebuild.
       - ./backend/seed.py:/app/seed.py
+      # INF-11: .dockerignore keeps seed.py out of every image, so the mount above is now the
+      # only copy in the container. tests/test_backend_image_excludes_seed.py reads this file;
+      # mounted so it does not read the copy baked at build time.
+      - ./backend/.dockerignore:/app/.dockerignore:ro
       # TBD-421: the shard-balance timing file. NOT covered by any directory
       # mount (it sits at the backend root), so without this line a fence that
       # reads it inside the container evaluates the copy baked in at image
@@ -123,6 +127,12 @@ services:
       # staying green in CI, which is how a fence gets weakened rather than
       # obeyed.
       - ./README.md:/app/README.md:ro
+      # INF-03: tests/test_public_secret_defaults.py scans these for committed secrets that
+      # production must refuse. Same container-only trap as README.md above.
+      - ./.env.example:/app/.env.example:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.prod.yml:/app/docker-compose.prod.yml:ro
+      - ./compose.smoke.yaml:/app/compose.smoke.yaml:ro
       # TBD-345: read-only mount so test_seed_determinism.py can assert that
       # `tbd`'s cmd_seed still forwards SEED_* generically. Without it that
       # guard is green on a bare CI checkout (where the repo root is present)
@@ -143,6 +153,8 @@ services:
       # container and only runs in CI — and a skip reads as a pass locally,
       # which is how a drift fence quietly stops covering anything.
       - ./frontend/lib:/app/frontend/lib:ro
+      # INF-07: tests/test_apex_wrangler_pin.py reads the Worker's package.json and lockfile.
+      - ./frontend/apex-worker:/app/frontend/apex-worker:ro
       # Read-only .git so the lifespan branch guard in app.main can
       # detect the host checkout's branch and refuse to migrate from
       # a non-main feature branch (the same drift class PFV_MIGRATE_OK_OFF_MAIN
@@ -218,8 +230,10 @@ services:
 
   nginx:
     image: mirror.gcr.io/library/nginx:alpine@sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417
+    # INF-10: loopback only. On all interfaces anyone on the same network reaches Swagger, the
+    # dev OAuth server, the public dev pepper and the demo superadmin.
     ports:
-      - "80:80"
+      - "127.0.0.1:80:80"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

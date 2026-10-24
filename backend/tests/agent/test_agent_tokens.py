@@ -548,17 +548,17 @@ async def test_m3_per_user_bucket_counts_failed_step_ups(factory, client, monkey
     comes from a new IP, as a grinder rotating IPs would); one global key
     (the second user would be refused too). Every call has its own IP, so
     the slowapi IP limit can never produce the 429."""
-    monkeypatch.setenv("PFV_RUNTIME", "app_platform")  # trust do-connecting-ip
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")  # the test picks the client IP
     org = await _org(factory, "A")
     h = await _jwt(factory, await _user(factory, org, "m"))
     other = await _jwt(factory, await _user(factory, org, "o"))
     for i in range(10):
         r = await client.post(BASE, json=_mint_body(current_password="wrong"),
-                              headers={**h, "do-connecting-ip": f"198.51.100.{i}"})
+                              headers={**h, "cf-connecting-ip": f"198.51.100.{i}"})
         assert r.status_code == 401, r.text
-    r = await client.post(BASE, json=_mint_body(), headers={**h, "do-connecting-ip": "198.51.100.99"})
+    r = await client.post(BASE, json=_mint_body(), headers={**h, "cf-connecting-ip": "198.51.100.99"})
     assert (r.status_code, r.json()["detail"]["code"]) == (429, "mint_rate_limited")
-    r = await client.post(BASE, json=_mint_body(), headers={**other, "do-connecting-ip": "198.51.100.98"})
+    r = await client.post(BASE, json=_mint_body(), headers={**other, "cf-connecting-ip": "198.51.100.98"})
     assert r.status_code == 201, r.text
 
 
