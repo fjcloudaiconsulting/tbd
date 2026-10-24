@@ -1,12 +1,15 @@
 """SSO step-up proof, scoped to one action (TBD-390).
 
 The ONLY reader/writer of ``users.stepup_token`` (besides the model, the
-schemas and the export registry). The stored value is ``f"{action}:{token}"``;
-the bare ``token`` travels in the callback's URL fragment. A consumer only
+schemas and the export registry). The stored value is
+``f"{action}:{sha256(token)}"`` (``stored_proof``, DB-06): the bare ``token``
+travels only in the callback's URL fragment, and a read of the row (a backup,
+a console, an export) yields nothing that can be presented. A consumer only
 accepts a token issued for its own action, so a proof minted for an email
 change can never mint a PAT (fenced in
 ``tests/auth/test_stepup_action_scoping.py``).
 """
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -32,6 +35,9 @@ STEPUP_ACTIONS: dict[str, str] = {
     # (which can carry agent:auto), nor a mint proof approve a consent. The
     # consent page stashes its query before initiate and re-validates after.
     "oauth_consent": "/oauth/authorize",
+    # BE-32. Re-authentication before an SSO account without a password
+    # enrols an authenticator (``POST /auth/mfa/setup``).
+    "mfa_setup": "/settings/security",
 }
 
 
@@ -46,6 +52,12 @@ def _encode(value: str) -> bytes:
     return value.encode("utf-8", "surrogatepass")
 
 
+def stored_proof(action: str, token: str) -> str:
+    """What ``users.stepup_token`` holds for ``token`` issued for ``action``.
+    A plain SHA-256 is enough: the token carries 256 random bits."""
+    return f"{action}:{hashlib.sha256(_encode(token)).hexdigest()}"
+
+
 def issue_stepup(user: User, action: str) -> str:
     """Write a fresh proof for ``action`` onto ``user``; return the BARE token.
 
@@ -54,7 +66,7 @@ def issue_stepup(user: User, action: str) -> str:
     if action not in STEPUP_ACTIONS:
         raise ValueError(f"unknown step-up action: {action!r}")
     token = secrets.token_urlsafe(32)
-    user.stepup_token = f"{action}:{token}"
+    user.stepup_token = stored_proof(action, token)
     user.stepup_token_expires_at = datetime.now(timezone.utc) + timedelta(
         seconds=STEPUP_TOKEN_TTL_SECONDS
     )
@@ -70,7 +82,7 @@ def stepup_valid(user: User, presented: str | None, action: str) -> bool:
         and stored is not None
         and expires_at is not None
         and _aware(expires_at) > datetime.now(timezone.utc)
-        and secrets.compare_digest(_encode(f"{action}:{presented}"), _encode(stored))
+        and secrets.compare_digest(_encode(stored_proof(action, presented)), _encode(stored))
     )
 
 

@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
 from app.models.user import User
+from app.rate_limit import limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.import_reconciliation import (
     ImportBatchDetail,
     ReconcileBatchRequest,
@@ -69,6 +71,28 @@ def _decode_tab_bytes(raw: bytes) -> str:
             raise ValidationError("File is not valid UTF-8 or Windows-1252 text")
 
 
+def _decode_csv_bytes(raw: bytes) -> str:
+    """Decode CSV upload bytes as UTF-8, tolerating a BOM.
+
+    Undecodable bytes are a clean 400, as on the TAB path, rather than an
+    unhandled ``UnicodeDecodeError`` 500.
+    """
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValidationError("File is not valid UTF-8 text")
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    """Read an upload, never more than one byte past ``MAX_UPLOAD_BYTES``.
+
+    BE-13: a bare ``file.read()`` copied the whole spooled part into memory
+    before the size check ran. One byte past the cap is all the callers'
+    ``>`` check needs, so an oversized upload costs at most the cap.
+    """
+    return await file.read(MAX_UPLOAD_BYTES + 1)
+
+
 async def _preview_text_upload(
     *,
     file: UploadFile,
@@ -91,10 +115,12 @@ async def _preview_text_upload(
     413 (not 400) from inside ``parse_ofx``, and it runs under an async
     parse timeout, so it keeps its own handler below.
     """
-    raw = await file.read()
+    raw = await _read_upload(file)
     if len(raw) > MAX_UPLOAD_BYTES:
+        # The capped read no longer sees the whole file; Starlette counted it.
+        size = file.size if file.size is not None else len(raw)
         raise ValidationError(
-            f"File too large ({len(raw)} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)"
+            f"File too large ({size} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)"
         )
     content = decode(raw)
 
@@ -119,8 +145,18 @@ async def _preview_text_upload(
         raise _missing_category_type_response(exc) from exc
 
 
-@router.post("/preview", response_model=ImportPreviewResponse)
+# BE-07. A preview parses up to ``MAX_ROWS`` rows (OFX: ``ofx_max_rows``) and
+# runs the duplicate / transfer detectors on each, so the three preview routes
+# carry a per-client limit: generous for a person re-previewing a file, and
+# tunable per org or user through the rate-limit override catalogue.
+@router.post(
+    "/preview",
+    response_model=ImportPreviewResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("import.preview", "30/minute"))
 async def preview_import(
+    request: Request,
     file: UploadFile = File(...),
     account_id: int = Form(...),
     current_user: User = Depends(get_current_user),
@@ -135,14 +171,20 @@ async def preview_import(
         account_id=account_id,
         current_user=current_user,
         db=db,
-        decode=lambda raw: raw.decode("utf-8-sig"),  # handles BOM
+        decode=_decode_csv_bytes,
         parse=parse_csv,
         source_format="csv",
     )
 
 
-@router.post("/tab/preview", response_model=ImportPreviewResponse)
+@router.post(
+    "/tab/preview",
+    response_model=ImportPreviewResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("import.tab_preview", "30/minute"))
 async def preview_tab_import(
+    request: Request,
     file: UploadFile = File(...),
     account_id: int = Form(...),
     current_user: User = Depends(get_current_user),
@@ -193,8 +235,14 @@ async def confirm_import(
 # org-scoping are wired so contract tests can assert them.
 
 
-@router.post("/ofx/preview", response_model=ImportPreviewResponse)
+@router.post(
+    "/ofx/preview",
+    response_model=ImportPreviewResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("import.ofx_preview", "30/minute"))
 async def preview_ofx_import(
+    request: Request,
     file: UploadFile = File(...),
     account_id: int = Form(...),
     current_user: User = Depends(get_current_user),
@@ -208,7 +256,7 @@ async def preview_ofx_import(
     ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
     §1. Bounds enforced in ``app.services.import_ofx_service``.
     """
-    raw = await file.read()
+    raw = await _read_upload(file)
     try:
         parsed_rows = await parse_ofx(raw, org_id=current_user.org_id)
     except ParseError as exc:

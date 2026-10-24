@@ -47,8 +47,9 @@ class PlanCreate(BaseModel):
     description: str = ""
     is_custom: bool = False
     sort_order: int = 0
-    price_monthly: Decimal = Field(ge=0, default=0)
-    price_yearly: Decimal = Field(ge=0, default=0)
+    # BE-01: bounded like ``plans.price_*`` (Numeric(10, 2)); see schemas.common.Money.
+    price_monthly: Decimal = Field(ge=0, default=0, max_digits=10, decimal_places=2)
+    price_yearly: Decimal = Field(ge=0, default=0, max_digits=10, decimal_places=2)
     max_users: int | None = Field(default=None, ge=1)
     retention_days: int | None = Field(default=None, ge=1)
     features: dict[str, StrictBool] = Field(default_factory=dict)
@@ -65,8 +66,8 @@ class PlanUpdate(BaseModel):
     is_custom: bool | None = None
     is_active: bool | None = None
     sort_order: int | None = None
-    price_monthly: Decimal | None = Field(default=None, ge=0)
-    price_yearly: Decimal | None = Field(default=None, ge=0)
+    price_monthly: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    price_yearly: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
     max_users: int | None = Field(default=None, ge=1)
     retention_days: int | None = Field(default=None, ge=1)
     features: dict[str, StrictBool] | None = None

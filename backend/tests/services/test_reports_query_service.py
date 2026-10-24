@@ -17,6 +17,7 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 from sqlalchemy import event
+from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -440,6 +441,64 @@ async def test_tag_filter_any_includes_either_tag(session_factory):
         rows, _ = await execute_query(db, ast, org_id=seeds["org_a_id"])
     totals = {row["category"]: row["value"] for row in rows}
     assert totals == {"Food": 60.0}
+
+
+def _tag_ast(names: list[str], match: TagMatch) -> ReportsQuery:
+    return ReportsQuery(
+        dataset=Dataset.TRANSACTIONS,
+        measure=Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
+        dimensions=[Dimension.CATEGORY],
+        filters=[
+            Filter(field=FilterField.TAG_NAME, op=FilterOp.IN, value=names, tag_match=match)
+        ],
+        limit=100,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tag_filter_all_ignores_repeated_names(session_factory):
+    """BE-11: names are deduplicated, so a repeat neither changes the answer
+    nor adds work. Same rows as ``test_tag_filter_all_requires_every_tag``."""
+    seeds = await _seed_world(session_factory)
+    ast = _tag_ast(["essentials", "Essentials ", "treat", "treat"], TagMatch.ALL)
+    async with session_factory() as db:
+        rows, _ = await execute_query(db, ast, org_id=seeds["org_a_id"])
+    assert {row["category"]: row["value"] for row in rows} == {"Food": 30.0}
+
+
+@pytest.mark.asyncio
+async def test_tag_filter_all_with_one_name_matches_any_row_carrying_it(session_factory):
+    seeds = await _seed_world(session_factory)
+    async with session_factory() as db:
+        all_rows, _ = await execute_query(
+            db, _tag_ast(["essentials"], TagMatch.ALL), org_id=seeds["org_a_id"]
+        )
+        any_rows, _ = await execute_query(
+            db, _tag_ast(["essentials"], TagMatch.ANY), org_id=seeds["org_a_id"]
+        )
+    assert all_rows == any_rows
+    assert {row["category"]: row["value"] for row in all_rows} == {"Food": 60.0}
+
+
+@pytest.mark.asyncio
+async def test_tag_filter_all_with_an_unknown_name_matches_nothing(session_factory):
+    seeds = await _seed_world(session_factory)
+    async with session_factory() as db:
+        rows, _ = await execute_query(
+            db, _tag_ast(["essentials", "no-such-tag"], TagMatch.ALL),
+            org_id=seeds["org_a_id"],
+        )
+    assert rows == []
+
+
+def test_tag_filter_all_compiles_to_one_subquery_whatever_the_list_length():
+    """BE-11. Wrong implementation: one correlated subquery per name, which
+    made the compiled statement grow with the list."""
+    names = [f"tag-{i}" for i in range(150)]
+    stmt = compile_ast_to_query(_tag_ast(names, TagMatch.ALL), org_id=1, dialect_name="mysql")
+    sql = str(stmt.compile(dialect=mysql.dialect())).lower()
+    assert sql.count("from transaction_tags") == 1
+    assert "having count(distinct tags.name_normalized)" in sql
 
 
 # ─── aggregation shape ─────────────────────────────────────────────

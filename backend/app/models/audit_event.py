@@ -216,6 +216,16 @@ User-initiated email-change types (TBD-361 / TBD-362):
   Demanding a password to undo a mistake is the exact shape that made
   the original TBD-361 defect unrecoverable.
 
+Sign-in attempt limits (BE-02, ``app/auth/attempts.py``):
+
+* ``auth.login.locked`` — the wrong password that filled an account's
+  15-minute failure window on ``POST /api/v1/auth/login``. actor=the
+  account (written only when the typed login resolves to a real user, at
+  most once per window), ``outcome="failure"``,
+  ``detail={"failures", "window_seconds"}``.
+* ``auth.mfa.locked`` — the same for wrong second factors (TOTP, recovery
+  or email code) across a user's MFA challenges.
+
 ⚠ ``tests/models/test_audit_event_taxonomy.py`` is ONE-DIRECTIONAL: it
 asserts that documented strings appear in this docstring, and nothing
 fences a NEWLY EMITTED string that was never documented. Every new

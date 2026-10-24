@@ -260,3 +260,20 @@ def test_all_required_fixtures_present_on_disk():
     ]
     missing = [name for name in required if not (FIXTURES / name).exists()]
     assert not missing, f"L3.2 §6.2 fixtures missing from disk: {missing}"
+
+
+# ── BE-01: a TRNAMT the ledger cannot store ──
+
+
+@pytest.mark.parametrize("raw", [b"1E+100000", b"-1E-100000", b"Infinity", b"-12.345"])
+def test_unstorable_trnamt_fails_with_its_transaction_number(raw: bytes):
+    """ofxtools hands these through as Decimals; the normalizer must stop them
+    before they reach the preview's SQL detectors. Runs in-process: the
+    bound lives in ``_normalize``, not in the subprocess plumbing."""
+    payload = _read("rabobank_ofx_1x.ofx").replace(
+        b"<TRNAMT>-8.95", b"<TRNAMT>" + raw, 1
+    )
+    with pytest.raises(ParseError, match="Amount out of range") as exc:
+        import_ofx_service._parse_and_normalize(payload, 10_000)
+    assert exc.value.row_number == 2
+    assert "transaction 2" in str(exc.value)

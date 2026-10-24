@@ -74,6 +74,10 @@ export default function SettingsProfilePage() {
   // backend in place of `current_password`.
   const [stepupToken, setStepupToken] = useState("");
   const [stepupBusy, setStepupBusy] = useState(false);
+  // BE-32. With two-factor on, moving the email (where reset links and the
+  // email-code fallback go) also takes a current authenticator code or an
+  // unused recovery code, on top of the password or Google step-up.
+  const [mfaCode, setMfaCode] = useState("");
 
   useEffect(() => {
     if (user) {
@@ -107,6 +111,7 @@ export default function SettingsProfilePage() {
 
   const emailChanging = email !== (user?.email ?? "");
   const passwordSet = user?.password_set ?? true;
+  const mfaEnabled = user?.mfa_enabled ?? false;
 
   async function handleVerifyWithGoogle() {
     setProfileErr(""); setStepupBusy(true);
@@ -181,6 +186,15 @@ export default function SettingsProfilePage() {
           }
           payload.current_password = currentPassword;
         }
+        if (mfaEnabled) {
+          if (!mfaCode.trim()) {
+            setProfileErr(
+              "Enter a code from your authenticator app, or a recovery code, to change your email.",
+            );
+            return;
+          }
+          payload.mfa_code = mfaCode.trim();
+        }
       }
 
       await apiFetch<User>("/api/v1/users/me", {
@@ -190,6 +204,7 @@ export default function SettingsProfilePage() {
       await refreshMe();
       setCurrentPassword("");
       setStepupToken("");
+      setMfaCode("");
       // TBD-361. The old copy said "You'll need to sign in again" and
       // implied the address had changed. All three clauses became false
       // when the change became two-phase: the profile was NOT updated,
@@ -367,6 +382,27 @@ export default function SettingsProfilePage() {
                         {stepupBusy ? "Redirecting..." : "Verify with Google"}
                       </button>
                     )}
+                  </div>
+                )}
+                {emailChanging && mfaEnabled && (
+                  <div>
+                    <label htmlFor="profile-mfa-code" className={label}>
+                      Authenticator or recovery code <span className="text-xs text-text-muted">(required to change email)</span>
+                    </label>
+                    <input
+                      id="profile-mfa-code"
+                      type="text"
+                      autoComplete="one-time-code"
+                      required
+                      maxLength={32}
+                      value={mfaCode}
+                      onChange={(e) => setMfaCode(e.target.value)}
+                      className={`${input} max-w-md`}
+                      aria-describedby="profile-mfa-code-hint"
+                    />
+                    <p id="profile-mfa-code-hint" className="mt-1 text-xs text-text-muted">
+                      Two-factor is on, so confirm with the 6-digit code from your app or one of your recovery codes.
+                    </p>
                   </div>
                 )}
                 <div>

@@ -23,6 +23,16 @@ export interface ErrorMapOptions {
   fallback?: string;
 }
 
+const PASSWORD_MISMATCH = "That password did not match. Check it and try again.";
+// BE-32: disable and regenerate also take a second factor, refused with
+// "Invalid authentication code" (403) when it does not match.
+const CODE_MISMATCH =
+  "That code did not match. Use the current code from your authenticator app or an unused recovery code.";
+
+function passwordOrCode(err: ApiResponseError): string {
+  return /code/i.test(err.message) ? CODE_MISMATCH : PASSWORD_MISMATCH;
+}
+
 /**
  * MFA setup / verify / enable errors.
  *
@@ -40,9 +50,17 @@ export function mapMfaSetupError(
   switch (err.status) {
     case 400:
       // Server may say "Invalid TOTP code" (verify), "MFA is already
-      // enabled" (race), or "Call /mfa/setup first" (state drift).
+      // enabled" (race), "Call /mfa/setup first" (state drift), or, from
+      // the re-authentication before setup (BE-32), "Current password is
+      // incorrect" / a Google step-up requirement.
       if (/already enabled/i.test(err.message)) {
         return "Two-factor authentication is already on. Refresh the page.";
+      }
+      if (/password/i.test(err.message)) {
+        return PASSWORD_MISMATCH;
+      }
+      if (/step-up|google/i.test(err.message)) {
+        return "Verify with Google again, then start setup.";
       }
       if (/totp/i.test(err.message) || /code/i.test(err.message)) {
         return "That code did not match. Codes refresh every 30 seconds, so use the latest one.";
@@ -63,7 +81,7 @@ export function mapMfaSetupError(
  * MFA disable errors.
  *
  * Endpoint: POST /auth/mfa/disable
- * Treat 401/403 the same way (bad password) without distinguishing.
+ * A 401/403 is a wrong password or, since BE-32, a wrong second factor.
  */
 export function mapMfaDisableError(
   err: unknown,
@@ -80,9 +98,9 @@ export function mapMfaDisableError(
       return fallback;
     case 401:
     case 403:
-      return "That password did not match. Check it and try again.";
+      return passwordOrCode(err);
     case 429:
-      return "Too many attempts. Wait a minute and try again.";
+      return "Too many attempts. Wait a few minutes and try again.";
     default:
       return fallback;
   }
@@ -108,9 +126,9 @@ export function mapMfaRegenerateError(
       return fallback;
     case 401:
     case 403:
-      return "That password did not match. Check it and try again.";
+      return passwordOrCode(err);
     case 429:
-      return "Too many attempts. Wait a minute and try again.";
+      return "Too many attempts. Wait a few minutes and try again.";
     default:
       return fallback;
   }
