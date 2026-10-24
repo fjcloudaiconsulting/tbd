@@ -116,6 +116,7 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("onboarding", "restart_tour"): ("onboarding.restart_tour", "10/hour"),
     ("onboarding", "seed_demo"): ("onboarding.seed_demo", "3/hour"),
     ("org_members", "accept_invitation"): ("org_members.accept_invitation", "10/minute"),
+    ("org_members", "create_invitation"): ("org_members.invite", "20/hour"),
     ("org_members", "preview_invitation"): (
         "org_members.preview_invitation",
         "30/minute",

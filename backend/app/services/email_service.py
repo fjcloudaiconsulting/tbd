@@ -671,11 +671,13 @@ async def send_invitation_email(
 
     ``inviter_name`` and ``org_name`` may contain user-supplied content
     (an inviter can rename themselves; an org name is set by an admin),
-    so both are HTML-escaped before interpolation.
+    so both are HTML-escaped before interpolation. The subject is fixed
+    (BE-06): it is the line a recipient reads before deciding to trust the
+    message, so it carries no text an inviter wrote.
     """
     inviter_safe = html.escape(inviter_name)
     org_safe = html.escape(org_name)
-    subject = f"{inviter_name} invited you to {org_name} on The Better Decision"
+    subject = "You have been invited to join a household on The Better Decision"
     body_html = _render_html(
         heading=f"Join {org_name} on The Better Decision",
         paragraphs=[

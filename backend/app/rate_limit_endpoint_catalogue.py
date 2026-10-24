@@ -115,6 +115,7 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "oauth.authorize",
     # org_members router. Backfilled by TBD-353: the decorator has
     # existed without a pattern, so no override for it could be stored.
+    "org_members.invite",  # BE-06, no path param: plain ``limit``
     "org_members.remove_member",
     # onboarding router
     "onboarding.complete",

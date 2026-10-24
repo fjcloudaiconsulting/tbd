@@ -308,9 +308,11 @@ class Settings(BaseSettings):
     # facing change on the next page load. Flip to True when the payment
     # platform is wired.
     #
-    # Backend API gating is NOT in scope — ``/api/v1/subscriptions`` and
-    # ``/api/v1/plans`` stay reachable; the gated frontend components just
-    # don't call them when the flag is off.
+    # One backend gate: while the flag is off, the owner self-service
+    # ``PUT /api/v1/subscriptions/plan`` answers 403 (no payment is taken
+    # yet; operators use the admin console). The rest of
+    # ``/api/v1/subscriptions`` and ``/api/v1/plans`` stays reachable; the
+    # gated frontend components just don't call them when the flag is off.
     billing_ui_enabled: bool = False
 
     # Reports v2 (flexible canvas + AST query engine)

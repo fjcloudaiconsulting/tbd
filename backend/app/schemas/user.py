@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models.user import AVATAR_URL_MAX_LENGTH
+from app.schemas.display_name import check_display_name
 
 
 class ProfileUpdate(BaseModel):
@@ -42,6 +43,9 @@ class ProfileUpdate(BaseModel):
         if v is not None and not v.startswith(("https://", "http://")):
             raise ValueError("Avatar URL must be an HTTP(S) URL")
         return v
+
+    # BE-06: names reach other people's inboxes (see schemas/display_name.py).
+    _check_names = field_validator("first_name", "last_name")(check_display_name)
 
 
 class PasswordChange(BaseModel):
