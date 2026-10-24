@@ -1189,7 +1189,7 @@ export default function SecurityPage() {
                   </span>
                 </div>
                 <p id="email-fallback-tradeoff" className="text-sm text-text-muted">
-                  If you lose your authenticator app and recovery codes, a sign-in code can be sent to <span className="font-medium text-text-primary">{user?.email}</span> instead. Anyone who gets into that mailbox could then sign in without your authenticator, so this stays off unless you turn it on.
+                  If you lose your authenticator app and recovery codes, a sign-in code can be sent to <span className="font-medium text-text-primary">{user?.email}</span> instead. Anyone who gets into that mailbox could then sign in without your authenticator, so this stays off unless you turn it on. Email codes also stop working for 72 hours after a password reset by email.
                 </p>
                 {fallbackErr && (
                   <div id="fallback-err" role="alert" aria-live="polite" className={`mt-4 ${errorCls}`}>

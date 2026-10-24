@@ -2185,6 +2185,9 @@ async def reset_password(
     user.password_set = True
     user.password_changed_at = cutoff
     user.sessions_invalidated_at = cutoff
+    # Opens the 72-hour window in which the email-code MFA fallback is
+    # refused (BE-03): this reset was proven through the mailbox alone.
+    user.password_reset_at = cutoff
     await db.commit()
     await _revoke_sessions(user.id)
 
@@ -2737,17 +2740,35 @@ EMAIL_FALLBACK_OFF_DETAIL = (
     "Email codes are turned off for this account. "
     "Use your authenticator app or a recovery code."
 )
+EMAIL_FALLBACK_PAUSED_DETAIL = (
+    "Email codes are unavailable for 72 hours after a password reset. "
+    "Use your authenticator app or a recovery code."
+)
+# How long after a reset through the emailed link the email code stays
+# refused, opt-in or not (BE-03).
+EMAIL_FALLBACK_RESET_LOCK = timedelta(hours=72)
 
 
-def _require_email_fallback(user: User) -> None:
+def _require_email_fallback(user: User, *, now: datetime | None = None) -> None:
     """Refuse the emailed code for an account whose owner has not turned the
     fallback on (BE-03): with TOTP enrolled, the mailbox alone must not stand
-    in for the authenticator. An MFA account without a TOTP secret keeps it,
-    as the only code-based factor it would have (``mfa_enable`` needs a TOTP
-    code, so the app does not create one). 400 like the other challenge-leg
-    refusals that are not a wrong code."""
-    if user.totp_secret and not user.mfa_email_fallback:
+    in for the authenticator. Also refused for 72 hours after a password
+    reset through the emailed link, so the sign-in after a reset takes TOTP
+    or a recovery code. An MFA account without a TOTP secret keeps it, as the
+    only code-based factor it would have (``mfa_enable`` needs a TOTP code, so
+    the app does not create one). 400 like the other challenge-leg refusals
+    that are not a wrong code."""
+    if not user.totp_secret:
+        return
+    if not user.mfa_email_fallback:
         raise HTTPException(status_code=400, detail=EMAIL_FALLBACK_OFF_DETAIL)
+    reset_at = user.password_reset_at
+    if reset_at is None:
+        return
+    if reset_at.tzinfo is None:  # stored naive UTC
+        reset_at = reset_at.replace(tzinfo=timezone.utc)
+    if (now or datetime.now(timezone.utc)) < reset_at + EMAIL_FALLBACK_RESET_LOCK:
+        raise HTTPException(status_code=400, detail=EMAIL_FALLBACK_PAUSED_DETAIL)
 
 
 async def _second_factor_failed(

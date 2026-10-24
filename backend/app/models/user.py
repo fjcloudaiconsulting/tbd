@@ -121,6 +121,12 @@ class User(Base):
         Boolean, nullable=False, server_default="1", default=True
     )
     password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # BE-03. When a password was last reset through the emailed link (naive
+    # UTC). ``password_changed_at`` also moves on an in-app change, so it
+    # cannot tell the two apart. For 72 hours after it the email-code MFA
+    # fallback is refused, even when opted in: whoever reset the password
+    # through the mailbox must not complete the sign-in through it too.
+    password_reset_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     sessions_invalidated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

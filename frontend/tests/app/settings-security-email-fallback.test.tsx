@@ -2,7 +2,8 @@
  * BE-03: the email-code sign-in fallback is a toggle on the security page.
  *
  * - It shows only for an account with two-factor on, says whether it is on,
- *   and explains the trade-off.
+ *   and explains the trade-off, including the 72-hour pause after an
+ *   emailed password reset.
  * - Turning it on asks for a current authenticator or recovery code and sends
  *   it as `mfa_code`; turning it off sends no code.
  */
@@ -100,6 +101,7 @@ describe("Security page: email-code fallback (BE-03)", () => {
     expect(screen.getByRole("heading", { name: /^Email fallback$/i })).toBeInTheDocument();
     expect(screen.getByText("Off")).toBeInTheDocument();
     expect(screen.getByText(/could then sign in without your authenticator/i)).toBeInTheDocument();
+    expect(screen.getByText(/72 hours after a password reset by email/i)).toBeInTheDocument();
     expect(screen.getByText("alice@acme.io")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Turn on email codes$/i })).toBeInTheDocument();
   });
