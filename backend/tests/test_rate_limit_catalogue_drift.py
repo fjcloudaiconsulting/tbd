@@ -128,6 +128,11 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("reports", "run_query"): ("reports.query", "60/minute"),
     ("reports", "run_sankey_query"): ("reports.sankey_query", "60/minute"),
     ("security", "csp_report"): ("security.csp_report", "60/minute"),
+    ("tags", "create_tag_endpoint"): ("tags.create", "30/minute"),
+    ("tags", "replace_transaction_tags_endpoint"): (
+        "tags.set_transaction_tags",
+        "60/minute",
+    ),
     ("users", "cancel_pending_email"): ("users.cancel_pending_email", "10/hour"),
     ("users", "change_password"): ("users.change_password", "5/hour"),
     ("users", "update_profile"): ("users.update_profile", "5/hour"),

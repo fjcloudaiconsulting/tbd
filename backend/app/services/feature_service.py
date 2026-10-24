@@ -8,7 +8,7 @@ correctly denies an otherwise plan-granted feature.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +25,7 @@ from app.auth.feature_catalog import (
 )
 from app.models.feature_override import OrgFeatureOverride
 from app.models.limit_override import OrgLimitOverride
-from app.models.subscription import Plan, Subscription
+from app.models.subscription import Plan, Subscription, SubscriptionStatus
 
 
 class UnknownFeatureKey(Exception):
@@ -47,10 +47,32 @@ class UsageLimit:
     limit: int | None  # None = unlimited, 0 = none
 
 
+# BE-05: the plan whose entitlements a lapsed subscription falls back to.
+FREE_PLAN_SLUG = "free"
+
+
+def _falls_back_to_free(status: SubscriptionStatus, period_end: date | None, today: date) -> bool:
+    """BE-05: is a subscription entitled to the Free plan, whatever plan it is on?
+
+    PAST_DUE: at once. CANCELED: once its paid period has ended, so the cancel
+    promise ("access continues until the current period ends") holds;
+    ``current_period_end`` is the last day of access, and a cancellation with
+    no period end falls back at once. TRIALING and ACTIVE follow their plan;
+    an expired trial is moved to Free by ``subscription_service.check_trial_expiry``.
+    """
+    if status == SubscriptionStatus.PAST_DUE:
+        return True
+    if status == SubscriptionStatus.CANCELED:
+        return period_end is None or period_end < today
+    return False
+
+
 @dataclass(frozen=True)
 class Entitlements:
-    """What an org may use, resolved once. ``plan_*`` are the plan's values
-    before overrides (catalog defaults when there is no subscription);
+    """What an org may use, resolved once. ``plan_*`` are the values of the
+    plan the subscription is entitled to, before overrides: the Free plan's for
+    a PAST_DUE subscription or a CANCELED one past its period, catalog
+    defaults when there is no subscription (or no Free plan to fall back to);
     ``overridden`` names every feature key and meter an ACTIVE override set."""
 
     features: dict[str, bool]
@@ -76,17 +98,32 @@ async def get_entitlements(
     NULL limit row makes the meter unlimited, a limit row replaces the meter's
     ``{period, limit}`` wholesale). An override is active while
     ``expires_at IS NULL OR expires_at > now`` on the app clock. No
-    subscription: catalog defaults, overrides still apply. Bad stored data
-    (an unknown plan key, a null platform limit) raises.
+    subscription: catalog defaults, overrides still apply. A PAST_DUE
+    subscription, and a CANCELED one whose period has ended (on ``now``'s
+    date), resolve as the Free plan (BE-05). Bad stored data (an unknown plan
+    key, a null platform limit) raises.
+
+    Seat limits are not read here: ``subscription_service.enforce_user_limit``
+    reads the subscribed plan and stays inert until billing is live.
     """
     now = now or utcnow_naive()
     plan = (
         await db.execute(
-            select(Plan.features, Plan.usage_limits, Plan.slug)
+            select(
+                Plan.features, Plan.usage_limits, Plan.slug,
+                Subscription.status, Subscription.current_period_end,
+            )
             .join(Subscription, Subscription.plan_id == Plan.id)
             .where(Subscription.org_id == org_id)
         )
     ).first()
+    if plan is not None and _falls_back_to_free(plan.status, plan.current_period_end, now.date()):
+        plan = (
+            await db.execute(
+                select(Plan.features, Plan.usage_limits, Plan.slug)
+                .where(Plan.slug == FREE_PLAN_SLUG)
+            )
+        ).first()
     plan_features = PlanFeatures.model_validate(
         (plan.features if plan else None) or {}
     ).model_dump(by_alias=True)

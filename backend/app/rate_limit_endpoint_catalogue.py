@@ -128,6 +128,10 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # two are separately addressable.
     "reports.query",
     "reports.sankey_query",
+    # tags router (BE-18): the two routes that create tags. The transaction
+    # route carries ``{transaction_id}``, so it uses ``shared_limit``.
+    "tags.create",
+    "tags.set_transaction_tags",
     # users router
     "users.cancel_pending_email",
     "users.change_password",

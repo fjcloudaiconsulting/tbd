@@ -62,7 +62,9 @@ export const TAG_NAME_MAX_LENGTH = 32;
 export type TagSuggestion = {
   name: string;
   source: "org_co_category" | "org_recent" | "shared_dictionary";
-  weight: number;
+  /** The org's own usage count; null on shared_dictionary suggestions, which
+   *  carry no cross-org count (BE-18). */
+  weight: number | null;
 };
 
 type SuggestApiResponse = { suggestions: TagSuggestion[] };

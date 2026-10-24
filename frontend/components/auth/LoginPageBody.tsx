@@ -42,6 +42,8 @@ const SSO_ERROR_COPY: Record<string, string> = {
   deactivated:
     "This account is deactivated. Contact support if this is unexpected.",
   no_email: "Google didn't return an email for this account.",
+  email_unsupported:
+    "This Google account's email address uses accented letters or an international domain name, which aren't supported. Try another Google account.",
   cancelled:
     "You cancelled the Google sign-in. Try again whenever you're ready.",
   provider_error:

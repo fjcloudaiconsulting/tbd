@@ -61,6 +61,7 @@ from app.schemas.auth import (
     VerifyEmailRequest,
     VerifyResponse,
 )
+from app.schemas.email_address import google_sign_in_allowed
 from app.config import settings as app_settings
 from app import state_db
 from app.security import (
@@ -187,8 +188,25 @@ async def _find_available_username(db: AsyncSession, base: str) -> str:
     return f"{base}{hash(base) % 10000}"
 
 
-async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organization:
+# DB-03: org names are globally unique (``uq_organizations_name_normalized``),
+# so a predictable default name could be claimed ahead of its owner. A default
+# name carries a random suffix, and a collision retries with a fresh one.
+_DEFAULT_ORG_NAME_ATTEMPTS = 5
+
+
+def _default_org_name(username: str) -> str:
+    return f"{username}'s Organization {secrets.token_hex(3)}"
+
+
+async def _create_org_with_defaults(
+    db: AsyncSession, org_name: str | None, *, username: str
+) -> Organization:
     """Create an organization and seed system account types + categories.
+
+    ``org_name`` None means the default name for ``username`` (DB-03): each
+    attempt inserts inside a savepoint, so a name already taken rolls back
+    only that attempt. A name the caller chose is tried once and a taken one
+    answers 409, like a rename.
 
     Delegates the seed to ``org_bootstrap_service.seed_org_defaults`` so
     the same logic backs both initial registration and the post-reset
@@ -196,9 +214,22 @@ async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organiza
     seed side; this caller path inserts a fresh org so no preexisting
     defaults can collide.
     """
-    org = Organization(name=org_name)
-    db.add(org)
-    await db.flush()
+    attempts = 1 if org_name is not None else _DEFAULT_ORG_NAME_ATTEMPTS
+    for attempt in range(attempts):
+        org = Organization(name=org_name if org_name is not None else _default_org_name(username))
+        try:
+            async with db.begin_nested():
+                db.add(org)
+                await db.flush()
+            break
+        except IntegrityError:
+            if org_name is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An organization with that name already exists",
+                )
+            if attempt == attempts - 1:
+                raise
     from app.services.org_bootstrap_service import seed_org_defaults
     await seed_org_defaults(db, org_id=org.id)
     return org
@@ -392,9 +423,7 @@ async def register(
             detail="Username or email already taken",
         )
 
-    org = await _create_org_with_defaults(
-        db, body.org_name or f"{body.username}'s Organization"
-    )
+    org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
 
     user = User(
         org_id=org.id,
@@ -4405,6 +4434,18 @@ async def google_callback(
     user = result.scalar_one_or_none()
     _phase("db_user_lookup_ok")
 
+    # DB-01: no new account under a non-ASCII address, and the
+    # accent-insensitive lookup above must not hand a look-alike address
+    # someone else's account. See ``google_sign_in_allowed``.
+    if not google_sign_in_allowed(email, user.email if user else None):
+        await _record_google_callback_failure(
+            session_factory,
+            request=request,
+            reason="email_unsupported",
+            actor_email=email,
+        )
+        return _google_error_redirect("email_unsupported")
+
     # Track whether this callback created a new local user. The flag
     # drives two downstream effects: an audit row distinct from the
     # login-success row, and a fragment-only signal to the frontend
@@ -4478,7 +4519,7 @@ async def google_callback(
         base_username = _suggest_username(first_name, last_name, email)
         username = await _find_available_username(db, base_username)
 
-        org = await _create_org_with_defaults(db, f"{username}'s Organization")
+        org = await _create_org_with_defaults(db, None, username=username)
 
         user = User(
             org_id=org.id,
