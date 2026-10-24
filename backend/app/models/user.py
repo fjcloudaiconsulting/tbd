@@ -144,6 +144,12 @@ class User(Base):
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
     totp_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
     recovery_codes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # BE-03. Whether a code mailed to ``email`` may stand in for TOTP at
+    # sign-in. Off until the user turns it on (with a second factor), so the
+    # mailbox alone cannot defeat the authenticator; existing rows start off.
+    mfa_email_fallback: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0", default=False
+    )
     # L3.3 first-run wizard: NULL means the user has not finished the
     # onboarding flow yet; a timestamp means "completed at <ts>". The
     # frontend redirects to ``/onboarding`` while this is NULL. The

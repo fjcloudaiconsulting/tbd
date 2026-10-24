@@ -273,7 +273,7 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 
 - TOTP via authenticator app (Google Authenticator, Authy, 1Password). A code is accepted once per user: its time step, and the two before it, are claimed in `used_tokens` (BE-26).
 - 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable), spent with a compare-and-swap on the stored list.
-- Email fallback with 6-digit code (10-minute expiry).
+- Email fallback with 6-digit code (10-minute expiry). For an account with TOTP it is off until the user turns it on in `/settings/security` (`PUT /api/v1/auth/mfa/email-fallback`), which takes a current TOTP code or an unused recovery code; turning it off takes neither, and disabling MFA turns it off (BE-03). While it is off, `/mfa/email-code` mails nothing and `/mfa/email-verify` completes no sign-in.
 - The 5-minute challenge token from the first leg carries a `jti`: it is claimed on success (single-use) and burned after 5 wrong codes, so the next try starts from the password.
 - TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY`).
 - Setup and disable via `/settings/security`. Setup asks for the password first (an account created with Google, `password_set=False`, uses a Google step-up for the `mfa_setup` action). Disabling MFA, regenerating recovery codes and changing the email of an MFA account also take a current TOTP code or an unused recovery code; wrong codes and passwords there draw from the per-account budgets below (BE-32).
@@ -391,7 +391,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `POST /api/v1/webhooks/mailgun` | HMAC signature-verified against the signing key on every call. Not open, just not bearer-authenticated. |
 | `POST /api/v1/oauth/token` | OAuth token endpoint (TBD-587). The credential is the authorization code plus its PKCE verifier, or a refresh token; an MCP client has no bearer token yet by construction. Limits are keyed on the credential, under a coarse per-IP ceiling. |
 
-The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable` and `mfa/recovery-codes` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
+The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable`, `mfa/recovery-codes` and `mfa/email-fallback` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
 
 This list is the authoritative one, and it is deliberately small and closed. Do not add to it without a security review. It is enforced automatically by `backend/tests/auth/test_public_route_allowlist.py`, which enumerates the real `app.main:app` and fails in both directions — a route that loses `Depends(get_current_user)` and a stale entry that no longer applies. Adding a route here without adding it to that test's `PUBLIC_ROUTES` literal (or the reverse) is a red build.
 

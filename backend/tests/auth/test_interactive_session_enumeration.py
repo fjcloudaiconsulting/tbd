@@ -100,6 +100,8 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/auth/mfa/enable"),             # mfa_enable
     ("POST", "/api/v1/auth/mfa/disable"),            # mfa_disable
     ("POST", "/api/v1/auth/mfa/recovery-codes"),     # mfa_regenerate_codes
+    # BE-03. Turning it on lets the mailbox stand in for the authenticator.
+    ("PUT", "/api/v1/auth/mfa/email-fallback"),      # mfa_email_fallback
     # TBD-346. The ISSUER of the step-up proof, not a consumer of it. Every
     # consumer is already gated, so a PAT could reach only this one link of
     # the chain -- and could not redeem what it started, because the Google

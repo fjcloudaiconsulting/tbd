@@ -42,6 +42,7 @@ from app.schemas.auth import (
     MfaChallengeResponse,
     MfaDisableRequest,
     MfaEmailCodeRequest,
+    MfaEmailFallbackRequest,
     MfaEmailVerifyRequest,
     MfaEnableRequest,
     MfaEnableResponse,
@@ -90,6 +91,7 @@ from app.services import audit_service, notification_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
 from app.services.notification_templates import (
     user_mfa_disabled as _tpl_user_mfa_disabled,
+    user_mfa_email_fallback_enabled as _tpl_user_mfa_email_fallback_enabled,
     user_mfa_enabled as _tpl_user_mfa_enabled,
     user_mfa_recovery_codes_regenerated as _tpl_user_mfa_recovery_codes_regenerated,
     user_password_reset as _tpl_user_password_reset,
@@ -152,6 +154,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         is_active=user.is_active,
         is_founder=user.is_founder,
         mfa_enabled=user.mfa_enabled,
+        mfa_email_fallback=user.mfa_email_fallback,
         password_set=user.password_set,
         onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
         allow_manual_balance_adjustment=org.allow_manual_balance_adjustment,
@@ -2730,6 +2733,23 @@ async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> tuple[User, str
     return user, jti
 
 
+EMAIL_FALLBACK_OFF_DETAIL = (
+    "Email codes are turned off for this account. "
+    "Use your authenticator app or a recovery code."
+)
+
+
+def _require_email_fallback(user: User) -> None:
+    """Refuse the emailed code for an account whose owner has not turned the
+    fallback on (BE-03): with TOTP enrolled, the mailbox alone must not stand
+    in for the authenticator. An MFA account without a TOTP secret keeps it,
+    as the only code-based factor it would have (``mfa_enable`` needs a TOTP
+    code, so the app does not create one). 400 like the other challenge-leg
+    refusals that are not a wrong code."""
+    if user.totp_secret and not user.mfa_email_fallback:
+        raise HTTPException(status_code=400, detail=EMAIL_FALLBACK_OFF_DETAIL)
+
+
 async def _second_factor_failed(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -3572,6 +3592,8 @@ async def mfa_disable(
     current_user.mfa_enabled = False
     current_user.totp_secret = None
     current_user.recovery_codes = None
+    # A later enrolment starts with the email fallback off again (BE-03).
+    current_user.mfa_email_fallback = False
     await db.commit()
 
     # Audit AFTER the business commit succeeds. This row is the trigger
@@ -3707,6 +3729,85 @@ async def mfa_regenerate_codes(
     return MfaEnableResponse(recovery_codes=codes)
 
 
+@router.put(
+    "/mfa/email-fallback",
+    dependencies=[Depends(require_interactive_session)],
+)
+async def mfa_email_fallback(
+    body: MfaEmailFallbackRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Turn the email-code sign-in fallback on or off (BE-03).
+
+    On lets the mailbox stand in for the authenticator, so it takes a current
+    TOTP code or an unused recovery code, as the BE-32 changes do; a recovery
+    code presented here is spent. Off raises protection and needs only the
+    session.
+    """
+    if not current_user.mfa_enabled or not current_user.totp_secret:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    if body.enabled:
+        await require_second_factor(
+            db, session_factory, request=request, user=current_user, code=body.mfa_code
+        )
+    changed = current_user.mfa_email_fallback != body.enabled
+    current_user.mfa_email_fallback = body.enabled
+    await db.commit()
+    if not changed:
+        return {"mfa_email_fallback": body.enabled}
+
+    event_type = (
+        "user.mfa.email_fallback.enabled"
+        if body.enabled
+        else "user.mfa.email_fallback.disabled"
+    )
+    audit_event_id = await audit_service.record_audit_event(
+        session_factory,
+        event_type=event_type,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=logs.CONTEXT.get({}).get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
+
+    # Turning it on is the direction that lowers protection: tell the user,
+    # in-app and by email, as for the other MFA changes. Best-effort.
+    if body.enabled and audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances.
+        recipient_user_id = current_user.id
+        recipient_email = current_user.email
+        title, notif_body, link_url = _tpl_user_mfa_email_fallback_enabled()
+        await notification_service.dispatch_notification_best_effort(
+            db,
+            user_id=recipient_user_id,
+            category=NotificationCategory.SECURITY,
+            event_type=event_type,
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=recipient_user_id,
+            email=recipient_email,
+            event_type=event_type,
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+        )
+
+    return {"mfa_email_fallback": body.enabled}
+
+
 @router.post("/mfa/verify", response_model=TokenResponse)
 @limiter.limit("10/minute")
 async def mfa_verify(
@@ -3804,6 +3905,7 @@ async def mfa_email_code(
 ):
     """Send a one-time code to the user's email as MFA fallback."""
     user, _jti = await _resolve_mfa_user(body.mfa_token, db)
+    _require_email_fallback(user)
 
     # Generate 6-digit numeric code
     code = f"{secrets.randbelow(1000000):06d}"
@@ -3830,6 +3932,9 @@ async def mfa_email_verify(
     """Verify an email-based MFA code to complete authentication."""
     await _require_session_store()
     user, challenge_jti = await _resolve_mfa_user(body.mfa_token, db)
+    # Checked again here: a code mailed before the fallback was turned off
+    # must not complete a sign-in after it (BE-03).
+    _require_email_fallback(user)
 
     # Validate the email_token and extract the code HMAC
     email_payload = decode_token(body.email_token)
