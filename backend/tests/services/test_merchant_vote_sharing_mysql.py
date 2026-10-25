@@ -10,8 +10,8 @@ fence (the re-check and the ordered locking reads) is in
 
 The opt-out side is what ``PUT /api/v1/settings`` does for
 ``share_merchant_data=false``: write the row, flush it (taking its lock), then
-withdraw the org's votes, one commit. The vote side is what ``execute_import``
-does: re-read the setting under its lock, then record the vote.
+withdraw the org's votes, one commit. The vote side is what each chunk of
+``execute_import`` does: re-read the setting under its lock, then record the vote.
 """
 from __future__ import annotations
 

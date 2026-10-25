@@ -219,6 +219,11 @@ async def confirm_import(
     L3.2 Wave 2B: passes ``user_id`` so the service can stamp the
     ``import_batches.created_by_user_id`` column when grouping the
     imported rows under a fresh batch header.
+
+    TBD-737: rows commit in chunks. A repeat with the same
+    ``idempotency_key`` resumes an interrupted confirm or returns the
+    stored result with ``replayed=true``; the same key with different
+    content is a 409.
     """
     return await import_service.execute_import(
         db,

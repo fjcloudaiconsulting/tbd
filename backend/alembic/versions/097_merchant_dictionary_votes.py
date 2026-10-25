@@ -1,7 +1,7 @@
 """Per-org votes on the shared merchant dictionary (BE-28).
 
-Revision ID: 095_merchant_dictionary_votes
-Revises: 094_tag_contributor_cleanup
+Revision ID: 097_merchant_dictionary_votes
+Revises: 096_ai_provider_varchar
 Create Date: 2026-10-25
 
 One row per (dictionary entry, org): an org's vote, counted once, when it
@@ -20,8 +20,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "095_merchant_dictionary_votes"
-down_revision: Union[str, None] = "094_tag_contributor_cleanup"
+revision: str = "097_merchant_dictionary_votes"
+down_revision: Union[str, None] = "096_ai_provider_varchar"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

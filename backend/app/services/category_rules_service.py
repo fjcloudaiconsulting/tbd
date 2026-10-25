@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Literal, Optional
+from typing import Iterable, Literal, Optional
 
 from sqlalchemy import case, delete, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
@@ -232,6 +232,107 @@ async def infer_category(
 
     # Tier 3 — default
     return None, "default"
+
+
+def _collation_key(value: str) -> str:
+    """Fold a stored token or slug the way the default MySQL collation compares.
+
+    ``utf8mb4_0900_ai_ci`` ignores case and accents, so the per-row
+    ``infer_category`` query matches a stored row that differs from the query
+    token only in case or accents. The batch variant matches in Python, so it
+    folds both sides the same way. Query tokens are already uppercase ASCII
+    (``normalize_description`` output), so for them the fold is the identity.
+    """
+    return _strip_accents(value).upper()
+
+
+def _pick(rows: list, token: str, attr: str):
+    """The row the per-row lookup would return for ``token``, or ``None``.
+
+    An exact match wins; otherwise the collation-equal rows decide. More than
+    one candidate is what ``scalar_one_or_none`` raises on, so it raises here
+    too.
+    """
+    exact = [r for r in rows if getattr(r, attr) == token]
+    candidates = exact or rows
+    if len(candidates) > 1:
+        raise MultipleResultsFound(
+            "Multiple rows were found when one or none was required"
+        )
+    return candidates[0] if candidates else None
+
+
+async def infer_categories(
+    db: AsyncSession, *, org_id: int, descriptions: Iterable[str]
+) -> dict[str, tuple[int | None, InferSource]]:
+    """``infer_category`` for many descriptions in a fixed number of queries.
+
+    TBD-736: the import preview called ``infer_category`` once per row (one to
+    three queries each). This resolves every distinct description with at most
+    three set-based queries (org rules, shared dictionary, then the org's
+    system categories for the dictionary slugs) and returns the same
+    ``(category_id, source)`` the per-row call returns, keyed by description.
+    """
+    tokens = {d: normalize_description(d) for d in set(descriptions)}
+    wanted = {t for t in tokens.values() if t}
+    resolved: dict[str, tuple[int | None, InferSource]] = {}
+
+    # Tier 1 — org rules for every token in one query.
+    rules_by_key: dict[str, list] = {}
+    if wanted:
+        rule_rows = (await db.execute(
+            select(CategoryRule.normalized_token, CategoryRule.category_id).where(
+                CategoryRule.org_id == org_id,
+                CategoryRule.normalized_token.in_(wanted),
+            )
+        )).all()
+        for r in rule_rows:
+            rules_by_key.setdefault(_collation_key(r.normalized_token), []).append(r)
+    for token in wanted:
+        rule = _pick(rules_by_key.get(token, []), token, "normalized_token")
+        if rule is not None and rule.category_id is not None:
+            resolved[token] = (rule.category_id, "org_rule")
+
+    # Tier 2 — shared dictionary for the tokens tier 1 left open, then the
+    # org's system categories for the slugs it names.
+    open_tokens = wanted - resolved.keys()
+    dict_by_key: dict[str, list] = {}
+    if open_tokens:
+        dict_rows = (await db.execute(
+            select(
+                MerchantDictionaryEntry.normalized_token,
+                MerchantDictionaryEntry.category_slug,
+            ).where(MerchantDictionaryEntry.normalized_token.in_(open_tokens))
+        )).all()
+        for r in dict_rows:
+            dict_by_key.setdefault(_collation_key(r.normalized_token), []).append(r)
+    slug_for_token: dict[str, str] = {}
+    for token in open_tokens:
+        entry = _pick(dict_by_key.get(token, []), token, "normalized_token")
+        if entry is not None and entry.category_slug:
+            slug_for_token[token] = entry.category_slug
+
+    cats_by_key: dict[str, list] = {}
+    if slug_for_token:
+        cat_rows = (await db.execute(
+            select(Category.slug, Category.id).where(
+                Category.org_id == org_id,
+                Category.slug.in_(set(slug_for_token.values())),
+                Category.is_system.is_(True),
+            )
+        )).all()
+        for r in cat_rows:
+            cats_by_key.setdefault(_collation_key(r.slug), []).append(r)
+    for token, slug in slug_for_token.items():
+        cat = _pick(cats_by_key.get(_collation_key(slug), []), slug, "slug")
+        if cat is not None and cat.id is not None:
+            resolved[token] = (cat.id, "shared_dictionary")
+
+    # Tier 3 — default.
+    return {
+        d: resolved.get(t, (None, "default")) if t else (None, "default")
+        for d, t in tokens.items()
+    }
 
 
 async def learn_from_choice(

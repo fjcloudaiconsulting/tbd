@@ -4,19 +4,25 @@ Parsing/validation is separate from persistence so a background worker
 can replace the synchronous confirm path later without a rewrite.
 """
 
+import hashlib
+import uuid
 from collections import Counter
+from dataclasses import dataclass, field
 
 import logging
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
 from app.models.category import Category, CategoryType
+from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.import_schemas import (
     ImportConfirmRequest,
     ImportConfirmResponse,
+    ImportConfirmRow,
     ImportPreviewRow,
     ImportPreviewResponse,
     ImportRowError,
@@ -38,11 +44,12 @@ from app.services.transaction_service import (
     _link_pair,
     _load_opts,
     find_duplicate_of_linked_leg,
-    find_match_candidates,
+    find_duplicate_of_linked_leg_batch,
+    find_match_candidates_batch,
     get_account_for_update,
 )
 from app.services.category_rules_service import (
-    infer_category,
+    infer_categories,
     learn_from_choice,
     normalize_description,
     record_shared_vote,
@@ -202,6 +209,31 @@ async def build_preview(
         existing_fitids = {row.fitid for row in fitid_result.all() if row.fitid}
     seen_fitids: set[tuple[int, str]] = set()
 
+    # ── Batched detectors (TBD-736) ──
+    # Smart-rules suggestions and both transfer detectors resolve every row
+    # with a fixed number of set-based queries instead of several per row.
+    # Each lookup returns exactly what the per-row helper returns for the
+    # same inputs (fenced in tests/services/test_import_preview_batching.py).
+    def _tx_type(row: ParsedRow) -> TransactionType:
+        return TransactionType.EXPENSE if row.type == "expense" else TransactionType.INCOME
+
+    detector_keys = {(_tx_type(r), r.amount, r.date) for r in parsed_rows}
+    suggestions = await infer_categories(
+        db, org_id=org_id, descriptions=[r.description for r in parsed_rows]
+    )
+    dup_linked_by_key = await find_duplicate_of_linked_leg_batch(
+        db, org_id,
+        account_id=account_id,
+        currency=destination_account.currency,
+        keys=detector_keys,
+    )
+    match_candidates_by_key = await find_match_candidates_batch(
+        db, org_id,
+        account_id_excluded=account_id,
+        currency=destination_account.currency,
+        keys=detector_keys,
+    )
+
     preview_rows: list[ImportPreviewRow] = []
     duplicate_count = 0
 
@@ -227,25 +259,14 @@ async def build_preview(
                 seen_fitids.add(fitid_key)
 
         # ── Smart-rules suggestion ──
-        suggested_category_id, suggestion_source = await infer_category(
-            db, org_id=org_id, description=row.description
-        )
+        suggested_category_id, suggestion_source = suggestions[row.description]
 
         if is_dup:
             duplicate_count += 1
 
         # ── Detector 1: same-account already-linked match → flag duplicate-of-linked-leg ──
-        row_tx_type = (
-            TransactionType.EXPENSE if row.type == "expense" else TransactionType.INCOME
-        )
-        dup_linked_candidates = await find_duplicate_of_linked_leg(
-            db, org_id,
-            account_id=account_id,
-            amount=row.amount,
-            type=row_tx_type,
-            date=row.date,
-            currency=destination_account.currency,
-        )
+        row_key = (_tx_type(row), row.amount, row.date)
+        dup_linked_candidates = dup_linked_by_key[row_key]
         is_dup_of_linked = bool(dup_linked_candidates)
         duplicate_candidate_obj: DuplicateCandidate | None = None
         if is_dup_of_linked:
@@ -270,14 +291,7 @@ async def build_preview(
             pair_with_id: int | None = None
             candidate_models: list[TransferCandidate] = []
         else:
-            match_candidates = await find_match_candidates(
-                db, org_id,
-                source_type=row_tx_type,
-                amount=row.amount,
-                account_id_excluded=account_id,
-                date=row.date,
-                currency=destination_account.currency,
-            )
+            match_candidates = match_candidates_by_key[row_key]
             if not match_candidates:
                 action, confidence, pair_with_id, candidate_models = (
                     "none", None, None, [],
@@ -393,6 +407,153 @@ async def build_preview(
     )
 
 
+# ── Confirm (TBD-737: chunked commits, idempotent by key) ───────────────────
+#
+# A confirm commits every ``CONFIRM_CHUNK_ROWS`` rows instead of holding one
+# transaction (and its account row locks) for the whole file. Its progress
+# lives on the ``import_batches`` header it creates, which carries the
+# client's ``idempotency_key``:
+#
+# 1. Claim: insert the header (key + request hash, ``next_row`` 0) and commit
+#    it on its own. A second request with the same key hits the unique index
+#    and attaches to the existing header instead; a different request body
+#    under the same key is a 409.
+# 2. Chunks: each chunk locks the header (``SELECT ... FOR UPDATE``), reads
+#    ``next_row``, applies the next slice of rows, links the new transactions
+#    to the header and writes the advanced progress, all in ONE transaction.
+#    A chunk therefore lands whole (rows, balances, progress) or not at all,
+#    and two requests for the same key can never apply the same slice: the
+#    second waits on the lock, then sees the advanced ``next_row``.
+# 3. Completion: the last chunk stores the final response. A repeated confirm
+#    returns it (``replayed=True``) without touching any row. A confirm that
+#    failed between chunks is resumed by repeating it with the same key.
+#
+# A confirm that imported nothing removes its header (no empty batches, as
+# before); repeating it re-runs rows that wrote nothing the first time.
+
+CONFIRM_CHUNK_ROWS = 500
+
+
+@dataclass
+class _ConfirmContext:
+    org_id: int
+    body: ImportConfirmRequest
+    currency: str
+    share_merchant_data: bool
+    # Per-call telemetry (rows this call processed).
+    learned_count: int = 0
+    accepted_count: int = 0
+    overridden_count: int = 0
+    source_split: Counter = field(default_factory=Counter)
+    miss_tokens: set[str] = field(default_factory=set)
+    rows_processed: int = 0
+
+
+@dataclass
+class _ChunkResult:
+    imported_count: int = 0
+    paired_count: int = 0
+    dropped_duplicate_count: int = 0
+    skipped_count: int = 0
+    errors: list[ImportRowError] = field(default_factory=list)
+    imported_transaction_ids: list[int] = field(default_factory=list)
+
+
+def _confirm_request_hash(body: ImportConfirmRequest) -> str:
+    """Fingerprint of a confirm's content, key excluded."""
+    payload = body.model_dump_json(exclude={"idempotency_key"})
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _empty_response() -> ImportConfirmResponse:
+    return ImportConfirmResponse(
+        imported_count=0, skipped_count=0, error_count=0, errors=[],
+    )
+
+
+def _add_chunk(acc: ImportConfirmResponse, chunk: _ChunkResult) -> ImportConfirmResponse:
+    errors = [*acc.errors, *chunk.errors]
+    return acc.model_copy(update={
+        "imported_count": acc.imported_count + chunk.imported_count,
+        "paired_count": acc.paired_count + chunk.paired_count,
+        "dropped_duplicate_count": (
+            acc.dropped_duplicate_count + chunk.dropped_duplicate_count
+        ),
+        "skipped_count": acc.skipped_count + chunk.skipped_count,
+        "errors": errors,
+        "error_count": len(errors),
+    })
+
+
+async def _find_keyed_batch(
+    db: AsyncSession, org_id: int, key: str
+) -> ImportBatch | None:
+    return await db.scalar(
+        select(ImportBatch)
+        .where(ImportBatch.org_id == org_id, ImportBatch.idempotency_key == key)
+        .execution_options(populate_existing=True)
+    )
+
+
+async def _claim_confirm(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    user_id: int,
+    body: ImportConfirmRequest,
+    key: str,
+    request_hash: str,
+) -> tuple[int, bool]:
+    """Return ``(batch_id, attached)`` for this key, creating the header if new.
+
+    ``attached`` is True when a header for the key already existed, i.e. this
+    request repeats an earlier one.
+    """
+    existing = await _find_keyed_batch(db, org_id, key)
+    if existing is None:
+        batch = ImportBatch(
+            org_id=org_id,
+            account_id=body.account_id,
+            source_format=ImportSourceFormat(body.source_format),
+            file_name=body.file_name,
+            created_by_user_id=user_id,
+            status=ImportBatchStatus.OPEN,
+            row_count=0,
+            accepted_count=0,
+            pending_count=0,
+            idempotency_key=key,
+            confirm_state={
+                "request_hash": request_hash,
+                "next_row": 0,
+                "completed": False,
+                "response": _empty_response().model_dump(mode="json"),
+            },
+        )
+        db.add(batch)
+        try:
+            await db.flush()
+            batch_id = batch.id
+            await db.commit()
+            return batch_id, False
+        except IntegrityError:
+            # A concurrent request with the same key claimed it first.
+            await db.rollback()
+            existing = await _find_keyed_batch(db, org_id, key)
+            if existing is None:
+                raise
+    state = existing.confirm_state or {}
+    if state.get("request_hash") != request_hash:
+        raise ConflictError(
+            "This import key was already used for a different import; "
+            "upload the file again to start a new import"
+        )
+    batch_id = existing.id
+    # Release the read snapshot so the chunk loop's locking reads see the
+    # latest committed progress.
+    await db.commit()
+    return batch_id, True
+
+
 async def execute_import(
     db: AsyncSession,
     org_id: int,
@@ -401,6 +562,209 @@ async def execute_import(
     user_id: int | None = None,
 ) -> ImportConfirmResponse:
     """Create / pair / drop transactions for all confirmed (non-skipped) rows.
+
+    Per-row behaviour is in ``_apply_confirm_rows``. This function owns the
+    chunked commits and the idempotency described above. Without a
+    ``user_id`` (service-level callers in tests) there is no batch header to
+    record progress on: rows are still committed per chunk, but a repeat is
+    not detected.
+    """
+    # Destination account for currency lookups (used by both pair partner
+    # validation and drop_as_duplicate revalidation).
+    destination_account = await db.scalar(
+        select(Account).where(
+            Account.id == body.account_id, Account.org_id == org_id
+        )
+    )
+    if destination_account is None:
+        await transaction_service.validate_account(db, body.account_id, org_id)
+
+    # ── Smart-rules learning: fetch share flag once ──
+    # BE-28: each chunk re-reads it under its row lock before voting
+    # (``_apply_confirm_rows``). This plain read keeps non-sharing orgs (the
+    # default) lock-free.
+    share_flag = (await db.execute(
+        select(OrgSetting.value).where(
+            OrgSetting.org_id == org_id,
+            OrgSetting.key == SHARE_MERCHANT_DATA_KEY,
+        )
+    )).scalar_one_or_none()
+
+    ctx = _ConfirmContext(
+        org_id=org_id,
+        body=body,
+        currency=destination_account.currency,
+        share_merchant_data=share_merchant_data_value_enabled(share_flag),
+    )
+
+    if user_id is None:
+        response = await _run_unkeyed(db, ctx)
+        attached = False
+    else:
+        key = body.idempotency_key or uuid.uuid4().hex
+        request_hash = _confirm_request_hash(body)
+        while True:
+            batch_id, attached = await _claim_confirm(
+                db, org_id=org_id, user_id=user_id, body=body,
+                key=key, request_hash=request_hash,
+            )
+            response = await _run_keyed(db, ctx, batch_id)
+            if response is not None:
+                break
+            # The header vanished under us: a concurrent request with this
+            # key finished having imported nothing and removed it. Nothing
+            # was written, so claim afresh and run the rows again.
+
+    if attached and ctx.rows_processed == 0:
+        logger.info(
+            "import.confirm.replayed",
+            extra={"org_id": org_id, "import_id": response.import_id},
+        )
+        return response.model_copy(update={"replayed": True})
+
+    _log_confirm_telemetry(ctx, response)
+    if attached:
+        response = response.model_copy(update={"replayed": True})
+    return response
+
+
+async def _run_unkeyed(
+    db: AsyncSession, ctx: _ConfirmContext
+) -> ImportConfirmResponse:
+    acc = _empty_response()
+    rows = ctx.body.rows
+    for start in range(0, len(rows), CONFIRM_CHUNK_ROWS):
+        chunk = await _apply_confirm_rows(
+            db, ctx, rows[start:start + CONFIRM_CHUNK_ROWS]
+        )
+        acc = _add_chunk(acc, chunk)
+        await db.commit()
+    return acc
+
+
+async def _run_keyed(
+    db: AsyncSession, ctx: _ConfirmContext, batch_id: int
+) -> ImportConfirmResponse | None:
+    """Drive the chunks of a claimed confirm to completion.
+
+    Returns the final response, or ``None`` if the header disappeared (see
+    ``execute_import``).
+    """
+    rows = ctx.body.rows
+    while True:
+        batch = await db.scalar(
+            select(ImportBatch)
+            .where(ImportBatch.id == batch_id, ImportBatch.org_id == ctx.org_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if batch is None:
+            await db.commit()
+            return None
+        state = batch.confirm_state or {}
+        acc = ImportConfirmResponse.model_validate(state["response"])
+        if state.get("completed"):
+            await db.commit()  # release the lock; nothing changed
+            return acc
+
+        start = int(state["next_row"])
+        chunk = await _apply_confirm_rows(
+            db, ctx, rows[start:start + CONFIRM_CHUNK_ROWS]
+        )
+        acc = _add_chunk(acc, chunk)
+        next_row = min(start + CONFIRM_CHUNK_ROWS, len(rows))
+        completed = next_row >= len(rows)
+
+        new_ids = chunk.imported_transaction_ids
+        if new_ids:
+            await db.execute(
+                update(Transaction)
+                .where(
+                    Transaction.id.in_(new_ids),
+                    Transaction.org_id == ctx.org_id,
+                )
+                .values(import_batch_id=batch_id)
+            )
+            batch.row_count += len(new_ids)
+            batch.accepted_count += len(new_ids)
+
+        row_count = batch.row_count
+        if completed and row_count == 0:
+            # Nothing imported: keep the "no empty batches" rule.
+            await db.delete(batch)
+            await db.commit()
+            return acc.model_copy(update={"import_id": None})
+
+        acc = acc.model_copy(update={"import_id": batch_id if row_count else None})
+        batch.confirm_state = {
+            "request_hash": state["request_hash"],
+            "next_row": next_row,
+            "completed": completed,
+            "response": acc.model_dump(mode="json"),
+        }
+        await db.commit()
+        if completed:
+            logger.info(
+                "import.batch_created",
+                extra={
+                    "org_id": ctx.org_id,
+                    "batch_id": batch_id,
+                    "source_format": ctx.body.source_format,
+                    "row_count": row_count,
+                },
+            )
+            return acc
+
+
+def _log_confirm_telemetry(
+    ctx: _ConfirmContext, response: ImportConfirmResponse
+) -> None:
+    # ── Aggregate smart-rules metric (architect-mandated; one per import) ──
+    # rows_total: rows this call processed (all submitted rows unless the
+    # call resumed an interrupted confirm).
+    logger.info(
+        "smart_rules.import_executed",
+        extra={
+            "org_id": ctx.org_id,
+            "rows_total": ctx.rows_processed,
+            "imported_count": response.imported_count,
+            "paired_count": response.paired_count,
+            "learned_count": ctx.learned_count,
+            "accepted_count": ctx.accepted_count,
+            "overridden_count": ctx.overridden_count,
+            "source_split": dict(ctx.source_split),
+            "miss_count": len(ctx.miss_tokens),
+        },
+    )
+    # Per-UNIQUE-token miss events (set-dedup is load-bearing — emitting
+    # per-row would flood the metric with duplicates of the same merchant).
+    for token in ctx.miss_tokens:
+        logger.info(
+            "smart_rules.miss",
+            extra={
+                "org_id": ctx.org_id,
+                "normalized_token": token,
+            },
+        )
+
+    # ── Per-execute confirm summary (transfer-aware) ──
+    logger.info(
+        "import.confirmed.transfers",
+        extra={
+            "org_id": ctx.org_id,
+            "paired_count": response.paired_count,
+            "dropped_duplicate_count": response.dropped_duplicate_count,
+            "plain_created_count": response.imported_count,
+        },
+    )
+
+
+async def _apply_confirm_rows(
+    db: AsyncSession,
+    ctx: _ConfirmContext,
+    rows: list[ImportConfirmRow],
+) -> _ChunkResult:
+    """Create / pair / drop transactions for one slice of confirmed rows.
 
     Per-row branches (spec §3.3):
       action="create"             → plain insert via _create_transaction_no_commit.
@@ -413,55 +777,45 @@ async def execute_import(
 
     Each row runs inside its own ``db.begin_nested()`` savepoint so failures
     in the pair branch (e.g. _link_pair raises after the new leg flushed)
-    cleanly roll back the partial work without taking the whole batch with it.
-    Smart-rules learning runs OUTSIDE the savepoint per row, best-effort:
+    cleanly roll back the partial work without taking the whole slice with
+    it. Smart-rules learning runs OUTSIDE the savepoint per row, best-effort:
     a learn failure must NOT bubble out as a row error or roll back the
-    imported transaction.
+    imported transaction. The caller owns the commit.
     """
+    org_id = ctx.org_id
+    body = ctx.body
+    currency = ctx.currency
+    # BE-28: re-read the share flag under its row lock at the start of every
+    # chunk. Each chunk commits on its own, so a lock taken once would be
+    # released at the first commit; held per chunk, turning sharing off and
+    # this chunk's votes are exclusive (the opt-out either waits for the
+    # chunk to commit and withdraws its votes, or commits first and the
+    # chunk sees sharing off). Once seen off, it stays off for the rest of
+    # the confirm. A resumed or repeated confirm cannot vote twice: a vote is
+    # one row per (entry, org).
+    if ctx.share_merchant_data:
+        ctx.share_merchant_data = await share_merchant_data_still_enabled(db, org_id)
+    share_merchant_data = ctx.share_merchant_data
+    result = _ChunkResult()
+    errors = result.errors
+    # L3.2 Wave 2B: the IDs of every transaction this slice created, linked
+    # to the ``import_batches`` header by the caller. The synthetic partner
+    # leg of a create_transfer_pair is intentionally NOT collected (it
+    # didn't come from the bank file). All other branches contribute their
+    # bank-side leg ID.
+    imported_transaction_ids = result.imported_transaction_ids
     imported_count = 0          # plain creates only (action="create")
     paired_count = 0
     dropped_duplicate_count = 0
     skipped_count = 0
-    errors: list[ImportRowError] = []
-    # L3.2 Wave 2B: collect the IDs of every transaction this confirm
-    # committed so we can link them to a fresh ``import_batches`` row
-    # at the end. The synthetic partner leg of a create_transfer_pair
-    # is intentionally NOT collected (it didn't come from the bank
-    # file). All other branches contribute their bank-side leg ID.
-    imported_transaction_ids: list[int] = []
-
-    # Destination account for currency lookups (used by both pair partner
-    # validation and drop_as_duplicate revalidation).
-    destination_account = await db.scalar(
-        select(Account).where(
-            Account.id == body.account_id, Account.org_id == org_id
-        )
-    )
-    if destination_account is None:
-        await transaction_service.validate_account(db, body.account_id, org_id)
-
-    # ── Smart-rules learning: fetch share flag once, init aggregate counters ──
-    share_flag = (await db.execute(
-        select(OrgSetting.value).where(
-            OrgSetting.org_id == org_id,
-            OrgSetting.key == SHARE_MERCHANT_DATA_KEY,
-        )
-    )).scalar_one_or_none()
-    share_merchant_data = share_merchant_data_value_enabled(share_flag)
-    # BE-28: re-read under a row lock, so turning sharing off and this
-    # import's votes are exclusive. The plain read keeps non-sharing orgs
-    # (the default) lock-free.
-    if share_merchant_data:
-        share_merchant_data = await share_merchant_data_still_enabled(db, org_id)
-
     learned_count = 0
     accepted_count = 0
     overridden_count = 0
-    source_split: Counter[str] = Counter()
-    miss_tokens: set[str] = set()
+    source_split = ctx.source_split
+    miss_tokens = ctx.miss_tokens
     paired_pair_ids: list[tuple[int, int]] = []
 
-    for row in body.rows:
+    for row in rows:
         if row.skip:
             skipped_count += 1
             continue
@@ -539,7 +893,7 @@ async def execute_import(
                         raise ConflictError(
                             "Partner row no longer settled; re-preview"
                         )
-                    if partner.account.currency != destination_account.currency:
+                    if partner.account.currency != currency:
                         raise ConflictError(
                             "Currency mismatch detected at confirm; re-preview"
                         )
@@ -577,7 +931,7 @@ async def execute_import(
                         amount=row.amount,
                         type=row_tx_type,
                         date=row.date,
-                        currency=destination_account.currency,
+                        currency=currency,
                     )
                     candidate_ids = {c.id for c in dup_check}
                     if row.duplicate_of_transaction_id not in candidate_ids:
@@ -610,7 +964,7 @@ async def execute_import(
                         raise ValidationError(
                             "Partner account must differ from import account"
                         )
-                    if partner_account.currency != destination_account.currency:
+                    if partner_account.currency != currency:
                         raise ValidationError(
                             "Partner account currency must match import "
                             "account currency"
@@ -840,85 +1194,12 @@ async def execute_import(
                 if token:
                     miss_tokens.add(token)
 
-    # L3.2 Wave 2B (owner-review fix): ``body.file_name`` and
-    # ``body.source_format`` are REQUIRED by the schema, so every
-    # confirm that committed at least one transaction creates an
-    # ``import_batches`` header row. We do this BEFORE the outer commit
-    # so the batch + the per-row import_batch_id backfill land in the
-    # same transaction. Manual batch entry (``/transactions/batch``)
-    # does NOT go through this path, so it stays unlinked (per spec
-    # §3.2 row C).
-    #
-    # We skip batch creation only when (a) no transactions were
-    # imported (every row was an error or skipped or
-    # drop_as_duplicate -- nothing to group under a batch), or (b) we
-    # don't have a ``user_id`` (test paths that call ``execute_import``
-    # without auth context). The router always passes ``user_id``, so
-    # case (b) is a test-only escape hatch.
-    batch_id: int | None = None
-    if imported_transaction_ids and user_id is not None:
-        from app.services import reconciliation_service  # avoid circular
-
-        batch = await reconciliation_service.create_import_batch(
-            db,
-            org_id=org_id,
-            user_id=user_id,
-            account_id=body.account_id,
-            source_format=body.source_format,
-            file_name=body.file_name,
-            transaction_ids=imported_transaction_ids,
-        )
-        batch_id = batch.id
-
-    # Final commit for any savepoints whose changes haven't been flushed to
-    # the outer transaction yet (savepoint commit only releases to the outer
-    # transaction; we still owe the outer commit).
-    await db.commit()
-
-    # ── Aggregate smart-rules metric (architect-mandated; one per import) ──
-    # rows_total preserves its original meaning: total submitted rows.
-    logger.info(
-        "smart_rules.import_executed",
-        extra={
-            "org_id": org_id,
-            "rows_total": len(body.rows),
-            "imported_count": imported_count,
-            "paired_count": paired_count,
-            "learned_count": learned_count,
-            "accepted_count": accepted_count,
-            "overridden_count": overridden_count,
-            "source_split": dict(source_split),
-            "miss_count": len(miss_tokens),
-        },
-    )
-    # Per-UNIQUE-token miss events (set-dedup is load-bearing — emitting
-    # per-row would flood the metric with duplicates of the same merchant).
-    for token in miss_tokens:
-        logger.info(
-            "smart_rules.miss",
-            extra={
-                "org_id": org_id,
-                "normalized_token": token,
-            },
-        )
-
-    # ── Per-execute confirm summary (transfer-aware) ──
-    logger.info(
-        "import.confirmed.transfers",
-        extra={
-            "org_id": org_id,
-            "paired_count": paired_count,
-            "dropped_duplicate_count": dropped_duplicate_count,
-            "plain_created_count": imported_count,
-        },
-    )
-
-    return ImportConfirmResponse(
-        imported_count=imported_count,
-        paired_count=paired_count,
-        dropped_duplicate_count=dropped_duplicate_count,
-        skipped_count=skipped_count,
-        error_count=len(errors),
-        errors=errors,
-        import_id=batch_id,
-    )
+    result.imported_count = imported_count
+    result.paired_count = paired_count
+    result.dropped_duplicate_count = dropped_duplicate_count
+    result.skipped_count = skipped_count
+    ctx.learned_count += learned_count
+    ctx.accepted_count += accepted_count
+    ctx.overridden_count += overridden_count
+    ctx.rows_processed += len(rows)
+    return result

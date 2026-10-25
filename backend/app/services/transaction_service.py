@@ -11,6 +11,7 @@ instead of HTTPException — callers map these to the appropriate response.
 """
 
 import datetime
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 
 import logging
@@ -2038,6 +2039,130 @@ async def find_duplicate_of_linked_leg(
     rows = list(result.scalars().all())
     rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
     return rows[:10]  # defensive cap AFTER sorting
+
+
+# ── Batched detectors (TBD-736) ─────────────────────────────────────────────
+#
+# The import preview used to call ``find_duplicate_of_linked_leg`` and
+# ``find_match_candidates`` once per parsed row. The batch variants below run
+# ONE query per detector for a whole file: every filter that is the same for
+# all rows stays in SQL, and the per-row part (type, amount, ±3-day window) is
+# widened to the union of the rows (``type IN``, ``amount IN``, the file's date
+# range padded by the window) and then applied per row in Python with the same
+# ordering and cap. The result for each key is exactly what the per-row call
+# returns for it.
+
+DetectorKey = tuple[TransactionType, Decimal, datetime.date]
+
+_DETECTOR_WINDOW = datetime.timedelta(days=3)
+
+
+def _per_row_slice(
+    fetched: list[Transaction],
+    keys: set[DetectorKey],
+    *,
+    type_for: Callable[[TransactionType], TransactionType],
+    cap: int,
+) -> dict[DetectorKey, list[Transaction]]:
+    """Split one widened result set into the per-row answers.
+
+    ``type_for(key_type)`` maps a key's type to the transaction type the
+    per-row query filters on (identity for duplicates, the opposite type for
+    transfer candidates).
+    """
+    by_type_amount: dict[tuple[TransactionType, Decimal], list[Transaction]] = {}
+    for tx in fetched:
+        by_type_amount.setdefault((tx.type, tx.amount), []).append(tx)
+    out: dict[DetectorKey, list[Transaction]] = {}
+    for key in keys:
+        key_type, amount, date = key
+        rows = [
+            tx for tx in by_type_amount.get((type_for(key_type), amount), [])
+            if date - _DETECTOR_WINDOW <= tx.date <= date + _DETECTOR_WINDOW
+        ]
+        rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
+        out[key] = rows[:cap]
+    return out
+
+
+async def find_duplicate_of_linked_leg_batch(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    account_id: int,
+    currency: str,
+    keys: set[DetectorKey],
+) -> dict[DetectorKey, list[Transaction]]:
+    """``find_duplicate_of_linked_leg`` for many ``(type, amount, date)`` keys.
+
+    Same filters, ordering and cap of 10 per key, in one query (plus the
+    eager loads) however many keys there are.
+    """
+    if not keys:
+        return {}
+    q = (
+        select(Transaction)
+        .options(*_load_opts())
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.account_id == account_id,
+            Transaction.type.in_({k[0] for k in keys}),
+            Transaction.amount.in_({k[1] for k in keys}),
+            Transaction.linked_transaction_id.is_not(None),
+            Transaction.is_manual_adjustment.is_(False),
+            Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
+            Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
+            Account.currency == currency,
+        )
+    )
+    fetched = list((await db.execute(q)).scalars().all())
+    return _per_row_slice(fetched, keys, type_for=lambda t: t, cap=10)
+
+
+async def find_match_candidates_batch(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    account_id_excluded: int,
+    currency: str,
+    keys: set[DetectorKey],
+) -> dict[DetectorKey, list[Transaction]]:
+    """``find_match_candidates`` for many ``(source_type, amount, date)`` keys.
+
+    Same filters, ordering and cap of 25 per key, in one query (plus the
+    eager loads) however many keys there are. As with the per-row helper,
+    each key carries the SOURCE type; the opposite type is matched.
+    """
+    if not keys:
+        return {}
+
+    def opposite(t: TransactionType) -> TransactionType:
+        return (
+            TransactionType.INCOME if t == TransactionType.EXPENSE
+            else TransactionType.EXPENSE
+        )
+
+    q = (
+        select(Transaction)
+        .options(*_load_opts())
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.account_id != account_id_excluded,
+            Transaction.type.in_({opposite(k[0]) for k in keys}),
+            Transaction.amount.in_({k[1] for k in keys}),
+            Transaction.status == TransactionStatus.SETTLED,
+            Transaction.linked_transaction_id.is_(None),
+            Transaction.recurring_id.is_(None),
+            Transaction.is_manual_adjustment.is_(False),
+            Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
+            Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
+            Account.currency == currency,
+        )
+    )
+    fetched = list((await db.execute(q)).scalars().all())
+    return _per_row_slice(fetched, keys, type_for=opposite, cap=25)
 
 
 async def pair_existing_transactions(

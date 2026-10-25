@@ -252,6 +252,44 @@ async def test_vote_rechecks_merchant_sharing_under_the_lock(
     assert await _votes(db_session) == (0, 0)
 
 
+async def test_each_chunk_rechecks_merchant_sharing(
+    db_session: AsyncSession, monkeypatch,
+) -> None:
+    """Each chunk commits on its own, so the share flag is re-read under its
+    lock per chunk: sharing turned off after the first chunk committed stops
+    the votes of the next one. Wrong implementation: one locked read for the
+    whole confirm, released at the first chunk's commit."""
+    seed = await _seed(db_session, share=True)
+    db_session.add(MerchantDictionaryEntry(
+        normalized_token="ALDI", category_slug="groceries", is_seed=True, vote_count=0,
+    ))
+    await db_session.commit()
+    monkeypatch.setattr(import_service, "CONFIRM_CHUNK_ROWS", 1)
+    original = import_service._apply_confirm_rows
+    calls = {"n": 0}
+
+    async def opt_out_after_first_chunk(db_, ctx, chunk_rows):
+        result = await original(db_, ctx, chunk_rows)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            setting = await db_.scalar(select(OrgSetting).where(
+                OrgSetting.org_id == seed["org_id"],
+                OrgSetting.key == "share_merchant_data",
+            ))
+            setting.value = "false"
+        return result
+
+    monkeypatch.setattr(import_service, "_apply_confirm_rows", opt_out_after_first_chunk)
+    rows = [_row(1, seed["groceries_id"]), _row(2, seed["groceries_id"])]
+    rows[1] = rows[1].model_copy(update={"description": "POS ALDI *0002"})
+    await _confirm(db_session, seed, rows)
+
+    counts = dict((await db_session.execute(select(
+        MerchantDictionaryEntry.normalized_token, MerchantDictionaryEntry.vote_count,
+    ).execution_options(populate_existing=True))).all())
+    assert counts == {"LIDL": 1, "ALDI": 0}
+
+
 async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
     """Paired rows (action='pair_with_existing') must NOT trigger smart-rules
     learning. The new ORM Transaction has linked_transaction_id set after
