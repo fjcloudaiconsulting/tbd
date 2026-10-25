@@ -43,9 +43,12 @@ export default function AcceptInviteBody() {
     let cancelled = false;
     (async () => {
       try {
-        const data = await apiFetch<Preview>(
-          `/api/v1/orgs/invitations/preview?token=${encodeURIComponent(token)}`,
-        );
+        // TBD-738: the token goes in the body, never in a URL, so it stays
+        // out of access logs and the Referer.
+        const data = await apiFetch<Preview>("/api/v1/orgs/invitations/preview", {
+          method: "POST",
+          body: JSON.stringify({ token }),
+        });
         if (cancelled) return;
         setPreview(data);
         if (data.is_reactivation && data.existing_username) {
