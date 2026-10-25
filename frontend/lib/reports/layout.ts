@@ -1,16 +1,16 @@
-import type { Layout } from "react-grid-layout";
+import type { LayoutItem } from "react-grid-layout";
 
 import type { Widget } from "@/lib/reports/types";
 
-/** The react-grid-layout item fields we read — a subset of RGL's `Layout`,
+/** The react-grid-layout item fields we read — a subset of RGL's `LayoutItem`,
  *  reused rather than re-declared so it can't drift from the library type. */
-export type RglItem = Pick<Layout, "i" | "x" | "y" | "w" | "h">;
+export type RglItem = Pick<LayoutItem, "i" | "x" | "y" | "w" | "h">;
 
 /** Apply react-grid-layout positions back onto widgets, keyed by id.
  *  Always returns exactly `items.length` widgets (it maps over `items`);
  *  a widget with no matching rgl item is returned unchanged, and an rgl
  *  item with no matching widget is ignored. */
-export function widgetsFromLayout(items: Widget[], rglItems: RglItem[]): Widget[] {
+export function widgetsFromLayout(items: Widget[], rglItems: readonly RglItem[]): Widget[] {
   const byId = new Map(rglItems.map((l) => [l.i, l]));
   return items.map((wgt) => {
     const l = byId.get(wgt.id);
