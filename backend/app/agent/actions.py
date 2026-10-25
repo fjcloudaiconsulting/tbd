@@ -13,6 +13,11 @@ that has left ``pending`` is never run again.
 ``agent:auto`` on a ``write`` tool over MCP stages and then calls the very same
 ``confirm`` in the same request. There is no second execute path.
 
+A ``sensitive`` action (money, a create, a delete) is never confirmed over MCP
+(TBD-664): the claim refuses it with ``requires_browser_confirmation`` and the
+row stays pending. The in-app confirm finds the user's actions by org and user,
+whatever channel staged them, so the person applies it from the app.
+
 Every write bucket fails CLOSED: no store connection, or any store error, is
 ``limits_unavailable`` (503), never an unmetered write.
 
@@ -153,16 +158,31 @@ def _staged(row: Action) -> dict[str, Any]:
         "action_id": row.id, "summary": p["summary"], "changes": p["changes"],
         "warnings": p["warnings"], "context": p["context"],
         "expires_at": row.expires_at.isoformat(), "requires_confirmation": True,
+        # TBD-664: only the person, in the app, confirms a sensitive action.
+        **({"requires_browser_confirmation": True} if row.risk == ActionRisk.SENSITIVE else {}),
     }
 
 
 def _mine(ctx: ToolContext, user_id: int, action_id: str) -> list[Any]:
-    """The row's owner, NULL-safe on the token (in-app rows carry none)."""
+    """The row's owner. Over MCP: the staging token, NULL-safe (in-app rows
+    carry none), so one token never decides another's action. In-app: the org
+    and the user only (TBD-664), so the person can decide in the browser what
+    their connected agents staged, which is the only way a sensitive one runs."""
+    owner = [Action.id == action_id, Action.org_id == ctx.org_id, Action.user_id == user_id]
+    if ctx.channel == "in_app":
+        return owner
     return [
-        Action.id == action_id, Action.org_id == ctx.org_id, Action.user_id == user_id,
-        Action.channel == ActionChannel(ctx.channel),
+        *owner, Action.channel == ActionChannel(ctx.channel),
         Action.api_token_id.is_not_distinct_from(ctx.api_token_id),
     ]
+
+
+def _browser_only(action_id: str) -> ToolError:
+    return ToolError(
+        "requires_browser_confirmation",
+        "a sensitive action is confirmed by the person in the app, never by an agent",
+        data={"action_id": action_id},
+    )
 
 
 async def _check_ceiling(ctx: ToolContext, user_id: int) -> None:
@@ -268,6 +288,8 @@ async def _explain_miss(ctx: ToolContext, user_id: int, action_id: str) -> None:
         raise ToolError("action_not_found")
     if row.status == ActionStatus.PENDING and row.expires_at <= utcnow_naive():
         raise ToolError("action_expired")
+    if row.status == ActionStatus.PENDING and ctx.channel == "mcp" and row.risk == ActionRisk.SENSITIVE:
+        raise _browser_only(row.id)  # left pending: the person can still confirm it in the app
     data = {"status": row.status.value, "result": row.result_json, "error_code": row.error_code}
     if row.status == ActionStatus.EXECUTING:
         raise ToolError("action_in_progress", data=data)
@@ -299,11 +321,15 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
     await _hit(f"agent:{p}:confirm", 30, HOUR, "confirm_rate_limited")
 
     # 1. Claim. ONE conditional UPDATE, committed: the WHERE is the lock.
+    # TBD-664: an agent never claims a sensitive action. A model injected
+    # through user text (a memo, a payee) could otherwise stage AND confirm a
+    # money write over MCP; only the person's browser confirms it.
     now = utcnow_naive()
+    browser_only = (Action.risk != ActionRisk.SENSITIVE,) if ctx.channel == "mcp" else ()
     res = await db.execute(
         update(Action).where(
             *_mine(ctx, user_id, action_id), Action.status == ActionStatus.PENDING,
-            Action.expires_at > now,
+            Action.expires_at > now, *browser_only,
         ).values(status=ActionStatus.EXECUTING, decided_at=now)
     )
     await db.commit()
@@ -358,7 +384,8 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
                 raise ToolError("tool_retired", tool)
             await registry.check_gates(db, user, spec, ctx.channel, scope)
             if ctx.channel == "mcp" and spec.risk == "sensitive":
-                await _hit(f"agent:{p}:sensitive:day", 10, DAY, "sensitive_budget_exhausted")
+                # The tool became sensitive after this row was staged as a write.
+                raise _browser_only(action_id)
             try:
                 args = spec.args.model_validate(args_json)
             except Exception:

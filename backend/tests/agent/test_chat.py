@@ -1170,8 +1170,8 @@ async def test_floor_counts_the_kept_history(factory, w, client, provider, monke
     _as(factory, w["user"])
     adapter = provider(lambda n: _resp(content="hi"))
     await client.post(URL, json=ASK)
-    budget = 3000
     base = chat._estimate(chat.opening([_msg("user", "")]), adapter.tools[0])
+    budget = base + 1500  # the tool schemas grow with the registry
     cur = _msg("user", "a" * int((budget - 60 - base) * 3.5))
     hist = [_msg("user", "h" * 450), _msg("assistant", "k" * 450)]
     assert chat._estimate(hist, []) <= budget // chat.HISTORY_SHARE

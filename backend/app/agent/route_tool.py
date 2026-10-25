@@ -22,12 +22,25 @@ the tool runs the code REST runs instead of a second adapter over a service.
 * An ``HTTPException`` 4xx from the handler is a ``ToolError``; so is a
   service ``ConflictError``. ``NotFoundError`` and ``ValidationError`` are
   mapped by ``registry.call_mapped``. A 5xx is not mapped (opaque internal).
-* Previews. A PUT or PATCH on one ``entity`` gets a templated preview: the row
-  is read FOR UPDATE in the caller's org, each set field is listed with its
-  current and new value (unchanged ones dropped; none left is ``no_change``),
-  and user text is disclosed as ``{"untrusted": ...}``. ``check`` adds the
-  tool's refusals and ``present`` its summary and context. Every other route
-  (a create, a delete, a verb) needs a hand-written ``preview``.
+* Previews. Three shapes get a templated preview; user text is disclosed as
+  ``{"untrusted": ...}``, ``check`` adds the tool's refusals and ``present``
+  its summary, context and any derived change (a balance, a rule):
+
+  - a PUT or PATCH on one ``entity``: the row is read FOR UPDATE in the
+    caller's org and each set field is listed with its current and new value
+    (unchanged ones dropped; none left is ``no_change``);
+  - a create (a POST with no path id, on one ``entity``): one insert,
+    ``"new:1"``, naming every allowlisted field the route's body model
+    resolves to a value (its defaults included);
+  - a DELETE on one ``entity``: the row is read in the caller's org, the
+    ``describe`` columns are named with their current value, and the tool's
+    hand-written ``cascade`` (a :class:`CascadeDisclosure`) lists what the
+    delete does beyond the row. Its ``covers`` must name every foreign key
+    that references the table, or registration fails, so a new FK cannot go
+    undisclosed.
+
+  Every other route (a verb, a create of several rows) needs a hand-written
+  ``preview``.
 
 The tier (``risk``) is declared here and enforced by ``registry.register``,
 which the caller still calls.
@@ -40,6 +53,7 @@ import inspect
 import types
 import typing
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Any
 
@@ -71,6 +85,21 @@ from app.services.feature_gate import Feature
 
 Check = Callable[[ToolContext, Any, Any], Awaitable[None]]
 Present = Callable[[ToolContext, Any, Any, list[Change]], Awaitable[Preview]]
+
+
+@dataclass(frozen=True)
+class CascadeDisclosure:
+    """What a delete does beyond its own row, written by hand for each delete
+    tool. ``covers`` names every foreign key referencing the deleted table as
+    ``"table.column"`` (checked against the schema at registration);
+    ``disclose(ctx, row, args)`` returns the Changes. ``locks``: ``disclose``
+    takes the row locks itself, in its own order, so the template reads the
+    row without one."""
+
+    covers: frozenset[str]
+    disclose: Callable[[ToolContext, Any, Any], Awaitable[list[Change]]]
+    locks: bool = False
+
 
 _TEMPLATED_METHODS = frozenset({"PUT", "PATCH"})
 _RAW_PARAMS = ("request", "websocket", "http_connection", "response", "background_tasks", "security_scopes")
@@ -242,6 +271,8 @@ def route_tool(
     present: Present | None = None,
     no_change: str = "nothing would change",
     preview: Callable[..., Awaitable[Preview]] | None = None,
+    describe: Sequence[str] = (),
+    cascade: CascadeDisclosure | None = None,
 ) -> ToolSpec:
     """A ``ToolSpec`` for ``method path`` on ``router`` (see the module doc)."""
     route = _find_route(router, method, path)
@@ -314,7 +345,11 @@ def route_tool(
             route=route,
         )
 
-    if preview is None:
+    if preview is None and method == "DELETE":
+        preview = _delete_preview(name, entity, path_names, describe, cascade, check, present)
+    elif preview is None and method == "POST" and not path_names and entity is not None:
+        preview = _create_preview(name, entity, fields, body_model, body_fields, check, present)
+    elif preview is None:
         preview = _templated_preview(
             name, method, path, entity, fields, path_names, check, present, no_change,
         )
@@ -369,6 +404,100 @@ def _templated_preview(
         return Preview(
             summary=f"Change {', '.join(c.field for c in changes)} of {label.lower()} {row.id}",
             changes=changes,
+        )
+
+    return _preview
+
+
+def _referencing(table: Any) -> frozenset[str]:
+    """Every foreign key in the schema that references ``table``."""
+    import app.models  # noqa: F401  (every table on the metadata)
+    from app.models.base import Base
+
+    return frozenset(
+        f"{t.name}.{fk.parent.name}"
+        for t in Base.metadata.sorted_tables for fk in t.foreign_keys
+        if fk.column.table is table
+    )
+
+
+def _create_preview(
+    name: str, entity: Any, fields: Sequence[str], body_model: Any, body_fields: Sequence[str],
+    check: Check | None, present: Present | None,
+) -> Callable[[ToolContext, Any], Awaitable[Preview]]:
+    table = entity.__table__
+    unknown = [f for f in fields if f not in table.c or f not in body_fields]
+    if body_model is None or unknown:
+        raise ToolRegistrationError(f"{name}: {unknown} is not a body column of {table.name}")
+    if "org_id" not in table.c:
+        raise ToolRegistrationError(f"{name}: {table.name} is not org-scoped")
+    label = entity.__name__
+
+    async def _preview(ctx: ToolContext, args: Any) -> Preview:
+        if check is not None:
+            await check(ctx, None, args)
+        # What the route will insert: the set fields through its body model,
+        # whose defaults fill the rest.
+        body = body_model.model_validate(
+            {k: getattr(args, k) for k in body_fields if k in args.model_fields_set}
+        )
+        changes = []
+        for f in fields:
+            value = _disclose(table.c[f], getattr(body, f))
+            if value is not None:
+                changes.append(Change(table.name, "new:1", f, None, value))
+        if present is not None:
+            return await present(ctx, None, args, changes)
+        return Preview(summary=f"Create a {label.lower()}", changes=changes)
+
+    return _preview
+
+
+def _delete_preview(
+    name: str, entity: Any, path_names: Sequence[str], describe: Sequence[str],
+    cascade: CascadeDisclosure | None, check: Check | None, present: Present | None,
+) -> Callable[[ToolContext, Any], Awaitable[Preview]]:
+    if entity is None or len(path_names) != 1:
+        raise ToolRegistrationError(
+            f"{name}: a templated delete needs an entity and exactly one id in the path"
+        )
+    table = entity.__table__
+    if "org_id" not in table.c:
+        raise ToolRegistrationError(f"{name}: {table.name} is not org-scoped")
+    if not describe or any(c not in table.c for c in describe):
+        raise ToolRegistrationError(f"{name}: describe must name columns of {table.name}")
+    if cascade is None:
+        raise ToolRegistrationError(f"{name}: a delete carries a hand-written FK-cascade disclosure")
+    if set(cascade.covers) != _referencing(table):
+        raise ToolRegistrationError(
+            f"{name}: the cascade disclosure covers {sorted(cascade.covers)}, "
+            f"but the foreign keys referencing {table.name} are {sorted(_referencing(table))}"
+        )
+    (id_name,) = path_names
+    label = entity.__name__
+
+    async def _preview(ctx: ToolContext, args: Any) -> Preview:
+        query = (
+            select(entity)
+            .where(entity.id == getattr(args, id_name), entity.org_id == ctx.org_id)
+            .execution_options(populate_existing=True)
+        )
+        row = await ctx.db.scalar(query if cascade.locks else query.with_for_update())
+        if row is None:
+            raise NotFoundError(label)
+        if check is not None:
+            await check(ctx, row, args)
+        beyond = await cascade.disclose(ctx, row, args)
+        # Named after the disclosure, which may have re-read the row locked.
+        changes = [
+            Change(table.name, row.id, c, _disclose(table.c[c], getattr(row, c)), None)
+            for c in describe
+        ] + beyond
+        if present is not None:
+            return await present(ctx, row, args, changes)
+        return Preview(
+            summary=f"Delete {label.lower()} {row.id}", changes=changes,
+            warnings=["A delete cannot be undone."],
         )
 
     return _preview

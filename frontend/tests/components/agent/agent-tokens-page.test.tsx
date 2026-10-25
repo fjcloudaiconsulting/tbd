@@ -77,6 +77,7 @@ beforeEach(() => {
   routes = {
     "GET /api/v1/agent/tokens": () => json(200, { items: [token({})], total: 1, limit: 1, offset: 0 }),
     "GET /api/v1/agent/actions?status=done&limit=20": () => json(200, { items: [DONE], limit: 20, offset: 0 }),
+    "GET /api/v1/agent/actions?status=pending&limit=20": () => json(200, { items: [], limit: 20, offset: 0 }),
   };
   fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
     const key = `${init.method ?? "GET"} ${String(url)}`;
@@ -300,6 +301,104 @@ describe("activity", () => {
   it("F-U4: the page is axe clean", async () => {
     const { container } = renderWithSWR(<AgentTokensPage />);
     await screen.findByText("Change a budget amount");
+    const result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
+    expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
+  });
+});
+
+// TBD-664: a connected agent stages a delete; MCP may never confirm it.
+const PENDING: AgentActionRow = {
+  action_id: "p1", tool: "transactions_delete", channel: "mcp", risk: "sensitive", mode: "confirm",
+  status: "pending",
+  preview: {
+    summary: "Delete transaction 7",
+    changes: [
+      { entity: "transactions", id: 7, field: "description", before: { untrusted: "Coffee" }, after: null },
+      { entity: "transactions", id: 7, field: "amount", before: "4.50", after: null, currency: "EUR" },
+      { entity: "transactions", id: 7, field: "status", before: "settled", after: null },
+      { entity: "accounts", id: 3, field: "balance_delta", before: null, after: "4.50", currency: "EUR" },
+    ],
+    warnings: ["A delete cannot be undone."],
+    context: { description: { untrusted: "Coffee" } },
+  },
+  error_code: null, created_at: "2099-10-08T09:00:00", expires_at: "2099-10-08T09:10:00",
+  decided_at: null, live: true,
+};
+
+describe("waiting for confirmation (TBD-664)", () => {
+  const pendingKey = "GET /api/v1/agent/actions?status=pending&limit=20";
+  const activityLoads = () =>
+    fetchMock.mock.calls.filter(([u]) => u === "/api/v1/agent/actions?status=done&limit=20").length;
+
+  it("nothing pending shows no card", async () => {
+    renderWithSWR(<AgentTokensPage />);
+    await screen.findByText("Change a budget amount");
+    expect(screen.queryByText("Waiting for your confirmation")).toBeNull();
+  });
+
+  it("an agent's staged delete is listed with what it changes and applies only on an explicit click", async () => {
+    routes[pendingKey] = () => json(200, { items: [PENDING], limit: 20, offset: 0 });
+    routes["POST /api/v1/agent/actions/p1/confirm"] = () => json(200, { action_id: "p1", status: "done" });
+    renderWithSWR(<AgentTokensPage />);
+    const section = (await screen.findByText("Waiting for your confirmation")).closest("section")!;
+    const preview = within(section).getByTestId("preview-card");
+    expect(within(section).getByText("From a connected agent")).toBeInTheDocument();
+    expect(within(preview).getByRole("heading", { name: "Delete a transaction" })).toBeInTheDocument();
+    expect(within(preview).getAllByText("Deleted")).toHaveLength(3);
+    expect(within(preview).getByText("Balance")).toBeInTheDocument();
+    expect(preview.textContent).toMatch(/\+€4\.50/);
+    expect(fetchMock.mock.calls.some(([u]) => u === "/api/v1/agent/actions/p1/confirm")).toBe(false);
+    await screen.findByText("Change a budget amount");
+    const before = activityLoads();
+    fireEvent.click(within(preview).getByRole("button", { name: "Apply change" }));
+    await waitFor(() => expect(within(preview).getByText("Applied")).toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([u]) => u === "/api/v1/agent/actions/p1/confirm")).toBe(true);
+    await waitFor(() => expect(activityLoads()).toBeGreaterThan(before));
+  });
+
+  it("discarding sends a cancel, never a confirm", async () => {
+    routes[pendingKey] = () => json(200, { items: [{ ...PENDING, channel: "in_app" }], limit: 20, offset: 0 });
+    routes["POST /api/v1/agent/actions/p1/cancel"] = () => json(200, { action_id: "p1", status: "cancelled" });
+    renderWithSWR(<AgentTokensPage />);
+    const section = (await screen.findByText("Waiting for your confirmation")).closest("section")!;
+    expect(within(section).getByText("From the assistant")).toBeInTheDocument();
+    fireEvent.click(within(section).getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(within(section).getByText("Discarded")).toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([u]) => u === "/api/v1/agent/actions/p1/confirm")).toBe(false);
+  });
+
+  it("a transfer names its two new legs and shows their values, not 'None'", async () => {
+    const leg = (id: string, type: string, account: number) => [
+      { entity: "transactions", id, field: "account_id", before: null, after: account },
+      { entity: "transactions", id, field: "amount", before: null, after: "30.00", currency: "EUR" },
+      { entity: "transactions", id, field: "type", before: null, after: type },
+    ];
+    routes[pendingKey] = () => json(200, { items: [{
+      ...PENDING, tool: "transactions_transfer",
+      preview: { summary: "Move money between two accounts", warnings: [], context: {}, changes: [
+        ...leg("new:1", "expense", 3), ...leg("new:2", "income", 4),
+      ] },
+    }], limit: 20, offset: 0 });
+    renderWithSWR(<AgentTokensPage />);
+    const preview = within((await screen.findByText("Waiting for your confirmation")).closest("section")!)
+      .getByTestId("preview-card");
+    expect(within(preview).getAllByText("New transaction 1")).toHaveLength(3);
+    expect(within(preview).getAllByText("New transaction 2")).toHaveLength(3);
+    expect(within(preview).getByText("account #4")).toBeInTheDocument();
+    expect(within(preview).queryByText("None")).toBeNull();
+  });
+
+  it("an expired row is not offered", async () => {
+    routes[pendingKey] = () => json(200, { items: [{ ...PENDING, live: false }], limit: 20, offset: 0 });
+    renderWithSWR(<AgentTokensPage />);
+    await screen.findByText("Change a budget amount");
+    expect(screen.queryByText("Waiting for your confirmation")).toBeNull();
+  });
+
+  it("F-U4: the page with a pending card is axe clean", async () => {
+    routes[pendingKey] = () => json(200, { items: [PENDING], limit: 20, offset: 0 });
+    const { container } = renderWithSWR(<AgentTokensPage />);
+    await screen.findByText("Waiting for your confirmation");
     const result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
     expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
   });

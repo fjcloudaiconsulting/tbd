@@ -403,15 +403,17 @@ async def test_fp3_drift_between_preview_and_confirm_is_stale(factory, w):
 # ── F-P4 ──────────────────────────────────────────────────────────────────
 
 async def test_fp4_principal_is_token_and_channel(factory, w):
-    """FENCE F-P4. Wrong implementations: WHERE without token/channel, or
-    ``api_token_id == :tok`` (an in-app NULL row could never be confirmed)."""
+    """FENCE F-P4. Wrong implementations: an MCP WHERE without token/channel,
+    or ``api_token_id == :tok`` (an in-app NULL row could never be confirmed).
+    TBD-664: the in-app side is the person, so it finds the user's rows by org
+    and user whatever staged them; another member still cannot."""
     a = w["A"]
     mcp = await _stage(factory, w, "121.00", api_token_id=a["t1"], **MCP)
     # second token of the same user
     assert (await _refused(_confirm(factory, a["member"], mcp["action_id"],
                                     api_token_id=a["t2"], **MCP))).code == "action_not_found"
-    # in-app cannot confirm an mcp row
-    assert (await _refused(_confirm(factory, a["member"], mcp["action_id"]))).code == "action_not_found"
+    # another member of the org, in-app
+    assert (await _refused(_confirm(factory, a["other"], mcp["action_id"]))).code == "action_not_found"
     inapp = await _stage(factory, w, "122.00")
     # mcp cannot confirm an in-app row
     assert (await _refused(_confirm(factory, a["member"], inapp["action_id"],
@@ -704,20 +706,49 @@ async def test_confirm_bucket_is_30_per_hour_and_checked_before_the_claim(factor
     assert (await _row(factory, out["action_id"])).status.value == "pending"
 
 
-async def test_sensitive_confirm_over_mcp_has_its_own_daily_bucket(factory, w, scratch):
+async def test_mcp_never_confirms_a_sensitive_action_and_the_browser_does(factory, w, scratch):
+    """FENCE (TBD-664, the MCP self-confirm hole). Wrong implementation: the
+    MCP confirm claiming a sensitive row, so a model injected through user
+    text stages AND confirms a money write. The refusal comes before the
+    claim: the row stays pending, and the person applies it from the app."""
     a = w["A"]
     calls = scratch("sens_tool", risk="sensitive")
-    out = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]},
-                        api_token_id=a["t1"], **MCP)
-    _seed_bucket(f"agent:tok:{a['t1']}:sensitive:day", 10)
-    err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"], **MCP))
-    assert err.code == "sensitive_budget_exhausted"
-    assert (await _row(factory, out["action_id"])).status.value == "failed"
-    assert calls == []
-    # in-app sensitive confirms are not on that bucket
+    for scope in ("agent:write", "agent:auto"):
+        out = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]},
+                            api_token_id=a["t1"], channel="mcp", scope=scope)
+        assert out["requires_browser_confirmation"] is True
+        err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"],
+                                      channel="mcp", scope=scope))
+        assert (err.code, err.data) == ("requires_browser_confirmation", {"action_id": out["action_id"]})
+        row = await _row(factory, out["action_id"])
+        assert (row.status.value, row.decided_at) == ("pending", None)
+    assert calls == [] and await _audits(factory) == []
+    # the same user, in the app: it runs
+    done = await _confirm(factory, a["member"], out["action_id"])
+    assert done["status"] == "done" and calls == ["sens_tool"]
+    (ev,) = await _audits(factory)
+    assert (ev.detail["channel"], ev.detail["risk"]) == ("in_app", "sensitive")
+    # staged in the app, it is confirmed in the app as before
     inapp = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]})
     await _confirm(factory, a["member"], inapp["action_id"])
-    assert calls == ["sens_tool"]
+    assert calls == ["sens_tool", "sens_tool"]
+
+
+async def test_a_write_re_registered_sensitive_is_refused_over_mcp_after_the_claim(factory, w, scratch):
+    """FENCE (TBD-664, defence in depth). Wrong implementation: trusting the
+    tier stored at staging, so a row staged while the tool was ``write`` runs
+    over MCP after the tool became ``sensitive``."""
+    import dataclasses
+
+    a = w["A"]
+    calls = scratch()
+    out = await _invoke(factory, a["member"], "scratch_write", {"budget_id": a["b1"]},
+                        api_token_id=a["t1"], **MCP)
+    registry._TOOLS["scratch_write"] = dataclasses.replace(registry._TOOLS["scratch_write"], risk="sensitive")
+    err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"], **MCP))
+    assert err.code == "requires_browser_confirmation" and calls == []
+    row = await _row(factory, out["action_id"])
+    assert (row.status.value, row.error_code) == ("failed", "requires_browser_confirmation")
 
 
 # ── auto ──────────────────────────────────────────────────────────────────
@@ -837,7 +868,11 @@ def _disclosed_key(org_id, change) -> tuple:
 
 
 def test_fa3_every_write_tool_has_a_case():
-    live = {t.name for t in registry.all_tools() if t.risk != "read"}
+    # ``write`` tools only. A ``sensitive`` tool inserts rows (``"new:1"``) and
+    # names composite keys, which this row-level diff cannot key; the honesty
+    # fence (``test_agent_honesty``, T-A9b) covers every non-read tool,
+    # column by column.
+    live = {t.name for t in registry.all_tools() if t.risk == "write"}
     live -= {"scratch_write", "admin_tool", "sens_tool", "big_tool", "retiring"}
     assert live == set(_WRITE_CASES), "a write tool was added without an F-A3 case"
 
@@ -884,18 +919,21 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
 
 # ── review round 1 ────────────────────────────────────────────────────────
 
-async def test_fp4_a_null_token_mcp_row_is_not_an_in_app_row(factory, w):
-    """FENCE F-P4 (channel clause). An MCP row whose token was SET NULL looks
-    like an in-app row on the token column alone; only ``channel`` keeps the
-    in-app user from confirming or cancelling it."""
+async def test_fp4_a_null_token_mcp_row_is_not_another_tokens_row(factory, w):
+    """FENCE F-P4 (token clause). An MCP row whose token was SET NULL matches
+    no token: no MCP principal decides it. Its user still can, in the app."""
     a = w["A"]
     out = await _stage(factory, w, api_token_id=a["t1"], **MCP)
     async with factory() as db:
         await db.execute(update(AgentPendingAction).values(api_token_id=None))
         await db.commit()
-    assert (await _refused(_confirm(factory, a["member"], out["action_id"]))).code == "action_not_found"
-    assert (await _refused(_cancel(factory, a["member"], out["action_id"]))).code == "action_not_found"
+    for tok in ("t1", "t2"):
+        err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a[tok], **MCP))
+        assert err.code == "action_not_found"
+        err = await _refused(_cancel(factory, a["member"], out["action_id"], api_token_id=a[tok], **MCP))
+        assert err.code == "action_not_found"
     assert (await _row(factory, out["action_id"])).status.value == "pending"
+    assert (await _cancel(factory, a["member"], out["action_id"]))["data"]["status"] == "cancelled"
 
 
 async def test_fp12_mcp_per_user_daily_preview_bucket(factory, w):

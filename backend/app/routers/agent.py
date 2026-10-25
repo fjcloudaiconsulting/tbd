@@ -6,6 +6,8 @@ streamed as server-sent events (``app.services.agent_chat``).
 ``GET /api/v1/agent/actions`` (the review list). Interactive sessions only: a
 PAT can never confirm, and there is no model-facing confirm tool. Confirm takes
 NO request body: the action runs with the arguments stored at preview time.
+Confirm and cancel find the caller's actions by org and user, whichever channel
+staged them: a sensitive action a connected agent staged runs only from here.
 """
 from typing import Any, Literal
 
@@ -51,7 +53,6 @@ _STATUS: dict[str, int] = {
     "not_found": 404,
     "preview_rate_limited": 429, "too_many_pending_actions": 429,
     "confirm_rate_limited": 429, "auto_budget_exhausted": 429,
-    "sensitive_budget_exhausted": 429,
     "limits_unavailable": 503,
 }
 
