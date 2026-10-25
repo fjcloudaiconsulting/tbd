@@ -376,7 +376,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `POST /api/v1/auth/forgot-password` | Password reset request. Answers uniformly whether or not the address exists, so it leaks no account inventory. |
 | `POST /api/v1/auth/resend-verification-public` | Targets an unverified account, which cannot hold a usable session. The non-`-public` sibling `POST /api/v1/auth/resend-verification` **is** authenticated. |
 | `GET /api/v1/auth/google` | Starts the Google OAuth redirect; the caller is anonymous at this point by construction. |
-| `GET /api/v1/public/founder-count` | Single aggregate integer rendered on the signup surface, before any account exists. |
+| `GET /api/v1/public/founder-count` | Single aggregate integer (the founding-members count) for callers with no account. No caller in this repo today: the apex counter was dropped before release, and the route is kept as public contract (TBD-661). |
 | `POST /api/v1/security/csp-report` | Browsers post CSP violation reports with no auth context and no way to attach a bearer token. Always answers 204. |
 | `GET /.well-known/oauth-protected-resource/mcp` | MCP OAuth discovery (RFC 9728, TBD-587): read by an MCP client before it holds any credential. Static document derived from `APP_URL`. Its path is fixed by the RFC, outside `/api/v1`. |
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414), same reasons as the line above. |

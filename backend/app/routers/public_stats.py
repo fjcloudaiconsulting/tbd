@@ -1,10 +1,15 @@
-"""Public, count-only stats for the marketing / apex site.
+"""Public, count-only stats: the founding-members count.
 
-The apex landing is a static export (no server runtime), so it fetches
-this cross-origin from the browser. A bearer token would be exposed in
-the public bundle and protect nothing, so this endpoint is intentionally
-PUBLIC and returns only a single non-sensitive integer — the
-founding-members count the landing page advertises.
+No caller in this repo. The apex landing was meant to fetch this from the
+browser, but that counter was dropped before release (#474): the apex
+bundle may not reference the backend API (``scripts/build-apex.sh`` fails
+the build on any ``/api/v1`` reference). The route stays as public
+contract (TBD-661). A browser caller on another origin is refused by CORS,
+which lists the app origin only (FE-01), so a future caller must be the
+app itself or a server-side fetch.
+
+The endpoint is intentionally PUBLIC: it returns only a single
+non-sensitive integer, and a caller with no account has no token to send.
 
 Hardened: cached in process (5 min) to absorb read volume, rate-limited,
 and it never 500s: a DB hiccup degrades to 0. Excludes the configured non-real usernames (smoke / seed
