@@ -343,6 +343,18 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
     token_id = row.api_token_id
     reverts = (preview_json.get("context") or {}).get("reverts")  # TBD-589: the action this undoes
 
+    spec_now = registry.get_tool(tool)
+    if ctx.channel == "mcp" and spec_now is not None and spec_now.risk == "sensitive":
+        # The tool became sensitive after this row was staged as a write: the
+        # claim is released, so the row is pending again for the person to
+        # confirm in the app, exactly as the refusal says.
+        await db.execute(
+            update(Action).where(Action.id == action_id, Action.status == ActionStatus.EXECUTING)
+            .values(status=ActionStatus.PENDING, decided_at=None)
+        )
+        await db.commit()
+        raise _browser_only(action_id)
+
     status: ActionStatus = ActionStatus.FAILED
     error_code: str | None = "internal"
     result: dict | None = None
@@ -383,9 +395,6 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
             if spec is None:
                 raise ToolError("tool_retired", tool)
             await registry.check_gates(db, user, spec, ctx.channel, scope)
-            if ctx.channel == "mcp" and spec.risk == "sensitive":
-                # The tool became sensitive after this row was staged as a write.
-                raise _browser_only(action_id)
             try:
                 args = spec.args.model_validate(args_json)
             except Exception:

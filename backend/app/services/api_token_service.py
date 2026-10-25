@@ -181,9 +181,28 @@ async def revoke(db: AsyncSession, token_id: int, user: User) -> ApiToken | None
     if row is None or row.revoked_at is not None:
         return None
     row.revoked_at = _naive_utc_now()
+    await cancel_staged_actions(db, [row.id])
     await db.commit()
     await db.refresh(row)
     return row
+
+
+async def cancel_staged_actions(db: AsyncSession, token_ids) -> int:
+    """Cancel the pending agent actions staged by ``token_ids`` (a list, or a
+    SELECT of ids), in the caller's transaction (TBD-664). Every revoke calls
+    this before its commit: a revoked token's staged writes would otherwise
+    stay confirmable in the app until they expire. No commit here."""
+    from app.models.agent_pending_action import ActionStatus, AgentPendingAction
+
+    result = await db.execute(
+        update(AgentPendingAction)
+        .where(
+            AgentPendingAction.api_token_id.in_(token_ids),
+            AgentPendingAction.status == ActionStatus.PENDING,
+        )
+        .values(status=ActionStatus.CANCELLED, decided_at=_naive_utc_now())
+    )
+    return result.rowcount or 0
 
 
 async def revoke_all(db: AsyncSession, user: User) -> int:
@@ -192,13 +211,10 @@ async def revoke_all(db: AsyncSession, user: User) -> int:
     Returns the number of tokens revoked by this call (already-revoked rows
     are not re-stamped and not counted).
     """
+    live = (ApiToken.created_by_user_id == user.id, ApiToken.revoked_at.is_(None))
+    await cancel_staged_actions(db, select(ApiToken.id).where(*live))
     result = await db.execute(
-        update(ApiToken)
-        .where(
-            ApiToken.created_by_user_id == user.id,
-            ApiToken.revoked_at.is_(None),
-        )
-        .values(revoked_at=_naive_utc_now())
+        update(ApiToken).where(*live).values(revoked_at=_naive_utc_now())
     )
     await db.commit()
     return result.rowcount or 0
@@ -433,14 +449,14 @@ async def get_org_agent(
 
 async def revoke_all_agent(db: AsyncSession, user: User) -> int:
     """Revoke the caller's unrevoked agent tokens; REST PATs are untouched."""
+    live = (
+        ApiToken.created_by_user_id == user.id,
+        ApiToken.scope.in_(AGENT_SCOPE_RANK),
+        ApiToken.revoked_at.is_(None),
+    )
+    await cancel_staged_actions(db, select(ApiToken.id).where(*live))
     result = await db.execute(
-        update(ApiToken)
-        .where(
-            ApiToken.created_by_user_id == user.id,
-            ApiToken.scope.in_(AGENT_SCOPE_RANK),
-            ApiToken.revoked_at.is_(None),
-        )
-        .values(revoked_at=_naive_utc_now())
+        update(ApiToken).where(*live).values(revoked_at=_naive_utc_now())
     )
     await db.commit()
     return result.rowcount or 0

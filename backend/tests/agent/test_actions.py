@@ -734,10 +734,12 @@ async def test_mcp_never_confirms_a_sensitive_action_and_the_browser_does(factor
     assert calls == ["sens_tool", "sens_tool"]
 
 
-async def test_a_write_re_registered_sensitive_is_refused_over_mcp_after_the_claim(factory, w, scratch):
-    """FENCE (TBD-664, defence in depth). Wrong implementation: trusting the
+async def test_a_write_re_registered_sensitive_is_released_for_the_browser(factory, w, scratch):
+    """FENCE (TBD-664, defence in depth). Wrong implementations: trusting the
     tier stored at staging, so a row staged while the tool was ``write`` runs
-    over MCP after the tool became ``sensitive``."""
+    over MCP after the tool became ``sensitive``; or refusing it but leaving
+    the row failed while the refusal says the person confirms it in the app.
+    The claim is released: pending again, and the app runs it."""
     import dataclasses
 
     a = w["A"]
@@ -748,7 +750,10 @@ async def test_a_write_re_registered_sensitive_is_refused_over_mcp_after_the_cla
     err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"], **MCP))
     assert err.code == "requires_browser_confirmation" and calls == []
     row = await _row(factory, out["action_id"])
-    assert (row.status.value, row.error_code) == ("failed", "requires_browser_confirmation")
+    assert (row.status.value, row.decided_at, row.error_code) == ("pending", None, None)
+    assert await _audits(factory) == []
+    assert (await _confirm(factory, a["member"], out["action_id"]))["status"] == "done"
+    assert calls == ["scratch_write"]
 
 
 # ── auto ──────────────────────────────────────────────────────────────────

@@ -48,6 +48,7 @@ from app.services.api_token_service import (
     AGENT_SCOPE_RANK,
     _aware,
     _naive_utc_now,
+    cancel_staged_actions,
     generate_token,
     hash_api_token,
     sha256_hex,
@@ -627,6 +628,8 @@ async def _revoke(
         .where(ApiToken.id == snap["api_token_id"], ApiToken.revoked_at.is_(None))
         .values(revoked_at=_naive_utc_now())
     )
+    # TBD-664: the revoked token's staged actions are cancelled with it.
+    await cancel_staged_actions(db, [snap["api_token_id"]])
     await db.commit()
     if not res.rowcount:
         return

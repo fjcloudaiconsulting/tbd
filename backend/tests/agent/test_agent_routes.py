@@ -194,6 +194,20 @@ async def test_the_browser_lists_and_applies_what_a_connected_agent_staged(facto
     assert await _tx(factory, a["tx"]) is None
 
 
+async def test_the_list_names_the_token_that_staged_a_row(factory, w, client):
+    """TBD-664 review: the person sees which of their agents proposed a change
+    (the token's name); an in-app row names none."""
+    from tests.agent.test_actions import _invoke
+
+    a = w["A"]
+    await _invoke(factory, a["member"], "transactions_delete", {"transaction_id": a["tx"]},
+                  channel="mcp", scope="agent:write", api_token_id=a["t2"])
+    await _stage(factory, w, "120.00")
+    _as(factory, a["member"])
+    items = (await client.get("/api/v1/agent/actions", params={"status": "pending"})).json()["items"]
+    assert sorted((x["channel"], x["token_name"]) for x in items) == [("in_app", None), ("mcp", "t2")]
+
+
 def test_routes_carry_the_interactive_and_entitlement_guards():
     """A PAT must never confirm (F-L7 shape) and the plan key gates the surface."""
     seen = {}
