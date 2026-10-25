@@ -15,7 +15,6 @@ via ``httpx.MockTransport`` and asserted against:
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 import httpx
 import pytest

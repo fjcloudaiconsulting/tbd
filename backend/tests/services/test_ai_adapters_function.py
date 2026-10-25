@@ -18,10 +18,7 @@ import httpx
 import pytest
 
 from app.services.ai_providers.anthropic import AnthropicAdapter
-from app.services.ai_providers.base import (
-    AIProviderError,
-    CapabilityNotSupported,
-)
+from app.services.ai_providers.base import AIProviderError
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import (
     OpenAICompatibleAdapter,
