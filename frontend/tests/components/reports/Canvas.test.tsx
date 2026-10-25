@@ -2,13 +2,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { verticalCompactor, type Compactor } from "react-grid-layout";
+
 import type { LayoutJson } from "@/lib/reports/types";
 
 // The props the mocked react-grid-layout captures so tests can drive its
 // callbacks directly.
 interface CapturedProps {
-  compactType: unknown;
-  preventCollision?: boolean;
+  compactor: Compactor;
+  width: number;
+  dragConfig: { enabled: boolean; handle?: string };
+  resizeConfig: { enabled: boolean };
   onLayoutChange: (
     layout: Array<{ i: string; x: number; y: number; w: number; h: number }>,
   ) => void;
@@ -16,18 +20,25 @@ interface CapturedProps {
   children?: ReactNode;
 }
 
-// WidthProvider is stubbed as identity and Responsive is replaced with a
-// prop-capturing stub: jsdom can't measure container width, so we can't
-// exercise RGL's real ResizeObserver mount emission. Instead we drive
-// `props.onLayoutChange` / `props.onBreakpointChange` manually to
-// unit-test the guard logic in isolation.
+// useContainerWidth is stubbed to a fixed lg width and Responsive is
+// replaced with a prop-capturing stub: jsdom can't measure container width,
+// so we can't exercise RGL's real ResizeObserver mount emission. Instead we
+// drive `props.onLayoutChange` / `props.onBreakpointChange` manually to
+// unit-test the guard logic in isolation. The rest of the module (the
+// compactors) stays real so the collision assertion checks RGL's own object.
 let captured: CapturedProps | null = null;
-vi.mock("react-grid-layout", () => ({
+vi.mock("react-grid-layout", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-grid-layout")>()),
   Responsive: (props: CapturedProps) => {
     captured = props;
     return <div data-testid="rgl">{props.children}</div>;
   },
-  WidthProvider: <T,>(c: T): T => c,
+  useContainerWidth: () => ({
+    width: 1280,
+    mounted: true,
+    containerRef: { current: null },
+    measureWidth: () => {},
+  }),
 }));
 
 import Canvas from "@/components/reports/Canvas";
@@ -66,8 +77,23 @@ describe("Canvas layout", () => {
 
   it("compacts vertically and lets a dragged tile push others aside (TBD-647)", () => {
     const { props } = renderCanvas();
-    expect(props.compactType).toBe("vertical");
-    expect(props.preventCollision).toBe(false);
+    expect(props.compactor).toBe(verticalCompactor);
+    expect(props.compactor.type).toBe("vertical");
+    expect(props.compactor.allowOverlap).toBe(false);
+    expect(props.compactor.preventCollision ?? false).toBe(false);
+  });
+
+  it("passes the measured width and gates drag + resize on edit mode", () => {
+    const { props } = renderCanvas();
+    expect(props.width).toBe(1280);
+    expect(props.dragConfig).toEqual({ enabled: true, handle: "[data-grid-drag-handle]" });
+    expect(props.resizeConfig).toEqual({ enabled: true });
+  });
+
+  it("disables drag + resize outside edit mode", () => {
+    const { props } = renderCanvas(false);
+    expect(props.dragConfig.enabled).toBe(false);
+    expect(props.resizeConfig.enabled).toBe(false);
   });
 
   it("does NOT call onLayoutChange for a mount/no-op emission (same grid)", () => {
