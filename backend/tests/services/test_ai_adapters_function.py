@@ -7,8 +7,6 @@ Wire-shape pins per provider:
 - Anthropic: OpenAI-shape tools normalized to ``{name, description,
   input_schema}``; response ``content`` blocks of type ``tool_use``
   parsed into ``FunctionCallResponse.tool_calls``.
-- Ollama: refuses with ``CapabilityNotSupported`` for models not on
-  the known function-call list; passes through for known prefixes.
 - OpenAI-compatible: same shape as OpenAI; provider-side rejection
   surfaces as a sanitized ``AIProviderError``.
 """
@@ -20,11 +18,7 @@ import httpx
 import pytest
 
 from app.services.ai_providers.anthropic import AnthropicAdapter
-from app.services.ai_providers.base import (
-    AIProviderError,
-    CapabilityNotSupported,
-)
-from app.services.ai_providers.ollama import OllamaAdapter
+from app.services.ai_providers.base import AIProviderError
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import (
     OpenAICompatibleAdapter,
@@ -155,68 +149,6 @@ async def test_anthropic_function_call_normalizes_oai_tools_and_parses_tool_use(
         {"id": "tu_1", "name": "set_category", "arguments": {"slug": "rent"}}
     ]
     assert resp.content == "Looks like rent."
-
-
-# ---------- Ollama ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ollama_function_call_refuses_unsupported_model():
-    """An Ollama model not on the known function-call prefix list must
-    raise ``CapabilityNotSupported`` — the caller (call_llm_function)
-    surfaces that as 412 ``ai_capability_not_supported``.
-    """
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434", api_key="x"
-    )
-    with pytest.raises(CapabilityNotSupported) as exc_info:
-        await adapter.function_call(
-            model="phi:latest",  # not on the list
-            messages=[],
-            tools=TOOLS_OPENAI,
-        )
-    assert exc_info.value.model == "phi:latest"
-    assert exc_info.value.capability == "function_call"
-
-
-@pytest.mark.asyncio
-async def test_ollama_function_call_supported_model_passes_through(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        assert body["tools"] == TOOLS_OPENAI
-        return httpx.Response(
-            200,
-            json={
-                "model": "llama3.1:8b",
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "set_category",
-                                "arguments": {"slug": "food"},
-                            }
-                        }
-                    ],
-                },
-                "prompt_eval_count": 6,
-                "eval_count": 2,
-            },
-        )
-
-    _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434", api_key="x"
-    )
-    resp = await adapter.function_call(
-        model="llama3.1:8b",
-        messages=[{"role": "user", "content": "classify"}],
-        tools=TOOLS_OPENAI,
-    )
-    assert resp.tool_calls == [
-        {"name": "set_category", "arguments": {"slug": "food"}}
-    ]
 
 
 # ---------- OpenAI-compatible ----------------------------------------

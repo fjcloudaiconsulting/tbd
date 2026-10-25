@@ -546,7 +546,7 @@ async def test_k11_tampered_platform_row_reaches_the_preset_host_with_the_env_ke
     await set_platform(db)
     org = await mk_org(db)
     await mk_model(db, MODEL, 100_000, 400_000)
-    await mk_platform(db, org, provider=AiProvider.OLLAMA,
+    await mk_platform(db, org, provider=AiProvider.ANTHROPIC,
                       base_url="https://attacker.example", base_url_is_api_root=False,
                       encrypted_api_key=encrypt("stored-key"), encrypted_bearer_token=encrypt("stored-bearer"))
     await _chat(db, org)

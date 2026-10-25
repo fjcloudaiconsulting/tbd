@@ -47,7 +47,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.category import Category
-from app.models.org_ai_credential import OrgAICredential
+from app.models.org_ai_credential import OrgAICredential, is_supported_provider
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.ai_forecast import (
     AIForecastAdjustments,
@@ -831,8 +831,21 @@ async def estimate_refine(
         )
 
     credential_id, model = routing
-    platform = await db.scalar(select(OrgAICredential.platform_provider).where(
-        OrgAICredential.id == credential_id, OrgAICredential.org_id == org_id))
+    cred = (await db.execute(
+        select(OrgAICredential.platform_provider, OrgAICredential.provider).where(
+            OrgAICredential.id == credential_id, OrgAICredential.org_id == org_id)
+    )).one_or_none()
+    platform = cred.platform_provider if cred is not None else None
+    if cred is not None and platform is None and not is_supported_provider(cred.provider):
+        # TBD-584: dispatch refuses a retired provider, so never offer Confirm.
+        return ForecastRefineEstimate(
+            est_prompt_tokens=est_prompt,
+            est_output_tokens=est_out,
+            est_cost_cents=0,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="ai_provider_not_supported",
+        )
     if platform is not None:
         # Priced like the dispatch it previews; own-key caps never gate it (D6).
         # routed=None: smart_forecast is a background feature, dispatch runs the default.

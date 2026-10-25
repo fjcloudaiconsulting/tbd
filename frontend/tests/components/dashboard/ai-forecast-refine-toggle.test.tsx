@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AIForecastRefineToggle, {
+  fallbackReasonLabel,
   type RefinedForecastResponse,
 } from "@/components/dashboard/AIForecastRefineToggle";
 import { setBalancesHidden } from "@/lib/format";
@@ -448,5 +449,13 @@ describe("AIForecastRefineToggle - AI status gating", () => {
 
     expect(screen.queryByTestId("ai-forecast-refine-toggle")).toBeNull();
     expect(screen.getByText(/set up ai/i)).toBeInTheDocument();
+  });
+});
+
+describe("fallbackReasonLabel", () => {
+  it("has copy for ai_provider_not_supported (TBD-584)", () => {
+    expect(fallbackReasonLabel("ai_provider_not_supported")).toBe(
+      "This AI provider is no longer supported. Choose another in AI settings.",
+    );
   });
 });

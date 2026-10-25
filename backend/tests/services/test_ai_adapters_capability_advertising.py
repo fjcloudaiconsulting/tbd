@@ -11,9 +11,6 @@ Rules pinned here:
   prefix (gpt-4o, gpt-4o-mini, gpt-4o-2024-08-06, gpt-4.1, gpt-5).
 - Anthropic: chat, structured_output, function_call, stream — no
   embed (Anthropic has no embeddings API).
-- Ollama: chat, embed, stream always; function_call + structured_output
-  conditional on any discovered model matching the
-  ``KNOWN_FUNCTION_CALL_MODELS`` prefix allowlist.
 - OpenAI-compatible: chat, embed, structured_output, function_call,
   stream — the full surface this adapter implements. The /v1/models
   response carries no capability metadata, so we trust the
@@ -28,11 +25,9 @@ import httpx
 import pytest
 
 from app.services.ai_providers import anthropic as anthropic_mod
-from app.services.ai_providers import ollama as ollama_mod
 from app.services.ai_providers import openai as openai_mod
 from app.services.ai_providers import openai_compatible as oai_compat_mod
 from app.services.ai_providers.anthropic import AnthropicAdapter
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import OpenAICompatibleAdapter
 
@@ -130,78 +125,6 @@ async def test_anthropic_validate_advertises_chat_structured_function_stream(
     caps = set(result.discovered_capabilities)
     assert caps == {"chat", "structured_output", "function_call", "stream"}
     assert "embed" not in caps
-
-
-# ---------- Ollama ----------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ollama_validate_with_function_capable_model_advertises_full(
-    monkeypatch,
-):
-    """An Ollama install whose model list intersects with
-    ``KNOWN_FUNCTION_CALL_MODELS`` (e.g. llama3.1) advertises chat,
-    embed, stream + function_call + structured_output.
-    """
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            text=json.dumps(
-                {
-                    "models": [
-                        {"name": "llama3.1:8b"},
-                        {"name": "nomic-embed-text"},
-                    ]
-                }
-            ),
-        )
-
-    def _client(*_args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return _RealAsyncClient(**kwargs)
-
-    monkeypatch.setattr(ollama_mod.httpx, "AsyncClient", _client)
-
-    adapter = OllamaAdapter(base_url="http://localhost:11434", api_key="")
-    result = await adapter.validate()
-    assert result.ok is True
-    caps = set(result.discovered_capabilities)
-    assert caps == {
-        "chat",
-        "embed",
-        "stream",
-        "function_call",
-        "structured_output",
-    }
-
-
-@pytest.mark.asyncio
-async def test_ollama_validate_with_non_function_capable_model_omits_function(
-    monkeypatch,
-):
-    """An Ollama install with only legacy models (no llama3.1+,
-    mistral-nemo, etc.) advertises just the baseline:
-    chat, embed, stream.
-    """
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            text=json.dumps({"models": [{"name": "llama2:7b"}]}),
-        )
-
-    def _client(*_args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return _RealAsyncClient(**kwargs)
-
-    monkeypatch.setattr(ollama_mod.httpx, "AsyncClient", _client)
-
-    adapter = OllamaAdapter(base_url="http://localhost:11434", api_key="")
-    result = await adapter.validate()
-    assert result.ok is True
-    caps = set(result.discovered_capabilities)
-    assert caps == {"chat", "embed", "stream"}
-    assert "function_call" not in caps
-    assert "structured_output" not in caps
 
 
 # ---------- OpenAI-compatible ----------------------------------------

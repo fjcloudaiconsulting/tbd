@@ -114,26 +114,16 @@ async def get_provider_options(
 ) -> dict:
     """Provider picker metadata for the admin UI.
 
-    Always returns ``not_yet_available`` for native in PR1. The
-    ``AI_NATIVE_ENABLED`` env flag is reported back for visibility, but
-    it does NOT control this field: even when the gate is flipped on,
-    the credential-create path still refuses native (no backend ships
-    in PR1). A future PR will gate this on ``AI_NATIVE_ENABLED`` once a
-    real native backend exists. Returning ``available`` here while the
-    create path rejects would be a UI lie.
+    Lists exactly the providers the create path accepts. TBD-584 removed
+    ``ollama`` (bring-your-own local model) and the ``native`` stub.
+    ``ai_native_enabled`` reports the platform AI env gate.
     """
     models = await platform_ai_settings.offered(db, await platform_ai_settings.load(db), current_user.org_id)
     return {
         "providers": [
             {"key": AiProvider.OPENAI.value, "label": "OpenAI", "availability": "available"},
             {"key": AiProvider.ANTHROPIC.value, "label": "Anthropic", "availability": "available"},
-            {"key": AiProvider.OLLAMA.value, "label": "Ollama", "availability": "available"},
             {"key": AiProvider.OPENAI_COMPATIBLE.value, "label": "OpenAI-compatible", "availability": "available"},
-            {
-                "key": AiProvider.NATIVE.value,
-                "label": "Native (hosted by The Better Decision)",
-                "availability": "not_yet_available",
-            },
         ],
         # Hosts reached through the openai_compatible adapter; the form
         # offers them as extra choices that prefill ``base_url`` (TBD-590).
@@ -821,8 +811,7 @@ async def delete_feature_caps(
 
 # --------------------------------------------------------------------
 # Consent endpoints (PR1). Append-only — POST writes a new row, GET
-# returns the effective snapshot. Refusal logic in the native adapter
-# lands in PR4 alongside the AI_NATIVE_ENABLED gate flip.
+# returns the effective snapshot.
 # --------------------------------------------------------------------
 
 CONSENT_PREFIX = "/consent"
@@ -999,7 +988,6 @@ async def rotate_credential(
         db,
         credential=row,
         new_api_key=payload.api_key,
-        new_bearer_token=payload.bearer_token,
         session_factory=session_factory,
         actor_user_id=current_user.id,
         actor_email=current_user.email,

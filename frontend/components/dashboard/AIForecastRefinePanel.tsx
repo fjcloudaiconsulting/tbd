@@ -21,6 +21,9 @@ const REASON_COPY: Record<string, string> = {
   ai_consent_required: AI_OFF_MESSAGE,
   ai_routing_not_configured:
     "Configure an AI provider in Settings to use this feature.",
+  // TBD-584: routing points at a provider that was removed (ollama).
+  ai_provider_not_supported:
+    "This AI provider is no longer supported. Choose another in AI settings.",
   insufficient_history: "Not enough transaction history yet to analyze.",
   estimate_failed: "Something went wrong estimating the cost. Try again.",
   forecast_window_not_monthly:

@@ -19,7 +19,12 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.models.org_ai_credential import AiProvider, OrgAICredential
+from app.models.org_ai_credential import (
+    AiProvider,
+    OrgAICredential,
+    is_supported_provider,
+    provider_key,
+)
 from app.schemas.org_ai_credential import OrgAICredentialCreate
 from app.services import (
     ai_consent_service,
@@ -68,14 +73,12 @@ async def _run_validate(
     *,
     provider: AiProvider,
     api_key: Optional[str],
-    bearer_token: Optional[str],
     base_url: Optional[str],
     base_url_is_api_root: bool,
 ) -> ValidateResult:
     adapter = get_adapter(
         provider,
         api_key=api_key,
-        bearer_token=bearer_token,
         base_url=base_url,
         base_url_is_api_root=base_url_is_api_root,
     )
@@ -140,21 +143,19 @@ async def get_credential_for_org(
     return result.scalar_one_or_none()
 
 
-def _native_not_available() -> HTTPException:
-    """PR1: native is structurally rejected at credential creation.
-
-    The full consent + adapter scaffolding ships now (so PR4 only flips
-    a gate, not a code path), but there is no native backend yet. We
-    use HTTP 400 with a typed code so a hand-rolled API client sees a
-    machine-readable refusal. Spec §5.
-    """
-    return HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail={
-            "code": "native_not_available",
-            "message": "Native provider is not yet available",
-        },
-    )
+def assert_provider_supported(credential: OrgAICredential) -> None:
+    """TBD-584: a row naming a retired provider (``ollama``, ``native``) is
+    inert. Validate and rotate refuse it before any adapter or network call;
+    listing, reading, relabelling and deleting still work, so an admin can
+    remove it. Called after the org-scoped 404 lookup."""
+    if not is_supported_provider(credential.provider):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ai_provider_not_supported",
+                "message": "This provider is no longer supported. Delete this credential.",
+            },
+        )
 
 
 async def create_credential(
@@ -168,12 +169,9 @@ async def create_credential(
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAICredential:
-    if payload.provider == AiProvider.NATIVE:
-        raise _native_not_available()
     result = await _run_validate(
         provider=payload.provider,
         api_key=payload.api_key,
-        bearer_token=payload.bearer_token,
         base_url=payload.base_url,
         base_url_is_api_root=True,
     )
@@ -184,9 +182,6 @@ async def create_credential(
         org_id=org_id,
         provider=payload.provider,
         encrypted_api_key=encrypt(payload.api_key) if payload.api_key else None,
-        encrypted_bearer_token=(
-            encrypt(payload.bearer_token) if payload.bearer_token else None
-        ),
         base_url=payload.base_url,
         base_url_is_api_root=True,
         key_fingerprint=fingerprint(payload.api_key) if payload.api_key else None,
@@ -213,7 +208,7 @@ async def create_credential(
         outcome="success",
         detail={
             "credential_id": row.id,
-            "provider": row.provider.value,
+            "provider": provider_key(row.provider),
             "last_four": row.last_four,
         },
     )
@@ -225,33 +220,16 @@ async def rotate_credential(
     *,
     credential: OrgAICredential,
     new_api_key: str,
-    new_bearer_token: Optional[str],
     session_factory: async_sessionmaker[AsyncSession],
     actor_user_id: int,
     actor_email: str,
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAICredential:
-    # Bearer token is Ollama-only — same rule the create-path schema
-    # validator enforces. Rotate's schema can't enforce it because the
-    # provider isn't in the request body (it's looked up by id), so the
-    # service layer is the enforcement point. See OrgAICredentialRotate
-    # field comment.
-    if (
-        new_bearer_token is not None
-        and credential.provider != AiProvider.OLLAMA
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "bearer_token_only_for_ollama",
-                "message": "bearer_token is only valid for Ollama credentials.",
-            },
-        )
+    assert_provider_supported(credential)
     result = await _run_validate(
         provider=credential.provider,
         api_key=new_api_key,
-        bearer_token=new_bearer_token,
         base_url=credential.base_url,
         base_url_is_api_root=credential.base_url_is_api_root,
     )
@@ -259,9 +237,6 @@ async def rotate_credential(
         raise _credential_validation_failure(result.error or "validation failed")
 
     credential.encrypted_api_key = encrypt(new_api_key)
-    credential.encrypted_bearer_token = (
-        encrypt(new_bearer_token) if new_bearer_token else None
-    )
     credential.key_fingerprint = fingerprint(new_api_key)
     credential.last_four = last_four(new_api_key)
     credential.discovered_capabilities = result.discovered_capabilities
@@ -283,7 +258,7 @@ async def rotate_credential(
         outcome="success",
         detail={
             "credential_id": credential.id,
-            "provider": credential.provider.value,
+            "provider": provider_key(credential.provider),
             "last_four": credential.last_four,
         },
     )
@@ -300,20 +275,15 @@ async def validate_credential(
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAICredential:
+    assert_provider_supported(credential)
     api_key = (
         decrypt(credential.encrypted_api_key)
         if credential.encrypted_api_key
         else None
     )
-    bearer_token = (
-        decrypt(credential.encrypted_bearer_token)
-        if credential.encrypted_bearer_token
-        else None
-    )
     result = await _run_validate(
         provider=credential.provider,
         api_key=api_key,
-        bearer_token=bearer_token,
         base_url=credential.base_url,
         base_url_is_api_root=credential.base_url_is_api_root,
     )
@@ -339,7 +309,7 @@ async def validate_credential(
         outcome="success" if result.ok else "failure",
         detail={
             "credential_id": credential.id,
-            "provider": credential.provider.value,
+            "provider": provider_key(credential.provider),
             "ok": result.ok,
             "error": credential.validation_error,
         },
@@ -388,7 +358,7 @@ async def delete_credential(
 ) -> None:
     org_id = credential.org_id
     credential_id = credential.id
-    provider = credential.provider.value
+    provider = provider_key(credential.provider)
     await db.delete(credential)
     await db.commit()
     await audit_service.record_audit_event(

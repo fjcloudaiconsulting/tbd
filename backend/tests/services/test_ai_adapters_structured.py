@@ -12,7 +12,6 @@ Wire shape per provider:
   + schema in the system message.
 - Anthropic: single ``tools`` entry whose ``input_schema`` is the
   response schema; ``tool_choice`` pins the tool.
-- Ollama: ``format: "json"`` + schema-hint system message.
 - OpenAI-compatible: same as legacy OpenAI (json_object only).
 """
 from __future__ import annotations
@@ -24,7 +23,6 @@ import pytest
 
 from app.services.ai_providers.anthropic import AnthropicAdapter
 from app.services.ai_providers.base import AIProviderError
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import (
     OpenAICompatibleAdapter,
@@ -185,44 +183,6 @@ async def test_anthropic_chat_structured_uses_tool_use(monkeypatch):
     assert parsed == {"category": "utilities"}
     assert resp.prompt_tokens == 10
     assert resp.completion_tokens == 6
-
-
-# ---------- Ollama ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ollama_chat_structured_uses_format_json(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        assert body["format"] == "json"
-        # Schema hint sits in the prepended system message.
-        first = body["messages"][0]
-        assert first["role"] == "system"
-        assert "category" in first["content"]
-        return httpx.Response(
-            200,
-            json={
-                "model": "llama3:8b",
-                "message": {
-                    "role": "assistant",
-                    "content": '{"category": "food"}',
-                },
-                "prompt_eval_count": 8,
-                "eval_count": 4,
-            },
-        )
-
-    _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434", api_key="x"
-    )
-    resp = await adapter.chat_structured(
-        model="llama3:8b",
-        messages=[{"role": "user", "content": "classify"}],
-        schema=SCHEMA,
-    )
-    assert json.loads(resp.content) == {"category": "food"}
-    assert resp.prompt_tokens == 8
 
 
 # ---------- OpenAI-compatible ----------------------------------------

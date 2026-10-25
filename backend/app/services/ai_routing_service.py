@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.org_ai_credential import AiProvider, OrgAICredential
+from app.models.org_ai_credential import OrgAICredential, is_supported_provider
 from app.models.org_ai_routing import (
     ROUTABLE_FEATURE_NAMES,
     OrgAIDefaultRouting,
@@ -87,9 +87,9 @@ async def list_models(db: AsyncSession, cred: OrgAICredential, feature: str | No
     """The ONE definition of which models ``cred`` can be routed to for ``feature``
     (None = the default routing row). The caller has validated ``feature``."""
     if cred.platform_provider is None:
-        # agent_chat.preflight refuses Ollama, so a chat list would be a second answer; the default
-        # row (feature None) still serves every other feature and keeps listing.
-        if cred.provider == AiProvider.OLLAMA and feature == CHAT_FEATURE:
+        # TBD-584: a retired provider (ollama, native) lists nothing, so no
+        # routing can be written to it; dispatch refuses it too.
+        if not is_supported_provider(cred.provider):
             return ModelList([], None)
         return _own_key_models(cred, feature)
     conf = await platform_ai_settings.load(db)

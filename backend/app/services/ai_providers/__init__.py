@@ -4,17 +4,17 @@ PR1 shipped the ``ValidateCapable`` protocol. PR2 added ``ChatCapable``,
 ``LLMResponse``, ``AIProviderError``. PR3 adds the remaining
 capabilities:
 
-- ``EmbedCapable.embed`` — OpenAI, Ollama, OpenAI-compatible (Anthropic
+- ``EmbedCapable.embed`` — OpenAI, OpenAI-compatible (Anthropic
   raises NotImplementedError).
 - ``StructuredOutputCapable.chat_structured`` — adapter-side
   implementation; service layer applies the architect-locked retry cap
   via ``ai_dispatch.call_llm_structured``.
-- ``FunctionCallCapable.function_call`` — OpenAI/Anthropic adapters;
-  Ollama raises ``CapabilityNotSupported`` for non-tool-using models.
+- ``FunctionCallCapable.function_call`` — OpenAI/Anthropic/OpenAI-compatible
+  adapters.
 - ``StreamCapable.stream`` — async iterator over ``StreamChunk``s.
 
-Native still raises ``NativeNotAvailable`` for every capability until
-PR4 wires a real backend.
+TBD-584 removed the ``ollama`` and ``native`` adapters; ``get_adapter``
+raises ``ProviderNotSupported`` for a row that still names one.
 
 Distinct from the older ``ai_adapters`` package (LAI foundation mock
 adapter) — that one is the call_llm() chokepoint; this one is the
@@ -30,6 +30,7 @@ from app.services.ai_providers.base import (
     FunctionCallResponse,
     LLMResponse,
     NativeNotAvailable,
+    ProviderNotSupported,
     StreamCapable,
     StreamChunk,
     StructuredOutputCapable,
@@ -51,6 +52,7 @@ __all__ = [
     "FunctionCallResponse",
     "LLMResponse",
     "NativeNotAvailable",
+    "ProviderNotSupported",
     "StreamCapable",
     "StreamChunk",
     "StructuredOutputCapable",

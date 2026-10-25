@@ -15,11 +15,9 @@ import httpx
 import pytest
 
 from app.services.ai_providers import anthropic as anthropic_mod
-from app.services.ai_providers import ollama as ollama_mod
 from app.services.ai_providers import openai as openai_mod
 from app.services.ai_providers import openai_compatible as oai_compat_mod
 from app.services.ai_providers.anthropic import AnthropicAdapter
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import OpenAICompatibleAdapter
 
@@ -103,20 +101,6 @@ async def test_anthropic_adapter_sanitizes_response(monkeypatch):
     result = await adapter.validate()
     assert "LEAKED" not in (result.error or "")
     assert "secret123" not in (result.error or "")
-
-
-@pytest.mark.asyncio
-async def test_ollama_adapter_sanitizes_response(monkeypatch):
-    adapter = OllamaAdapter(
-        base_url="http://ollama.example.com",
-        api_key="sk-LEAKED-456",
-        bearer_token="bearer-LEAK-789",
-    )
-    _patch_with_mock(monkeypatch, ollama_mod, 401, HOSTILE_BODY)
-    result = await adapter.validate()
-    assert "LEAKED" not in (result.error or "")
-    assert "secret123" not in (result.error or "")
-    assert "bearer-LEAK-789" not in (result.error or "")
 
 
 @pytest.mark.asyncio

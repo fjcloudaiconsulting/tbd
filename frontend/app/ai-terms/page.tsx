@@ -83,10 +83,9 @@ export default function AiTermsPage() {
             <ul>
               <li>
                 Your own provider: with your organization&rsquo;s own key, the
-                provider it chose (OpenAI, Anthropic, an OpenAI-compatible
-                service such as OpenRouter, or your own Ollama server)
-                processes the data under your organization&rsquo;s agreement
-                with it. You are responsible for that agreement and that key.
+                provider it chose (OpenAI, Anthropic, or an OpenAI-compatible
+                service such as OpenRouter) processes the data under your
+                organization&rsquo;s agreement with it. You are responsible for that agreement and that key.
               </li>
               <li>
                 Platform AI, where we supply the AI provider, is not offered

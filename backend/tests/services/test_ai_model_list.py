@@ -83,12 +83,21 @@ async def test_s2d_an_own_key_zero_priced_row_is_never_the_default(db, monkeypat
     assert ids(lst) == ["z/free", "gpt-4o"] and lst.default == "gpt-4o"
 
 
-async def test_s3b_ollama_lists_nothing_where_chat_can_run(db):
-    cred = await own(db, ["llama3.1"], caps=CAPS, provider=AiProvider.OLLAMA)
-    lst = await ai_routing_service.list_models(db, cred, "chat")
-    assert (ids(lst), lst.default) == ([], None)
-    assert ids(await ai_routing_service.list_models(db, cred, None)) == ["llama3.1"]
-    assert ids(await ai_routing_service.list_models(db, cred, "smart_budget")) == ["llama3.1"]
+async def test_s3b_a_retired_provider_lists_nothing(db):
+    """TBD-584: a row still naming ``ollama`` lists no model for any
+    feature, so no routing can be written to it."""
+    from sqlalchemy import text
+
+    cred = await own(db, ["llama3.1"], caps=CAPS)
+    await db.execute(
+        text("UPDATE org_ai_credentials SET provider = 'ollama' WHERE id = :id"),
+        {"id": cred.id},
+    )
+    await db.commit()
+    await db.refresh(cred)
+    for feature in (None, "chat", "smart_budget"):
+        lst = await ai_routing_service.list_models(db, cred, feature)
+        assert (ids(lst), lst.default) == ([], None)
 
 
 # ---- S4-S5: the free-model rules ---------------------------------------------
