@@ -122,11 +122,18 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
         "org_members.preview_invitation",
         "30/minute",
     ),
+    # TBD-738: the deprecated GET shape, one release only; shares the POST's
+    # bucket (``shared_limit`` on the same scope).
+    ("org_members", "preview_invitation_by_query"): (
+        "org_members.preview_invitation",
+        "30/minute",
+    ),
     ("org_members", "remove_member"): ("org_members.remove_member", "30/minute"),
     ("orgs", "rename_org_endpoint"): ("orgs.rename", "10/hour"),
-    ("public_stats", "founder_count"): ("public_stats.founder_count", "60/minute"),
     ("reports", "run_query"): ("reports.query", "60/minute"),
     ("reports", "run_sankey_query"): ("reports.sankey_query", "60/minute"),
+    ("scenarios", "compare_scenarios"): ("scenarios.compare", "30/minute"),  # per user (TBD-726)
+    ("scenarios", "simulate_scenario"): ("scenarios.simulate", "60/minute"),  # per user (TBD-726)
     ("security", "csp_report"): ("security.csp_report", "60/minute"),
     ("tags", "create_tag_endpoint"): ("tags.create", "30/minute"),
     ("tags", "replace_transaction_tags_endpoint"): (
@@ -365,6 +372,7 @@ _KNOWN_PATH_PARAM_LIMITED: frozenset = frozenset({
     "app.routers.admin_users.cancel_admin_pending_email",
     "app.routers.org_members.remove_member",
     "app.routers.orgs.rename_org_endpoint",
+    "app.routers.scenarios.simulate_scenario",
 })
 
 

@@ -222,6 +222,9 @@ class ToolSpec:
     run: Callable[[ToolContext, Any], Awaitable[Any]] | None = None
     preview: Callable[..., Awaitable[Any]] | None = None
     execute: Callable[..., Awaitable[Any]] | None = None
+    # The APIRoute a route-bound tool runs in-process (``app.agent.route_tool``,
+    # TBD-664); ``None`` for a hand-written adapter.
+    route: Any = field(default=None, compare=False, repr=False)
 
 
 _TOOLS: dict[str, ToolSpec] = {}
@@ -245,6 +248,13 @@ def wrap_untrusted(value: Any) -> Any:
         }
     if isinstance(value, list):
         return [wrap_untrusted(v) for v in value]
+    return value
+
+
+def unwrap_untrusted(value: Any) -> Any:
+    """The string inside a ``{"untrusted": s}`` disclosure; anything else as is."""
+    if isinstance(value, dict) and set(value) == {"untrusted"}:
+        return value["untrusted"]
     return value
 
 

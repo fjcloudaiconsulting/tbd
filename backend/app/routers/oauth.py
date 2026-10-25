@@ -221,7 +221,10 @@ async def authorize_decision(
     detail = {"oauth_client_id": cid, "redirect_host": oauth_service.redirect_host(redirect),
               "scope": granted}
     try:
-        sso_proof = _verify_step_up(current_user, body, "oauth_consent")
+        sso_proof = await _verify_step_up(
+            current_user, body, "oauth_consent",
+            request=request, db=db, session_factory=session_factory,
+        )
         if sso_proof and not await consume_stepup(db, current_user):
             raise _step_up_401()
         if oauth_service.is_cimd(body.client_id):

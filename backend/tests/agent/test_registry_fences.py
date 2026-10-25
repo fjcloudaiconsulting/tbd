@@ -84,11 +84,11 @@ def scratch_tool():
 def test_registry_ships_the_six_v1_reads_and_the_writes():
     assert sorted(t.name for t in TOOLS) == sorted([
         "accounts_list", "categories_list", "budgets_list",
-        "transactions_search", "spending_by_category", "forecast_get",
-        "budgets_update_amount", "transactions_set_category",
+        "transactions_search", "spending_by_category", "forecast_get", "transactions_get",
+        "budgets_update_amount", "transactions_set_category", "transactions_update",
     ])
     assert {t.name for t in TOOLS if t.risk != "read"} == {
-        "budgets_update_amount", "transactions_set_category",
+        "budgets_update_amount", "transactions_set_category", "transactions_update",
     }
     assert {t.risk for t in TOOLS} == {"read", "write"}
 
@@ -239,6 +239,8 @@ def _valid_base(tool) -> dict:
         return {"budget_id": 1, "amount": "10.00"}
     if tool.name == "transactions_set_category":
         return {"transaction_id": 1, "category_id": 2}
+    if tool.name in ("transactions_get", "transactions_update"):
+        return {"transaction_id": 1}
     return {}
 
 
@@ -451,6 +453,8 @@ _NEVER = [
     ("PUT", "/api/v1/scheduler/settings"),
     ("PUT", "/api/v1/settings/manual-balance-adjustment"),
     ("POST", "/api/v1/webhooks/mailgun"),
+    # No route is mounted here any more (TBD-661); the entry keeps the
+    # ``/api/v1/public`` prefix rule under test.
     ("GET", "/api/v1/public/founder-count"),
     ("POST", "/api/v1/security/csp-report"),
 ]
