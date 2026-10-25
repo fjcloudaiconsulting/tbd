@@ -265,13 +265,13 @@ For the full router-by-router and service-by-service map, see the live file tree
 Google-SSO users have `password_set=False` until they explicitly set a password. To prevent a hijacked SSO session from silently attaching a password:
 
 - **First password set** requires a Google **step-up** verification. The user re-authenticates with the same Google account, the backend issues a 5-minute single-use step-up token, and only then accepts the password write.
-- **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success.
+- **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success. The 1-hour reset token carries a keyed digest of the address it was mailed to (never the address itself) and a `jti`: it stops working once the account's email changes, and its `jti` is claimed in `used_tokens`, so it resets the password once (TBD-654).
 - **Step-up proofs are scoped to one action** (`email_change`, `password_set`, `pat_mint`; `STEPUP_ACTIONS` in `backend/app/auth/stepup.py`). Initiate requires a known `action` (422 otherwise), the callback returns to that action's fixed page, and only the consumer for that action accepts the proof. A state carrying anything else fails as `sso_stepup_error=state`.
 - **Email change** also takes the step-up path and flips `password_set` back to `False` if the new email belongs to a different identity.
 
 ### MFA
 
-- TOTP via authenticator app (Google Authenticator, Authy, 1Password). A code is accepted once per user: its time step, and the two before it, are claimed in `used_tokens` (BE-26).
+- TOTP via authenticator app (Google Authenticator, Authy, 1Password). A code is accepted once per user: its time step, and the two before it, are claimed in `used_tokens` (BE-26). That holds everywhere a TOTP code is checked, the PAT, agent-token and OAuth-consent step-ups included (TBD-716).
 - 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable), spent with a compare-and-swap on the stored list.
 - Email fallback with 6-digit code (10-minute expiry). For an account with TOTP it is off until the user turns it on in `/settings/security` (`PUT /api/v1/auth/mfa/email-fallback`), which takes a current TOTP code or an unused recovery code; turning it off takes neither, and disabling MFA turns it off (BE-03). While it is off, `/mfa/email-code` mails nothing and `/mfa/email-verify` completes no sign-in. For 72 hours after a password reset through the emailed link (`users.password_reset_at`) both refuse even when it is on, so the next sign-in takes TOTP or a recovery code; an in-app password change does not open that window.
 - The 5-minute challenge token from the first leg carries a `jti`: it is claimed on success (single-use) and burned after 5 wrong codes, so the next try starts from the password.
@@ -287,8 +287,8 @@ Failed sign-in attempts are also counted per account, beside the per-IP limits (
 | Counter | Budget per 15 minutes | When full |
 |---------|-----------------------|-----------|
 | Wrong password, keyed on the login as typed (lower-cased), checked before the lookup | 10 | `/login` answers 429 with `Retry-After`, even for the right password |
-| Wrong password, keyed on the user id: `/login` under any spelling, and the password re-auth on the MFA settings routes | 10 | `/login` stops checking that account's password and answers the usual 401 (a 429 would show the login exists); re-auth answers 429. A rename or email change does not reopen it |
-| Wrong second factor (TOTP, recovery or email code), per user | 10 | every `/mfa/*` challenge leg answers 429 with `Retry-After` |
+| Wrong password, keyed on the user id: `/login` under any spelling, and every password re-check of a known account (the MFA settings routes, password and email change, the PAT / agent-token / OAuth-consent step-ups, confirming an unverified address at `/verify-email`) | 10 | `/login` stops checking that account's password and answers the usual 401 (a 429 would show the login exists); re-auth answers 429. A rename or email change does not reopen it |
+| Wrong second factor (TOTP, recovery or email code), per user, at sign-in, on the MFA settings routes and on the token-minting step-ups | 10 | every `/mfa/*` challenge leg and every such check answers 429 with `Retry-After` |
 | Wrong second factor, per challenge token | 5 | the challenge is burned: 401, sign in again |
 
 Only failures count. A success empties the account's window, a completed password reset empties its login window, and nothing locks permanently. The failure that fills an account's window writes one `auth.login.locked` or `auth.mfa.locked` audit row (for a real account only).

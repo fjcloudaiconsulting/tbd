@@ -1,5 +1,8 @@
-"""The v1 agent tools: six reads (TBD-559), ``budgets_update_amount`` (TBD-577)
-and ``transactions_set_category`` (TBD-580).
+"""The agent tools: six reads (TBD-559), ``budgets_update_amount`` (TBD-577)
+and ``transactions_set_category`` (TBD-580); ``transactions_get`` and
+``transactions_update`` (TBD-664). ``budgets_update_amount`` and the two
+TBD-664 tools are route-bound (``app.agent.route_tool``): they run the route
+handler itself.
 
 Each tool is a thin adapter over the code its mirrored REST route runs, scoped
 by ``ctx``. ``accounts_list`` and ``categories_list`` call the route handlers
@@ -18,19 +21,21 @@ No module here may cause network egress (fenced by
 from __future__ import annotations
 
 import datetime
-from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
 from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register
+from app.agent.route_tool import route_tool
 from app.models import Budget, Category, Organization, Transaction
+from app.models.transaction import TransactionStatus
 from app.models.category_rule import CategoryRule
 from app.models.user import Role
 from app.routers.accounts import list_accounts
+from app.routers import budgets as budgets_router
+from app.routers import transactions as transactions_router
 from app.routers.categories import list_categories
-from app.schemas.budget import BudgetUpdate
 from app.schemas.forecast import ForecastResponse
 from app.schemas.transaction import SpendingByCategoryResponse, TransactionUpdate
 from app.services import (
@@ -44,7 +49,7 @@ from app.services import (
 from app.services.category_rules_service import normalize_description
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.feature_gate import Feature
-from app.services.transaction_filters import is_reportable_transaction
+from app.services.transaction_filters import REVERTED_RECONCILIATION_STATES, is_reportable_transaction
 
 MAX_SEARCH_DAYS = 366
 MAX_PAGE = 50
@@ -63,13 +68,6 @@ class PeriodArgs(_Args):
         default=None,
         description="Start date of a billing period; omit for the current open period.",
     )
-
-
-class BudgetAmountArgs(_Args):
-    # Mirrors ``PUT /budgets/{budget_id}`` (``BudgetUpdate.amount``: gt=0) and
-    # is stricter where the column is (Numeric(12, 2)): fenced by F-R4.
-    budget_id: int
-    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
 
 
 class SetCategoryArgs(_Args):
@@ -223,51 +221,33 @@ register(ToolSpec(
 ))
 
 
-def _money(value: Decimal) -> str:
-    return f"{value:.2f}"
+# ── budgets_update_amount (route-bound since TBD-664, same spec as v1) ────
 
-
-async def _budgets_update_amount_preview(ctx: ToolContext, args: BudgetAmountArgs) -> Preview:
-    found = (await ctx.db.execute(
-        select(Budget, Category.name)
-        .join(Category, Category.id == Budget.category_id)
-        .where(Budget.id == args.budget_id, Budget.org_id == ctx.org_id)
-        .execution_options(populate_existing=True)
-    )).first()
-    if found is None:
-        raise NotFoundError("Budget")
-    budget, category_name = found
-    if budget.amount == args.amount:
-        raise ToolError("no_change", "the budget already has this amount")
+async def _budget_present(ctx: ToolContext, budget: Budget, args, changes: list[Change]) -> Preview:
+    category_name = await ctx.db.scalar(select(Category.name).where(Category.id == budget.category_id))
     org = await ctx.db.get(Organization, ctx.org_id)
     currency = org.primary_currency or (
         await currency_service.resolve_currency_scope(ctx.db, org_id=ctx.org_id)
     ).get("currency")
-    before, after = _money(budget.amount), _money(args.amount)
+    [amount] = changes
     return Preview(
-        summary=f"Change the amount of budget {budget.id} from {before} to {after}"
+        summary=f"Change the amount of budget {budget.id} from {amount.before} to {amount.after}"
         + (f" {currency}" if currency else ""),
-        changes=[Change("budgets", budget.id, "amount", before, after, currency)],
+        changes=[Change("budgets", budget.id, "amount", amount.before, amount.after, currency)],
         context={"category_name": category_name, "period_start": budget.period_start.isoformat()},
     )
 
 
-async def _budgets_update_amount_execute(ctx: ToolContext, args: BudgetAmountArgs) -> dict:
-    out = await budget_service.update_budget(
-        ctx.db, ctx.org_id, args.budget_id, BudgetUpdate(amount=args.amount)
-    )
-    return out.model_dump(mode="json")
-
-
-register(ToolSpec(
-    name="budgets_update_amount", risk="write", args=BudgetAmountArgs,
+register(route_tool(
+    name="budgets_update_amount", risk="write", args_name="BudgetAmountArgs",
+    router=budgets_router.router, method="PUT", path="/api/v1/budgets/{budget_id}",
+    fields=("amount",), required=("amount",),
     product_area=Feature.BUDGETS, min_role=Role.MEMBER,
-    mirrors_route=("PUT", "/api/v1/budgets/{budget_id}"),
     description=(
         "Change the amount of one existing budget. Returns a preview to confirm; "
         "nothing changes until it is confirmed."
     ),
-    preview=_budgets_update_amount_preview, execute=_budgets_update_amount_execute,
+    entity=Budget, present=_budget_present, no_change="the budget already has this amount",
 ))
 
 
@@ -394,4 +374,63 @@ register(ToolSpec(
         "nothing changes until it is confirmed."
     ),
     preview=_set_category_preview, execute=_set_category_execute,
+))
+
+
+# ── transactions_get / transactions_update (route-bound, TBD-664) ─────────
+
+register(route_tool(
+    name="transactions_get", risk="read",
+    router=transactions_router.router, method="GET", path="/api/v1/transactions/{transaction_id}",
+    fields=(), product_area=None, min_role=Role.MEMBER,
+    description="Read one transaction by id, with its tags.",
+))
+
+
+# ``transactions_update`` edits the fields that move no money: description,
+# date and the settlement date. Amount, account, type and status move
+# ``accounts.balance`` and are a ``sensitive`` tool (PR B); the category has its
+# own tool (it learns a categorization rule). Its preview refuses what
+# ``update_transaction`` would write beyond the row or silently ignore:
+# a description edit on a recurring row (it renames the template and every
+# pending sibling), clearing a SETTLED row's settlement date (the service keeps
+# it), and a date pair out of order or a skipped occurrence's date (which the
+# service refuses only at execute). A transfer leg is fine: none of these fields is mirrored to the
+# partner, and the balance revert/apply on its own account nets to zero.
+
+async def _tx_update_check(ctx: ToolContext, tx: Transaction, args) -> None:
+    sent = args.model_fields_set
+    if tx.is_manual_adjustment:
+        raise ValidationError("Manual balance adjustments cannot be edited")
+    if "description" in sent and tx.recurring_id is not None and args.description != tx.description:
+        raise ToolError(
+            "unsupported_in_v1", "the description of a transaction in a recurring series cannot be edited here",
+            data={"reason": "recurring_series"},
+        )
+    date = args.date if "date" in sent else tx.date
+    if (
+        "date" in sent and date != tx.date and tx.recurring_id is not None
+        and tx.reconciliation_state in REVERTED_RECONCILIATION_STATES
+    ):
+        raise ValidationError(f"The date of a {tx.reconciliation_state} transaction cannot be changed")
+    settled = args.settled_date if "settled_date" in sent else tx.settled_date
+    if "settled_date" in sent and settled is None and tx.status == TransactionStatus.SETTLED:
+        raise ValidationError("A settled transaction keeps its settlement date")
+    if settled is not None and settled < date:
+        raise ValidationError("settled_date must be on or after date")
+
+
+register(route_tool(
+    name="transactions_update", risk="write",
+    router=transactions_router.router, method="PUT", path="/api/v1/transactions/{transaction_id}",
+    fields=("description", "date", "settled_date"), nullable=("settled_date",),
+    product_area=None, min_role=Role.MEMBER,
+    description=(
+        "Edit the description, date or settlement date of one transaction (for a pending "
+        "transaction the settlement date is the expected one; null clears it). Use "
+        "transactions_set_category for the category. Returns a preview to confirm; nothing "
+        "changes until it is confirmed."
+    ),
+    entity=Transaction, check=_tx_update_check,
+    no_change="the transaction already has these values",
 ))
