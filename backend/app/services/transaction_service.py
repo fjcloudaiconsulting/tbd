@@ -12,6 +12,7 @@ instead of HTTPException — callers map these to the appropriate response.
 
 import datetime
 from collections.abc import Callable
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 import logging
@@ -1098,67 +1099,42 @@ def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
         tx.date = body.date
 
 
-async def _settle_batch_counters_and_demote_orphans(
-    db: AsyncSession,
+@dataclass(frozen=True)
+class BatchSettlementPlan:
+    """What ``apply_batch_settlement`` will write, decided without writing.
+
+    ``demoted`` are the inbound referrers to mark REJECTED (``prior_states``
+    holds each one's state before); the three ``*_delta`` maps are the
+    decrements per import batch id; ``unlocked_ids`` are delete-set ids the
+    caller did not lock (reported, never counted). An agent preview renders
+    this plan, so the preview and the write cannot disagree.
+    """
+
+    deleted_ids: frozenset[int]
+    demoted: list[Transaction]
+    prior_states: dict[int, str]
+    accepted_delta: dict[int, int]
+    pending_delta: dict[int, int]
+    row_delta: dict[int, int]
+    unlocked_ids: list[int]
+
+    @property
+    def demoted_ids(self) -> list[int]:
+        return [r.id for r in self.demoted]
+
+
+def plan_batch_settlement(
     org_id: int,
     *,
     locked_rows: dict[int, Transaction],
     deleted_ids: set[int],
-) -> list[int]:
-    """The single pre-delete side-effect pass for every delete path.
+) -> BatchSettlementPlan:
+    """The decision half of ``_settle_batch_counters_and_demote_orphans``.
 
-    Two jobs, deliberately in ONE function and ONE ``import_batches`` write:
-
-    * **TBD-294** -- mark every row that points AT a row we are about to
-      delete, and whose amount is NOT inside ``accounts.balance``, as
-      REJECTED.
-    * **TBD-311** -- settle the import-batch counters for the rows the caller
-      is about to delete, which no state transition will ever do for them.
-
-    They are not separable. A deleted row and a demoted referrer can sit in
-    the SAME batch and both decrement ``pending_count``, and the counter write
-    below is one floored UPDATE per batch issued in ascending batch id -- a
-    shape arrived at deliberately to kill the self-inversion between two
-    concurrent deletes (see the long comment on that loop). A second helper
-    with its own ``UPDATE import_batches`` would re-create exactly that
-    ordering edge, invisibly, since no test can see a lock-order inversion.
-    It is also why "a fifth delete path must route through the same helper"
-    stays enforceable by a single grep: one helper, not two to remember.
-
-    THE HOLE TBD-294 CLOSES. ``transactions.linked_transaction_id`` is
-    ``ON DELETE SET NULL``. A reconcile-matched duplicate ``M -> T`` had its
-    contribution reverted at match time and is excluded from balance
-    reconstruction and from reports SOLELY because of that link's direction.
-    Delete ``T`` and the FK erases the discriminator: ``M`` becomes
-    byte-identical to an ordinary row, re-enters
-    ``balance_contribution_filter`` (so reconstruction counts an amount that
-    is not in ``accounts.balance``) AND ``reportable_transaction_filter`` (so
-    budgets and reports are wrong too).
-
-    THE FIX IS A STATE WRITE, NOT A REFUSAL. ``REJECTED`` is in
-    ``_RECON_EXCLUDED_STATES``, which BOTH of those filters consult. One
-    write moves the discriminator out of a column the FK erases and into one
-    it cannot touch, at the instant of erasure. No migration, and the delete
-    still succeeds -- refusing it would strand the user with a row they
-    cannot remove.
-
-    ``contributes_to_cached_balance(R, target)`` is the discriminator, not
-    "is the link one-way": a RECIPROCAL partner is inside the balance and its
-    own delete is already handled by the transfer cascade, so it must be left
-    alone. Rows already in a reverted state are skipped -- their
-    contribution is already out of both filters, and REJECTED is terminal, so
-    rewriting SKIPPED to REJECTED would burn a state for nothing.
-
-    Caller MUST have locked every row in ``locked_rows`` FOR UPDATE, in the
-    same ascending-id query that locked the delete set. Mutates state in
-    place and adjusts the owning ``ImportBatch`` counters; the caller owns
-    the transaction scope.
+    Pure: no SQL, no ORM mutation. It reads only ``locked_rows``, so call it
+    on the rows the caller locked, before anything is written.
     """
-    from app.services.reconciliation_service import (
-        PENDING_STATES,
-        close_batch_if_complete,
-    )
-    from app.models.import_batch import ImportBatch
+    from app.services.reconciliation_service import PENDING_STATES
 
     demoted: list[Transaction] = []
     for r in locked_rows.values():
@@ -1194,6 +1170,7 @@ async def _settle_batch_counters_and_demote_orphans(
     accepted_delta: dict[int, int] = {}
     pending_delta: dict[int, int] = {}
     row_delta: dict[int, int] = {}
+    unlocked_ids: list[int] = []
 
     # TBD-311. THE ROWS THE CALLER IS ABOUT TO DELETE.
     #
@@ -1227,13 +1204,7 @@ async def _settle_batch_counters_and_demote_orphans(
             # delete path must route through it", and a fifth path that
             # passed an id it forgot to lock would reintroduce TBD-311
             # silently, with the suite green. Say so rather than skipping.
-            logger.warning(
-                "transactions.delete_counter_skipped_unlocked_row",
-                extra={
-                    "org_id": org_id,
-                    "transaction_id": tid,
-                },
-            )
+            unlocked_ids.append(tid)
             continue
         if r.import_batch_id is None:
             continue
@@ -1244,8 +1215,10 @@ async def _settle_batch_counters_and_demote_orphans(
         elif r.reconciliation_state in PENDING_STATES:
             pending_delta[bid] = pending_delta.get(bid, 0) + 1
 
+    prior_states: dict[int, str] = {}
     for r in demoted:
         prior = r.reconciliation_state
+        prior_states[r.id] = prior
         if r.import_batch_id is not None:
             if prior == "accepted":
                 accepted_delta[r.import_batch_id] = (
@@ -1255,6 +1228,37 @@ async def _settle_batch_counters_and_demote_orphans(
                 pending_delta[r.import_batch_id] = (
                     pending_delta.get(r.import_batch_id, 0) + 1
                 )
+
+    return BatchSettlementPlan(
+        deleted_ids=frozenset(deleted_ids),
+        demoted=demoted,
+        prior_states=prior_states,
+        accepted_delta=accepted_delta,
+        pending_delta=pending_delta,
+        row_delta=row_delta,
+        unlocked_ids=unlocked_ids,
+    )
+
+
+async def apply_batch_settlement(
+    db: AsyncSession, org_id: int, plan: BatchSettlementPlan
+) -> list[int]:
+    """The write half of ``_settle_batch_counters_and_demote_orphans``: it
+    performs exactly ``plan`` and returns the demoted ids."""
+    from app.services.reconciliation_service import close_batch_if_complete
+    from app.models.import_batch import ImportBatch
+
+    for tid in plan.unlocked_ids:
+        logger.warning(
+            "transactions.delete_counter_skipped_unlocked_row",
+            extra={
+                "org_id": org_id,
+                "transaction_id": tid,
+            },
+        )
+
+    for r in plan.demoted:
+        prior = plan.prior_states[r.id]
         r.reconciliation_state = "rejected"
         # NOT SILENT (ruling condition 2). REJECTED is terminal and
         # ``reconciliation_state`` is not settable through ``TransactionUpdate``,
@@ -1273,6 +1277,9 @@ async def _settle_batch_counters_and_demote_orphans(
             },
         )
 
+    accepted_delta, pending_delta, row_delta = (
+        plan.accepted_delta, plan.pending_delta, plan.row_delta
+    )
     # ⚠ THE EARLY RETURN LIVES HERE, BELOW BOTH DELTA CLASSES, AND MUST STAY
     # THERE. It used to sit above, guarding on ``demoted`` alone. Moving the
     # deleted-row work in without moving this is the one way to write a
@@ -1281,7 +1288,7 @@ async def _settle_batch_counters_and_demote_orphans(
     # ``demoted`` is non-empty in all of them and the whole suite stays green
     # while an ordinary delete still strands its batch. F17/F18 exist with no
     # matched pair precisely to kill that variant.
-    if not demoted and not row_delta:
+    if not plan.demoted and not row_delta:
         return []
 
     await db.flush()
@@ -1364,19 +1371,105 @@ async def _settle_batch_counters_and_demote_orphans(
         )
         if batch is not None:
             await close_batch_if_complete(
-                db, batch=batch, exclude_transaction_ids=deleted_ids
+                db, batch=batch, exclude_transaction_ids=set(plan.deleted_ids)
             )
 
-    return [r.id for r in demoted]
+    return plan.demoted_ids
 
 
-async def delete_transaction(
-    db: AsyncSession, org_id: int, transaction_id: int
+async def _settle_batch_counters_and_demote_orphans(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    locked_rows: dict[int, Transaction],
+    deleted_ids: set[int],
 ) -> list[int]:
-    """Delete one transaction (cascading to a RECIPROCAL partner only).
+    """The single pre-delete side-effect pass for every delete path.
 
-    Returns the ids of any rows demoted to REJECTED because the row they
-    pointed at is being deleted (TBD-294). See ``_settle_batch_counters_and_demote_orphans``.
+    Two jobs, deliberately in ONE function and ONE ``import_batches`` write:
+
+    * **TBD-294** -- mark every row that points AT a row we are about to
+      delete, and whose amount is NOT inside ``accounts.balance``, as
+      REJECTED.
+    * **TBD-311** -- settle the import-batch counters for the rows the caller
+      is about to delete, which no state transition will ever do for them.
+
+    They are not separable. A deleted row and a demoted referrer can sit in
+    the SAME batch and both decrement ``pending_count``, and the counter write
+    below is one floored UPDATE per batch issued in ascending batch id -- a
+    shape arrived at deliberately to kill the self-inversion between two
+    concurrent deletes (see the long comment on that loop). A second helper
+    with its own ``UPDATE import_batches`` would re-create exactly that
+    ordering edge, invisibly, since no test can see a lock-order inversion.
+    It is also why "a fifth delete path must route through the same helper"
+    stays enforceable by a single grep: one helper, not two to remember.
+
+    THE HOLE TBD-294 CLOSES. ``transactions.linked_transaction_id`` is
+    ``ON DELETE SET NULL``. A reconcile-matched duplicate ``M -> T`` had its
+    contribution reverted at match time and is excluded from balance
+    reconstruction and from reports SOLELY because of that link's direction.
+    Delete ``T`` and the FK erases the discriminator: ``M`` becomes
+    byte-identical to an ordinary row, re-enters
+    ``balance_contribution_filter`` (so reconstruction counts an amount that
+    is not in ``accounts.balance``) AND ``reportable_transaction_filter`` (so
+    budgets and reports are wrong too).
+
+    THE FIX IS A STATE WRITE, NOT A REFUSAL. ``REJECTED`` is in
+    ``_RECON_EXCLUDED_STATES``, which BOTH of those filters consult. One
+    write moves the discriminator out of a column the FK erases and into one
+    it cannot touch, at the instant of erasure. No migration, and the delete
+    still succeeds -- refusing it would strand the user with a row they
+    cannot remove.
+
+    ``contributes_to_cached_balance(R, target)`` is the discriminator, not
+    "is the link one-way": a RECIPROCAL partner is inside the balance and its
+    own delete is already handled by the transfer cascade, so it must be left
+    alone. Rows already in a reverted state are skipped -- their
+    contribution is already out of both filters, and REJECTED is terminal, so
+    rewriting SKIPPED to REJECTED would burn a state for nothing.
+
+    TBD-664: it is ``plan_batch_settlement`` (the decision, pure) then
+    ``apply_batch_settlement`` (the writes), so a preview can state what a
+    delete will do. A delete path calls this function, or both halves on the
+    same locked rows (only ``plan_transaction_delete`` /
+    ``apply_transaction_delete`` do, so a preview can render the plan).
+
+    Caller MUST have locked every row in ``locked_rows`` FOR UPDATE, in the
+    same ascending-id query that locked the delete set. Mutates state in
+    place and adjusts the owning ``ImportBatch`` counters; the caller owns
+    the transaction scope.
+    """
+    return await apply_batch_settlement(
+        db,
+        org_id,
+        plan_batch_settlement(org_id, locked_rows=locked_rows, deleted_ids=deleted_ids),
+    )
+
+
+@dataclass(frozen=True)
+class TransactionDeletePlan:
+    """What ``apply_transaction_delete`` will do to delete one transaction.
+
+    ``rows`` is every row locked FOR UPDATE (the lock set); ``deleted`` the
+    delete set (the row, plus its partner when the link is reciprocal);
+    ``reverts`` the deleted rows whose amount comes back out of
+    ``accounts.balance``; ``settlement`` the demotions and batch counters.
+    """
+
+    transaction_id: int
+    rows: dict[int, Transaction]
+    deleted: dict[int, Transaction]
+    reverts: list[Transaction]
+    settlement: BatchSettlementPlan
+
+
+async def plan_transaction_delete(
+    db: AsyncSession, org_id: int, transaction_id: int
+) -> TransactionDeletePlan:
+    """Lock and decide a single delete, writing nothing (TBD-664).
+
+    Takes the locks ``delete_transaction`` takes, in the same order; the
+    caller applies the plan in the same transaction or rolls back.
     """
     # Unlocked pre-read to discover any transfer pair, then acquire tx-row
     # locks in one FOR UPDATE query ordered by ascending id. This matches
@@ -1502,6 +1595,23 @@ async def delete_transaction(
         )
     ]
 
+    return TransactionDeletePlan(
+        transaction_id=transaction_id,
+        rows=rows,
+        deleted=to_delete,
+        reverts=to_revert,
+        settlement=plan_batch_settlement(
+            org_id, locked_rows=rows, deleted_ids=set(to_delete)
+        ),
+    )
+
+
+async def apply_transaction_delete(
+    db: AsyncSession, org_id: int, plan: TransactionDeletePlan
+) -> list[int]:
+    """Perform ``plan`` and commit. Returns the demoted ids."""
+    to_revert, to_delete = plan.reverts, plan.deleted
+
     async with db.begin_nested():
         # Lock every affected account in ascending id order (deadlock-free),
         # then revert per row against its OWN account.
@@ -1514,15 +1624,26 @@ async def delete_transaction(
         # TBD-294: demote BEFORE the delete, so the discriminator has moved
         # into ``reconciliation_state`` by the time ON DELETE SET NULL erases
         # the link.
-        demoted_ids = await _settle_batch_counters_and_demote_orphans(
-            db, org_id, locked_rows=rows, deleted_ids=set(to_delete)
-        )
+        demoted_ids = await apply_batch_settlement(db, org_id, plan.settlement)
 
         for r in to_delete.values():
             await db.delete(r)
 
     await db.commit()
     return demoted_ids
+
+
+async def delete_transaction(
+    db: AsyncSession, org_id: int, transaction_id: int
+) -> list[int]:
+    """Delete one transaction (cascading to a RECIPROCAL partner only).
+
+    Returns the ids of any rows demoted to REJECTED because the row they
+    pointed at is being deleted (TBD-294). See ``_settle_batch_counters_and_demote_orphans``.
+    It is ``plan_transaction_delete`` then ``apply_transaction_delete``.
+    """
+    plan = await plan_transaction_delete(db, org_id, transaction_id)
+    return await apply_transaction_delete(db, org_id, plan)
 
 
 async def bulk_delete_transactions(
