@@ -453,6 +453,8 @@ _NEVER = [
     ("PUT", "/api/v1/scheduler/settings"),
     ("PUT", "/api/v1/settings/manual-balance-adjustment"),
     ("POST", "/api/v1/webhooks/mailgun"),
+    # No route is mounted here any more (TBD-661); the entry keeps the
+    # ``/api/v1/public`` prefix rule under test.
     ("GET", "/api/v1/public/founder-count"),
     ("POST", "/api/v1/security/csp-report"),
 ]

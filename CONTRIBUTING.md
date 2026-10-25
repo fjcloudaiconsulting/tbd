@@ -361,9 +361,9 @@ Legitimate use stays far below 30 a minute.
 
 ### Public endpoints (no auth required)
 
-Exactly **31** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 14 are genuinely **open**, and 17 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "31 public routes" is not 31 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
+Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 13 are genuinely **open**, and 17 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "30 public routes" is not 30 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
 
-**Open — no identity check at all (14)**
+**Open — no identity check at all (13)**
 
 | Route | Why it cannot carry auth |
 | --- | --- |
@@ -376,7 +376,6 @@ Exactly **31** `(method, path)` pairs reach a handler without `get_current_user`
 | `POST /api/v1/auth/forgot-password` | Password reset request. Answers uniformly whether or not the address exists, so it leaks no account inventory. |
 | `POST /api/v1/auth/resend-verification-public` | Targets an unverified account, which cannot hold a usable session. The non-`-public` sibling `POST /api/v1/auth/resend-verification` **is** authenticated. |
 | `GET /api/v1/auth/google` | Starts the Google OAuth redirect; the caller is anonymous at this point by construction. |
-| `GET /api/v1/public/founder-count` | Single aggregate integer rendered on the signup surface, before any account exists. |
 | `POST /api/v1/security/csp-report` | Browsers post CSP violation reports with no auth context and no way to attach a bearer token. Always answers 204. |
 | `GET /.well-known/oauth-protected-resource/mcp` | MCP OAuth discovery (RFC 9728, TBD-587): read by an MCP client before it holds any credential. Static document derived from `APP_URL`. Its path is fixed by the RFC, outside `/api/v1`. |
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414), same reasons as the line above. |
@@ -412,7 +411,7 @@ The table documents **reachability**, not a claim that every listed route is ful
 
 All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
-**MCP server component (separate app, `backend/app/mcp_main.py`, not part of the 31 above)**
+**MCP server component (separate app, `backend/app/mcp_main.py`, not part of the 30 above)**
 
 The MCP component is its own image and process and never imports `app.main`, so the allowlist test cannot see it. Its route set is exactly these two pairs, fenced by `backend/tests/mcp/test_mcp_server.py` (F-M1).
 

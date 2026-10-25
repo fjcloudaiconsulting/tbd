@@ -130,7 +130,6 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("org_members", "remove_member"): ("org_members.remove_member", "30/minute"),
     ("orgs", "rename_org_endpoint"): ("orgs.rename", "10/hour"),
-    ("public_stats", "founder_count"): ("public_stats.founder_count", "60/minute"),
     ("reports", "run_query"): ("reports.query", "60/minute"),
     ("reports", "run_sankey_query"): ("reports.sankey_query", "60/minute"),
     ("scenarios", "compare_scenarios"): ("scenarios.compare", "30/minute"),  # per user (TBD-726)

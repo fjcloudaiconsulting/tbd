@@ -134,9 +134,6 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # Starts the Google OAuth redirect; the caller is anonymous by
         # construction at this point in the flow.
         ("GET", "/api/v1/auth/google"),
-        # Founding-members counter rendered on the marketing/signup surface,
-        # before any account exists. Returns a single aggregate integer.
-        ("GET", "/api/v1/public/founder-count"),
         # CSP violation sink. Browsers post these with no auth context and no
         # way to attach a bearer token; wired in via ``report-uri``/
         # ``report-to``. Always answers 204.
@@ -434,14 +431,14 @@ def test_p6_allowlist_literal_is_the_expected_size():
     The count is asserted separately from the set so a diff that quietly
     reshapes the literal cannot land without touching this number.
     """
-    assert len(PUBLIC_ROUTES) == 31, (
-        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 31. If a "
+    assert len(PUBLIC_ROUTES) == 30, (
+        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 30. If a "
         "route was legitimately added to or removed from the public surface, "
         "update this number, CONTRIBUTING.md, and record the security review."
     )
     # Deduped count must match too: a duplicated (method, path) line would
     # otherwise inflate the literal while the comparison set stayed the same.
-    assert len(_PUBLIC_ROUTE_SET) == 31, (
+    assert len(_PUBLIC_ROUTE_SET) == 30, (
         "PUBLIC_ROUTES contains duplicate entries: "
         f"{sorted({e for e in PUBLIC_ROUTES if PUBLIC_ROUTES.count(e) > 1})}"
     )
