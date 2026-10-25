@@ -7,6 +7,7 @@ import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app._time import utcnow_naive
 from app.config import settings
 from app.models.settings import OrgSetting
 from app.models.subscription import (
@@ -42,7 +43,9 @@ async def get_default_plan(db: AsyncSession) -> Plan:
 async def create_trial(db: AsyncSession, org_id: int) -> Subscription:
     """Create a trial subscription for a new org."""
     plan = await get_default_plan(db)
-    today = datetime.date.today()
+    # Subscription dates use the UTC date, like the entitlement resolver and
+    # the admin KPIs that read them (TBD-749).
+    today = utcnow_naive().date()
     trial_end = today + datetime.timedelta(days=settings.trial_duration_days)
 
     subscription = Subscription(
@@ -110,9 +113,11 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
     if sub.status != SubscriptionStatus.TRIALING:
         return sub
 
+    today = utcnow_naive().date()
+
     # Send trial expiring email at 3 days and 1 day remaining (idempotent, background)
     if sub.trial_end:
-        days_left = (sub.trial_end - datetime.date.today()).days
+        days_left = (sub.trial_end - today).days
         if days_left in (3, 1):
             sentinel_key = f"trial_reminder_{days_left}d_sent"
             already_sent = await db.scalar(
@@ -138,7 +143,7 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
                     # Fire and forget — don't block the request on email delivery
                     asyncio.create_task(_send_trial_email_safe(owner.email, days_left, org_name))
 
-    if sub.trial_end and sub.trial_end < datetime.date.today():
+    if sub.trial_end and sub.trial_end < today:
         # Trial expired — downgrade to free plan
         free_plan = await db.execute(
             select(Plan).where(Plan.slug == "free", Plan.is_active == True)
@@ -195,7 +200,7 @@ async def change_plan(
         sub.trial_start = None
         sub.trial_end = None
         # In mock mode, set a 30-day period
-        today = datetime.date.today()
+        today = utcnow_naive().date()
         sub.current_period_start = today
         if interval == BillingInterval.MONTHLY:
             sub.current_period_end = today + datetime.timedelta(days=30)
@@ -238,7 +243,8 @@ async def enforce_user_limit(db: AsyncSession, org_id: int) -> None:
     enforce before billing is live is an owner decision.
 
     The org row is locked first so two concurrent accepts cannot both take
-    the last seat.
+    the last seat. A caller that also locks invitation rows takes this lock
+    before them (``invitation_service`` lock order, TBD-727).
     """
     if not settings.billing_ui_enabled:
         return
