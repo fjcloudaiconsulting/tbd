@@ -27,17 +27,15 @@ import {
   label as labelCls,
 } from "@/lib/styles";
 
-type Provider =
-  | "openai"
-  | "anthropic"
-  | "ollama"
-  | "openai_compatible"
-  | "native";
+type Provider = "openai" | "anthropic" | "openai_compatible";
 
 interface Credential {
   id: number;
   org_id: number;
-  provider: Provider;
+  // A stored row may name a provider that is no longer supported (TBD-584);
+  // `provider_supported` is then false.
+  provider: string;
+  provider_supported: boolean;
   platform_provider?: string | null;
   last_four: string | null;
   key_fingerprint: string | null;
@@ -115,15 +113,21 @@ interface CapsBundle {
 const PROVIDER_LABELS: Record<Provider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
-  ollama: "Ollama",
   openai_compatible: "OpenAI-compatible",
-  native: "Native (hosted)",
 };
+
+// A provider that is no longer supported shows its stored key.
+const providerLabel = (provider: string) =>
+  PROVIDER_LABELS[provider as Provider] ?? provider;
+
+const credentialOptionLabel = (c: Credential) =>
+  `${providerLabel(c.provider)}${c.last_four ? ` ***${c.last_four}` : ""}` +
+  `${c.label ? ` (${c.label})` : ""}` +
+  `${c.provider_supported === false ? " (no longer supported)" : ""}`;
 
 const PROVIDER_DOC_LINKS: Partial<Record<Provider, { href: string; label: string }>> = {
   openai: { href: "https://platform.openai.com/api-keys", label: "Get an OpenAI API key" },
   anthropic: { href: "https://console.anthropic.com/settings/keys", label: "Get an Anthropic API key" },
-  ollama: { href: "https://ollama.com/download", label: "Set up Ollama locally" },
   openai_compatible: {
     href: "https://platform.openai.com/docs/api-reference",
     label: "Use an OpenAI-compatible endpoint",
@@ -145,13 +149,14 @@ const isPlatformCred = (creds: Credential[], id: number | "") =>
   creds.find((c) => c.id === id)?.platform_provider != null;
 const isUnknownCred = (creds: Credential[], id: number | "") =>
   id !== "" && !creds.some((c) => c.id === id);
+// No refresh for a provider that is no longer supported: validate answers 409.
+const isRetiredCred = (creds: Credential[], id: number | "") =>
+  creds.find((c) => c.id === id)?.provider_supported === false;
 
-const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
+const NEEDS_BASE_URL: Provider[] = ["openai_compatible"];
 const BASE_URL_PLACEHOLDERS: Partial<Record<Provider, string>> = {
-  ollama: "http://192.168.1.10:11434",
   openai_compatible: "https://api.example.com/v1",
 };
-const ALLOWS_BEARER: Provider[] = ["ollama"];
 
 // Backend-whitelisted sort keys for /api/v1/settings/ai-providers. Limited
 // to the UI-exposed sortable columns.
@@ -414,13 +419,17 @@ export default function AiProvidersPage() {
               <tbody>
                 {credentials.map((c) => (
                   <tr key={c.id} className="border-b border-border">
-                    <td className="px-4 py-2">{PROVIDER_LABELS[c.provider]}</td>
+                    <td className="px-4 py-2">{providerLabel(c.provider)}</td>
                     <td className="px-4 py-2">{c.label ?? "-"}</td>
                     <td className="px-4 py-2 font-mono text-xs">
                       {c.last_four ? `***${c.last_four}` : "-"}
                     </td>
                     <td className="px-4 py-2">
-                      {c.validation_error ? (
+                      {c.provider_supported === false ? (
+                        <span className="text-error">
+                          Provider no longer supported. Delete this credential.
+                        </span>
+                      ) : c.validation_error ? (
                         <span className="text-error">{c.validation_error}</span>
                       ) : c.last_validated_at ? (
                         <span className="text-success">Valid</span>
@@ -435,14 +444,16 @@ export default function AiProvidersPage() {
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          className={btnSecondary}
-                          disabled={busyId === c.id}
-                          onClick={() => handleValidate(c.id)}
-                        >
-                          Validate now
-                        </button>
+                        {c.provider_supported !== false && (
+                          <button
+                            type="button"
+                            className={btnSecondary}
+                            disabled={busyId === c.id}
+                            onClick={() => handleValidate(c.id)}
+                          >
+                            Validate now
+                          </button>
+                        )}
                         <button
                           type="button"
                           className={btnSecondary}
@@ -518,7 +529,6 @@ function AddCredentialModal({
   // a provider plus a prefilled base URL.
   const [choice, setChoice] = useState<string>("openai");
   const [apiKey, setApiKey] = useState("");
-  const [bearerToken, setBearerToken] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [labelText, setLabelText] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -552,8 +562,6 @@ function AddCredentialModal({
     }
     setChoice(next);
   }
-  const allowsBearer = ALLOWS_BEARER.includes(provider);
-  const apiKeyOptional = provider === "ollama";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -568,15 +576,13 @@ function AddCredentialModal({
       }
       return;
     }
-    if (!apiKeyOptional && !apiKey.trim()) return;
+    if (!apiKey.trim()) return;
     setSubmitting(true);
     setErrorText(null);
     try {
-      const body: Record<string, unknown> = { provider };
-      if (apiKey.trim()) body.api_key = apiKey.trim();
+      const body: Record<string, unknown> = { provider, api_key: apiKey.trim() };
       if (labelText.trim()) body.label = labelText.trim();
       if (needsBaseUrl) body.base_url = baseUrl.trim();
-      if (allowsBearer && bearerToken.trim()) body.bearer_token = bearerToken.trim();
       await apiFetch("/api/v1/settings/ai-providers", {
         method: "POST",
         body: JSON.stringify(body),
@@ -589,14 +595,11 @@ function AddCredentialModal({
     }
   }
 
-  // Fall back to the static list if /options hasn't loaded — the page
-  // is still functional, native just won't be visible.
+  // Fall back to the static list if /options hasn't loaded.
   const options =
     providerOptions.length > 0
       ? providerOptions
-      : (
-          ["openai", "anthropic", "ollama", "openai_compatible"] as Provider[]
-        ).map((k) => ({
+      : (["openai", "anthropic", "openai_compatible"] as Provider[]).map((k) => ({
           key: k,
           label: PROVIDER_LABELS[k],
           availability: "available" as const,
@@ -650,12 +653,6 @@ function AddCredentialModal({
                 </option>
               ))}
             </select>
-            {provider === "native" && (
-              <p className="mt-1 text-xs text-text-muted">
-                Native hosted provider is coming soon (gated by
-                AI_NATIVE_ENABLED).
-              </p>
-            )}
             {!preset && PROVIDER_DOC_LINKS[provider] && (
               <a
                 href={PROVIDER_DOC_LINKS[provider]!.href}
@@ -710,7 +707,7 @@ function AddCredentialModal({
               </div>
               <div>
                 <label className={labelCls} htmlFor="ai-api-key">
-                  API key{apiKeyOptional ? " (optional)" : ""}
+                  API key
                 </label>
                 <input
                   id="ai-api-key"
@@ -720,30 +717,9 @@ function AddCredentialModal({
                   onChange={(e) => setApiKey(e.target.value)}
                   disabled={submitting}
                   autoComplete="off"
-                  required={!apiKeyOptional}
+                  required
                 />
-                {apiKeyOptional && (
-                  <p className="mt-1 text-xs text-text-muted">
-                    Optional for self-hosted Ollama (LAN-only).
-                  </p>
-                )}
               </div>
-              {allowsBearer && (
-                <div>
-                  <label className={labelCls} htmlFor="ai-bearer">
-                    Bearer token (optional)
-                  </label>
-                  <input
-                    id="ai-bearer"
-                    type="password"
-                    className={input}
-                    value={bearerToken}
-                    onChange={(e) => setBearerToken(e.target.value)}
-                    disabled={submitting}
-                    autoComplete="off"
-                  />
-                </div>
-              )}
               {needsBaseUrl && (
                 <div>
                   <label className={labelCls} htmlFor="ai-base-url">
@@ -789,9 +765,8 @@ function AddCredentialModal({
                 className={btnPrimary}
                 disabled={
                   submitting ||
-                  (!apiKeyOptional && !apiKey.trim()) ||
-                  (needsBaseUrl && !baseUrl.trim()) ||
-                  provider === "native"
+                  !apiKey.trim() ||
+                  (needsBaseUrl && !baseUrl.trim())
                 }
               >
                 {submitting ? "Validating..." : "Add credential"}
@@ -885,9 +860,8 @@ function RoutingSection({
               >
                 <option value="">(choose)</option>
                 {credentials.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {PROVIDER_LABELS[c.provider]}{c.last_four ? ` ***${c.last_four}` : ""}
-                    {c.label ? ` (${c.label})` : ""}
+                  <option key={c.id} value={c.id} disabled={c.provider_supported === false}>
+                    {credentialOptionLabel(c)}
                   </option>
                 ))}
               </select>
@@ -900,7 +874,9 @@ function RoutingSection({
                 id="default-model"
                 credentialId={defaultCred}
                 platform={isPlatformCred(credentials, defaultCred)}
-                unknown={isUnknownCred(credentials, defaultCred)}
+                unknown={
+                  isUnknownCred(credentials, defaultCred) || isRetiredCred(credentials, defaultCred)
+                }
                 value={defaultModel}
                 onChange={setDefaultModel}
                 onListedChange={setDefaultListed}
@@ -1062,9 +1038,8 @@ function FeatureRoutingTable({
                     >
                       <option value="">(use default)</option>
                       {credentials.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {PROVIDER_LABELS[c.provider]}{c.last_four ? ` ***${c.last_four}` : ""}
-                          {c.label ? ` (${c.label})` : ""}
+                        <option key={c.id} value={c.id} disabled={c.provider_supported === false}>
+                          {credentialOptionLabel(c)}
                         </option>
                       ))}
                     </select>
@@ -1078,7 +1053,10 @@ function FeatureRoutingTable({
                       rowLabel={f.label}
                       onValidated={onValidated}
                       platform={isPlatformCred(credentials, draft.cred)}
-                      unknown={isUnknownCred(credentials, draft.cred)}
+                      unknown={
+                        isUnknownCred(credentials, draft.cred) ||
+                        isRetiredCred(credentials, draft.cred)
+                      }
                       value={draft.model}
                       onChange={(model) =>
                         setDrafts((prev) => ({

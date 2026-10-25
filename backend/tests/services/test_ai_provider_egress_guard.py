@@ -19,7 +19,6 @@ import ipaddress
 import httpx
 import pytest
 
-from app.config import settings
 from app.services.ai_providers import egress_guard
 from app.services.ai_providers.base import AIProviderError
 from app.services.ai_providers.egress_guard import (
@@ -29,7 +28,6 @@ from app.services.ai_providers.egress_guard import (
     guarded_async_client,
     ip_literal_or_none,
 )
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai_compatible import (
     OpenAICompatibleAdapter,
 )
@@ -116,7 +114,8 @@ def test_check_ip_allow_private_permits_private_and_loopback(
     "still_blocked",
     [
         # Metadata, link-local, multicast, unspecified, reserved stay
-        # blocked even for a private-networks-allowed (ollama) target.
+        # blocked even with ``allow_private`` (which no adapter sets since
+        # TBD-584 removed ollama).
         "169.254.169.254",
         "fd00:ec2::254",
         "169.254.1.1",
@@ -277,14 +276,14 @@ async def test_allow_private_permits_private_but_not_metadata(
     _patch_resolve(
         monkeypatch,
         {
-            "ollama.internal": ["192.168.1.163"],
+            "llm.internal": ["192.168.1.163"],
             "sneaky.internal": ["169.254.169.254"],
         },
     )
     inner = _patch_inner(monkeypatch)
     transport = GuardedTransport(allow_private=True)
     resp = await _send(
-        transport, "http://ollama.internal:11434/api/tags"
+        transport, "http://llm.internal:11434/api/tags"
     )
     assert resp.status_code == 200
     assert inner[-1].url.host == "192.168.1.163"
@@ -313,87 +312,46 @@ async def test_pin_is_cached_per_host_no_second_resolution(
 
 
 @pytest.mark.asyncio
-async def test_ollama_validate_hostname_to_private_is_blocked(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("base_url", "records"),
+    [
+        # A local model server, the setup TBD-584 retired with ollama,
+        # cannot come back through openai_compatible.
+        ("http://127.0.0.1:11434", {}),
+        ("http://[::1]:11434", {}),
+        ("http://192.168.1.163:11434", {}),
+        ("http://localhost:11434", {"localhost": ["127.0.0.1", "::1"]}),
+        ("http://ollama.lan:11434", {"ollama.lan": ["192.168.1.163"]}),
+        ("http://vllm.internal:8000", {"vllm.internal": ["10.0.0.5"]}),
+        ("http://rebind.evil.example", {"rebind.evil.example": ["fd12:3456::1"]}),
+    ],
+)
+async def test_openai_compatible_refuses_local_and_private_endpoints(
+    monkeypatch, base_url: str, records: dict
 ) -> None:
-    """Flag OFF (default): a DNS name resolving to RFC1918 must fail
-    validation with a blocked-address error, not reach the wire."""
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", False
-    )
-    _patch_resolve(monkeypatch, {"rebind.evil.example": ["10.0.0.5"]})
+    """openai_compatible always gets the full denylist: validation fails
+    with a blocked-address error and nothing reaches the wire."""
+    _patch_resolve(monkeypatch, records)
     inner = _patch_inner(monkeypatch)
-    adapter = OllamaAdapter(
-        base_url="http://rebind.evil.example:11434", api_key="unused"
-    )
+    adapter = OpenAICompatibleAdapter(api_key="sk-test-1234", base_url=base_url)
     result = await adapter.validate()
     assert result.ok is False
     assert "blocked network address" in (result.error or "")
     assert inner == []
 
 
-@pytest.mark.asyncio
-async def test_ollama_validate_loopback_literal_blocked_by_default(
-    monkeypatch,
-) -> None:
-    """The old blanket ollama loopback/private exemption is gone: with
-    the flag OFF even a literal loopback base_url refuses to connect."""
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", False
-    )
-    inner = _patch_inner(monkeypatch)
-    adapter = OllamaAdapter(
-        base_url="http://127.0.0.1:11434", api_key="unused"
-    )
-    result = await adapter.validate()
-    assert result.ok is False
-    assert "blocked network address" in (result.error or "")
-    assert inner == []
+def test_no_adapter_enables_allow_private() -> None:
+    """The private-network escape hatch served only ollama (TBD-584)."""
+    from pathlib import Path
 
+    from app.config import settings
 
-@pytest.mark.asyncio
-async def test_ollama_flag_on_allows_private_hostname(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", True
-    )
-    _patch_resolve(monkeypatch, {"ollama.internal": ["192.168.1.163"]})
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, json={"models": [{"name": "llama3.2"}]}
-        )
-
-    inner = _patch_inner(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://ollama.internal:11434", api_key="unused"
-    )
-    result = await adapter.validate()
-    assert result.ok is True
-    assert result.discovered_models == ["llama3.2"]
-    assert inner[0].url.host == "192.168.1.163"
-    assert inner[0].headers["Host"] == "ollama.internal:11434"
-
-
-@pytest.mark.asyncio
-async def test_openai_compatible_strict_even_with_flag_on(
-    monkeypatch,
-) -> None:
-    """AI_PROVIDER_ALLOW_PRIVATE_NETWORKS is an ollama-only escape
-    hatch; openai_compatible keeps the full denylist."""
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", True
-    )
-    _patch_resolve(monkeypatch, {"vllm.internal": ["10.0.0.5"]})
-    inner = _patch_inner(monkeypatch)
-    adapter = OpenAICompatibleAdapter(
-        api_key="sk-test-1234", base_url="http://vllm.internal:8000"
-    )
-    result = await adapter.validate()
-    assert result.ok is False
-    assert "blocked network address" in (result.error or "")
-    assert inner == []
+    assert not hasattr(settings, "ai_provider_allow_private_networks")
+    src = Path(egress_guard.__file__).parent
+    for path in src.glob("*.py"):
+        if path.name == "egress_guard.py":
+            continue
+        assert "allow_private" not in path.read_text(), path.name
 
 
 @pytest.mark.asyncio
@@ -450,62 +408,17 @@ async def test_guarded_client_does_not_follow_redirects() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ollama_chat_goes_through_guard(monkeypatch) -> None:
-    """The guard covers the dispatch path (chat), not just validate."""
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", False
-    )
+async def test_openai_compatible_stream_goes_through_guard(monkeypatch) -> None:
+    """The guard covers the dispatch path (stream), not just validate."""
     _patch_resolve(monkeypatch, {"rebind.evil.example": ["10.0.0.5"]})
     _patch_inner(monkeypatch)
-    adapter = OllamaAdapter(
-        base_url="http://rebind.evil.example:11434", api_key="unused"
-    )
-    with pytest.raises(AIProviderError) as excinfo:
-        await adapter.chat(
-            model="llama3.2",
-            messages=[{"role": "user", "content": "hi"}],
-        )
-    assert excinfo.value.code == "network_BlockedAddressError"
-
-
-@pytest.mark.asyncio
-async def test_ollama_stream_goes_through_guard(monkeypatch) -> None:
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", False
-    )
-    _patch_resolve(monkeypatch, {"rebind.evil.example": ["10.0.0.5"]})
-    _patch_inner(monkeypatch)
-    adapter = OllamaAdapter(
-        base_url="http://rebind.evil.example:11434", api_key="unused"
+    adapter = OpenAICompatibleAdapter(
+        api_key="sk-test-1234", base_url="http://rebind.evil.example:8000"
     )
     with pytest.raises(AIProviderError) as excinfo:
         async for _chunk in adapter.stream(
-            model="llama3.2",
+            model="m",
             messages=[{"role": "user", "content": "hi"}],
         ):
             pass
     assert excinfo.value.code == "network_BlockedAddressError"
-
-
-@pytest.mark.asyncio
-async def test_public_hostname_ollama_validate_ok(monkeypatch) -> None:
-    """Happy path: public DNS resolves public, request succeeds and is
-    pinned."""
-    _patch_resolve(
-        monkeypatch, {"ollama.example.com": ["93.184.216.34"]}
-    )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/tags"
-        return httpx.Response(
-            200, json={"models": [{"name": "llama3.1"}]}
-        )
-
-    inner = _patch_inner(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="https://ollama.example.com", api_key="unused"
-    )
-    result = await adapter.validate()
-    assert result.ok is True
-    assert inner[0].url.host == "93.184.216.34"
-    assert inner[0].extensions["sni_hostname"] == "ollama.example.com"

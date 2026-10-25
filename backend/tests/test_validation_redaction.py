@@ -312,7 +312,9 @@ AI_SECRET = "sk-BE12-SENTINEL-0123456789"
         ("/ai-create", {"provider": "openai", "api_key": AI_SECRET, "bearer_token": AI_SECRET}),
         # Field-level: the secret itself fails its own constraint.
         ("/ai-create", {"provider": "openai", "api_key": AI_SECRET * 200}),
-        ("/ai-create", {"provider": "ollama", "base_url": "https://o.example", "bearer_token": AI_SECRET * 200}),
+        # bearer_token is no longer a field (TBD-584): extra_forbidden.
+        ("/ai-create", {"provider": "openai_compatible", "base_url": "https://o.example",
+                        "api_key": "sk-abcd", "bearer_token": AI_SECRET * 200}),
         ("/ai-rotate", {"api_key": AI_SECRET * 200}),
         ("/ai-rotate", {"api_key": AI_SECRET, "bearer_token": AI_SECRET * 200}),
         ("/ai-rotate", {"api_key": AI_SECRET, "unexpected": 1}),
@@ -333,7 +335,11 @@ def test_refused_base_url_userinfo_is_not_echoed(client: TestClient):
     """DB-02: the 422 that refuses URL credentials must not repeat them."""
     res = client.post(
         "/ai-create",
-        json={"provider": "ollama", "base_url": f"https://u:{AI_SECRET}@nas.example.com"},
+        json={
+            "provider": "openai_compatible",
+            "api_key": "sk-abcd",
+            "base_url": f"https://u:{AI_SECRET}@nas.example.com",
+        },
     )
     assert res.status_code == 422
     assert "username or password" in res.text

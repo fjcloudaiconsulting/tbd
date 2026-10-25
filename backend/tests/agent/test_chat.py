@@ -439,7 +439,7 @@ async def test_real_anthropic_adapter_two_rounds(factory, w, client, monkeypatch
 # ── pre-flight ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
-    "case", ["no_routing", "no_function_call", "ollama", "cap_exhausted", "cap_projected"],
+    "case", ["no_routing", "no_function_call", "retired_provider", "cap_exhausted", "cap_projected"],
 )
 async def test_preflight_refusals_are_http_and_never_count(
     case, factory, w, client, provider,
@@ -452,9 +452,14 @@ async def test_preflight_refusals_are_http_and_never_count(
             await db.delete(await db.scalar(select(OrgAIDefaultRouting)))
         elif case == "no_function_call":
             cred.discovered_capabilities = ["chat"]
-        elif case == "ollama":
-            cred.provider = AiProvider.OLLAMA
-            cred.discovered_capabilities = ["chat", "function_call"]
+        elif case == "retired_provider":
+            # TBD-584: a row an earlier release stored with ``ollama``.
+            from sqlalchemy import text
+
+            await db.execute(
+                text("UPDATE org_ai_credentials SET provider = 'ollama' WHERE id = :id"),
+                {"id": cred.id},
+            )
         elif case == "cap_exhausted":
             db.add(OrgAIDefaultCaps(org_id=w["org"], hard_cap_cents=0))
         else:
@@ -468,7 +473,7 @@ async def test_preflight_refusals_are_http_and_never_count(
     r = await client.post(URL, json=ASK)
     want = {"no_routing": (412, "ai_routing_not_configured"),
             "no_function_call": (412, "ai_capability_not_supported"),
-            "ollama": (412, "ai_capability_not_supported"),
+            "retired_provider": (412, "ai_provider_not_supported"),
             "cap_exhausted": (402, "ai_hard_cap_exceeded"),
             "cap_projected": (402, "ai_hard_cap_exceeded")}[case]
     assert (r.status_code, r.json()["detail"]["code"]) == want

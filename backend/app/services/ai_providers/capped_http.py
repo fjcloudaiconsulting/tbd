@@ -3,7 +3,7 @@
 ``client.get`` / ``client.post`` buffer the whole body, and httpx
 transparently decodes gzip, deflate, brotli and zstd, so a provider can
 answer with an arbitrarily large or highly compressed body. Org admins
-choose the ``base_url`` of ollama / openai_compatible credentials, so the
+choose the ``base_url`` of openai_compatible credentials, so the
 far end may be hostile. Every adapter request goes through this module
 instead (same pattern as ``openrouter_oauth.exchange_code``):
 

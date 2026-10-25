@@ -1,7 +1,6 @@
 """Connect-time SSRF guard for org-configured AI provider endpoints.
 
-Org admins control the ``base_url`` of ``ollama`` / ``openai_compatible``
-credentials, which the adapters hit server-side (validate probes, chat,
+Org admins control the ``base_url`` of ``openai_compatible`` credentials, which the adapters hit server-side (validate probes, chat,
 embed, streaming). Save-time literal-IP validation in
 ``app.schemas.org_ai_credential`` is defense-in-depth only: a DNS name
 whose A/AAAA record points at 169.254.169.254 / 127.0.0.1 / RFC1918
@@ -21,10 +20,11 @@ sails straight through it. This module is the enforcement point:
   enabled redirects, each hop re-enters the transport and is
   re-validated.
 
-``allow_private`` (wired to settings.ai_provider_allow_private_networks
-for the ollama adapter only) permits loopback + private-range targets
-for self-hosted operators; link-local, cloud-metadata, multicast,
-unspecified, and reserved addresses stay blocked regardless.
+``allow_private`` permits loopback + private-range targets; link-local,
+cloud-metadata, multicast, unspecified, and reserved addresses stay
+blocked regardless. No adapter sets it: it served only the ``ollama``
+provider, removed in TBD-584, so every org-configured endpoint gets the
+full denylist.
 """
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ import httpx
 #   this v4 IMDS address (it is also link-local, so doubly covered).
 # - fd00:ec2::254: AWS IPv6 IMDS.
 # - 100.100.100.200: Alibaba Cloud metadata. It lives in the CGNAT
-#   shared range (100.64/10), which ``is_private`` covers — so the
-#   ollama escape hatch (allow_private=True) would otherwise permit it.
+#   shared range (100.64/10), which ``is_private`` covers — so
+#   ``allow_private=True`` would otherwise permit it.
 METADATA_IPS = frozenset(
     {"169.254.169.254", "fd00:ec2::254", "100.100.100.200"}
 )
@@ -119,7 +119,7 @@ def check_ip(
     # outer IPv6 form looks globally routable, so they would slip past
     # the is_global catch-all (and every private/loopback check) below.
     # 6to4 (2002::/16, exposes ip.sixtofour) and Teredo (2001:0::/32,
-    # exposes ip.teredo) are never a legitimate LAN-ollama target, so
+    # exposes ip.teredo) are never a legitimate private target, so
     # refuse outright regardless of allow_private. IPv4-mapped IPv6 is
     # already unwrapped above and reports sixtofour/teredo as None.
     if isinstance(ip, IPv6Address) and (
