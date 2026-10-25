@@ -1159,3 +1159,137 @@ async def test_ai_simulate_audits_resolved_client_ip(session_factory, monkeypatc
 
     assert res.status_code == 200, res.text
     assert seen["ip_address"] == "203.0.113.9"
+
+
+# ── TBD-726: the engine runs in a worker thread, off the event loop ─────
+
+
+def _spy_engine_runs(monkeypatch) -> list[dict]:
+    """Wrap ``AnalyticEngine.simulate`` and record, per call, whether an
+    event loop was running in the calling thread and what object the
+    engine was handed as its scenario.
+
+    TestClient drives the app from its own thread, so comparing thread ids
+    with the test thread proves nothing; "is a loop running in this thread"
+    is what separates the handler's thread from a worker thread.
+    """
+    import asyncio
+
+    from app.services.scenario_engine import AnalyticEngine
+
+    calls: list[dict] = []
+    original = AnalyticEngine.simulate
+
+    def spy(self, req, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        calls.append({"on_loop": on_loop, "scenario": req.scenario})
+        return original(self, req, **kwargs)
+
+    monkeypatch.setattr(AnalyticEngine, "simulate", spy)
+    return calls
+
+
+async def _expected_projection(
+    session_factory, *, scenario_id: int, user_id: int, org_id: int, horizon: int
+) -> dict:
+    """The projection computed the pre-TBD-726 way: the ORM row, on the loop."""
+    from app.services.scenario_engine import (
+        AnalyticEngine,
+        SimulationRequest,
+        build_world_state,
+    )
+
+    async with session_factory() as db:
+        row = await db.get(Scenario, scenario_id)
+        state = await build_world_state(db, org_id=org_id, user_id=user_id)
+        return AnalyticEngine().simulate(
+            SimulationRequest(scenario=row, state=state, horizon_months=horizon, options={})
+        )
+
+
+def _without_timestamp(projection: dict) -> dict:
+    return {k: v for k, v in projection.items() if k != "computed_at"}
+
+
+@pytest.mark.asyncio
+async def test_simulate_runs_the_engine_off_the_event_loop(session_factory, monkeypatch):
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
+        ).json()
+        calls = _spy_engine_runs(monkeypatch)
+        res = client.post(
+            f"/api/v1/scenarios/{created['id']}/simulate",
+            json={"engine": "analytic", "options": {}},
+        )
+    assert res.status_code == 200, res.text
+    assert len(calls) == 1
+    assert calls[0]["on_loop"] is False
+    # No ORM instance (and so no session) crosses into the worker thread.
+    assert not isinstance(calls[0]["scenario"], Scenario)
+
+
+@pytest.mark.asyncio
+async def test_simulate_result_is_unchanged_by_the_worker_thread(session_factory):
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
+        ).json()
+        res = client.post(
+            f"/api/v1/scenarios/{created['id']}/simulate",
+            json={"engine": "analytic", "options": {}},
+        )
+    assert res.status_code == 200, res.text
+    expected = await _expected_projection(
+        session_factory,
+        scenario_id=created["id"],
+        user_id=seeds["alice_id"],
+        org_id=seeds["org_id"],
+        horizon=24,
+    )
+    assert _without_timestamp(res.json()["projection_json"]) == _without_timestamp(expected)
+
+
+@pytest.mark.asyncio
+async def test_compare_runs_the_engine_off_the_event_loop_with_unchanged_results(
+    session_factory, monkeypatch
+):
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        s1 = client.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"], name="Trip A")
+        ).json()
+        s2 = client.post(
+            "/api/v1/scenarios",
+            json=_purchase_payload(seeds["account_id"], name="Purchase B"),
+        ).json()
+        calls = _spy_engine_runs(monkeypatch)
+        res = client.post(
+            "/api/v1/scenarios/compare",
+            json={"scenario_ids": [s1["id"], s2["id"]], "horizon_months": 24},
+        )
+    assert res.status_code == 200, res.text
+    assert [c["on_loop"] for c in calls] == [False, False]
+    assert not any(isinstance(c["scenario"], Scenario) for c in calls)
+    from app.schemas.scenario import ProjectionResult
+
+    for sid, proj in zip((s1["id"], s2["id"]), res.json()["projections"]):
+        expected = await _expected_projection(
+            session_factory,
+            scenario_id=sid,
+            user_id=seeds["alice_id"],
+            org_id=seeds["org_id"],
+            horizon=24,
+        )
+        # compare serialises through ``ProjectionResult``; do the same here.
+        expected = ProjectionResult.model_validate(expected).model_dump(mode="json")
+        assert _without_timestamp(proj["projection"]) == _without_timestamp(expected)

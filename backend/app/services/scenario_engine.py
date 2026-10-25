@@ -25,8 +25,10 @@ Architect-locked invariants:
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Optional
@@ -123,12 +125,66 @@ class WorldState:
     history: list[MonthlyCashflowPoint] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ScenarioSnapshot:
+    """The fields of a ``Scenario`` the engine reads, as plain data.
+
+    ``simulate_off_loop`` hands the engine this instead of the ORM row, so
+    nothing bound to an ``AsyncSession`` crosses into the worker thread
+    (TBD-726): an attribute read there could not lazy-load, and the session
+    is not thread-safe.
+    """
+
+    id: Optional[int]
+    scenario_type: ScenarioType
+    params_json: dict[str, Any]
+
+    @classmethod
+    def of(
+        cls, scenario: "Scenario | ScenarioSnapshot", *, params_json: Optional[dict[str, Any]] = None
+    ) -> "ScenarioSnapshot":
+        """Copy what the engine reads; ``params_json`` overrides the row's
+        assumptions (the AI path re-runs with adjusted ones)."""
+        params = scenario.params_json if params_json is None else params_json
+        return cls(
+            id=scenario.id,
+            scenario_type=scenario.scenario_type,
+            params_json=deepcopy(params or {}),
+        )
+
+
 @dataclass
 class SimulationRequest:
-    scenario: Scenario
+    scenario: Scenario | ScenarioSnapshot
     state: WorldState
     horizon_months: int
     options: dict[str, Any] = field(default_factory=dict)
+
+
+async def simulate_off_loop(
+    engine: "ScenarioEngine",
+    req: SimulationRequest,
+    *,
+    smooth_with_regression: bool = False,
+) -> dict[str, Any]:
+    """Run ``engine.simulate`` in a worker thread (TBD-726).
+
+    The projection is CPU-bound (up to 480 months of per-account math), so
+    running it in an async handler stalled every other request on the
+    worker's event loop. The caller loads everything first (the row, the
+    ``WorldState`` snapshot); here the scenario is copied into a
+    ``ScenarioSnapshot`` and the engine runs on plain data with no session.
+    The caller awaits the result before touching its session again.
+    """
+    detached = SimulationRequest(
+        scenario=ScenarioSnapshot.of(req.scenario),
+        state=req.state,
+        horizon_months=req.horizon_months,
+        options=req.options,
+    )
+    return await asyncio.to_thread(
+        engine.simulate, detached, smooth_with_regression=smooth_with_regression
+    )
 
 
 # ── Helpers shared by engines ───────────────────────────────────────────
