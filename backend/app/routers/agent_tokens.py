@@ -149,7 +149,10 @@ async def mint_agent_token(
         raise _err(code, exc.code, exc.detail) from None
 
     try:
-        sso_proof = _verify_step_up(current_user, body, "agent_token_mint")
+        sso_proof = await _verify_step_up(
+            current_user, body, "agent_token_mint",
+            request=request, db=db, session_factory=session_factory,
+        )
         if sso_proof and not await consume_stepup(db, current_user):
             raise _step_up_401()
         plaintext, row = await svc.mint_agent(

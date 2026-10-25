@@ -797,6 +797,22 @@ jobs:
           fi
           python -m pytest tests/test_state_db.py tests/auth tests/routers/test_refresh_cookie_catchup.py -q -p no:cacheprovider -p no:xdist
 
+      # TBD-737. Concurrent import confirms with one idempotency key must import
+      # each row once; that rests on InnoDB row locks and the unique index on
+      # import_batches, so the fences run here. A skip is red, as above.
+      - name: Run the import confirm fences against MySQL
+        working-directory: backend
+        env:
+          IMPORT_CONFIRM_MYSQL_URL: ${{ env.DATABASE_URL }}
+          IMPORT_CONFIRM_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/services/test_import_confirm_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/import-confirm.log
+          if grep -q '^SKIPPED' /tmp/import-confirm.log; then
+            echo "an import confirm fence did not run"
+            exit 1
+          fi
+
       # TBD-586 (R12, R16, R18). The platform reserve/settle race fences need a
       # real InnoDB: two connections, row locks, rowcount semantics. They live in
       # tests/services/test_platform_reserve_mysql.py and are not run anywhere

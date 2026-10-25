@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import state_db
 from app.auth.pat import require_interactive_session
-from app.auth.second_factor import require_second_factor
+from app.auth.second_factor import reauth_password, require_second_factor
 from app.auth.stepup import consume_stepup, stepup_valid
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -28,7 +28,6 @@ from app.security import (
     create_email_verification_token,
     hash_password,
     session_cutoff,
-    verify_password,
 )
 from app.services import audit_service, notification_service
 from app.services.email_service import send_verification_email
@@ -174,13 +173,16 @@ async def update_profile(
         #     instead supply a fresh step-up proof issued for the
         #     `email_change` action (5min hard expiry, single-use, TBD-390).
         if current_user.password_set:
-            if not body.current_password or not verify_password(
-                body.current_password, current_user.password_hash
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Current password is required and must be correct to change email",
-                )
+            # Wrong passwords draw from the account's password budget, the
+            # one /login uses (TBD-735).
+            await reauth_password(
+                session_factory,
+                request=request,
+                user=current_user,
+                password=body.current_password,
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is required and must be correct to change email",
+            )
         else:
             # Constant-time, scoped to this action; missing/expired/wrong
             # proofs share one generic 400 so no check leaks.
@@ -492,13 +494,16 @@ async def change_password(
     # flag — the audit row needs the pre-mutation value.
     was_initial_password_set = not current_user.password_set
     if current_user.password_set:
-        if not body.current_password or not verify_password(
-            body.current_password, current_user.password_hash
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is incorrect",
-            )
+        # Wrong passwords draw from the account's password budget, the one
+        # /login uses (TBD-735).
+        await reauth_password(
+            session_factory,
+            request=request,
+            user=current_user,
+            password=body.current_password,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
     else:
         # Validate, then spend atomically so the proof cannot be replayed.
         # After a False consume the session is rolled back: raise only.

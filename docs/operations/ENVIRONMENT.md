@@ -66,7 +66,8 @@ the env-var name (uppercased).
 | `TBD_APP_VERSION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Release version reported by `/health` (`version`). Baked into the published GHCR images at build time from the Dockerfile `ARG`; Builds without build args report `dev`. | Falls back to `dev`. |
 | `TBD_APP_REVISION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Git revision reported by `/health` (`revision`). Baked at build time like `TBD_APP_VERSION`. | Falls back to `dev`. |
 | `LOG_LEVEL` | no | `INFO` | `.env` | conftest | tbd-prod manifest | no | Log level of the `app` loggers; other libraries log at INFO or above whatever this is. JSON lines on stdout. | Defaults to `INFO`. |
-| `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | tbd-prod secret (also on the migrate init container) | yes (prod) | Async SQLAlchemy DSN. Alembic and the app share it. | Backend cannot reach MySQL; lifespan and Alembic fail. |
+| `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | tbd-prod secret (also on the migrate init container) | yes (prod) | Async SQLAlchemy DSN of the app. Migrations use it too unless `MIGRATIONS_DATABASE_URL` is set. | Backend cannot reach MySQL; lifespan and Alembic fail. |
+| `MIGRATIONS_DATABASE_URL` | no | unset (falls back to `DATABASE_URL`) | unset (one local user) | unset | not yet; the migrate init container once the `tbd_migrate` user exists (TBD-655) | yes (prod) | Async SQLAlchemy DSN for migrations, so they can run as a user with DDL rights while the app's `DATABASE_URL` user keeps data rights only. Read by `alembic/env.py`, by `scripts/migrate.py` (the migrations image) and so by the dev lifespan's `alembic upgrade head`. Resolved in `backend/app/migration_url.py`. | Unset or blank: migrations use `DATABASE_URL`, as before. |
 | `DB_POOL_SIZE` | no | `5` | `.env` | unset | tbd-prod manifest (optional override) | no | SQLAlchemy pool size per replica. See K8S-3 (PR #251). | Default 5 used. |
 | `DB_MAX_OVERFLOW` | no | `10` | `.env` | unset | tbd-prod manifest (optional override) | no | SQLAlchemy max overflow per replica. See K8S-3 (PR #251). | Default 10 used. |
 | `JWT_SECRET_KEY` | yes | none (placeholder rejected) | `.env` | conftest sets a long fixture value | tbd-prod secret (also on the migrate init container) | yes | HS256 key for access / refresh / reset / step-up / invite / verify-email tokens. Also keyed by recovery-code HMAC and MFA Fernet derivation. | Backend refuses to boot (`field_validator` rejects placeholder; min length 32). |
@@ -184,7 +185,8 @@ declared separately from the backend container in the same manifest.
 | Variable | Required | Where | Purpose |
 |---|---|---|---|
 | `APP_ENV` | yes | tbd-prod manifest (`production`) | Selects prod code paths. |
-| `DATABASE_URL` | yes | tbd-prod secret | Migration target. Same Secret key as the backend container. |
+| `DATABASE_URL` | yes | tbd-prod secret | Migration target when `MIGRATIONS_DATABASE_URL` is unset. Same Secret key as the backend container. |
+| `MIGRATIONS_DATABASE_URL` | no | tbd-prod secret (once added, TBD-655) | Migration target with the migrations user's DDL rights. Wins over `DATABASE_URL`. |
 | `API_TOKEN_HMAC_KEY` | yes | tbd-prod secret | Required in production by `Settings()` at import, same reason. |
 | `JWT_SECRET_KEY` | yes | tbd-prod secret | Required because `backend/app/config.py` instantiates `Settings()` at import; the JWT validator refuses the placeholder. Without this the migrate container crashes before alembic runs. See PR #202. |
 
@@ -222,6 +224,7 @@ in the manifests, secrets in SOPS-encrypted `*.secret.yaml` (see the cloud-infra
 These are secrets (never plain env):
 
 - `DATABASE_URL`
+- `MIGRATIONS_DATABASE_URL` (when set)
 - `JWT_SECRET_KEY`
 - `MFA_ENCRYPTION_KEY`
 - `MFA_RECOVERY_HMAC_KEY` (only when adopted; optional)
