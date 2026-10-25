@@ -9,10 +9,12 @@ version + timestamp + auth tag so no extra envelope JSON is needed.
 from __future__ import annotations
 
 import hashlib
+import hmac
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import settings
+from app.security import derive_hmac_key
 
 
 class AiCredentialCryptoError(RuntimeError):
@@ -67,9 +69,25 @@ def decrypt(envelope: str) -> str:
             ) from exc
 
 
+# TBD-719: marks a keyed fingerprint. A row stored before it holds 16 bare hex
+# chars of an unkeyed sha256, which stays valid (the value is only displayed,
+# never compared) until a revalidate or rotate rewrites it with ``fingerprint``.
+FINGERPRINT_PREFIX = "h1:"
+_FINGERPRINT_PURPOSE = b"ai-key-fingerprint-v1"
+
+
 def fingerprint(plaintext: str) -> str:
-    """Return the first 16 hex chars of sha256(plaintext)."""
-    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()[:16]
+    """``h1:`` + the first 16 hex chars of HMAC-SHA256 under a key derived for
+    this purpose from JWT_SECRET_KEY, so a leaked row cannot be checked against
+    a candidate key without the server secret.
+
+    Rotating JWT_SECRET_KEY changes the value computed for the same key; the
+    stored one is refreshed on the next revalidate or rotate.
+    """
+    digest = hmac.new(
+        derive_hmac_key(_FINGERPRINT_PURPOSE), plaintext.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return FINGERPRINT_PREFIX + digest[:16]
 
 
 def last_four(plaintext: str) -> str:
