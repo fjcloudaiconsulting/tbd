@@ -26,13 +26,18 @@ from app.models import Base
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
+import json
+
 import jwt
 
+from app import state_db
 from app.config import settings as app_settings
+from app.routers import auth as auth_module
 from app.security import (
     create_password_reset_token,
     decode_token,
     hash_password,
+    reset_email_digest,
     verify_password,
 )
 
@@ -156,13 +161,34 @@ def _reset(client, token: str, new_password: str = RESET_PASSWORD):
     )
 
 
-def test_the_token_carries_a_jti_and_the_email() -> None:
-    payload = decode_token(create_password_reset_token(7, "alice@acme.io"))
+def test_the_token_carries_a_jti_and_an_email_digest() -> None:
+    raw = create_password_reset_token(7, "alice@acme.io")
+    payload = decode_token(raw)
     assert payload["type"] == "password_reset"
-    assert payload["email"] == "alice@acme.io"
+    # The address is bound by a keyed digest, never carried in the clear.
+    assert "email" not in payload
+    assert "alice" not in json.dumps(payload)
+    assert payload["email_digest"] == reset_email_digest("alice@acme.io")
+    assert payload["email_digest"] != reset_email_digest("moved@acme.io")
     assert isinstance(payload["jti"], str) and payload["jti"]
     other = decode_token(create_password_reset_token(7, "alice@acme.io"))
     assert other["jti"] != payload["jti"]
+
+
+@pytest.mark.asyncio
+async def test_a_claimed_jti_is_refused(session_factory):
+    """The jti alone refuses the token: here it was claimed before the
+    password ever changed, so the iat check cannot be what refuses it."""
+    user_id = await _seed_user(session_factory, password_set=True)
+    token = create_password_reset_token(user_id, "alice@acme.io")
+    assert await state_db.claim_token(
+        auth_module.PASSWORD_RESET_SCOPE, decode_token(token)["jti"], 60
+    )
+    with TestClient(_make_app(session_factory)) as client:
+        res = _reset(client, token)
+    assert res.status_code == 400
+    async with session_factory() as db:
+        assert verify_password(STARTING_PASSWORD, (await db.get(User, user_id)).password_hash)
 
 
 @pytest.mark.asyncio
@@ -194,7 +220,7 @@ async def test_a_token_dies_with_an_email_change(session_factory):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("drop", ["jti", "email"])
+@pytest.mark.parametrize("drop", ["jti", "email_digest"])
 async def test_a_token_without_the_new_claims_is_refused(session_factory, drop):
     user_id = await _seed_user(session_factory, password_set=True)
     payload = decode_token(create_password_reset_token(user_id, "alice@acme.io"))
@@ -222,4 +248,4 @@ async def test_forgot_password_mails_a_bound_token(session_factory, monkeypatch)
     (to, token), = sent
     payload = decode_token(token)
     assert to == "alice@acme.io"
-    assert payload["email"] == "alice@acme.io" and payload["jti"]
+    assert payload["email_digest"] == reset_email_digest("alice@acme.io") and payload["jti"]

@@ -114,7 +114,8 @@ async def reauth_password(
     password budget, the one ``/login`` uses, keyed on the user id: a stolen
     session cannot guess the password here without limit, nor reopen the
     budget by renaming the account. ``status_code`` / ``detail`` on a wrong
-    password, 429 when the budget is full. A missing password is refused the
+    password, 429 when the budget is full; the right password empties it, as
+    at ``/login``. A missing password is refused the
     same way but not counted: no guess was made.
     """
     try:
@@ -130,6 +131,12 @@ async def reauth_password(
     if not password:
         raise HTTPException(status_code=status_code, detail=detail)
     if verify_password(password, user.password_hash):
+        # A right password empties the account's window, as at /login, so
+        # typos here do not leave /login one failure from its full refusal.
+        try:
+            await attempts.clear_password_failures(user.id)
+        except SQLAlchemyError as exc:
+            raise _unavailable() from exc
         return
     try:
         filled = await attempts.record_password_failure(None, user.id)

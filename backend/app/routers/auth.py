@@ -79,6 +79,7 @@ from app.security import (
     get_org_session_ttl_seconds,
     hash_password,
     mfa_email_code_hmac,
+    reset_email_digest,
     session_cutoff,
     token_cutoff,
     verify_password_or_dummy,
@@ -2232,13 +2233,17 @@ async def reset_password(
     # sent before an email change no longer works after it, and it resets the
     # password once: its jti is claimed here, after every check and before
     # any write. A token without both claims predates them and is refused.
-    token_email = payload.get("email")
+    # The address travels as a keyed digest, compared in constant time.
+    token_digest = payload.get("email_digest")
     reset_jti = payload.get("jti")
     if (
         not isinstance(reset_jti, str)
         or not reset_jti
-        or not isinstance(token_email, str)
-        or token_email != user.email
+        or not isinstance(token_digest, str)
+        or not _hmac.compare_digest(
+            token_digest.encode("utf-8", "surrogatepass"),
+            reset_email_digest(user.email).encode(),
+        )
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

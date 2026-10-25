@@ -176,6 +176,20 @@ async def test_wrong_mint_passwords_draw_from_the_password_budget(factory) -> No
         assert _mint(client, jwt, current_password=PASSWORD) == 429
 
 
+@pytest.mark.asyncio
+async def test_a_right_password_empties_the_window(factory) -> None:
+    """As at /login: typos at a re-check followed by the right password do
+    not leave the account one failure away from its full-budget refusal."""
+    from app import rate_limit_db
+
+    uid = await _seed_superadmin(factory, password_set=True)
+    jwt = await _jwt_for(factory, uid)
+    await _fill_password_budget_but_one(uid)
+    with _make_client(factory) as client:
+        assert _mint(client, jwt, current_password=PASSWORD) == 201
+    assert rate_limit_db.get(attempts._password_user_key(uid, None)) == 0
+
+
 async def _signed_in(factory) -> tuple[int, dict]:
     from app.security import create_access_token
 

@@ -265,7 +265,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 Google-SSO users have `password_set=False` until they explicitly set a password. To prevent a hijacked SSO session from silently attaching a password:
 
 - **First password set** requires a Google **step-up** verification. The user re-authenticates with the same Google account, the backend issues a 5-minute single-use step-up token, and only then accepts the password write.
-- **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success. The 1-hour reset token carries the address it was mailed to and a `jti`: it stops working once the account's email changes, and its `jti` is claimed in `used_tokens`, so it resets the password once (TBD-654).
+- **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success. The 1-hour reset token carries a keyed digest of the address it was mailed to (never the address itself) and a `jti`: it stops working once the account's email changes, and its `jti` is claimed in `used_tokens`, so it resets the password once (TBD-654).
 - **Step-up proofs are scoped to one action** (`email_change`, `password_set`, `pat_mint`; `STEPUP_ACTIONS` in `backend/app/auth/stepup.py`). Initiate requires a known `action` (422 otherwise), the callback returns to that action's fixed page, and only the consumer for that action accepts the proof. A state carrying anything else fails as `sso_stepup_error=state`.
 - **Email change** also takes the step-up path and flips `password_set` back to `False` if the new email belongs to a different identity.
 

@@ -227,22 +227,31 @@ def decode_refresh_jti_sid(token: str) -> tuple[str, str]:
 
 
 PASSWORD_RESET_TTL_SECONDS = 60 * 60
+RESET_EMAIL_DIGEST_PURPOSE = b"password-reset-email-v1"
+
+
+def reset_email_digest(email: str) -> str:
+    """Keyed digest of the address a reset token is bound to (TBD-654). The
+    token carries this, never the address: a JWT payload is only base64, and
+    the link can surface in logs or a Referer."""
+    key = derive_hmac_key(RESET_EMAIL_DIGEST_PURPOSE)
+    return _hmac.new(key, email.strip().lower().encode(), hashlib.sha256).hexdigest()
 
 
 def create_password_reset_token(user_id: int, email: str) -> str:
     """Create a short-lived token for password reset (1 hour).
 
-    Bound to the address it was mailed to (``email``) and single-use through
-    its ``jti`` (TBD-654): ``/reset-password`` refuses it once the account's
-    email has changed, and claims the ``jti`` in ``used_tokens`` so it resets
-    the password at most once.
+    Bound to the address it was mailed to (a keyed digest of ``email``) and
+    single-use through its ``jti`` (TBD-654): ``/reset-password`` refuses it
+    once the account's email has changed, and claims the ``jti`` in
+    ``used_tokens`` so it resets the password at most once.
     """
     now = datetime.now(timezone.utc)
     expire = now + timedelta(seconds=PASSWORD_RESET_TTL_SECONDS)
     payload = {
         "sub": str(user_id),
         "type": "password_reset",
-        "email": email,
+        "email_digest": reset_email_digest(email),
         "jti": secrets.token_urlsafe(16),
         "iat": now,
         "exp": expire,
