@@ -587,7 +587,7 @@ async def test_password_reset_sends_security_email(session_factory, sent_emails)
     the audit event) AND emails the account address. This is the
     account-takeover path — the highest-value alert of the batch."""
     seed = await _seed_user(session_factory)
-    token = create_password_reset_token(seed["user_id"])
+    token = create_password_reset_token(seed["user_id"], seed["email"])
     # reset-password is unauthenticated; the router override for
     # get_current_user is unused by this route.
     app = _make_app(session_factory, seed["user_id"], router=auth_router)
@@ -625,7 +625,7 @@ async def test_password_reset_email_force_on_despite_optout(
     reset alert (security is force-on)."""
     seed = await _seed_user(session_factory)
     await _opt_out_of_everything(session_factory, seed["user_id"])
-    token = create_password_reset_token(seed["user_id"])
+    token = create_password_reset_token(seed["user_id"], seed["email"])
     app = _make_app(session_factory, seed["user_id"], router=auth_router)
     with TestClient(app) as client:
         res = client.post(
@@ -644,7 +644,7 @@ async def test_password_reset_survives_mailer_failure(
     """A raising mailer must not fail the reset, revert the password, or
     roll back the in-app row."""
     seed = await _seed_user(session_factory)
-    token = create_password_reset_token(seed["user_id"])
+    token = create_password_reset_token(seed["user_id"], seed["email"])
     app = _make_app(session_factory, seed["user_id"], router=auth_router)
     with TestClient(app) as client:
         res = client.post(
@@ -927,7 +927,7 @@ async def test_password_reset_survives_dispatch_failure(
     """The account-takeover path: a raising in-app write must not fail the
     reset or revert the password."""
     seed = await _seed_user(session_factory)
-    token = create_password_reset_token(seed["user_id"])
+    token = create_password_reset_token(seed["user_id"], seed["email"])
     app = _make_app(session_factory, seed["user_id"], router=auth_router)
     with TestClient(app) as client:
         res = client.post(

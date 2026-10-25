@@ -694,7 +694,11 @@ async def suggest_tags(
         # We use LIKE 'prefix%' because the leading-column index on
         # name_normalized covers prefix scans. Substring matches would
         # miss the index and degrade as the table grows.
-        like_clause = f"{prefix_norm}%"
+        # TBD-718: ``%`` / ``_`` in the prefix are literal, not wildcards
+        # (same escaping as ``list_org_tags``, BE-27).
+        from app.services.admin_users_search_service import _normalize_like
+
+        like_clause = f"{_normalize_like(prefix_norm)}%"
     else:
         like_clause = "%"  # Empty prefix returns top-N overall.
 
@@ -715,7 +719,7 @@ async def suggest_tags(
                 Tag.org_id == org_id,
                 Transaction.org_id == org_id,
                 Transaction.category_id == category_id,
-                Tag.name_normalized.like(like_clause),
+                Tag.name_normalized.like(like_clause, escape="\\"),
             )
             .group_by(Tag.id)
             .order_by(
@@ -747,7 +751,7 @@ async def suggest_tags(
             .outerjoin(TransactionTag, TransactionTag.tag_id == Tag.id)
             .where(
                 Tag.org_id == org_id,
-                Tag.name_normalized.like(like_clause),
+                Tag.name_normalized.like(like_clause, escape="\\"),
             )
             .group_by(Tag.id)
             .order_by(
@@ -787,7 +791,7 @@ async def suggest_tags(
         dict_query = (
             select(TagDictionary.name_normalized)
             .where(
-                TagDictionary.name_normalized.like(like_clause),
+                TagDictionary.name_normalized.like(like_clause, escape="\\"),
                 or_(
                     and_(
                         TagDictionary.contributor_org_count
