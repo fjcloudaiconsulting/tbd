@@ -6,7 +6,7 @@ Agents with Jira access use it to create, update and close the Jira issues.
 Every agent working on this effort keeps it current, so the next one starts from
 the real state and nobody needs a live conversation to catch up.
 
-Last updated: 2026-10-24 by the Jira agent, after the owner-decision PRs and the cloud-infra changes
+Last updated: 2026-10-25 by the assessment session, after release 0.303.1
 
 ## Disclosure note
 
@@ -23,8 +23,9 @@ exploit detail into public issues, PRs or commit messages.
 - **Merged to `main` on 2026-10-24:** #1006, #1009, #1005, #1008 and #1004
   (security), #1003, #978, #1002, #872 and #941 (dependencies), and #1010 (this
   file). Later the same day, the owner-decision PRs #1019, #1020 and #1021
-  (security) and #1016 (this file). Every check passed on each one before it
-  merged. That covers 41 of the 58 findings; see the Merged column.
+  (security) and #1016 (this file), then #1024 (BE-13 streaming caps), #1017
+  (Python 3.14), #1023 (this file) and #1025 (test durations). Every check
+  passed on each one before it merged. That covers 41 of the 58 findings; see the Merged column.
 - **Live in `cloud-infra` (2026-10-24):** the production CORS list (FE-01), the
   edge request body limit (BE-13), tunnel-only access to the API with a
   network policy (INF-01), the client-IP header on the MCP workload (INF-02)
@@ -33,23 +34,28 @@ exploit detail into public issues, PRs or commit messages.
 - **Waiting on the owner:** #1007 (check the production secrets first, item 1 of
   the owner decision queue; its 9 findings are not merged) and #929 (PyYAML
   builds from source on Python 3.15). #937 was closed in favour of #1003.
-- **Release:** the app is not released yet; production runs 0.302.0. The merged
-  fixes ship in the release that the open release-please PR
-  [#1011](https://github.com/fjcloudaiconsulting/tbd/pull/1011) prepares (0.303.1
-  when this was written), once the owner merges it and then the image bump in
-  `cloud-infra`. That release carries three migrations: two additive `users`
-  columns and one batched data clean-up of the tag dictionary. After it
-  deploys, `cloud-infra` can drop the backend's `--forwarded-allow-ips`
-  argument: the containers already set `FORWARDED_ALLOW_IPS` to the same list,
-  and the new images read it (#1021). The
-  apex landing site deploys from `main` on its own, so #1004's apex changes
-  (connect-src and `security.txt`) have been live there since 2026-10-24.
+- **Release:** v0.303.1 was released on 2026-10-24 (release commit `cb42ff03`).
+  It carries every merged fix above, plus Python 3.14, and three migrations:
+  two additive `users` columns and one batched data clean-up of the tag
+  dictionary. Production still runs 0.302.0. Renovate's staging bump to 0.303.1
+  is waiting to automerge. The production bump,
+  [cloud-infra #301](https://github.com/fjcloudaiconsulting/cloud-infra/pull/301),
+  is pinned by digest and waits for staging by design. Jira TBD-750 tracks the
+  deploy and its follow-ups:
+  - the smoke false alarms (cloud-infra #282) clear;
+  - drop the `--forwarded-allow-ips` `args` override;
+  - confirm the Grafana uptime check;
+  - tell MFA users that email codes are opt-in.
+
+  The INF-03 secret gate does not apply to 0.303.1, which does not contain
+  #1007. The apex landing site deploys from `main` on its own, so its changes
+  are already live.
 - **Follow-ups merged:** #1014 (tracker refresh) and #1015 (test durations).
 - **Jira:** every finding has an issue (Jira column), labelled
   `security-assessment-2026-10`. Merged Fixed and Partial findings are Done,
   with their remaining work in a linked follow-up or owner-decision issue. The
   #1007 findings are In Progress. Needs owner and Not fixed findings are open.
-  The fix version is not set yet because 0.303.1 has not shipped.
+  The project has no Jira versions, so the release is recorded in issue comments and in TBD-750.
 - **Next:** the owner works through the decision queue (item 1 first) and
   releases #1011; the coding session takes the follow-ups and "Incoming from
   Jira" below.
@@ -123,6 +129,7 @@ exploit detail into public issues, PRs or commit messages.
 | [#1019](https://github.com/fjcloudaiconsulting/tbd/pull/1019) | `security/auth-audit-decisions` | Owner decisions: MFA email fallback, audit growth | BE-03, BE-10 | Merged 2026-10-24 as `a131686a` |
 | [#1020](https://github.com/fjcloudaiconsulting/tbd/pull/1020) | `security/tenant-data-decisions` | Owner decisions: billing entitlements, org names, email addresses, tag dictionary | BE-05, DB-03, DB-01, BE-18 | Merged 2026-10-24 as `9c6f8148` |
 | [#1021](https://github.com/fjcloudaiconsulting/tbd/pull/1021) | `security/infra-followups` | Public-only smoke test, proxy trust list, environment docs | INF-09, INF-01, INF-02 | Merged 2026-10-24 as `1fe8adaf` |
+| [#1024](https://github.com/fjcloudaiconsulting/tbd/pull/1024) | `security/be13-body-stream-cap` | Streaming body caps on the CSP report and Mailgun routes | BE-13 | Merged 2026-10-24 as `8e1d127c` |
 
 Dependency PRs handled in the same pass:
 
@@ -133,8 +140,9 @@ Dependency PRs handled in the same pass:
 | [#1002](https://github.com/fjcloudaiconsulting/tbd/pull/1002) | FastAPI 0.162.0 (routine Renovate update, not from the assessment) | Merged 2026-10-24 as `0e6fe9a7` |
 | [#872](https://github.com/fjcloudaiconsulting/tbd/pull/872) | recharts 3.10.1; line charts animate unless the user prefers reduced motion | Merged 2026-10-24 as `238c793a` |
 | [#941](https://github.com/fjcloudaiconsulting/tbd/pull/941) | react-resizable 4 | Merged 2026-10-24 as `effc9098` |
-| [#929](https://github.com/fjcloudaiconsulting/tbd/pull/929) | Python 3.15 runtime | Open: waiting on the PyYAML build decision (owner queue item 9) |
+| [#929](https://github.com/fjcloudaiconsulting/tbd/pull/929) | Python 3.15 runtime (replaced by #1017) | Closed |
 | [#937](https://github.com/fjcloudaiconsulting/tbd/pull/937) | TypeScript 7 (replaced by #1003) | Closed |
+| [#1017](https://github.com/fjcloudaiconsulting/tbd/pull/1017) | Python 3.14 runtime, Renovate held below 3.15 until PyYAML ships cp315 wheels (replaces #929) | Merged 2026-10-24 as `807721ee` |
 
 ## Merge notes
 
@@ -274,6 +282,18 @@ titles only; the detail is in Jira.
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-10-25, release 0.303.1 and handoff: assessment session (Claude Code, with Jira access)
+
+- **Did:**
+  - Merged and released 0.303.1 with the owner: #1024, #1023 and the release PR #1011, then #1025.
+  - Moved the backend to Python 3.14 (#1017, closing #929); TBD-658 is Done.
+  - Added the #1024 line that release-please missed to the v0.303.1 notes.
+  - Released the rate-limited Renovate tbd bumps, which opened cloud-infra #301.
+  - Recorded the outcomes in Jira, opened TBD-750 for the deploy, and cleaned up all local worktrees, branches and images from this work.
+- **Changed here:** Current state, the PR tables (#1024, #1017, #929) and the State and Merged columns.
+- **Next:** TBD-750 (staging, then cloud-infra #301, then its follow-ups). TBD-739 (the secret check before #1007) needs the machine that holds the SOPS age key. TBD-744 (the production data checks) needs cluster access.
+- **Questions for the owner:** none new.
 
 ### 2026-10-24, live state: Jira agent (Claude Code, with Jira access)
 
