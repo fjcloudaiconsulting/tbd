@@ -6,15 +6,16 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Literal
+from typing import Literal, Optional
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import case, delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
+from app.models.settings import OrgSetting
 from app.services.transaction_filters import is_transfer_leg
 
 # URL scheme prefix (HTTP / HTTPS) — stripped before bank-noise so `HTTPS://AMAZON…` collapses cleanly.
@@ -283,6 +284,32 @@ async def learn_from_choice(
     rule.match_count = (rule.match_count or 0) + 1
 
 
+SHARE_MERCHANT_DATA_KEY = "share_merchant_data"
+
+
+def share_merchant_data_value_enabled(value: Optional[str]) -> bool:
+    """The one reading of a stored ``share_merchant_data`` value: only ``"true"``."""
+    return value == "true"
+
+
+async def share_merchant_data_still_enabled(db: AsyncSession, org_id: int) -> bool:
+    """Re-read ``share_merchant_data`` under a row lock before voting (BE-28).
+
+    Turning sharing off updates (or deletes) that row and withdraws the
+    org's votes in one transaction (``withdraw_shared_votes``). The lock
+    makes the two exclusive, as BE-18 does for tags: an import either waits
+    for the opt-out to commit and then sees it, or commits first and its
+    votes are then withdrawn by it (the withdrawal reads vote rows with a
+    locking read too).
+    """
+    row = await db.execute(
+        select(OrgSetting.value)
+        .where(OrgSetting.org_id == org_id, OrgSetting.key == SHARE_MERCHANT_DATA_KEY)
+        .with_for_update()
+    )
+    return share_merchant_data_value_enabled(row.scalar_one_or_none())
+
+
 async def record_shared_vote(
     db: AsyncSession,
     *,
@@ -349,13 +376,20 @@ async def record_shared_vote(
 
 
 async def withdraw_shared_votes(db: AsyncSession, *, org_id: int) -> int:
-    """Remove every shared-dictionary vote of ``org_id`` (org reset or delete).
+    """Remove every shared-dictionary vote of ``org_id`` (sharing turned off,
+    org reset or deleted).
 
     Each entry loses the one count the org's vote added, then the vote rows
     go, so ``vote_count`` keeps its legacy baseline plus one per remaining
-    vote row. The rows are read with a locking read, so a vote committed
-    while this transaction waited is withdrawn too. Staged on the caller's
-    session; the caller commits. Returns the number of votes removed.
+    vote row. The decrement stops at 0. The rows are read with a locking
+    read, so a vote committed while this transaction waited for the org's
+    ``share_merchant_data`` row is withdrawn too. Entries are updated in
+    ``entry_id`` order, so two withdrawals lock them in the same order. The
+    sort is done here, not in SQL: an ``ORDER BY entry_id`` lets MySQL read
+    through the ``(entry_id, org_id)`` unique index and lock other orgs'
+    vote rows, which deadlocks concurrent withdrawals. Staged on the
+    caller's session; the caller commits. Returns the number of votes
+    removed.
     """
     rows = (await db.execute(
         select(MerchantDictionaryVote.id, MerchantDictionaryVote.entry_id)
@@ -364,11 +398,15 @@ async def withdraw_shared_votes(db: AsyncSession, *, org_id: int) -> int:
     )).all()
     if not rows:
         return 0
-    for _, entry_id in rows:
+    for _, entry_id in sorted(rows, key=lambda row: row.entry_id):
         await db.execute(
             update(MerchantDictionaryEntry)
             .where(MerchantDictionaryEntry.id == entry_id)
-            .values(vote_count=MerchantDictionaryEntry.vote_count - 1)
+            .values(vote_count=case(
+                (MerchantDictionaryEntry.vote_count > 0,
+                 MerchantDictionaryEntry.vote_count - 1),
+                else_=0,
+            ))
         )
     await db.execute(
         delete(MerchantDictionaryVote).where(

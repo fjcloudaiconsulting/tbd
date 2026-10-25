@@ -46,6 +46,9 @@ from app.services.category_rules_service import (
     learn_from_choice,
     normalize_description,
     record_shared_vote,
+    SHARE_MERCHANT_DATA_KEY,
+    share_merchant_data_still_enabled,
+    share_merchant_data_value_enabled,
     should_skip_learning,
 )
 from app.services.import_parser import ParsedRow
@@ -441,10 +444,15 @@ async def execute_import(
     share_flag = (await db.execute(
         select(OrgSetting.value).where(
             OrgSetting.org_id == org_id,
-            OrgSetting.key == "share_merchant_data",
+            OrgSetting.key == SHARE_MERCHANT_DATA_KEY,
         )
     )).scalar_one_or_none()
-    share_merchant_data = (share_flag == "true")
+    share_merchant_data = share_merchant_data_value_enabled(share_flag)
+    # BE-28: re-read under a row lock, so turning sharing off and this
+    # import's votes are exclusive. The plain read keeps non-sharing orgs
+    # (the default) lock-free.
+    if share_merchant_data:
+        share_merchant_data = await share_merchant_data_still_enabled(db, org_id)
 
     learned_count = 0
     accepted_count = 0

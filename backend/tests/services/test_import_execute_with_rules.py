@@ -232,6 +232,26 @@ async def test_repeated_rows_and_imports_count_one_vote_per_org(
     assert await _votes(db_session) == (1, 1)
 
 
+async def test_vote_rechecks_merchant_sharing_under_the_lock(
+    db_session: AsyncSession, monkeypatch,
+) -> None:
+    """The plain read said "sharing", but the row says otherwise by the time
+    the import would vote (an opt-out committed in between): no vote. Wrong
+    implementation: trusting the first, unlocked read."""
+    seed = await _seed(db_session, share=False)
+    db_session.add(OrgSetting(
+        org_id=seed["org_id"], key="share_merchant_data", value="false",
+    ))
+    await db_session.commit()
+    monkeypatch.setattr(
+        import_service, "share_merchant_data_value_enabled", lambda _value: True
+    )
+
+    await _confirm(db_session, seed, [_row(1, seed["groceries_id"])])
+
+    assert await _votes(db_session) == (0, 0)
+
+
 async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
     """Paired rows (action='pair_with_existing') must NOT trigger smart-rules
     learning. The new ORM Transaction has linked_transaction_id set after

@@ -12,12 +12,15 @@ from app.models import Base
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
+from app.models.settings import OrgSetting
 from app.models.user import Organization
 from app.services.category_rules_service import (
     infer_category,
     learn_from_choice,
     normalize_description,
     record_shared_vote,
+    share_merchant_data_still_enabled,
+    share_merchant_data_value_enabled,
     should_skip_learning,
     withdraw_shared_votes,
 )
@@ -471,3 +474,85 @@ async def test_withdraw_shared_votes_removes_only_that_orgs_votes(
 
     # Run twice: nothing left to withdraw.
     assert await withdraw_shared_votes(db_session, org_id=seeded_org["org_id"]) == 0
+
+
+async def test_withdraw_shared_votes_never_takes_a_count_below_zero(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    """A vote row on an entry whose stored count is already 0: the count
+    stays 0 and the row still goes. Wrong implementation: a plain
+    ``vote_count - 1``."""
+    entry_id = await _add_lidl(db_session)
+    db_session.add(MerchantDictionaryVote(entry_id=entry_id, org_id=seeded_org["org_id"]))
+    await db_session.commit()
+
+    assert await withdraw_shared_votes(db_session, org_id=seeded_org["org_id"]) == 1
+    await db_session.commit()
+
+    assert await _vote_state(db_session) == (0, [])
+
+
+@pytest.mark.parametrize("value", ["false", "True", "", None])
+def test_only_true_enables_merchant_sharing(value):
+    assert share_merchant_data_value_enabled(value) is False
+    assert share_merchant_data_value_enabled("true") is True
+
+
+async def test_merchant_sharing_recheck_reads_the_stored_value(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    org_id = seeded_org["org_id"]
+    assert await share_merchant_data_still_enabled(db_session, org_id) is False
+    db_session.add(OrgSetting(org_id=org_id, key="share_merchant_data", value="true"))
+    await db_session.commit()
+    assert await share_merchant_data_still_enabled(db_session, org_id) is True
+
+
+async def test_sharing_recheck_and_vote_withdrawal_use_ordered_locking_reads(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    """The reads that make an opt-out and an import's votes exclusive must be
+    locking reads on MySQL, and the withdrawal updates entries in ``entry_id``
+    order so two withdrawals lock them in the same order. SQLite drops
+    FOR UPDATE, so the rendered SQL is checked; the MySQL interleavings are
+    in test_merchant_vote_sharing_mysql.py."""
+    from sqlalchemy.dialects import mysql
+
+    org_id = seeded_org["org_id"]
+    for token in ("LIDL", "ALDI"):
+        db_session.add(MerchantDictionaryEntry(
+            normalized_token=token, category_slug="groceries", is_seed=True, vote_count=1,
+        ))
+    await db_session.flush()
+    ids = (await db_session.execute(
+        select(MerchantDictionaryEntry.id).order_by(MerchantDictionaryEntry.id.desc())
+    )).scalars().all()
+    # Inserted highest entry id first, so the vote table's own order is not
+    # the entry order.
+    db_session.add_all([MerchantDictionaryVote(entry_id=i, org_id=org_id) for i in ids])
+    await db_session.commit()
+
+    seen: list = []
+    real = db_session.execute
+
+    async def _spy(stmt, *args, **kwargs):
+        seen.append(stmt)
+        return await real(stmt, *args, **kwargs)
+
+    db_session.execute = _spy  # type: ignore[assignment]
+    try:
+        await share_merchant_data_still_enabled(db_session, org_id)
+        await withdraw_shared_votes(db_session, org_id=org_id)
+    finally:
+        db_session.execute = real  # type: ignore[assignment]
+    rendered = [str(s.compile(dialect=mysql.dialect())) for s in seen]
+    assert rendered[0].rstrip().endswith("FOR UPDATE") and "FROM org_settings" in rendered[0]
+    vote_read = rendered[1]
+    assert "FROM merchant_dictionary_votes" in vote_read
+    assert vote_read.rstrip().endswith("FOR UPDATE")
+    # Sorted in Python: ORDER BY entry_id would let MySQL lock other orgs'
+    # vote rows through the (entry_id, org_id) index.
+    assert "ORDER BY" not in vote_read
+    updated = [s.compile().params["id_1"] for s in seen[2:]
+               if str(s).startswith("UPDATE merchant_dictionary ")]
+    assert updated == sorted(ids)
