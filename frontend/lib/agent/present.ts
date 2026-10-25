@@ -28,6 +28,8 @@ const TOOL_LABELS: Record<string, string> = {
   forecast_get: "Read the forecast",
   budgets_update_amount: "Change a budget amount",
   transactions_set_category: "Recategorize a transaction",
+  transactions_get: "Read a transaction",
+  transactions_update: "Edit a transaction",
 };
 
 export function toolLabel(name: string): string {
@@ -43,6 +45,9 @@ export function actionHeadline(tool: string, summary: string, changes: ActionCha
 const FIELD_LABELS: Record<string, string> = {
   "budgets.amount": "Budget amount",
   "transactions.category_id": "Category",
+  "transactions.description": "Description",
+  "transactions.date": "Date",
+  "transactions.settled_date": "Settlement date",
   "category_rules.category_id": "Categorization rule",
 };
 
