@@ -27,7 +27,6 @@ then finds its revisions already applied (alembic no-ops).
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
 import sys
 import threading
@@ -42,6 +41,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app import logs
+from app.migration_url import migrations_database_url
 
 
 ALEMBIC_INI = "/app/alembic.ini"
@@ -119,10 +119,9 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 def _resolve_database_url(alembic_cfg: Config) -> Optional[str]:
-    """Mirror env.py's resolution: DATABASE_URL env var wins."""
-    return os.getenv("DATABASE_URL") or alembic_cfg.get_main_option(
-        "sqlalchemy.url"
-    )
+    """Same resolution as env.py: MIGRATIONS_DATABASE_URL, else DATABASE_URL
+    (TBD-655), else alembic.ini."""
+    return migrations_database_url(alembic_cfg.get_main_option("sqlalchemy.url"))
 
 
 def _get_current_revision_sync(database_url: str) -> Optional[str]:
