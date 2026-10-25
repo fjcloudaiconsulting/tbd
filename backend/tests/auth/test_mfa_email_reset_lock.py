@@ -73,7 +73,7 @@ async def test_an_emailed_reset_refuses_the_email_code_but_not_totp(session_fact
     with TestClient(_app(session_factory)) as client:
         reset = client.post(
             "/api/v1/auth/reset-password",
-            json={"token": create_password_reset_token(user_id), "new_password": NEW_PASSWORD},
+            json={"token": create_password_reset_token(user_id, "alice@example.com"), "new_password": NEW_PASSWORD},
         )
         assert reset.status_code == 200, reset.text
         row = await _row(session_factory, user_id)

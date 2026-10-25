@@ -66,6 +66,7 @@ from app.config import settings as app_settings
 from app import state_db
 from app.security import (
     MFA_EMAIL_TOKEN_TTL_SECONDS,
+    PASSWORD_RESET_TTL_SECONDS,
     create_access_token,
     create_email_verification_token,
     create_mfa_challenge_token,
@@ -80,7 +81,6 @@ from app.security import (
     mfa_email_code_hmac,
     session_cutoff,
     token_cutoff,
-    verify_password,
     verify_password_or_dummy,
     wait_out_cutoff,
 )
@@ -2183,10 +2183,14 @@ async def forgot_password(
     user = result.scalar_one_or_none()
 
     if user and user.is_active:
-        token = create_password_reset_token(user.id)
+        token = create_password_reset_token(user.id, user.email)
         background_tasks.add_task(send_password_reset_email, user.email, token)
 
     return {"detail": "If that email exists, a reset link has been sent"}
+
+
+# used_tokens scope of a password-reset token's jti (TBD-654).
+PASSWORD_RESET_SCOPE = "password_reset"
 
 
 @router.post("/reset-password")
@@ -2223,6 +2227,34 @@ async def reset_password(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired reset token",
             )
+
+    # TBD-654. The token is bound to the address it was mailed to, so a link
+    # sent before an email change no longer works after it, and it resets the
+    # password once: its jti is claimed here, after every check and before
+    # any write. A token without both claims predates them and is refused.
+    token_email = payload.get("email")
+    reset_jti = payload.get("jti")
+    if (
+        not isinstance(reset_jti, str)
+        or not reset_jti
+        or not isinstance(token_email, str)
+        or token_email != user.email
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+    try:
+        first_use = await state_db.claim_token(
+            PASSWORD_RESET_SCOPE, reset_jti, PASSWORD_RESET_TTL_SECONDS + 60
+        )
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if not first_use:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
 
     # Whole-second cutoff past this second (BE-04): every token minted
     # before the reset is refused, whatever MySQL's rounding does.
@@ -2663,14 +2695,27 @@ async def verify_email(
     # binding (a bad token stays an undifferentiated 400, no password oracle)
     # and before `promoting` so admin-initiated promotion is covered too.
     # Nothing is written on a refusal, so a pending claim survives it.
-    if not user.email_verified and not (
-        body.password and verify_password(body.password, user.password_hash)
-    ):
-        code = "password_incorrect" if body.password else "password_required"
-        raise HTTPException(
+    #
+    # A wrong password draws from the account's password budget, the one
+    # `/login` uses (TBD-735); asking without one is how the page learns a
+    # password is needed, so it is not counted.
+    if not user.email_verified:
+        if not body.password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "password_required",
+                    "message": "Enter your password to confirm this email address.",
+                },
+            )
+        await reauth_password(
+            session_factory,
+            request=request,
+            user=user,
+            password=body.password,
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "code": code,
+                "code": "password_incorrect",
                 "message": "Enter your password to confirm this email address.",
             },
         )

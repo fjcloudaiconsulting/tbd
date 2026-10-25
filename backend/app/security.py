@@ -226,13 +226,24 @@ def decode_refresh_jti_sid(token: str) -> tuple[str, str]:
     return jti, sid
 
 
-def create_password_reset_token(user_id: int) -> str:
-    """Create a short-lived token for password reset (1 hour)."""
+PASSWORD_RESET_TTL_SECONDS = 60 * 60
+
+
+def create_password_reset_token(user_id: int, email: str) -> str:
+    """Create a short-lived token for password reset (1 hour).
+
+    Bound to the address it was mailed to (``email``) and single-use through
+    its ``jti`` (TBD-654): ``/reset-password`` refuses it once the account's
+    email has changed, and claims the ``jti`` in ``used_tokens`` so it resets
+    the password at most once.
+    """
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(hours=1)
+    expire = now + timedelta(seconds=PASSWORD_RESET_TTL_SECONDS)
     payload = {
         "sub": str(user_id),
         "type": "password_reset",
+        "email": email,
+        "jti": secrets.token_urlsafe(16),
         "iat": now,
         "exp": expire,
     }
