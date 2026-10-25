@@ -16,8 +16,15 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
+from app.auth import attempts
 from app.auth.pat import require_interactive_session
-from app.auth.stepup import STEPUP_ACTIONS, issue_stepup
+from app.auth.second_factor import (
+    consume_recovery_code,
+    reauth_password,
+    require_second_factor,
+    verify_totp_once,
+)
+from app.auth.stepup import STEPUP_ACTIONS, consume_stepup, issue_stepup, stepup_valid
 from app.deps import get_current_user, get_current_user_optional, get_session_factory
 from app.services.feature_gate import Feature, resolve_features
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
@@ -35,11 +42,13 @@ from app.schemas.auth import (
     MfaChallengeResponse,
     MfaDisableRequest,
     MfaEmailCodeRequest,
+    MfaEmailFallbackRequest,
     MfaEmailVerifyRequest,
     MfaEnableRequest,
     MfaEnableResponse,
     MfaRecoveryRequest,
     MfaRegenerateRequest,
+    MfaSetupRequest,
     MfaSetupResponse,
     MfaVerifyRequest,
     RegisterRequest,
@@ -52,6 +61,7 @@ from app.schemas.auth import (
     VerifyEmailRequest,
     VerifyResponse,
 )
+from app.schemas.email_address import google_sign_in_allowed
 from app.config import settings as app_settings
 from app import state_db
 from app.security import (
@@ -68,32 +78,33 @@ from app.security import (
     get_org_session_ttl_seconds,
     hash_password,
     mfa_email_code_hmac,
+    session_cutoff,
     token_cutoff,
     verify_password,
+    verify_password_or_dummy,
+    wait_out_cutoff,
 )
 from app.captcha import verify_captcha
 from app.models.notification import NotificationCategory
-from app.rate_limit import get_client_ip, limiter
+from app.rate_limit import get_client_ip, limiter, rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service, notification_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
 from app.services.notification_templates import (
     user_mfa_disabled as _tpl_user_mfa_disabled,
+    user_mfa_email_fallback_enabled as _tpl_user_mfa_email_fallback_enabled,
     user_mfa_enabled as _tpl_user_mfa_enabled,
     user_mfa_recovery_codes_regenerated as _tpl_user_mfa_recovery_codes_regenerated,
     user_password_reset as _tpl_user_password_reset,
 )
 from app.services.mfa_service import (
     MfaConfigError,
-    decrypt_secret,
     encrypt_secret,
     generate_qr_base64,
     generate_recovery_codes,
     generate_totp_secret,
     get_totp_uri,
     hash_recovery_code,
-    verify_recovery_code,
-    verify_totp,
 )
 from app import logs
 
@@ -144,6 +155,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         is_active=user.is_active,
         is_founder=user.is_founder,
         mfa_enabled=user.mfa_enabled,
+        mfa_email_fallback=user.mfa_email_fallback,
         password_set=user.password_set,
         onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
         allow_manual_balance_adjustment=org.allow_manual_balance_adjustment,
@@ -176,8 +188,25 @@ async def _find_available_username(db: AsyncSession, base: str) -> str:
     return f"{base}{hash(base) % 10000}"
 
 
-async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organization:
+# DB-03: org names are globally unique (``uq_organizations_name_normalized``),
+# so a predictable default name could be claimed ahead of its owner. A default
+# name carries a random suffix, and a collision retries with a fresh one.
+_DEFAULT_ORG_NAME_ATTEMPTS = 5
+
+
+def _default_org_name(username: str) -> str:
+    return f"{username}'s Organization {secrets.token_hex(3)}"
+
+
+async def _create_org_with_defaults(
+    db: AsyncSession, org_name: str | None, *, username: str
+) -> Organization:
     """Create an organization and seed system account types + categories.
+
+    ``org_name`` None means the default name for ``username`` (DB-03): each
+    attempt inserts inside a savepoint, so a name already taken rolls back
+    only that attempt. A name the caller chose is tried once and a taken one
+    answers 409, like a rename.
 
     Delegates the seed to ``org_bootstrap_service.seed_org_defaults`` so
     the same logic backs both initial registration and the post-reset
@@ -185,9 +214,22 @@ async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organiza
     seed side; this caller path inserts a fresh org so no preexisting
     defaults can collide.
     """
-    org = Organization(name=org_name)
-    db.add(org)
-    await db.flush()
+    attempts = 1 if org_name is not None else _DEFAULT_ORG_NAME_ATTEMPTS
+    for attempt in range(attempts):
+        org = Organization(name=org_name if org_name is not None else _default_org_name(username))
+        try:
+            async with db.begin_nested():
+                db.add(org)
+                await db.flush()
+            break
+        except IntegrityError:
+            if org_name is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An organization with that name already exists",
+                )
+            if attempt == attempts - 1:
+                raise
     from app.services.org_bootstrap_service import seed_org_defaults
     await seed_org_defaults(db, org_id=org.id)
     return org
@@ -381,9 +423,7 @@ async def register(
             detail="Username or email already taken",
         )
 
-    org = await _create_org_with_defaults(
-        db, body.org_name or f"{body.username}'s Organization"
-    )
+    org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
 
     user = User(
         org_id=org.id,
@@ -527,6 +567,50 @@ async def register(
     return _user_response(user, org)
 
 
+def _attempt_store_unavailable() -> HTTPException:
+    # The attempt counters live in the same database as the sessions; a
+    # failure to count is never a pass (BE-02).
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+    )
+
+
+async def _revoke_sessions(user_id: int) -> None:
+    """Delete every refresh-session family of ``user_id`` after a committed
+    credential change (BE-04). The whole-second cutoff written with the change
+    already refuses every earlier token, so a store failure here is logged,
+    not raised: the change itself must not turn into a 5xx."""
+    try:
+        await state_db.session_revoke_user(user_id)
+    except SQLAlchemyError:
+        _LOGGER.warning("auth.sessions.revoke_user_failed", exc_info=True)
+
+
+async def _revoke_other_sessions(request: Request, user_id: int) -> None:
+    """Delete every session family of ``user_id`` except the one(s) the
+    caller's own refresh cookie names (BE-04: MFA enable / disable end the
+    user's other sessions and keep this one). Runs BEFORE the change commits
+    and fails closed: here nothing else would end those sessions."""
+    keep: set[str] = set()
+    for raw in _extract_refresh_cookies(request):
+        payload = decode_token(raw)
+        if (
+            payload is not None
+            and payload.get("type") == "refresh"
+            and payload.get("sub") == str(user_id)
+            and isinstance(payload.get("sid"), str)
+        ):
+            keep.add(payload["sid"])
+    try:
+        await state_db.session_revoke_user(user_id, frozenset(keep))
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+
+
 async def _require_session_store() -> None:
     """Probe the session store before any credential check, so every
     branch answers the same 503 while it is unreachable (INFRA-121,
@@ -551,6 +635,19 @@ async def login(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     await _require_session_store()
+    # Per-account failure budgets beside the per-IP limit (BE-02). The only
+    # one that answers 429 is the login AS TYPED, checked before the lookup:
+    # it fills the same way for a real login and an unknown one.
+    try:
+        retry_after = await attempts.login_retry_after(body.login)
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=attempts.TOO_MANY_LOGIN_ATTEMPTS_DETAIL,
+            headers={"Retry-After": str(retry_after)},
+        )
     # Accept username or email
     result = await db.execute(
         select(User).where(
@@ -558,12 +655,41 @@ async def login(
         )
     )
     user = result.scalar_one_or_none()
+    user_id = user.id if user is not None else None
+    # The account's own budget, keyed on the user id, so no other spelling
+    # of the login, rename or email change reopens it. While it is full the
+    # real password is NOT checked: the dummy bcrypt runs and the answer is
+    # the same 401 an unknown login gets. Answering 429 here would say that
+    # this login exists and which spellings belong to one account.
+    try:
+        account_full = await attempts.password_retry_after(user_id, body.login) is not None
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    stored_hash = user.password_hash if user is not None and not account_full else None
 
-    if user is None or not verify_password(body.password, user.password_hash):
+    if not verify_password_or_dummy(body.password, stored_hash):
+        try:
+            filled = await attempts.record_password_failure(body.login, user_id)
+        except SQLAlchemyError as exc:
+            raise _attempt_store_unavailable() from exc
+        if filled and user is not None:
+            await attempts.audit_window_filled(
+                session_factory,
+                request=request,
+                event_type="auth.login.locked",
+                user_id=user.id,
+                user_email=user.email,
+                user_org_id=user.org_id,
+                failures=attempts.LOGIN_FAILURES_PER_ACCOUNT,
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
         )
+    try:
+        await attempts.clear_password_failures(user.id, body.login)
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
 
     if not user.is_active:
         raise HTTPException(
@@ -579,6 +705,10 @@ async def login(
                 "message": "Please verify your email to sign in.",
             },
         )
+
+    # A sign-in in the second after a credential change waits for it, so
+    # the tokens minted below are not refused by that change's cutoff (BE-04).
+    await wait_out_cutoff(user)
 
     # If MFA is enabled, return a challenge token instead of access tokens.
     # The login.success audit fires AFTER MFA completes (in /mfa/*), not
@@ -782,7 +912,8 @@ async def _rotate_refresh_session(
     or ``"jti_collision"``. The router dispatches on the value per
     §5.1 step 6:
 
-    * ``"ok"`` — issue cookie, emit ``auth.session.rotated`` audit.
+    * ``"ok"`` — issue cookie. No audit row: a routine rotation happens on
+      every refresh of every session (BE-10).
     * ``"session_revoked"`` — concurrent logout deleted the family
       set; router returns 401, no audit (terminal — frontend redirects).
     * ``"already_rotated"`` — concurrent ``/refresh`` won the race;
@@ -1434,7 +1565,34 @@ async def _validate_refresh_cookie(
     return successes[0]
 
 
+def _refresh_rate_limit_key(request: Request) -> str:
+    """Bucket for ``POST /refresh`` (BE-10): the session family (``sid``) of
+    the refresh cookie, which every rotation keeps, so one session gets 30 a
+    minute wherever it calls from and sessions behind one address
+    do not share a budget. Of several cookies, the newest by ``iat`` (the one
+    ``_validate_refresh_cookie`` prefers). A request with no cookie that
+    verifies as a refresh token carrying a ``sid`` (none, garbage, forged,
+    expired, another token type) is bucketed per IP instead. The stored key
+    is hashed (``rate_limit_db``)."""
+    best: tuple[int, str] | None = None
+    for token in _extract_refresh_cookies(request):
+        payload = decode_token(token)
+        if payload is None or payload.get("type") != "refresh":
+            continue
+        sid = payload.get("sid")
+        if not isinstance(sid, str) or not sid:
+            continue
+        iat = payload.get("iat")
+        iat = iat if isinstance(iat, int) else 0
+        if best is None or iat > best[0]:
+            best = (iat, sid)
+    if best is None:
+        return rate_limit_key(request)
+    return f"refresh-session:{best[1]}"
+
+
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/minute", key_func=_refresh_rate_limit_key)
 async def refresh(
     request: Request,
     response: Response,
@@ -1576,7 +1734,7 @@ async def _refresh_impl(
         return TokenResponse(access_token=access_token)
 
     # ── Normal rotation path: Lua script is the authority ───────────────
-    new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
+    new_refresh_token, _new_jti, _sid, lua_result = await _rotate_refresh_session(
         user.id,
         old_jti,
         sid,
@@ -1587,7 +1745,7 @@ async def _refresh_impl(
     if lua_result == state_db.SESSION_ROTATE_JTI_COLLISION:
         # 128-bit collision — regenerate jti once and retry. If the second
         # attempt also collides, the RNG is broken: 503 + log flag.
-        new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
+        new_refresh_token, _new_jti, _sid, lua_result = await _rotate_refresh_session(
             user.id,
             old_jti,
             sid,
@@ -1705,15 +1863,9 @@ async def _refresh_impl(
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
-    await _record_session_rotated(
-        session_factory,
-        user=user,
-        request=request,
-        old_jti=old_jti,
-        new_jti=new_jti,
-        sid=sid,
-    )
-
+    # No audit row for a routine rotation (BE-10): one per refresh of every
+    # live session buried the events that matter. Grace acceptances, reuse
+    # detection and rotation failures above are still audited.
     return TokenResponse(access_token=access_token)
 
 
@@ -2072,7 +2224,9 @@ async def reset_password(
                 detail="Invalid or expired reset token",
             )
 
-    now = datetime.now(timezone.utc)
+    # Whole-second cutoff past this second (BE-04): every token minted
+    # before the reset is refused, whatever MySQL's rounding does.
+    cutoff = session_cutoff()
     user.password_hash = hash_password(body.new_password)
     # Flip `password_set` so an SSO user who reset via token lands in
     # the standard branch on every future /users/me/password call and
@@ -2080,9 +2234,21 @@ async def reset_password(
     # account has working local credentials but the row still claims
     # no password has ever been chosen. (Finding 2 from PR #138.)
     user.password_set = True
-    user.password_changed_at = now
-    user.sessions_invalidated_at = now
+    user.password_changed_at = cutoff
+    user.sessions_invalidated_at = cutoff
+    # Opens the 72-hour window in which the email-code MFA fallback is
+    # refused (BE-03): this reset was proven through the mailbox alone.
+    user.password_reset_at = cutoff
     await db.commit()
+    await _revoke_sessions(user.id)
+
+    # A reset is the way out of a full per-account login window (BE-02):
+    # the owner can sign in with the new password straight away. Best-effort,
+    # the reset itself is committed.
+    try:
+        await attempts.clear_password_failures(user.id, user.username, user.email)
+    except SQLAlchemyError:
+        _LOGGER.warning("auth.reset_password.clear_login_failures_failed", exc_info=True)
 
     # Audit AFTER the business commit succeeds. This is the
     # account-takeover path (a completed forgot-password flow), so the
@@ -2256,16 +2422,17 @@ async def _promote_pending_email(
     user.email_verified = True
     # Identity changed, so every token minted under the OLD address dies.
     #
-    # ⚠ DELIBERATELY NOT FLOORED to whole seconds. Every validator compares
-    # with a strict `<` (deps.py, and _validate_refresh_cookie) and
-    # `create_access_token` already floors `iat`, so a cutoff floored to T.0
-    # fails to invalidate a token minted at T.2 whose `iat` is T -- `T < T`
-    # is False and the token survives an identity change. Unfloored, MySQL's
-    # fsp-0 rounding stores T+1 and the token is correctly rejected. If this
-    # endpoint is ever changed to mint a session, adopt
+    # ⚠ NOT FLOORED to whole seconds. Every validator compares with a strict
+    # `<` (deps.py, and _validate_refresh_cookie) and `create_access_token`
+    # already floors `iat`, so a cutoff floored to T.0 fails to invalidate a
+    # token minted at T.2 whose `iat` is T -- `T < T` is False and the token
+    # survives an identity change. Left unfloored, MySQL's fsp-0 rounding
+    # floors a sub-.5 fraction just the same, so the cutoff is the NEXT whole
+    # second (`session_cutoff`, BE-04), and the families are deleted too. If
+    # this endpoint is ever changed to mint a session, adopt
     # `invitation_service.accept_invitation`'s pattern WHOLESALE: its comment
     # requires BOTH columns floored, because `token_cutoff` maxes two.
-    user.sessions_invalidated_at = datetime.now(timezone.utc)
+    user.sessions_invalidated_at = session_cutoff()
 
     user_id_snapshot = user.id
     try:
@@ -2287,6 +2454,8 @@ async def _promote_pending_email(
                 "address."
             ),
         )
+
+    await _revoke_sessions(user_id_snapshot)
 
     # Additive discriminator. Both branches used to return an identical
     # body, so the verify-email page could not tell a first-time
@@ -2575,10 +2744,20 @@ async def resend_verification_public(
 # ── MFA ─────────────────────────────────────────────────────────────────────
 
 
-async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> User:
-    """Validate an MFA challenge token and return the associated user."""
+async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> tuple[User, str]:
+    """Validate an MFA challenge token; return the user and the challenge's
+    ``jti``.
+
+    Before any code is looked at (BE-02), refuses a user who has used their
+    second-factor failure budget (429 until the window ends) and a challenge
+    that has used its own (it is burned: sign in again)."""
     payload = decode_token(mfa_token)
     if payload is None or payload.get("type") != "mfa_challenge":
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti:
+        # A challenge minted before BE-02 has no jti and cannot be made
+        # single-use; it is at most 5 minutes old, so sign in again.
         raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
     user_id = int(payload["sub"])
     result = await db.execute(select(User).where(User.id == user_id))
@@ -2588,7 +2767,100 @@ async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> User:
     # Reject if MFA was disabled after the challenge token was issued
     if not user.mfa_enabled:
         raise HTTPException(status_code=401, detail="MFA is no longer enabled for this account")
-    return user
+    # A challenge from before a password reset or change dies with it (BE-04).
+    iat = payload.get("iat")
+    if not isinstance(iat, int) or datetime.fromtimestamp(iat, tz=timezone.utc) < token_cutoff(user):
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+    try:
+        retry_after = await attempts.mfa_user_retry_after(user.id)
+        exhausted = await attempts.mfa_challenge_exhausted(jti)
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=attempts.TOO_MANY_MFA_ATTEMPTS_DETAIL,
+            headers={"Retry-After": str(retry_after)},
+        )
+    if exhausted:
+        raise HTTPException(status_code=401, detail=attempts.MFA_CHALLENGE_SPENT_DETAIL)
+    return user, jti
+
+
+EMAIL_FALLBACK_OFF_DETAIL = (
+    "Email codes are turned off for this account. "
+    "Use your authenticator app or a recovery code."
+)
+EMAIL_FALLBACK_PAUSED_DETAIL = (
+    "Email codes are unavailable for 72 hours after a password reset. "
+    "Use your authenticator app or a recovery code."
+)
+# How long after a reset through the emailed link the email code stays
+# refused, opt-in or not (BE-03).
+EMAIL_FALLBACK_RESET_LOCK = timedelta(hours=72)
+
+
+def _require_email_fallback(user: User, *, now: datetime | None = None) -> None:
+    """Refuse the emailed code for an account whose owner has not turned the
+    fallback on (BE-03): with TOTP enrolled, the mailbox alone must not stand
+    in for the authenticator. Also refused for 72 hours after a password
+    reset through the emailed link, so the sign-in after a reset takes TOTP
+    or a recovery code. An MFA account without a TOTP secret keeps it, as the
+    only code-based factor it would have (``mfa_enable`` needs a TOTP code, so
+    the app does not create one). 400 like the other challenge-leg refusals
+    that are not a wrong code."""
+    if not user.totp_secret:
+        return
+    if not user.mfa_email_fallback:
+        raise HTTPException(status_code=400, detail=EMAIL_FALLBACK_OFF_DETAIL)
+    reset_at = user.password_reset_at
+    if reset_at is None:
+        return
+    if reset_at.tzinfo is None:  # stored naive UTC
+        reset_at = reset_at.replace(tzinfo=timezone.utc)
+    if (now or datetime.now(timezone.utc)) < reset_at + EMAIL_FALLBACK_RESET_LOCK:
+        raise HTTPException(status_code=400, detail=EMAIL_FALLBACK_PAUSED_DETAIL)
+
+
+async def _second_factor_failed(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    request: Request,
+    jti: str,
+    user_id: int,
+    user_email: str,
+    user_org_id: int,
+) -> None:
+    """Count a wrong second factor against the user and the challenge, and
+    audit the failure that fills the user's window (BE-02). Takes scalars:
+    a lost recovery-code race has already rolled the session back."""
+    try:
+        filled = await attempts.record_mfa_failure(user_id, jti)
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if filled:
+        await attempts.audit_window_filled(
+            session_factory,
+            request=request,
+            event_type="auth.mfa.locked",
+            user_id=user_id,
+            user_email=user_email,
+            user_org_id=user_org_id,
+            failures=attempts.MFA_FAILURES_PER_USER,
+        )
+
+
+async def _second_factor_passed(user_id: int, jti: str) -> None:
+    """Spend the challenge (single-use, BE-02) and empty the user's failure
+    window. A challenge already spent or burned is a 401."""
+    try:
+        claimed = await attempts.claim_mfa_challenge(jti)
+        if claimed:
+            await attempts.clear_mfa_failures(user_id)
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if not claimed:
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
 
 
 async def _issue_tokens(
@@ -2607,6 +2879,7 @@ async def _issue_tokens(
     and applied to the JWT exp, the cookie Max-Age, AND the session store
     primary-key TTL in lockstep (2026-05-18 session-stability fix).
     """
+    await wait_out_cutoff(user)  # BE-04, as in ``login``
     access_token = create_access_token(user.id, user.org_id, user.role.value)
     ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
     refresh_token, _jti, _sid = await _issue_refresh_session(
@@ -2877,6 +3150,20 @@ def _google_token_body_detail(tokens: dict[str, Any] | None) -> dict[str, Any]:
     return detail
 
 
+SSO_NONCE_COOKIE = "oauth_nonce"
+_SSO_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
+def _sso_nonce_param(cookie_value: str | None) -> str:
+    """``&nonce=<value>`` for the Google success fragment (FE-02), or "" when
+    the cookie is absent or not the shape ``google_login`` writes. A cookie
+    can be set by a sibling host, so only a bare token is ever echoed: it
+    cannot add a second ``token=`` to the fragment."""
+    if cookie_value and _SSO_NONCE_RE.fullmatch(cookie_value):
+        return f"&nonce={cookie_value}"
+    return ""
+
+
 def _google_error_redirect(
     reason: str,
     *,
@@ -2896,6 +3183,7 @@ def _google_error_redirect(
         status_code=307,
     )
     resp.delete_cookie("oauth_state", path=cookie_path)
+    resp.delete_cookie(SSO_NONCE_COOKIE, path=cookie_path)
     return resp
 
 
@@ -2993,36 +3281,6 @@ async def _record_login_success(
 
 
 # ── PR 3 session-rotation audit events (spec §5.1 step 8) ───────────────────
-
-
-async def _record_session_rotated(
-    session_factory: async_sessionmaker[AsyncSession],
-    *,
-    user: User,
-    request: Request,
-    old_jti: str,
-    new_jti: str,
-    sid: str,
-) -> None:
-    """Persist an ``auth.session.rotated`` audit event on the happy-path
-    rotation (Lua returned ``"ok"``).
-
-    Detail carries the predecessor + successor ``jti`` plus the stable
-    ``sid`` so operators can reconstruct the rotation chain offline.
-    """
-    request_id = logs.CONTEXT.get({}).get("request_id")
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="auth.session.rotated",
-        actor_user_id=user.id,
-        actor_email=user.email,
-        target_org_id=user.org_id,
-        target_org_name=None,
-        request_id=request_id,
-        ip_address=get_client_ip(request),
-        outcome="success",
-        detail={"old_jti": old_jti, "new_jti": new_jti, "sid": sid},
-    )
 
 
 async def _record_session_grace_accept(
@@ -3204,18 +3462,45 @@ async def _record_session_reuse_detected(
     )
 
 
+MFA_SETUP_STEPUP_DETAIL = (
+    "Step-up verification with Google is required to set up two-factor authentication"
+)
+
+
 @router.post(
     "/mfa/setup",
     response_model=MfaSetupResponse,
     dependencies=[Depends(require_interactive_session)],
 )
 async def mfa_setup(
+    body: MfaSetupRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    """Start MFA enrollment — generate TOTP secret and QR code."""
+    """Start MFA enrollment — generate TOTP secret and QR code.
+
+    Re-authenticates first (BE-32): a session alone must not be able to put
+    its own authenticator on the account. The password, or for an SSO account
+    without one a step-up proof for ``mfa_setup`` (spent here). Enabling then
+    needs a code from the secret only this response reveals.
+    """
     if current_user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is already enabled")
+    if current_user.password_set:
+        # 400 like the other settings re-auth gates: a 403 here would read as
+        # the interactive-session guard refusing the caller.
+        await reauth_password(
+            session_factory,
+            request=request,
+            user=current_user,
+            password=body.current_password,
+            status_code=400,
+            detail="Current password is incorrect",
+        )
+    elif not stepup_valid(current_user, body.stepup_token, "mfa_setup"):
+        raise HTTPException(status_code=400, detail=MFA_SETUP_STEPUP_DETAIL)
 
     secret = generate_totp_secret()
     uri = get_totp_uri(secret, current_user.email)
@@ -3226,6 +3511,9 @@ async def mfa_setup(
         current_user.totp_secret = encrypt_secret(secret)
     except MfaConfigError:
         raise HTTPException(status_code=503, detail="MFA is not available — encryption not configured")
+    # Spend the proof with the write; a lost race rolls both back.
+    if not current_user.password_set and not await consume_stepup(db, current_user):
+        raise HTTPException(status_code=400, detail=MFA_SETUP_STEPUP_DETAIL)
     await db.commit()
 
     return MfaSetupResponse(qr_code=qr_code, secret=secret, uri=uri)
@@ -3250,13 +3538,19 @@ async def mfa_enable(
         raise HTTPException(status_code=400, detail="Call /mfa/setup first")
 
     try:
-        secret = decrypt_secret(current_user.totp_secret)
+        # Same once-per-step rule as sign-in (BE-26), so the enrolment code
+        # cannot be replayed at the login that follows.
+        accepted = await verify_totp_once(current_user, body.code)
     except (ValueError, MfaConfigError):
         raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
-    if not verify_totp(secret, body.code):
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if not accepted:
         raise HTTPException(status_code=400, detail="Invalid TOTP code")
 
     codes = generate_recovery_codes()
+    # The user's other sessions end; this one stays (BE-04).
+    await _revoke_other_sessions(request, current_user.id)
     current_user.mfa_enabled = True
     current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
     await db.commit()
@@ -3324,15 +3618,24 @@ async def mfa_disable(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    """Disable MFA. Requires password confirmation."""
+    """Disable MFA. Requires the password and a current second factor
+    (BE-32): the factor being removed has to be presented to remove it."""
     if not current_user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled")
-    if not verify_password(body.password, current_user.password_hash):
-        raise HTTPException(status_code=403, detail="Invalid password")
+    await reauth_password(
+        session_factory, request=request, user=current_user, password=body.password
+    )
+    await require_second_factor(
+        db, session_factory, request=request, user=current_user, code=body.mfa_code
+    )
 
+    # The user's other sessions end; this one stays (BE-04).
+    await _revoke_other_sessions(request, current_user.id)
     current_user.mfa_enabled = False
     current_user.totp_secret = None
     current_user.recovery_codes = None
+    # A later enrolment starts with the email fallback off again (BE-03).
+    current_user.mfa_email_fallback = False
     await db.commit()
 
     # Audit AFTER the business commit succeeds. This row is the trigger
@@ -3402,11 +3705,16 @@ async def mfa_regenerate_codes(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    """Regenerate recovery codes. Requires password confirmation."""
+    """Regenerate recovery codes. Requires the password and a current second
+    factor (BE-32); a recovery code presented here is spent with the rest."""
     if not current_user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled")
-    if not verify_password(body.password, current_user.password_hash):
-        raise HTTPException(status_code=403, detail="Invalid password")
+    await reauth_password(
+        session_factory, request=request, user=current_user, password=body.password
+    )
+    await require_second_factor(
+        db, session_factory, request=request, user=current_user, code=body.mfa_code
+    )
 
     codes = generate_recovery_codes()
     current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
@@ -3463,6 +3771,85 @@ async def mfa_regenerate_codes(
     return MfaEnableResponse(recovery_codes=codes)
 
 
+@router.put(
+    "/mfa/email-fallback",
+    dependencies=[Depends(require_interactive_session)],
+)
+async def mfa_email_fallback(
+    body: MfaEmailFallbackRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Turn the email-code sign-in fallback on or off (BE-03).
+
+    On lets the mailbox stand in for the authenticator, so it takes a current
+    TOTP code or an unused recovery code, as the BE-32 changes do; a recovery
+    code presented here is spent. Off raises protection and needs only the
+    session.
+    """
+    if not current_user.mfa_enabled or not current_user.totp_secret:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    if body.enabled:
+        await require_second_factor(
+            db, session_factory, request=request, user=current_user, code=body.mfa_code
+        )
+    changed = current_user.mfa_email_fallback != body.enabled
+    current_user.mfa_email_fallback = body.enabled
+    await db.commit()
+    if not changed:
+        return {"mfa_email_fallback": body.enabled}
+
+    event_type = (
+        "user.mfa.email_fallback.enabled"
+        if body.enabled
+        else "user.mfa.email_fallback.disabled"
+    )
+    audit_event_id = await audit_service.record_audit_event(
+        session_factory,
+        event_type=event_type,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=logs.CONTEXT.get({}).get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
+
+    # Turning it on is the direction that lowers protection: tell the user,
+    # in-app and by email, as for the other MFA changes. Best-effort.
+    if body.enabled and audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances.
+        recipient_user_id = current_user.id
+        recipient_email = current_user.email
+        title, notif_body, link_url = _tpl_user_mfa_email_fallback_enabled()
+        await notification_service.dispatch_notification_best_effort(
+            db,
+            user_id=recipient_user_id,
+            category=NotificationCategory.SECURITY,
+            event_type=event_type,
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=recipient_user_id,
+            email=recipient_email,
+            event_type=event_type,
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+        )
+
+    return {"mfa_email_fallback": body.enabled}
+
+
 @router.post("/mfa/verify", response_model=TokenResponse)
 @limiter.limit("10/minute")
 async def mfa_verify(
@@ -3474,17 +3861,29 @@ async def mfa_verify(
 ):
     """Verify TOTP code during login to complete authentication."""
     await _require_session_store()
-    user = await _resolve_mfa_user(body.mfa_token, db)
+    user, challenge_jti = await _resolve_mfa_user(body.mfa_token, db)
 
     if not user.totp_secret:
         raise HTTPException(status_code=400, detail="MFA not configured")
 
     try:
-        secret = decrypt_secret(user.totp_secret)
+        # A code is accepted once per user: a replay is a wrong code (BE-26).
+        accepted = await verify_totp_once(user, body.code)
     except (ValueError, MfaConfigError):
         raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
-    if not verify_totp(secret, body.code):
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if not accepted:
+        await _second_factor_failed(
+            session_factory,
+            request=request,
+            jti=challenge_jti,
+            user_id=user.id,
+            user_email=user.email,
+            user_org_id=user.org_id,
+        )
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
+    await _second_factor_passed(user.id, challenge_jti)
 
     tokens = await _issue_tokens(user, response, db)
     await _record_login_success(
@@ -3504,25 +3903,31 @@ async def mfa_recovery(
 ):
     """Use a recovery code during login to complete authentication."""
     await _require_session_store()
-    user = await _resolve_mfa_user(body.mfa_token, db)
+    user, challenge_jti = await _resolve_mfa_user(body.mfa_token, db)
 
     if not user.recovery_codes:
         raise HTTPException(status_code=400, detail="No recovery codes available")
+    # Scalars for the failure path: a lost race rolls the session back.
+    user_id, user_email, user_org_id = user.id, user.email, user.org_id
 
-    hashed_codes = user.recovery_codes.split(",")
-    idx = verify_recovery_code(body.code, hashed_codes)
-    if idx is None:
+    # Remove the used code with a compare-and-swap on the stored list, so
+    # two concurrent requests carrying one code cannot both get a session
+    # (BE-21). Architect P1 finding on PR #306: hold the commit until AFTER
+    # the store-backed session-issue inside ``_issue_tokens`` succeeds.
+    # Otherwise a store 503 would consume the recovery code (durable side
+    # effect on a tiny finite pool) without giving the user a session,
+    # forcing them to burn another code on retry.
+    if not await consume_recovery_code(db, user, body.code):
+        await _second_factor_failed(
+            session_factory,
+            request=request,
+            jti=challenge_jti,
+            user_id=user_id,
+            user_email=user_email,
+            user_org_id=user_org_id,
+        )
         raise HTTPException(status_code=401, detail="Invalid recovery code")
-
-    # Remove the used code. Architect P1 finding on PR #306: hold the
-    # commit until AFTER the store-backed session-issue inside
-    # ``_issue_tokens`` succeeds. Otherwise a store 503 would consume
-    # the recovery code (durable side effect on a tiny finite pool)
-    # without giving the user a session, forcing them to burn another
-    # code on retry.
-    hashed_codes.pop(idx)
-    user.recovery_codes = ",".join(hashed_codes) if hashed_codes else None
-    await db.flush()
+    await _second_factor_passed(user_id, challenge_jti)
 
     tokens = await _issue_tokens(user, response, db)
     await db.commit()
@@ -3541,7 +3946,8 @@ async def mfa_email_code(
     db: AsyncSession = Depends(get_db),
 ):
     """Send a one-time code to the user's email as MFA fallback."""
-    user = await _resolve_mfa_user(body.mfa_token, db)
+    user, _jti = await _resolve_mfa_user(body.mfa_token, db)
+    _require_email_fallback(user)
 
     # Generate 6-digit numeric code
     code = f"{secrets.randbelow(1000000):06d}"
@@ -3567,7 +3973,10 @@ async def mfa_email_verify(
 ):
     """Verify an email-based MFA code to complete authentication."""
     await _require_session_store()
-    user = await _resolve_mfa_user(body.mfa_token, db)
+    user, challenge_jti = await _resolve_mfa_user(body.mfa_token, db)
+    # Checked again here: a code mailed before the fallback was turned off
+    # must not complete a sign-in after it (BE-03).
+    _require_email_fallback(user)
 
     # Validate the email_token and extract the code HMAC
     email_payload = decode_token(body.email_token)
@@ -3589,6 +3998,14 @@ async def mfa_email_verify(
     # token and forces a resend (one-attempt-only regression).
     expected_hmac = mfa_email_code_hmac(body.code)
     if not _hmac.compare_digest(expected_hmac, email_payload.get("code_hmac", "")):
+        await _second_factor_failed(
+            session_factory,
+            request=request,
+            jti=challenge_jti,
+            user_id=user.id,
+            user_email=user.email,
+            user_org_id=user.org_id,
+        )
         raise HTTPException(status_code=401, detail="Invalid code")
 
     # Only consume the jti after the code is proven valid: the first use
@@ -3605,6 +4022,7 @@ async def mfa_email_verify(
         ) from exc
     if not first_use:
         raise HTTPException(status_code=401, detail="Invalid or expired email code")
+    await _second_factor_passed(user.id, challenge_jti)
 
     tokens = await _issue_tokens(user, response, db)
     await _record_login_success(
@@ -3672,6 +4090,21 @@ async def google_login(request: Request, response: Response):
         max_age=1800,  # 30 minutes
         path="/api/v1/auth/google",
     )
+    # FE-02. A second random value, kept by the page that started the flow
+    # (sessionStorage, from this response body) and echoed back by the
+    # callback in the success fragment from this httpOnly cookie. The
+    # callback page refuses a fragment whose nonce its own tab did not
+    # store, so a link that plants someone else's token is turned away.
+    nonce = secrets.token_urlsafe(16)
+    response.set_cookie(
+        key=SSO_NONCE_COOKIE,
+        value=nonce,
+        httponly=True,
+        secure=app_settings.cookie_secure,
+        samesite="lax",
+        max_age=1800,
+        path="/api/v1/auth/google",
+    )
 
     params = {
         "client_id": app_settings.google_client_id,
@@ -3682,7 +4115,10 @@ async def google_login(request: Request, response: Response):
         "prompt": "select_account",
         "state": state,
     }
-    return {"redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"}
+    return {
+        "redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}",
+        "nonce": nonce,
+    }
 
 
 @router.get("/google/callback")
@@ -3696,6 +4132,7 @@ async def google_callback(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
     oauth_state: str | None = Cookie(default=None),
+    oauth_nonce: str | None = Cookie(default=None),
 ):
     """Handle Google OAuth callback — exchange code for tokens, create or login user.
 
@@ -3997,6 +4434,18 @@ async def google_callback(
     user = result.scalar_one_or_none()
     _phase("db_user_lookup_ok")
 
+    # DB-01: no new account under a non-ASCII address, and the
+    # accent-insensitive lookup above must not hand a look-alike address
+    # someone else's account. See ``google_sign_in_allowed``.
+    if not google_sign_in_allowed(email, user.email if user else None):
+        await _record_google_callback_failure(
+            session_factory,
+            request=request,
+            reason="email_unsupported",
+            actor_email=email,
+        )
+        return _google_error_redirect("email_unsupported")
+
     # Track whether this callback created a new local user. The flag
     # drives two downstream effects: an audit row distinct from the
     # login-success row, and a fragment-only signal to the frontend
@@ -4070,7 +4519,7 @@ async def google_callback(
         base_username = _suggest_username(first_name, last_name, email)
         username = await _find_available_username(db, base_username)
 
-        org = await _create_org_with_defaults(db, f"{username}'s Organization")
+        org = await _create_org_with_defaults(db, None, username=username)
 
         user = User(
             org_id=org.id,
@@ -4112,14 +4561,24 @@ async def google_callback(
 
     # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])
+    await wait_out_cutoff(user)  # BE-04, as in ``login``
 
     if user.mfa_enabled:
         mfa_token = create_mfa_challenge_token(user.id)
+        # FE-03. The challenge rides in the callback page's FRAGMENT, never a
+        # query string: a fragment is not sent to any server, so it stays out
+        # of access logs, Referer headers and the CSP report sink. The page
+        # checks the nonce (FE-02) and hands the challenge to /mfa-verify
+        # through sessionStorage, as the password login does.
         resp = RedirectResponse(
-            url=f"{app_settings.app_url}/mfa-verify?mfa_token={mfa_token}",
+            url=(
+                f"{app_settings.app_url}/auth/google/callback"
+                f"#mfa_token={mfa_token}{_sso_nonce_param(oauth_nonce)}"
+            ),
             status_code=302,
         )
         resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
+        resp.delete_cookie(SSO_NONCE_COOKIE, path="/api/v1/auth/google")
         return resp
 
     access_token = create_access_token(user.id, user.org_id, user.role.value)
@@ -4169,11 +4628,13 @@ async def google_callback(
     fragment = f"token={access_token}"
     if created_user:
         fragment = f"{fragment}&created_user=true"
+    fragment += _sso_nonce_param(oauth_nonce)  # FE-02
     resp = RedirectResponse(
         url=f"{app_settings.app_url}/auth/google/callback#{fragment}",
         status_code=302,
     )
     resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
+    resp.delete_cookie(SSO_NONCE_COOKIE, path="/api/v1/auth/google")
     resp.set_cookie(
         key="refresh_token",
         value=refresh_token,

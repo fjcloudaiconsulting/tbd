@@ -142,22 +142,34 @@ def test_s3_nginx_routes_the_endpoint_exactly():
 
 
 def test_s6_smoke_test_checks_the_endpoint_and_no_longer_lies_about_ready():
-    """S6 — the post-deploy gate must check the dependency endpoint, and
+    """S6 — the smoke must still be able to check the dependency endpoint, and
     must stop claiming ``/ready`` covers more than the database.
 
     A comment once claimed ``/ready`` covered a dependency it did not, and the
     script passed a deploy on which login was 100% broken.
+
+    INF-09: the public hosts no longer route ``/ready`` or this endpoint, so
+    both checks sit in the ``SMOKE_INTERNAL_PROBES=1`` block and ``/health``
+    stays outside it (behaviour: ``test_smoke_test_probes.py``).
     """
     script = _artifact("scripts/smoke-test.sh").read_text()
+    lines = [line.strip() for line in script.splitlines()]
 
-    checks = [
-        line.strip()
-        for line in script.splitlines()
-        if line.strip().startswith("check_status ")
-    ]
+    checks = [line for line in lines if line.startswith("check_status ")]
     assert any(ENDPOINT in c for c in checks), (
         f"smoke-test.sh does not check {ENDPOINT}; found {checks}"
     )
+
+    opt_in = [i for i, line in enumerate(lines) if line == 'if [[ "$INTERNAL_PROBES" == 1 ]]; then']
+    assert len(opt_in) == 1, f"expected one SMOKE_INTERNAL_PROBES block, found {len(opt_in)}"
+    start = opt_in[0]
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] in ("else", "fi"))
+    gated = [line for line in lines[start + 1 : end] if line.startswith("check_status ")]
+    ungated = [line for line in lines[:start] + lines[end:] if line.startswith("check_status ")]
+    for path in ("/ready", ENDPOINT):
+        assert any(f'GET "{path}"' in c for c in gated), f"{path} is not behind the opt-in: {gated}"
+        assert not any(f'GET "{path}"' in c for c in ungated), f"{path} is also checked ungated: {ungated}"
+    assert any('GET "/health"' in c for c in ungated), f"/health must stay unconditional: {ungated}"
 
     # Target the header's numbered surface list precisely, rather than
     # sweeping every comment: prose elsewhere in the file legitimately

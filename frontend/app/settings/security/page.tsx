@@ -12,6 +12,7 @@ import { isAdmin } from "@/lib/auth";
 import {
   mapMfaSetupError,
   mapMfaDisableError,
+  mapMfaEmailFallbackError,
   mapMfaRegenerateError,
 } from "@/lib/formErrors";
 import {
@@ -30,6 +31,13 @@ import type { MfaSetupResponse, MfaEnableResponse } from "@/lib/types";
 // Mirror of a backend `STEPUP_ACTIONS` key. The proof is scoped to this
 // action, and the callback redirects back to /settings/security (here).
 const STEPUP_ACTION = "password_set";
+// BE-32. The second action that returns here: an SSO account without a
+// password re-authenticates with Google before enrolling an authenticator.
+// The fragment carries only the token, so the action a pending step-up was
+// started for rides in sessionStorage across the Google round trip; none
+// recorded means the password-set flow, as before.
+const MFA_SETUP_STEPUP_ACTION = "mfa_setup";
+const PENDING_STEPUP_ACTION_KEY = "tbd-stepup-pending-action";
 
 /**
  * Friendly copy keyed by the `?sso_stepup_error=<code>` value that
@@ -57,7 +65,7 @@ const SSO_STEPUP_ERROR_COPY: Record<string, string> = {
 };
 const SSO_STEPUP_ERROR_FALLBACK = "Google verification didn't complete. Try again.";
 
-type MfaStep = "idle" | "qr" | "verify" | "codes";
+type MfaStep = "idle" | "confirm" | "qr" | "verify" | "codes";
 
 export default function SecurityPage() {
   const { user, login, refreshMe } = useAuth();
@@ -71,6 +79,20 @@ export default function SecurityPage() {
   const [pwdMsg, setPwdMsg] = useState("");
   const [pwdErr, setPwdErr] = useState("");
   const [savingPwd, setSavingPwd] = useState(false);
+
+  // ── MFA Setup ────────────────────────────────────────────────────────────
+  const [mfaStep, setMfaStep] = useState<MfaStep>("idle");
+  const [setupData, setSetupData] = useState<MfaSetupResponse | null>(null);
+  const [totpCode, setTotpCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+  const [codesSaved, setCodesSaved] = useState(false);
+  const [mfaMsg, setMfaMsg] = useState("");
+  const [mfaErr, setMfaErr] = useState("");
+  const [mfaLoading, setMfaLoading] = useState(false);
+  // BE-32. Re-authentication before a new authenticator secret is shown:
+  // the password, or a Google step-up proof for an account without one.
+  const [setupPassword, setSetupPassword] = useState("");
+  const [mfaStepupToken, setMfaStepupToken] = useState("");
 
   // SSO users (Google) start with `password_set=false`. They cannot
   // type a current password, so the first-time set requires the same
@@ -109,26 +131,48 @@ export default function SecurityPage() {
     const hash = window.location.hash;
     if (hash.startsWith("#stepup_token=")) {
       const token = hash.slice("#stepup_token=".length);
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- capture the step-up token from the URL fragment on mount before stripping it from history
-      if (token) setStepupToken(token);
+      let pendingAction: string | null = null;
+      try {
+        pendingAction = window.sessionStorage.getItem(PENDING_STEPUP_ACTION_KEY);
+        window.sessionStorage.removeItem(PENDING_STEPUP_ACTION_KEY);
+      } catch {
+        // sessionStorage unavailable: treat it as the password-set flow.
+      }
+      if (token && pendingAction === MFA_SETUP_STEPUP_ACTION) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- route a step-up proof issued for MFA setup to the setup form before stripping it from history
+        setMfaStepupToken(token);
+        setMfaStep("confirm");
+      } else if (token) {
+        setStepupToken(token);
+      }
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
     }
   }, []);
 
-  async function handleVerifyWithGoogle() {
-    setPwdErr(""); setStepupBusy(true);
+  async function handleVerifyWithGoogle(action: string = STEPUP_ACTION) {
+    const setErr = action === STEPUP_ACTION ? setPwdErr : setMfaErr;
+    setErr(""); setStepupBusy(true);
     try {
+      try {
+        if (action === STEPUP_ACTION) {
+          window.sessionStorage.removeItem(PENDING_STEPUP_ACTION_KEY);
+        } else {
+          window.sessionStorage.setItem(PENDING_STEPUP_ACTION_KEY, action);
+        }
+      } catch {
+        // Private mode: the proof then lands on the password-set flow.
+      }
       const data = await apiFetch<{ redirect_url: string }>(
         "/api/v1/auth/sso-stepup/initiate",
         {
           method: "POST",
-          body: JSON.stringify({ action: STEPUP_ACTION }),
+          body: JSON.stringify({ action }),
         },
       );
       // Full navigation, not router.push — Google must own the next page.
       window.location.href = data.redirect_url;
     } catch (err) {
-      setPwdErr(extractErrorMessage(err));
+      setErr(extractErrorMessage(err));
       setStepupBusy(false);
     }
   }
@@ -192,28 +236,32 @@ export default function SecurityPage() {
     finally { setSavingPwd(false); }
   }
 
-  // ── MFA Setup ────────────────────────────────────────────────────────────
-  const [mfaStep, setMfaStep] = useState<MfaStep>("idle");
-  const [setupData, setSetupData] = useState<MfaSetupResponse | null>(null);
-  const [totpCode, setTotpCode] = useState("");
-  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
-  const [codesSaved, setCodesSaved] = useState(false);
-  const [mfaMsg, setMfaMsg] = useState("");
-  const [mfaErr, setMfaErr] = useState("");
-  const [mfaLoading, setMfaLoading] = useState(false);
 
   // ── MFA Disable ──────────────────────────────────────────────────────────
   const [disablePassword, setDisablePassword] = useState("");
+  // BE-32. Turning MFA off, or minting new recovery codes, also takes a
+  // current authenticator code or an unused recovery code.
+  const [disableCode, setDisableCode] = useState("");
   const [disableErr, setDisableErr] = useState("");
   const [disabling, setDisabling] = useState(false);
   const [showDisable, setShowDisable] = useState(false);
 
   // ── Regenerate Codes ─────────────────────────────────────────────────────
   const [regenPassword, setRegenPassword] = useState("");
+  const [regenCode, setRegenCode] = useState("");
   const [regenErr, setRegenErr] = useState("");
   const [regenerating, setRegenerating] = useState(false);
   const [showRegen, setShowRegen] = useState(false);
   const [regenCodes, setRegenCodes] = useState<string[]>([]);
+
+  // ── Email-code fallback (BE-03) ──────────────────────────────────────────
+  // Off unless the user turns it on. Turning it on lowers protection, so it
+  // takes a current authenticator or recovery code; turning it off does not.
+  const [showFallbackOn, setShowFallbackOn] = useState(false);
+  const [fallbackCode, setFallbackCode] = useState("");
+  const [fallbackErr, setFallbackErr] = useState("");
+  const [fallbackMsg, setFallbackMsg] = useState("");
+  const [fallbackSaving, setFallbackSaving] = useState(false);
 
   // ── Copy-to-clipboard ────────────────────────────────────────────────────
   // One small bit of UI state tracks which payload was most recently
@@ -281,16 +329,34 @@ export default function SecurityPage() {
     finally { setSavingSession(false); }
   }
 
-  async function handleSetup() {
+  function handleStartSetup() {
+    setMfaErr(""); setMfaMsg(""); setSetupPassword("");
+    setMfaStep("confirm");
+  }
+
+  function handleCancelSetup() {
+    setMfaStep("idle"); setMfaErr(""); setSetupPassword(""); setMfaStepupToken("");
+  }
+
+  async function handleSetup(e: FormEvent) {
+    e.preventDefault();
     if (mfaLoading) return; // guard against double-submit on rapid clicks
     setMfaErr(""); setMfaLoading(true);
     try {
       const data = await apiFetch<MfaSetupResponse>("/api/v1/auth/mfa/setup", {
         method: "POST",
+        body: JSON.stringify(
+          passwordSet ? { current_password: setupPassword } : { stepup_token: mfaStepupToken },
+        ),
       });
+      setSetupPassword(""); setMfaStepupToken("");
       setSetupData(data);
       setMfaStep("qr");
-    } catch (err) { setMfaErr(mapMfaSetupError(err)); }
+    } catch (err) {
+      // A Google proof is single-use and may be spent: verify again.
+      if (!passwordSet) setMfaStepupToken("");
+      setMfaErr(mapMfaSetupError(err));
+    }
     finally { setMfaLoading(false); }
   }
 
@@ -359,18 +425,19 @@ export default function SecurityPage() {
   async function handleDisable(e: FormEvent) {
     e.preventDefault();
     if (disabling) return;
-    if (!disablePassword) {
-      setDisableErr("Enter your password to confirm.");
+    if (!disablePassword || !disableCode.trim()) {
+      setDisableErr("Enter your password and a code to confirm.");
       return;
     }
     setDisableErr(""); setDisabling(true);
     try {
       await apiFetch("/api/v1/auth/mfa/disable", {
         method: "POST",
-        body: JSON.stringify({ password: disablePassword }),
+        body: JSON.stringify({ password: disablePassword, mfa_code: disableCode.trim() }),
       });
       setShowDisable(false);
       setDisablePassword("");
+      setDisableCode("");
       setMfaMsg(
         "Two-factor authentication is off. Your account is now protected by your password only.",
       );
@@ -395,18 +462,19 @@ export default function SecurityPage() {
   async function handleRegenerate(e: FormEvent) {
     e.preventDefault();
     if (regenerating) return;
-    if (!regenPassword) {
-      setRegenErr("Enter your password to confirm.");
+    if (!regenPassword || !regenCode.trim()) {
+      setRegenErr("Enter your password and a code to confirm.");
       return;
     }
     setRegenErr(""); setRegenerating(true);
     try {
       const data = await apiFetch<MfaEnableResponse>("/api/v1/auth/mfa/recovery-codes", {
         method: "POST",
-        body: JSON.stringify({ password: regenPassword }),
+        body: JSON.stringify({ password: regenPassword, mfa_code: regenCode.trim() }),
       });
       setRegenCodes(data.recovery_codes);
       setRegenPassword("");
+      setRegenCode("");
     } catch (err) {
       // Preserve the typed password on error so the user can correct
       // and resubmit without re-typing.
@@ -415,7 +483,41 @@ export default function SecurityPage() {
     finally { setRegenerating(false); }
   }
 
+  async function saveEmailFallback(enabled: boolean, e?: FormEvent) {
+    e?.preventDefault();
+    if (fallbackSaving) return;
+    if (enabled && !fallbackCode.trim()) {
+      setFallbackErr("Enter a code to confirm.");
+      return;
+    }
+    setFallbackErr(""); setFallbackMsg(""); setFallbackSaving(true);
+    try {
+      await apiFetch("/api/v1/auth/mfa/email-fallback", {
+        method: "PUT",
+        body: JSON.stringify(
+          enabled ? { enabled: true, mfa_code: fallbackCode.trim() } : { enabled: false },
+        ),
+      });
+      setShowFallbackOn(false);
+      setFallbackCode("");
+      setFallbackMsg(enabled ? "Email codes are on." : "Email codes are off.");
+      // The setting is saved; a failed profile refresh only leaves the
+      // card showing the old state until the page reloads.
+      await refreshMe().catch(() => {
+        setFallbackMsg(
+          enabled
+            ? "Email codes are on. Reload the page to refresh your profile state."
+            : "Email codes are off. Reload the page to refresh your profile state.",
+        );
+      });
+    } catch (err) {
+      setFallbackErr(mapMfaEmailFallbackError(err));
+    }
+    finally { setFallbackSaving(false); }
+  }
+
   const mfaEnabled = user?.mfa_enabled ?? false;
+  const emailFallbackOn = user?.mfa_email_fallback ?? false;
 
   return (
     <SettingsLayout activeTab="/settings/security">
@@ -470,7 +572,7 @@ export default function SecurityPage() {
                     ) : (
                       <button
                         type="button"
-                        onClick={handleVerifyWithGoogle}
+                        onClick={() => handleVerifyWithGoogle()}
                         disabled={stepupBusy}
                         className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
                       >
@@ -575,17 +677,80 @@ export default function SecurityPage() {
                     Add an extra layer of security to your account by requiring a verification code when you sign in.
                   </p>
                   <button
-                    onClick={handleSetup}
-                    disabled={mfaLoading}
-                    aria-busy={mfaLoading}
-                    className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                    onClick={handleStartSetup}
+                    className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
                   >
-                    {mfaLoading && (
-                      <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                    )}
-                    {mfaLoading ? "Setting up..." : "Set Up Two-Factor Authentication"}
+                    Set Up Two-Factor Authentication
                   </button>
                 </div>
+              )}
+
+              {/* ── Step 0: Re-authenticate (BE-32) ───────────────────── */}
+              {!mfaEnabled && mfaStep === "confirm" && (
+                <form onSubmit={handleSetup} className="space-y-4" aria-busy={mfaLoading}>
+                  {passwordSet ? (
+                    <>
+                      <p className="text-sm text-text-muted">
+                        Confirm your password to set up two-factor authentication.
+                      </p>
+                      <div>
+                        <label htmlFor="mfa-setup-pwd" className={label}>Account password</label>
+                        <PasswordInput
+                          id="mfa-setup-pwd"
+                          required
+                          autoComplete="current-password"
+                          value={setupPassword}
+                          onChange={(e) => setSetupPassword(e.target.value)}
+                          className={`${input} max-w-md`}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-lg border border-border p-4 space-y-3">
+                      <p className="text-sm text-text-primary font-medium">
+                        Verify with Google to set up two-factor
+                      </p>
+                      <p className="text-xs text-text-muted">
+                        Confirm this is you by signing in with Google before we add an authenticator to your account.
+                      </p>
+                      {mfaStepupToken ? (
+                        <p className="text-xs text-success">
+                          Google verified. Start setup to continue.
+                        </p>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleVerifyWithGoogle(MFA_SETUP_STEPUP_ACTION)}
+                          disabled={stepupBusy}
+                          className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                        >
+                          {stepupBusy ? "Redirecting..." : "Verify with Google"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={handleCancelSetup}
+                      disabled={mfaLoading}
+                      className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={mfaLoading || (passwordSet ? !setupPassword : !mfaStepupToken)}
+                      aria-busy={mfaLoading}
+                      className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                    >
+                      {mfaLoading && (
+                        <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                      )}
+                      {mfaLoading ? "Setting up..." : "Start setup"}
+                    </button>
+                  </div>
+                </form>
               )}
 
               {/* ── Step 1: QR Code ───────────────────────────────────── */}
@@ -834,10 +999,25 @@ export default function SecurityPage() {
                           aria-invalid={regenErr ? true : undefined}
                         />
                       </div>
+                      <div>
+                        <label htmlFor="regen-code" className={label}>Authenticator or recovery code</label>
+                        <input
+                          id="regen-code"
+                          type="text"
+                          autoComplete="one-time-code"
+                          required
+                          maxLength={32}
+                          value={regenCode}
+                          onChange={(e) => setRegenCode(e.target.value)}
+                          className={`${input} max-w-md`}
+                          aria-describedby={regenErr ? "regen-err" : undefined}
+                          aria-invalid={regenErr ? true : undefined}
+                        />
+                      </div>
                       <div className="flex flex-col gap-2 sm:flex-row">
                         <button
                           type="button"
-                          onClick={() => { setShowRegen(false); setRegenPassword(""); setRegenErr(""); }}
+                          onClick={() => { setShowRegen(false); setRegenPassword(""); setRegenCode(""); setRegenErr(""); }}
                           disabled={regenerating}
                           className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
                         >
@@ -845,7 +1025,7 @@ export default function SecurityPage() {
                         </button>
                         <button
                           type="submit"
-                          disabled={regenerating || !regenPassword}
+                          disabled={regenerating || !regenPassword || !regenCode.trim()}
                           aria-busy={regenerating}
                           className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
                         >
@@ -926,7 +1106,7 @@ export default function SecurityPage() {
                     ) : (
                       <form onSubmit={handleDisable} className="space-y-3" aria-busy={disabling}>
                         <p className="text-sm text-text-primary font-medium">
-                          Confirm with your password to turn off two-factor.
+                          Confirm with your password and a code from your authenticator app, or a recovery code, to turn off two-factor.
                         </p>
                         <p className="text-xs text-text-muted">
                           Your account will be protected by your password only. You can turn it back on at any time.
@@ -948,10 +1128,25 @@ export default function SecurityPage() {
                             aria-invalid={disableErr ? true : undefined}
                           />
                         </div>
+                        <div>
+                          <label htmlFor="disable-code" className={label}>Authenticator or recovery code</label>
+                          <input
+                            id="disable-code"
+                            type="text"
+                            autoComplete="one-time-code"
+                            required
+                            maxLength={32}
+                            value={disableCode}
+                            onChange={(e) => setDisableCode(e.target.value)}
+                            className={`${input} max-w-md`}
+                            aria-describedby={disableErr ? "disable-err" : undefined}
+                            aria-invalid={disableErr ? true : undefined}
+                          />
+                        </div>
                         <div className="flex flex-col gap-2 sm:flex-row">
                           <button
                             type="button"
-                            onClick={() => { setShowDisable(false); setDisablePassword(""); setDisableErr(""); }}
+                            onClick={() => { setShowDisable(false); setDisablePassword(""); setDisableCode(""); setDisableErr(""); }}
                             disabled={disabling}
                             className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
                           >
@@ -959,7 +1154,7 @@ export default function SecurityPage() {
                           </button>
                           <button
                             type="submit"
-                            disabled={disabling || !disablePassword}
+                            disabled={disabling || !disablePassword || !disableCode.trim()}
                             aria-busy={disabling}
                             className={`${btnPrimary} !bg-danger hover:!bg-danger/80 w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
                           >
@@ -976,13 +1171,96 @@ export default function SecurityPage() {
               )}
             </div>
 
-            {/* ── Email Fallback Info ──────────────────────────────────── */}
+            {/* ── Email Fallback (BE-03) ───────────────────────────────── */}
             {mfaEnabled && mfaStep === "idle" && (
               <div className={`${card} p-6`}>
                 <h2 className={`mb-3 ${cardTitle}`}>Email fallback</h2>
-                <p className="text-sm text-text-muted">
-                  If you cannot access your authenticator app or recovery codes, a verification code can be sent to <span className="font-medium text-text-primary">{user?.email}</span>.
+                {fallbackMsg && (
+                  <div role="status" aria-live="polite" className={`mb-4 ${successCls}`}>
+                    {fallbackMsg}
+                  </div>
+                )}
+                <div className="mb-3 flex items-center gap-2">
+                  <div
+                    className={`h-2 w-2 rounded-full ${emailFallbackOn ? "bg-success" : "bg-border"}`}
+                  />
+                  <span className="text-sm font-medium text-text-primary">
+                    {emailFallbackOn ? "On" : "Off"}
+                  </span>
+                </div>
+                <p id="email-fallback-tradeoff" className="text-sm text-text-muted">
+                  If you lose your authenticator app and recovery codes, a sign-in code can be sent to <span className="font-medium text-text-primary">{user?.email}</span> instead. Anyone who gets into that mailbox could then sign in without your authenticator, so this stays off unless you turn it on. Email codes also stop working for 72 hours after a password reset by email.
                 </p>
+                {fallbackErr && (
+                  <div id="fallback-err" role="alert" aria-live="polite" className={`mt-4 ${errorCls}`}>
+                    {fallbackErr}
+                  </div>
+                )}
+                {emailFallbackOn ? (
+                  <button
+                    type="button"
+                    onClick={() => saveEmailFallback(false)}
+                    disabled={fallbackSaving}
+                    aria-busy={fallbackSaving}
+                    className={`${btnSecondary} mt-4 w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    {fallbackSaving ? "Turning off..." : "Turn off email codes"}
+                  </button>
+                ) : !showFallbackOn ? (
+                  <button
+                    type="button"
+                    onClick={() => { setShowFallbackOn(true); setFallbackErr(""); setFallbackMsg(""); }}
+                    className={`${btnSecondary} mt-4 w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    Turn on email codes
+                  </button>
+                ) : (
+                  <form
+                    onSubmit={(e) => saveEmailFallback(true, e)}
+                    className="mt-4 space-y-3 rounded-lg border border-border p-4"
+                    aria-busy={fallbackSaving}
+                  >
+                    <p className="text-sm text-text-primary font-medium">
+                      Confirm with a code from your authenticator app, or a recovery code, to turn on email codes.
+                    </p>
+                    <div>
+                      <label htmlFor="fallback-code" className={label}>Authenticator or recovery code</label>
+                      <input
+                        id="fallback-code"
+                        type="text"
+                        autoComplete="one-time-code"
+                        required
+                        maxLength={32}
+                        value={fallbackCode}
+                        onChange={(e) => setFallbackCode(e.target.value)}
+                        className={`${input} max-w-md`}
+                        aria-describedby={fallbackErr ? "fallback-err email-fallback-tradeoff" : "email-fallback-tradeoff"}
+                        aria-invalid={fallbackErr ? true : undefined}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={() => { setShowFallbackOn(false); setFallbackCode(""); setFallbackErr(""); }}
+                        disabled={fallbackSaving}
+                        className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={fallbackSaving || !fallbackCode.trim()}
+                        aria-busy={fallbackSaving}
+                        className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                      >
+                        {fallbackSaving && (
+                          <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                        )}
+                        {fallbackSaving ? "Turning on..." : "Turn on"}
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             )}
           </div>

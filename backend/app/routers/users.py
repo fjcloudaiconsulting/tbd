@@ -1,11 +1,14 @@
+import logging
 import re
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import state_db
 from app.auth.pat import require_interactive_session
+from app.auth.second_factor import require_second_factor
 from app.auth.stepup import consume_stepup, stepup_valid
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -19,8 +22,14 @@ from app.schemas.auth import (
     UserResponse,
 )
 from app.models.notification import NotificationCategory
+from app.schemas.email_address import NON_ASCII_EMAIL_DETAIL, is_ascii_email
 from app.schemas.user import PasswordChange, ProfileUpdate
-from app.security import create_email_verification_token, hash_password, verify_password
+from app.security import (
+    create_email_verification_token,
+    hash_password,
+    session_cutoff,
+    verify_password,
+)
 from app.services import audit_service, notification_service
 from app.services.email_service import send_verification_email
 from app.services.user_service import normalize_email
@@ -30,6 +39,12 @@ from app.services.notification_templates import (
     user_password_changed as _tpl_user_password_changed,
 )
 from app import logs
+
+logger = logging.getLogger(__name__)
+
+EMAIL_CHANGE_SECOND_FACTOR_DETAIL = (
+    "An authenticator or recovery code is required to change the email of an account with two-factor on"
+)
 
 
 def _request_id() -> str | None:
@@ -61,6 +76,7 @@ def _user_response(user: User) -> UserResponse:
         is_active=user.is_active,
         is_founder=user.is_founder,
         mfa_enabled=user.mfa_enabled,
+        mfa_email_fallback=user.mfa_email_fallback,
         password_set=user.password_set,
         onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
         allow_manual_balance_adjustment=user.organization.allow_manual_balance_adjustment,
@@ -116,6 +132,13 @@ async def update_profile(
     email_changing = (
         new_email_norm is not None and new_email_norm != normalize_email(current_user.email)
     )
+    # DB-01: a NEW address must be ASCII. Checked only on a change, so an
+    # account already stored under a non-ASCII address can still send it.
+    if email_changing and not is_ascii_email(new_email_norm):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=NON_ASCII_EMAIL_DETAIL,
+        )
     # Submitting your CURRENT address while a claim is live cancels the
     # claim. Without this the natural undo gesture silently does nothing and
     # the mistyped address stays clickable for its full 24 hours -- whoever
@@ -182,6 +205,21 @@ async def update_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Email already taken",
+            )
+        if current_user.mfa_enabled:
+            # BE-32. The email is where reset links and the MFA email-code
+            # fallback go, so on an MFA account moving it also takes the
+            # second factor. After the target check (a taken address must
+            # not spend a code) and before the step-up is spent: a refusal
+            # rolls back, so a spent recovery code is restored with it.
+            await require_second_factor(
+                db,
+                session_factory,
+                request=request,
+                user=current_user,
+                code=body.mfa_code,
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=EMAIL_CHANGE_SECOND_FACTOR_DETAIL,
             )
         if not current_user.password_set:
             # Step-up was validated above; only consume now that the
@@ -472,12 +510,21 @@ async def change_password(
                 detail="Step-up verification with Google is required to set a password",
             )
 
-    now = datetime.now(timezone.utc)
+    # Every session ends, this one included, as before: the settings page
+    # signs straight back in with the new password. The whole-second cutoff
+    # and the family revoke make that hold for a token minted earlier in this
+    # same second too (BE-04).
+    cutoff = session_cutoff()
     current_user.password_hash = hash_password(body.new_password)
     current_user.password_set = True
-    current_user.password_changed_at = now
-    current_user.sessions_invalidated_at = now
+    current_user.password_changed_at = cutoff
+    current_user.sessions_invalidated_at = cutoff
     await db.commit()
+    try:
+        await state_db.session_revoke_user(current_user.id)
+    except SQLAlchemyError:
+        # The cutoff above already refuses every earlier token.
+        logger.warning("users.change_password.revoke_user_failed", exc_info=True)
 
     # Audit AFTER the business commit succeeds. This row is the trigger
     # source for the user.password.changed security notification

@@ -40,7 +40,7 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--workers", "2", "--proxy-headers"]
     volumes: []  # Override dev volume mounts — immutable container
 
   # TBD-561: the MCP component with its OWN JWT and MFA recovery secrets
@@ -52,7 +52,7 @@ services:
       - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:?set API_TOKEN_HMAC_KEY in .env}
       - JWT_SECRET_KEY=${MCP_JWT_SECRET_KEY:?set MCP_JWT_SECRET_KEY in .env}
       - MFA_RECOVERY_HMAC_KEY=${MCP_MFA_RECOVERY_HMAC_KEY:?set MCP_MFA_RECOVERY_HMAC_KEY in .env}
-    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--proxy-headers"]
     volumes: []  # immutable container
 
   frontend:

@@ -26,7 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import User
-from app.rate_limit import get_client_ip
+from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.tag import (
     TagCreate,
     TagRename,
@@ -56,6 +57,15 @@ def _request_id() -> Optional[str]:
     return logs.CONTEXT.get({}).get("request_id")
 
 
+def _too_many_new_tags(exc: "tag_service.TagCreationLimited") -> HTTPException:
+    """The org's budget of new tags is spent (BE-18): 429 with Retry-After."""
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=exc.detail,
+        headers={"Retry-After": str(exc.retry_after)},
+    )
+
+
 @router.get("", response_model=list[TagResponse])
 async def list_tags(
     q: Optional[str] = Query(default=None, max_length=64),
@@ -75,7 +85,18 @@ async def list_tags(
     ]
 
 
-@router.post("", response_model=TagResponse, status_code=201)
+# BE-18. Creating a tag can contribute it to the shared dictionary, so both
+# routes that create tags carry a per-client limit, tunable per org or user
+# through the rate-limit override catalogue. The transaction route carries
+# ``{transaction_id}``, so it uses ``shared_limit``: a plain ``limit`` would
+# give every transaction its own budget.
+@router.post(
+    "",
+    response_model=TagResponse,
+    status_code=201,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("tags.create", "30/minute"))
 async def create_tag_endpoint(
     body: TagCreate,
     request: Request,
@@ -93,6 +114,9 @@ async def create_tag_endpoint(
         )
         await db.commit()
         await db.refresh(tag)
+    except tag_service.TagCreationLimited as exc:
+        await db.rollback()
+        raise _too_many_new_tags(exc)
     except ValidationError:
         await db.rollback()
         raise
@@ -231,6 +255,11 @@ async def suggest_endpoint(
 @transaction_tags_router.put(
     "/{transaction_id}/tags",
     response_model=list[TagResponse],
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.shared_limit(
+    dynamic_limit("tags.set_transaction_tags", "60/minute"),
+    scope="tags.set_transaction_tags",
 )
 async def replace_transaction_tags_endpoint(
     transaction_id: int,
@@ -258,6 +287,9 @@ async def replace_transaction_tags_endpoint(
     except NotFoundError:
         await db.rollback()
         raise HTTPException(status_code=404, detail="Transaction not found")
+    except tag_service.TagCreationLimited as exc:
+        await db.rollback()
+        raise _too_many_new_tags(exc)
     except (ValidationError, ConflictError):
         await db.rollback()
         raise

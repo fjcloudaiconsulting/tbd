@@ -1,4 +1,6 @@
 import datetime
+import re
+import unicodedata
 from decimal import Decimal
 
 import logging
@@ -35,7 +37,7 @@ from app.schemas.settings import (
     PlanningToolResponse,
     PlanningToolToggle,
 )
-from app.services import audit_service, billing_service, currency_service
+from app.services import audit_service, billing_service, currency_service, tag_service
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.feature_gate import (
     Feature,
@@ -89,6 +91,35 @@ _RESERVED_NAMESPACE_DETAIL = (
     "The 'feature.', 'orgpref.' and 'platform_ai.' settings namespaces are "
     "managed by dedicated endpoints, not this one"
 )
+
+# BE-19: casefolding is not enough. ``utf8mb4_0900_ai_ci`` is also ACCENT- and
+# width-insensitive and ignores control characters, so an accented
+# (U+00E9) or full-width (U+FF46) spelling of ``feature.reports`` matches the
+# stored ``feature.reports`` row too. Two layers:
+#   * ``_is_reserved_key`` folds the way the collation compares (NFKD, drop
+#     combining marks and control / format characters, casefold) before the
+#     prefix test, and is applied to the stored key a lookup matched as well.
+#   * New writes must be plain ASCII (``_WRITABLE_KEY``), where the collation
+#     equals casefold, so no new look-alike row can be created and the per-key
+#     validators below can compare casefolded keys exactly.
+# Existing rows with other spellings stay listable and deletable.
+_WRITABLE_KEY = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
+_WRITABLE_KEY_DETAIL = (
+    "Setting keys may contain only ASCII letters, digits, '_', '-' and '.' "
+    "(not at the start or end, and not doubled)"
+)
+
+
+def _fold_settings_key(key: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", key)
+        if not unicodedata.combining(c) and unicodedata.category(c) not in ("Cc", "Cf")
+    ).casefold()
+
+
+def _is_reserved_key(key: str) -> bool:
+    return _fold_settings_key(key).startswith(RESERVED_SETTINGS_PREFIX)
+
 
 # The allow-list behind PUT /settings/features/{feature}. Kept beside the
 # reserved-prefix note on purpose: these two constants are the whole reason an
@@ -157,16 +188,16 @@ async def list_settings(
     # switching Budgets off an admin would otherwise see a raw
     # ``orgpref.budgets = off`` row directly beneath the switch that wrote it.
     #
-    # ``.casefold()``: ``str.startswith`` is case-sensitive but the MySQL
-    # column collation is not, so a row stored as ``Orgpref.budgets`` is the
-    # same row to the database and must not leak through this filter. Same
-    # idiom as the two write guards above, which TBD-322 casefolded for the
-    # same reason — all three comparisons against this constant fold their
-    # input, and a fourth must too.
+    # ``_is_reserved_key``: ``str.startswith`` is case-sensitive but the MySQL
+    # column collation is not (nor accent- or width-sensitive, BE-19), so a
+    # row stored as ``Orgpref.budgets`` is the same row to the database and
+    # must not leak through this filter. Same fold as the guards in
+    # ``upsert_setting`` and ``delete_setting``: every comparison against
+    # this constant folds its input, and a new one must too.
     return [
         OrgSettingResponse(key=s.key, value=s.value)
         for s in result.scalars().all()
-        if not s.key.casefold().startswith(RESERVED_SETTINGS_PREFIX)
+        if not _is_reserved_key(s.key)
     ]
 
 
@@ -178,17 +209,25 @@ async def upsert_setting(
 ):
     _require_admin(current_user)
 
-    if body.key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
+    if _is_reserved_key(body.key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=_RESERVED_NAMESPACE_DETAIL,
         )
+    if len(body.key) > 100 or not _WRITABLE_KEY.fullmatch(body.key):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_WRITABLE_KEY_DETAIL,
+        )
+    # Casefolded for the per-key checks: ``Session_Lifetime_Days`` reaches the
+    # same row under the collation and must meet the same bounds.
+    key_cf = body.key.casefold()
 
     # Per-key bounds validation. Other org settings have no bounds
     # contract today; only the session-lifetime key actually drives
     # the session TTL, so an out-of-bounds write here would log
     # users out instantly or hand them a year-long session.
-    if body.key == "session_lifetime_days":
+    if key_cf == "session_lifetime_days":
         try:
             days = int(body.value)
         except (TypeError, ValueError):
@@ -205,7 +244,7 @@ async def upsert_setting(
     # Forecast build granularity is a closed enum (master|subcategory). The
     # service defends by falling back to master on garbage, but rejecting a
     # bad write here avoids a silently-ignored setting that confuses admins.
-    if body.key == FORECAST_INPUT_GRANULARITY_KEY:
+    if key_cf == FORECAST_INPUT_GRANULARITY_KEY:
         if body.value not in FORECAST_GRANULARITY_VALUES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -222,6 +261,12 @@ async def upsert_setting(
         )
     )
     setting = result.scalar_one_or_none()
+    if setting is not None and _is_reserved_key(setting.key):
+        # Defence in depth: the collation matched a reserved row.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_RESERVED_NAMESPACE_DETAIL,
+        )
 
     if setting:
         setting.value = body.value
@@ -230,6 +275,18 @@ async def upsert_setting(
             org_id=current_user.org_id, key=body.key, value=body.value
         )
         db.add(setting)
+
+    # BE-18: turning tag sharing off withdraws the org's contributions to the
+    # shared tag dictionary, in the same commit as the setting. The write is
+    # flushed first: its row lock is what a concurrent tag create waits on
+    # (``tag_service._share_tag_data_still_enabled``).
+    stops_tag_sharing = (
+        key_cf == tag_service.SHARE_TAG_DATA_KEY
+        and not tag_service.share_tag_data_value_enabled(body.value)
+    )
+    if stops_tag_sharing:
+        await db.flush()
+        await tag_service.withdraw_dictionary_contributions(db, org_id=current_user.org_id)
 
     try:
         await db.commit()
@@ -244,6 +301,11 @@ async def upsert_setting(
         )
         setting = result.scalar_one()
         setting.value = body.value
+        if stops_tag_sharing:
+            await db.flush()
+            await tag_service.withdraw_dictionary_contributions(
+                db, org_id=current_user.org_id
+            )
         await db.commit()
 
     await db.refresh(setting)
@@ -258,7 +320,7 @@ async def delete_setting(
 ):
     _require_admin(current_user)
 
-    if key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
+    if _is_reserved_key(key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=_RESERVED_NAMESPACE_DETAIL,
@@ -273,8 +335,19 @@ async def delete_setting(
     setting = result.scalar_one_or_none()
     if setting is None:
         raise HTTPException(status_code=404, detail="Setting not found")
+    if _is_reserved_key(setting.key):
+        # The collation matched a reserved row the input did not spell.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_RESERVED_NAMESPACE_DETAIL,
+        )
 
     await db.delete(setting)
+    # BE-18: no ``share_tag_data`` row means sharing is off. The DELETE is
+    # flushed before the withdrawal reads, so the row lock is held throughout.
+    if setting.key.casefold() == tag_service.SHARE_TAG_DATA_KEY:
+        await db.flush()
+        await tag_service.withdraw_dictionary_contributions(db, org_id=current_user.org_id)
     await db.commit()
 
 

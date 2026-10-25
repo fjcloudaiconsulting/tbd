@@ -18,6 +18,13 @@ from unittest.mock import patch
 import pytest
 
 
+def _handler(auth_mod):
+    """The route body under its ``@limiter.limit`` (BE-10). The limiter's
+    wrapper needs a real ``Request``; these tests drive the timeout wrapper
+    with ``request=None``, and the limit has its own tests."""
+    return auth_mod.refresh.__wrapped__
+
+
 class TestRefreshHandlerTimeout:
     @pytest.mark.asyncio
     async def test_refresh_returns_503_when_inner_impl_hangs(
@@ -54,7 +61,7 @@ class TestRefreshHandlerTimeout:
              patch.object(auth_mod, "_LOGGER") as logger_mock:
             start = time.monotonic()
             with pytest.raises(HTTPException) as exc_info:
-                await auth_mod.refresh(
+                await _handler(auth_mod)(
                     request=None,  # type: ignore[arg-type]
                     response=None,  # type: ignore[arg-type]
                     db=None,  # type: ignore[arg-type]
@@ -97,7 +104,7 @@ class TestRefreshHandlerTimeout:
             return sentinel
 
         with patch.object(auth_mod, "_refresh_impl", quick_success):
-            result = await auth_mod.refresh(
+            result = await _handler(auth_mod)(
                 request=None,  # type: ignore[arg-type]
                 response=None,  # type: ignore[arg-type]
                 db=None,  # type: ignore[arg-type]
@@ -129,7 +136,7 @@ class TestRefreshHandlerTimeout:
 
         with patch.object(auth_mod, "_refresh_impl", reject_401):
             with pytest.raises(HTTPException) as exc_info:
-                await auth_mod.refresh(
+                await _handler(auth_mod)(
                     request=None,  # type: ignore[arg-type]
                     response=None,  # type: ignore[arg-type]
                     db=None,  # type: ignore[arg-type]
@@ -163,7 +170,7 @@ class TestRefreshHandlerTimeout:
 
         with patch.object(auth_mod, "_refresh_impl", boom):
             with pytest.raises(ProgrammerBug) as exc_info:
-                await auth_mod.refresh(
+                await _handler(auth_mod)(
                     request=None,  # type: ignore[arg-type]
                     response=None,  # type: ignore[arg-type]
                     db=None,  # type: ignore[arg-type]

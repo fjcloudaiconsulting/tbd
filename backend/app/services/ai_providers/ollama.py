@@ -23,6 +23,7 @@ from typing import AsyncIterator, Optional
 import httpx
 
 from app.config import settings
+from app.services.ai_providers import capped_http
 from app.services.ai_providers.base import (
     AIProviderError,
     CapabilityNotSupported,
@@ -114,10 +115,16 @@ class OllamaAdapter:
                 # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
                 # finding as ``captcha.py``, TBD-328).
                 async with asyncio.timeout(VALIDATE_TIMEOUT_S):
-                    resp = await client.get(url, headers=headers)
+                    resp = await capped_http.request(
+                        client, "GET", url, headers=headers
+                    )
         except BlockedAddressError:
             return ValidateResult(
                 ok=False, error=BLOCKED_ADDRESS_VALIDATION_ERROR
+            )
+        except AIProviderError as exc:
+            return ValidateResult(
+                ok=False, error=capped_http.validation_error(exc)
             )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             return ValidateResult(
@@ -180,7 +187,9 @@ class OllamaAdapter:
         try:
             async with self._client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(url, headers=headers, json=body)
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=headers, json=body
+                    )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
@@ -238,8 +247,8 @@ class OllamaAdapter:
                 deadline = asyncio.get_running_loop().time() + EMBED_TIMEOUT_S
                 for text in texts:
                     async with asyncio.timeout_at(deadline):
-                        resp = await client.post(
-                            url,
+                        resp = await capped_http.request(
+                            client, "POST", url,
                             headers=headers,
                             json={"model": model, "prompt": text},
                         )
@@ -310,7 +319,9 @@ class OllamaAdapter:
         try:
             async with self._client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(url, headers=headers, json=body)
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=headers, json=body
+                    )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
@@ -377,7 +388,9 @@ class OllamaAdapter:
         try:
             async with self._client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(url, headers=headers, json=body)
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=headers, json=body
+                    )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
@@ -451,14 +464,16 @@ class OllamaAdapter:
         try:
             async with self._client(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
-                    "POST", url, headers=headers, json=body
+                    "POST", url,
+                    headers=capped_http.identity_headers(headers),
+                    json=body,
                 ) as resp:
                     if resp.status_code != 200:
                         raise AIProviderError(
                             code=f"provider_status_{resp.status_code}",
                             status_code=resp.status_code,
                         )
-                    async for line in resp.aiter_lines():
+                    async for line in capped_http.aiter_lines(resp):
                         if not line:
                             continue
                         try:

@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.303.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.303.0...v0.303.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **auth:** opt-in email MFA fallback with a reset lock, and bound audit growth (BE-03, BE-10) ([#1019](https://github.com/fjcloudaiconsulting/tbd/issues/1019)) ([a131686](https://github.com/fjcloudaiconsulting/tbd/commit/a131686a2d8724ceea079e2ab3e2b316b2690c2f))
+* **deps:** update dependency react-resizable to v4 ([#941](https://github.com/fjcloudaiconsulting/tbd/issues/941)) ([effc909](https://github.com/fjcloudaiconsulting/tbd/commit/effc9098a32f630d6e1770a6793523d58a214474))
+* **infra:** public-only post-deploy smoke and FORWARDED_ALLOW_IPS for the proxy trust list (INF-09, INF-01, INF-02) ([#1021](https://github.com/fjcloudaiconsulting/tbd/issues/1021)) ([1fe8ada](https://github.com/fjcloudaiconsulting/tbd/commit/1fe8adaf1cf21804f2c72b7d39800857c6efa7ac))
+* **security:** billing entitlements, default org names, email addresses and the tag dictionary (BE-05, DB-03, DB-01, BE-18) ([#1020](https://github.com/fjcloudaiconsulting/tbd/issues/1020)) ([9c6f814](https://github.com/fjcloudaiconsulting/tbd/commit/9c6f8148c955aa31b6b9c9865528ad8800416d6c))
+* **security:** bound AI provider responses and the CSP sink, tighten admin and webhook edges ([#1008](https://github.com/fjcloudaiconsulting/tbd/issues/1008)) ([7f47868](https://github.com/fjcloudaiconsulting/tbd/commit/7f4786814504caa13df734ceedaad5a0713d567d))
+* **security:** bound request inputs across imports, reports, loans, plans and search ([#1006](https://github.com/fjcloudaiconsulting/tbd/issues/1006)) ([2f36594](https://github.com/fjcloudaiconsulting/tbd/commit/2f36594975d9777bf56f1800d84f774b7e078142))
+* **security:** harden CSV export, one-time token URLs and apex CSP, add security.txt ([#1004](https://github.com/fjcloudaiconsulting/tbd/issues/1004)) ([47b8e9f](https://github.com/fjcloudaiconsulting/tbd/commit/47b8e9f0e175399e940fac893b96926d83d0ba57))
+* **security:** harden sign-in limits, session revocation, MFA changes and Google SSO ([#1009](https://github.com/fjcloudaiconsulting/tbd/issues/1009)) ([8b9c95a](https://github.com/fjcloudaiconsulting/tbd/commit/8b9c95a3ece9d89277928d26104ea88e1bb69c43))
+* **security:** tighten tenant billing, invitation, account and settings logic ([#1005](https://github.com/fjcloudaiconsulting/tbd/issues/1005)) ([772ab8e](https://github.com/fjcloudaiconsulting/tbd/commit/772ab8e3973fbc6ca2e9b307ab6719b407e24319))
+
+## [0.303.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.302.0...v0.303.0) (2026-10-23)
+
+
+### Features
+
+* **ai:** connect OpenRouter from AI providers in one click (TBD-632) ([#993](https://github.com/fjcloudaiconsulting/tbd/issues/993)) ([0139776](https://github.com/fjcloudaiconsulting/tbd/commit/0139776ceb1279a8e2ba5b8220b29d46914df2a8))
+* **ai:** connect OpenRouter with OAuth PKCE (TBD-632) ([#989](https://github.com/fjcloudaiconsulting/tbd/issues/989)) ([fac62b3](https://github.com/fjcloudaiconsulting/tbd/commit/fac62b3b99972c79da450803f261e49c78bc97bf))
+* **ai:** list the models a saved key can use, refuse routing to unlisted models (TBD-608) ([#984](https://github.com/fjcloudaiconsulting/tbd/issues/984)) ([1df16e4](https://github.com/fjcloudaiconsulting/tbd/commit/1df16e4fdc90a9889b5edffe954974fadc74fe06))
+* **ai:** pick the routing model from the key's model list (TBD-608) ([#987](https://github.com/fjcloudaiconsulting/tbd/issues/987)) ([81a40c9](https://github.com/fjcloudaiconsulting/tbd/commit/81a40c9712ae56a6e6f746270db4f4c8cc1d5a06))
+
+
+### Bug Fixes
+
+* **auth:** Google sign-in discards the password of an unverified account (TBD-651) ([#994](https://github.com/fjcloudaiconsulting/tbd/issues/994)) ([5b203bc](https://github.com/fjcloudaiconsulting/tbd/commit/5b203bcea7705831cd732a7a7402982ef4a98c93))
+* **deps:** bump Pillow to 13.0.0 and certifi to 2026.10.19 (TBD-652) ([#995](https://github.com/fjcloudaiconsulting/tbd/issues/995)) ([bfe2abf](https://github.com/fjcloudaiconsulting/tbd/commit/bfe2abfdfa5e4eb5bc5c8b3b79b1680d5530aea1))
+
 ## [0.302.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.301.0...v0.302.0) (2026-10-21)
 
 

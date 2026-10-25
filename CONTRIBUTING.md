@@ -258,6 +258,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 3. **Tokens issued.** Access token (15 min, response body) + refresh token (7 day, httpOnly cookie).
 4. **Silent refresh.** Frontend auto-refreshes via `POST /api/v1/auth/refresh` on 401.
 5. **Absolute session lifetime.** Sessions expire after `SESSION_LIFETIME_DAYS` (default 30) regardless of refresh activity.
+6. **Credential changes end sessions.** A password reset or change and a proven email change delete every session family of the user and write a cutoff at the next whole second, so no token minted before the change (even earlier in the same second) survives it; a sign-in in that second waits it out. Enabling or disabling MFA deletes every other session family and keeps the caller's (BE-04).
 
 ### SSO password security
 
@@ -270,15 +271,27 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 
 ### MFA
 
-- TOTP via authenticator app (Google Authenticator, Authy, 1Password).
-- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable).
-- Email fallback with 6-digit code (10-minute expiry).
+- TOTP via authenticator app (Google Authenticator, Authy, 1Password). A code is accepted once per user: its time step, and the two before it, are claimed in `used_tokens` (BE-26).
+- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable), spent with a compare-and-swap on the stored list.
+- Email fallback with 6-digit code (10-minute expiry). For an account with TOTP it is off until the user turns it on in `/settings/security` (`PUT /api/v1/auth/mfa/email-fallback`), which takes a current TOTP code or an unused recovery code; turning it off takes neither, and disabling MFA turns it off (BE-03). While it is off, `/mfa/email-code` mails nothing and `/mfa/email-verify` completes no sign-in. For 72 hours after a password reset through the emailed link (`users.password_reset_at`) both refuse even when it is on, so the next sign-in takes TOTP or a recovery code; an in-app password change does not open that window.
+- The 5-minute challenge token from the first leg carries a `jti`: it is claimed on success (single-use) and burned after 5 wrong codes, so the next try starts from the password.
 - TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY`).
-- Setup and disable via `/settings/security`.
+- Setup and disable via `/settings/security`. Setup asks for the password first (an account created with Google, `password_set=False`, uses a Google step-up for the `mfa_setup` action). Disabling MFA, regenerating recovery codes and changing the email of an MFA account also take a current TOTP code or an unused recovery code; wrong codes and passwords there draw from the per-account budgets below (BE-32).
 
 ### Rate limiting
 
-All limits are per client IP via slowapi. Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
+All limits are per client IP via slowapi, except `/auth/refresh`, which is per session (below). Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
+
+Failed sign-in attempts are also counted per account, beside the per-IP limits (BE-02, `backend/app/auth/attempts.py`), so a client spread over many addresses gets no larger budget:
+
+| Counter | Budget per 15 minutes | When full |
+|---------|-----------------------|-----------|
+| Wrong password, keyed on the login as typed (lower-cased), checked before the lookup | 10 | `/login` answers 429 with `Retry-After`, even for the right password |
+| Wrong password, keyed on the user id: `/login` under any spelling, and the password re-auth on the MFA settings routes | 10 | `/login` stops checking that account's password and answers the usual 401 (a 429 would show the login exists); re-auth answers 429. A rename or email change does not reopen it |
+| Wrong second factor (TOTP, recovery or email code), per user | 10 | every `/mfa/*` challenge leg answers 429 with `Retry-After` |
+| Wrong second factor, per challenge token | 5 | the challenge is burned: 401, sign in again |
+
+Only failures count. A success empties the account's window, a completed password reset empties its login window, and nothing locks permanently. The failure that fills an account's window writes one `auth.login.locked` or `auth.mfa.locked` audit row (for a real account only).
 
 | Endpoint | Limit |
 |----------|-------|
@@ -293,10 +306,15 @@ All limits are per client IP via slowapi. Counters live in the MySQL `rate_limit
 | `POST /api/v1/auth/mfa/email-code` | 3/minute |
 | `POST /api/v1/auth/mfa/email-verify` | 10/minute |
 | `POST /api/v1/auth/logout` | 120/minute |
+| `POST /api/v1/auth/refresh` | 30/minute per session family (the refresh cookie's `sid`); per IP when the cookie does not verify |
 | `POST /api/v1/auth/reset-password` | 10/minute |
 | `GET /api/v1/auth/google` | 60/minute |
 | `GET /api/v1/auth/google/callback` | 60/minute |
 | `GET /api/v1/auth/sso-stepup/callback` | 60/hour |
+| `POST /api/v1/orgs/invitations` | 20/hour, plus per-org caps of 20 pending and 50 created per day |
+| `POST /api/v1/tags` | 30/minute (BE-18: a new tag can feed the shared tag dictionary) |
+| `PUT /api/v1/transactions/{id}/tags` | 60/minute, one budget across all transactions (it creates missing tags) |
+| New tags, on any route (the two above and `POST /api/v1/transactions/bulk-update`) | 30 per org per minute, counted per tag created (`tag_service.TAG_CREATE_LIMIT`); the tag routes answer 429, bulk update skips the row |
 
 ⚠ This table is a reader's summary of the auth surface, not the inventory.
 The authoritative one is `backend/app/rate_limit_endpoint_catalogue.py`, and
@@ -312,17 +330,34 @@ renders bare JSON in the middle of a browser navigation. The anonymous
 `audit_events` writes those routes used to permit are bounded by suppressing
 the rows, not by the limits (TBD-353).
 
-⚠ That bounds **those three routes**, not the anonymous `audit_events` write
-surface as a whole. `POST /api/v1/security/csp-report` is still an open,
-unauthenticated writer at 20 rows per body × 60/minute = **1200 rows/min/IP**,
-and the `/admin/audit` and alerting exclusion its own docstring names as the
-mitigation does not exist. Tracked separately; do not describe the surface as
-bounded.
+⚠ That bounds **those three routes**. `POST /api/v1/security/csp-report`, the
+other anonymous `audit_events` writer, is bounded by what it keeps (BE-10): a
+report identical to one the same client network recorded in the last hour is
+not recorded again, every row of a request lands in one commit, and the sink
+records at most **50 rows per hour per client network** (IPv6 by /64) and
+**1000 rows per hour across all clients**. Once that budget is spent, a reserve
+still records one row per CSP directive per hour (unknown directives share one
+`other` slot), so a distributed flood cannot hide every genuine report. The
+counters live in `rate_limits`; when they are unreachable the sink records
+nothing. Every dropped report counts in the `tbd.security.csp_reports` metric
+by outcome (`duplicate`, `client_budget`, `global_budget`) and directive; alert
+on `global_budget`. URL fields lose their query string and fragment before
+they are stored (FE-03). The default `/admin/audit` view hides these rows
+(`include_csp=true` shows them, TBD-439). A scheduler job deletes these rows
+30 days after they were recorded (`services/scheduler/jobs/csp_audit_purge.py`,
+BE-10), in batches of 1000 with one short transaction each, and logs only the
+count; no other event type is purged.
 
-`POST /api/v1/auth/refresh` remains **unlimited**, deliberately (TBD-353): it
-writes no audit row for an anonymous caller, and a 429 there wedges the
-frontend's mount-path session restore into a permanent spinner whose only
-recovery — reload — re-issues the request. Tracked separately.
+`POST /api/v1/auth/refresh` is limited to **30 a minute per session** (BE-10).
+The key is the session family (`sid`) of the newest refresh cookie that
+verifies, which every rotation keeps, so one session has one budget wherever it
+calls from and sessions behind a shared address do not pool theirs. A request
+whose cookie is missing or does not verify (garbage, forged, expired, another
+token type) is bucketed per IP instead.
+⚠ The frontend does not back off on a 429 yet (TBD-353): a session past its
+budget, or a signed-out visitor on an address past the per-IP one, sees the
+mount-path restore spinner until the minute is over, then a reload recovers.
+Legitimate use stays far below 30 a minute.
 
 ### Public endpoints (no auth required)
 
@@ -368,7 +403,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `POST /api/v1/webhooks/mailgun` | HMAC signature-verified against the signing key on every call. Not open, just not bearer-authenticated. |
 | `POST /api/v1/oauth/token` | OAuth token endpoint (TBD-587). The credential is the authorization code plus its PKCE verifier, or a refresh token; an MCP client has no bearer token yet by construction. Limits are keyed on the credential, under a coarse per-IP ceiling. |
 
-The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable` and `mfa/recovery-codes` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
+The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable`, `mfa/recovery-codes` and `mfa/email-fallback` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
 
 This list is the authoritative one, and it is deliberately small and closed. Do not add to it without a security review. It is enforced automatically by `backend/tests/auth/test_public_route_allowlist.py`, which enumerates the real `app.main:app` and fails in both directions — a route that loses `Depends(get_current_user)` and a stale entry that no longer applies. Adding a route here without adding it to that test's `PUBLIC_ROUTES` literal (or the reverse) is a red build.
 
@@ -416,7 +451,8 @@ enumerates by *gate* rather than by path so those are covered.
 ⚠ **`require_interactive_session` is not an authorization gate.** It sits on many
 admin write routes (and on account and token routes outside `/api/v1/admin/`;
 the roster is `backend/tests/auth/test_interactive_session_enumeration.py`) and checks only that the caller used a browser session rather than
-a PAT — it authorizes nobody. A route carrying only that dependency is reachable
+a PAT — it authorizes nobody. Platform-wide writes carry it: plans, org
+subscriptions, announcements, broadcasts, features and overrides (BE-20). A route carrying only that dependency is reachable
 by every authenticated user.
 
 Enforced by `backend/tests/auth/test_admin_authorization_enumeration.py`, which

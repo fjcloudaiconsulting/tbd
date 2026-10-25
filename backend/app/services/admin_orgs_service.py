@@ -136,11 +136,15 @@ async def list_orgs(
         .outerjoin(Plan, Plan.id == Subscription.plan_id)
     )
     if q:
-        stmt = stmt.where(Organization.name.ilike(f"%{q}%"))
+        # BE-27: ``%`` / ``_`` in ``q`` are literal, not wildcards.
+        from app.services.admin_users_search_service import _normalize_like
+
+        name_like = Organization.name.ilike(f"%{_normalize_like(q)}%", escape="\\")
+        stmt = stmt.where(name_like)
 
     total_stmt = select(func.count()).select_from(Organization)
     if q:
-        total_stmt = total_stmt.where(Organization.name.ilike(f"%{q}%"))
+        total_stmt = total_stmt.where(name_like)
     total = (await db.scalar(total_stmt)) or 0
 
     order_by = resolve_order_by(

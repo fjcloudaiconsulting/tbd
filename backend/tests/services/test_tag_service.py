@@ -184,6 +184,26 @@ async def test_create_tag_succeeds_and_persists(db_session):
 
 
 @pytest.mark.asyncio
+async def test_list_org_tags_search_treats_like_wildcards_literally(db_session):
+    """BE-27: tag names never contain ``%`` or ``_``, so a search for them
+    matches nothing (it used to match every tag, or any one character)."""
+    org, user = await _make_org_user(db_session, "wild")
+    await db_session.commit()
+    for name in ("insurance", "travel"):
+        await tag_service.create_tag(
+            db_session, org_id=org.id, name=name, created_by_user_id=user.id
+        )
+    await db_session.commit()
+
+    async def names(q):
+        return [t.name_normalized for t, _ in await tag_service.list_org_tags(db_session, org.id, q=q)]
+
+    assert await names("%") == []
+    assert await names("tr_vel") == []
+    assert await names("ravel") == ["travel"]
+
+
+@pytest.mark.asyncio
 async def test_create_tag_collision_within_org_raises_conflict(db_session):
     org, user = await _make_org_user(db_session, "alpha")
     await db_session.commit()
@@ -453,23 +473,38 @@ async def test_suggest_skips_dictionary_when_share_disabled(db_session):
 @pytest.mark.asyncio
 async def test_suggest_dictionary_pass_honors_k_anonymity_floor(db_session):
     """With sharing on, dictionary entries below the floor (3) are NOT
-    surfaced. Only entries at-or-above the floor (or seeded) appear."""
+    surfaced. Only entries at-or-above the floor (or seeded) appear.
+
+    BE-18: the floor counts contributor rows of aged orgs, so the entries
+    get real contributors from orgs older than the minimum age."""
     org, _user = await _make_org_user(db_session, "alpha")
     await _enable_share_tag_data(db_session, org.id)
-    db_session.add_all([
-        TagDictionary(
-            name_normalized="below",
-            contributor_org_count=2,  # below floor of 3
-            usage_count=99,
-            is_seed=False,
-        ),
-        TagDictionary(
-            name_normalized="above",
-            contributor_org_count=3,  # at floor
-            usage_count=10,
-            is_seed=False,
-        ),
-    ])
+    old = datetime.datetime(2020, 1, 1)
+    contributors = []
+    for name in ("c1", "c2", "c3"):
+        c, _ = await _make_org_user(db_session, name)
+        c.created_at = old
+        contributors.append(c)
+    below = TagDictionary(
+        name_normalized="below",
+        contributor_org_count=2,  # below floor of 3
+        usage_count=99,
+        is_seed=False,
+    )
+    above = TagDictionary(
+        name_normalized="above",
+        contributor_org_count=3,  # at floor
+        usage_count=10,
+        is_seed=False,
+    )
+    db_session.add_all([below, above])
+    await db_session.flush()
+    for c in contributors[:2]:
+        db_session.add(TagDictionaryContributor(dictionary_tag_id=below.id,
+                                                contributor_org_id=c.id))
+    for c in contributors:
+        db_session.add(TagDictionaryContributor(dictionary_tag_id=above.id,
+                                                contributor_org_id=c.id))
     await db_session.commit()
 
     res = await tag_service.suggest_tags(

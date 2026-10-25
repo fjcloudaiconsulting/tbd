@@ -471,7 +471,7 @@ async def test_mfa_disable_writes_audit(session_factory):
     with TestClient(app) as client:
         res = client.post(
             "/api/v1/auth/mfa/disable",
-            json={"password": "starting-password-1"},
+            json={"password": "starting-password-1", "mfa_code": pyotp.TOTP(secret).now()},
         )
     assert res.status_code == 200, res.text
 
@@ -523,7 +523,7 @@ async def test_mfa_disable_wrong_password_writes_no_audit(session_factory):
     with TestClient(app) as client:
         res = client.post(
             "/api/v1/auth/mfa/disable",
-            json={"password": "wrong-password"},
+            json={"password": "wrong-password", "mfa_code": pyotp.TOTP(secret).now()},
         )
     assert res.status_code == 403, res.text
 

@@ -105,11 +105,17 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
+    # import router (BE-07): the three file-preview routes, no path params,
+    # so a plain ``limit`` each.
+    "import.ofx_preview",
+    "import.preview",
+    "import.tab_preview",
     # oauth router (TBD-587). The consent decision is a credential mint,
     # JWT + interactive session; no path param, so a plain ``limit``.
     "oauth.authorize",
     # org_members router. Backfilled by TBD-353: the decorator has
     # existed without a pattern, so no override for it could be stored.
+    "org_members.invite",  # BE-06, no path param: plain ``limit``
     "org_members.remove_member",
     # onboarding router
     "onboarding.complete",
@@ -122,6 +128,10 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # two are separately addressable.
     "reports.query",
     "reports.sankey_query",
+    # tags router (BE-18): the two routes that create tags. The transaction
+    # route carries ``{transaction_id}``, so it uses ``shared_limit``.
+    "tags.create",
+    "tags.set_transaction_tags",
     # users router
     "users.cancel_pending_email",
     "users.change_password",
@@ -150,6 +160,10 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.mfa_email_verify",
     "auth.mfa_recovery",
     "auth.mfa_verify",
+    # BE-10. Keyed on the refresh cookie's session family, not the IP (the
+    # decorator passes its own ``key_func``); a cookie that does not verify
+    # falls back to the per-IP key.
+    "auth.refresh",
     "auth.register",
     "auth.resend_verification_public",
     "auth.reset_password",

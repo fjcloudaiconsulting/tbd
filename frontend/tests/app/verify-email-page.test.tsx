@@ -17,8 +17,10 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
 }));
 vi.mock("@/components/auth/AuthProvider", () => ({ useAuth: () => ({ user: null }) }));
+// Reads the live URL, as Next.js does: once the page strips ?token= from the
+// address bar (FE-03), useSearchParams no longer returns it.
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams({ token: tokenParam }),
+  useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
 const b64url = (o: object) =>
@@ -39,11 +41,33 @@ beforeEach(() => {
   tokenParam = jwt({ sub: "1", email: "victim?>>@example.com", type: "email_verify" });
 });
 
+// Lands on the page from the email link carrying the current `tokenParam`.
+function renderPage() {
+  window.history.replaceState(null, "", `/verify-email?${new URLSearchParams({ token: tokenParam })}`);
+  return render(<VerifyEmailPage />);
+}
+
 async function reachForm() {
   apiFetchMock.mockRejectedValueOnce(required());
-  render(<VerifyEmailPage />);
+  renderPage();
   return screen.findByLabelText("Password");
 }
+
+describe("verify-email page, token in the URL (FE-03)", () => {
+  it("drops the token from the address bar before the auto-POST", async () => {
+    let urlAtPost = "";
+    apiFetchMock.mockImplementationOnce(async () => {
+      urlAtPost = window.location.href;
+      return { detail: "Email verified" };
+    });
+    renderPage();
+    await screen.findByText("Email verified!");
+    expect(bodies()).toEqual([{ token: tokenParam }]);
+    expect(urlAtPost).not.toContain("token=");
+    expect(window.location.pathname).toBe("/verify-email");
+    expect(window.location.search).toBe("");
+  });
+});
 
 describe("verify-email page, password confirmation", () => {
   it("password_required renders the field, not 'verified' and not a dead end", async () => {
@@ -147,7 +171,7 @@ describe("verify-email page, password confirmation", () => {
     [409, "That address is now in use."],
   ])("an initial %i is the final screen with no Password field", async (status, msg) => {
     apiFetchMock.mockRejectedValueOnce(new ApiResponseError(status, msg));
-    render(<VerifyEmailPage />);
+    renderPage();
     await screen.findByText(msg);
     expect(screen.queryByLabelText("Password")).toBeNull();
   });

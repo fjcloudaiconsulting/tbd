@@ -206,6 +206,23 @@ async def test_invitation_email_template(captured_send: list[dict[str, Any]]):
 
 
 @pytest.mark.asyncio
+async def test_invitation_subject_carries_no_inviter_text(captured_send: list[dict[str, Any]]):
+    """BE-06: the subject is the line a recipient trusts before opening the
+    message, so neither the inviter's name nor the org name reaches it."""
+    for inviter, org in (("Alice Doe", "Doe Household"), ("Bank Support", "Verify at evil")):
+        await email_service.send_invitation_email(
+            "guest@example.com",
+            inviter_name=inviter,
+            org_name=org,
+            accept_url="http://localhost/accept-invite?token=invtoken",
+        )
+    first, second = captured_send[0]["subject"], captured_send[1]["subject"]
+    assert first == second
+    for text in ("Alice", "Doe", "Bank", "Verify", "evil"):
+        assert text not in first
+
+
+@pytest.mark.asyncio
 async def test_trial_expiring_template_plural(captured_send: list[dict[str, Any]]):
     ok = await email_service.send_trial_expiring_email(
         "user@example.com", days_left=3, org_name="Doe Household"

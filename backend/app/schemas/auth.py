@@ -1,4 +1,7 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.schemas.display_name import check_display_name, reject_control_characters
+from app.schemas.email_address import reject_non_ascii_email
 
 # Single source of truth for username rules. Re-used by `RegisterRequest`
 # below and by the `/check-username` Query constraint so the two stay
@@ -32,6 +35,12 @@ class RegisterRequest(BaseModel):
     # POST with an unbounded payload. The field is treated as sensitive
     # by ``main.py`` 422 redaction (`_SENSITIVE_FIELD_NAMES`).
     captcha_token: str | None = Field(default=None, max_length=2048)
+
+    # BE-06: names reach other people's inboxes (see schemas/display_name.py).
+    _check_names = field_validator("first_name", "last_name")(check_display_name)
+    _check_org_name = field_validator("org_name")(reject_control_characters)
+    # DB-01: new addresses are ASCII only (see schemas/email_address.py).
+    _check_email = field_validator("email")(reject_non_ascii_email)
 
 
 class LoginRequest(BaseModel):
@@ -77,6 +86,9 @@ class UserResponse(BaseModel):
     # (default True so existing tokens/responses stay valid).
     is_founder: bool = True
     mfa_enabled: bool = False
+    # BE-03. Whether the emailed sign-in code may stand in for TOTP. Off by
+    # default; the security settings page reads it to render the toggle.
+    mfa_email_fallback: bool = False
     # Track E: org-level toggle for the "set balance directly" admin escape
     # hatch. Off by default; mirrors `billing_cycle_day` storage pattern
     # (column on `organizations`).
@@ -126,6 +138,14 @@ class VerifyEmailRequest(BaseModel):
 # ── MFA ─────────────────────────────────────────────────────────────────────
 
 
+class MfaSetupRequest(BaseModel):
+    # Re-authentication before a new authenticator secret is shown (BE-32):
+    # the password, or for an SSO account without one (``password_set=False``)
+    # a step-up proof issued for the ``mfa_setup`` action.
+    current_password: str | None = Field(default=None, max_length=128)
+    stepup_token: str | None = Field(default=None, max_length=128)
+
+
 class MfaSetupResponse(BaseModel):
     qr_code: str  # base64 PNG
     secret: str  # for manual entry
@@ -142,6 +162,15 @@ class MfaEnableResponse(BaseModel):
 
 class MfaDisableRequest(BaseModel):
     password: str = Field(max_length=128)
+    # A current TOTP code or an unused recovery code (BE-32).
+    mfa_code: str = Field(min_length=6, max_length=32)
+
+
+class MfaEmailFallbackRequest(BaseModel):
+    enabled: bool
+    # Turning the fallback on takes a current TOTP code or an unused recovery
+    # code (BE-03, as BE-32); turning it off takes none.
+    mfa_code: str | None = Field(default=None, min_length=6, max_length=32)
 
 
 class MfaVerifyRequest(BaseModel):
@@ -166,6 +195,8 @@ class MfaEmailVerifyRequest(BaseModel):
 
 class MfaRegenerateRequest(BaseModel):
     password: str = Field(max_length=128)
+    # A current TOTP code or an unused recovery code (BE-32).
+    mfa_code: str = Field(min_length=6, max_length=32)
 
 
 class StepUpInitiateRequest(BaseModel):

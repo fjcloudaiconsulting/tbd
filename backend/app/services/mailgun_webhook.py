@@ -18,6 +18,8 @@ for the exact contract. Key points that are load-bearing:
   ``==`` — a plain equality compare leaks timing information about how
   many leading bytes matched, which a patient attacker can use to forge
   a signature byte-by-byte.
+* Every malformed input is ``bad_signature``, never an exception: the
+  route is public, and an exception here is a 500 (BE-24).
 """
 
 import hashlib
@@ -51,8 +53,9 @@ def verify_signature(
     Returns one of:
       * ``"key_unset"`` — ``signing_key`` is empty. FAIL CLOSED: the
         feature is not configured, reject every payload (router → 404).
-      * ``"bad_signature"`` — ``timestamp`` is non-int / None, or the
-        HMAC does not match (router → 401).
+      * ``"bad_signature"`` — ``timestamp`` is non-int / None / not
+        finite, ``token`` or ``signature`` is not a string (or cannot be
+        encoded), or the HMAC does not match (router → 401).
       * ``"stale"`` — ``abs(now_ts - int(timestamp)) > tolerance_s``
         (past OR future beyond the skew window; router → 401).
       * ``"ok"`` — signature valid and fresh; proceed with processing.
@@ -63,25 +66,33 @@ def verify_signature(
         return VERIFY_KEY_UNSET
     try:
         ts = int(timestamp)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: a JSON ``Infinity`` or ``1e400`` timestamp.
         return VERIFY_BAD_SIGNATURE
     if abs(now_ts - ts) > tolerance_s:
         # Past OR future beyond the skew window — replay-mitigation
         # freshness gate (W1).
         return VERIFY_STALE
-    # A crafted body can make ``signature`` any JSON type; a non-str would
-    # raise TypeError in compare_digest below and surface as a 500 on this
-    # public endpoint (W2 says unauth input must be 4xx, never 5xx). Reject
-    # it as a bad signature here.
-    if not isinstance(signature, str):
+    # A crafted body can make ``signature`` / ``token`` any JSON type; a
+    # non-str would raise TypeError in compare_digest below and surface as a
+    # 500 on this public endpoint (W2 says unauth input must be 4xx, never
+    # 5xx). Reject it as a bad signature here.
+    if not isinstance(signature, str) or not isinstance(token, str):
+        return VERIFY_BAD_SIGNATURE
+    try:
+        message = f"{timestamp}{token}".encode()
+        # Bytes, not str: compare_digest raises on a non-ASCII str.
+        provided = signature.encode("ascii")
+    except UnicodeEncodeError:
+        # A lone surrogate in the token, or a non-ASCII signature.
         return VERIFY_BAD_SIGNATURE
     expected = hmac.new(
         signing_key.encode(),
-        f"{timestamp}{token}".encode(),
+        message,
         hashlib.sha256,
-    ).hexdigest()
+    ).hexdigest().encode()
     # Constant-time compare (W1) — MUST NOT use ``==``.
-    if hmac.compare_digest(expected, signature):
+    if hmac.compare_digest(expected, provided):
         return VERIFY_OK
     return VERIFY_BAD_SIGNATURE
 

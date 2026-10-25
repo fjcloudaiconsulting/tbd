@@ -21,6 +21,7 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from app.services.ai_providers import capped_http
 from app.services.ai_providers.base import (
     AIProviderError,
     EmbedResponse,
@@ -177,11 +178,15 @@ class AnthropicAdapter:
                 # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
                 # finding as ``captcha.py``, TBD-328).
                 async with asyncio.timeout(VALIDATE_TIMEOUT_S):
-                    resp = await client.get(
-                        MODELS_URL,
+                    resp = await capped_http.request(
+                        client, "GET", MODELS_URL,
                         headers=headers,
                         params={"limit": MODELS_PAGE_LIMIT},
                     )
+        except AIProviderError as exc:
+            return ValidateResult(
+                ok=False, error=capped_http.validation_error(exc)
+            )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             return ValidateResult(
                 ok=False, error=f"Network error: {type(exc).__name__}"
@@ -236,8 +241,8 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        MESSAGES_URL, headers=headers, json=body
+                    resp = await capped_http.request(
+                        client, "POST", MESSAGES_URL, headers=headers, json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -327,8 +332,8 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        MESSAGES_URL, headers=headers, json=body
+                    resp = await capped_http.request(
+                        client, "POST", MESSAGES_URL, headers=headers, json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -400,8 +405,8 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        MESSAGES_URL, headers=headers, json=body
+                    resp = await capped_http.request(
+                        client, "POST", MESSAGES_URL, headers=headers, json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -500,14 +505,16 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
-                    "POST", MESSAGES_URL, headers=headers, json=body
+                    "POST", MESSAGES_URL,
+                    headers=capped_http.identity_headers(headers),
+                    json=body,
                 ) as resp:
                     if resp.status_code != 200:
                         raise AIProviderError(
                             code=f"provider_status_{resp.status_code}",
                             status_code=resp.status_code,
                         )
-                    async for line in resp.aiter_lines():
+                    async for line in capped_http.aiter_lines(resp):
                         if not line or not line.startswith("data:"):
                             continue
                         data = line[len("data:"):].strip()

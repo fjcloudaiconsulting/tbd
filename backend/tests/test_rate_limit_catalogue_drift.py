@@ -94,6 +94,7 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("auth", "mfa_email_verify"): ("auth.mfa_email_verify", "10/minute"),
     ("auth", "mfa_recovery"): ("auth.mfa_recovery", "10/minute"),
     ("auth", "mfa_verify"): ("auth.mfa_verify", "10/minute"),
+    ("auth", "refresh"): ("auth.refresh", "30/minute"),  # per session family (BE-10)
     ("auth", "register"): ("auth.register", "5/hour"),
     ("auth", "resend_verification"): ("auth.resend_verification", "3/hour"),
     ("auth", "resend_verification_public"): (
@@ -106,6 +107,9 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("auth", "verify"): ("auth.verify", "120/minute"),
     ("auth", "verify_email"): ("auth.verify_email", "10/minute"),
     ("feedback", "submit_feedback"): ("feedback.submit", "5/hour"),
+    ("import_router", "preview_import"): ("import.preview", "30/minute"),
+    ("import_router", "preview_ofx_import"): ("import.ofx_preview", "30/minute"),
+    ("import_router", "preview_tab_import"): ("import.tab_preview", "30/minute"),
     ("oauth", "authorize_decision"): ("oauth.authorize", "30/hour"),
     ("oauth", "register_client"): ("oauth.register", "1000/hour"),
     ("oauth", "token_endpoint"): ("oauth.token", "600/minute"),
@@ -113,6 +117,7 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("onboarding", "restart_tour"): ("onboarding.restart_tour", "10/hour"),
     ("onboarding", "seed_demo"): ("onboarding.seed_demo", "3/hour"),
     ("org_members", "accept_invitation"): ("org_members.accept_invitation", "10/minute"),
+    ("org_members", "create_invitation"): ("org_members.invite", "20/hour"),
     ("org_members", "preview_invitation"): (
         "org_members.preview_invitation",
         "30/minute",
@@ -123,6 +128,11 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("reports", "run_query"): ("reports.query", "60/minute"),
     ("reports", "run_sankey_query"): ("reports.sankey_query", "60/minute"),
     ("security", "csp_report"): ("security.csp_report", "60/minute"),
+    ("tags", "create_tag_endpoint"): ("tags.create", "30/minute"),
+    ("tags", "replace_transaction_tags_endpoint"): (
+        "tags.set_transaction_tags",
+        "60/minute",
+    ),
     ("users", "cancel_pending_email"): ("users.cancel_pending_email", "10/hour"),
     ("users", "change_password"): ("users.change_password", "5/hour"),
     ("users", "update_profile"): ("users.update_profile", "5/hour"),

@@ -290,6 +290,22 @@ def _revoke_family(sid: str) -> list[str]:
         return _delete_family(c, sid)
 
 
+def _revoke_user(user_id: int, keep_sids: frozenset[str]) -> int:
+    with _engine.begin() as c:
+        # Locks every family row of the user, as each write does for its own
+        # family; at most _MAX_FAMILIES_PER_USER rows.
+        sids = [
+            sid
+            for sid in c.execute(
+                select(_F.c.sid).where(_F.c.user_id == user_id).with_for_update()
+            ).scalars().all()
+            if sid not in keep_sids
+        ]
+        if sids:
+            _drop_families(c, sids)
+    return len(sids)
+
+
 def _detect_reuse_and_revoke(jti: str, sid: str) -> tuple[str, int] | tuple[str]:
     with _engine.begin() as c:
         fam = _lock_family(c, sid)
@@ -373,6 +389,14 @@ async def session_rotate(
 async def session_revoke_family(sid: str) -> list[str]:
     """Delete the family and every member; returns the jtis (sorted)."""
     return await _aio(_revoke_family, sid)
+
+
+async def session_revoke_user(user_id: int, keep_sids: frozenset[str] = frozenset()) -> int:
+    """Delete every session family of ``user_id`` except ``keep_sids``;
+    returns how many went. Credential changes call it so no earlier refresh
+    cookie outlives them (BE-04). A concurrent rotation of a family either
+    commits first and is deleted with it, or finds it gone."""
+    return await _aio(_revoke_user, user_id, keep_sids)
 
 
 async def session_detect_reuse_and_revoke(jti: str, sid: str) -> tuple[str, int] | tuple[str]:

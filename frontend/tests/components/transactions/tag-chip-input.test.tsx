@@ -222,6 +222,25 @@ describe("TagChipInput", () => {
     expect(screen.getByTestId("tag-chip-insurance")).toBeTruthy();
   });
 
+  it("renders and commits a shared suggestion that carries no weight", async () => {
+    // BE-18: the API returns weight null for shared_dictionary suggestions.
+    const d = deferred<TagSuggestion[]>();
+    const fetcher: Fetcher = vi.fn().mockReturnValue(d.promise);
+    render(<Harness fetcher={fetcher} />);
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "gy" } });
+      await vi.advanceTimersByTimeAsync(15);
+      d.resolve([{ name: "gym", source: "shared_dictionary", weight: null }]);
+    });
+    const option = await screen.findByRole("option", { name: /gym/ });
+    expect(option.textContent).toContain("suggested");
+    await act(async () => {
+      fireEvent.mouseDown(option);
+    });
+    expect(screen.getByTestId("tag-chip-gym")).toBeTruthy();
+  });
+
   it("announces suggestion count to the aria-live region", async () => {
     const d = deferred<TagSuggestion[]>();
     const fetcher: Fetcher = vi.fn().mockReturnValue(d.promise);

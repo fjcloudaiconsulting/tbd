@@ -7,6 +7,8 @@ POST /api/v1/webhooks/mailgun — covers the required matrix (spec
 - invalid signature → 401 (no write); missing signature fields → 400;
 - unset signing key → 404 (fail closed);
 - oversized content-length → dropped (413);
+- chunked body past the cap → 413 without being read in full (BE-13);
+  chunked body within the cap → processed;
 - out-of-order: ``complained`` then late ``delivered`` stays ``complained``;
 - ``bounced_temporary`` then ``delivered`` → ``delivered``;
 - duplicate identical event → no-op (idempotent);
@@ -273,6 +275,60 @@ async def test_oversized_content_length_dropped(client):
     assert resp.status_code == 413
 
 
+class _ChunkedBody:
+    """A request body sent chunked (no Content-Length) that fails the test
+    if the route asks for another chunk once it holds more than ``cap``
+    bytes, so an over-cap body can never have been read in full."""
+
+    def __init__(self, body: bytes, cap: int, chunk: int = 16 * 1024) -> None:
+        self.body, self.cap, self.chunk, self.sent = body, cap, chunk, 0
+
+    async def __aiter__(self):
+        for start in range(0, len(self.body), self.chunk):
+            if self.sent > self.cap:
+                raise AssertionError(f"body read past the {self.cap}-byte cap")
+            piece = self.body[start:start + self.chunk]
+            self.sent += len(piece)
+            yield piece
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_over_the_cap_is_413_unread(client, session_factory):
+    # No Content-Length, so only the running count can stop it. The bytes
+    # before the cap alone would be a valid signed event.
+    bid, rid = await _seed(session_factory)
+    cap = webhooks_module._MAX_BODY_BYTES
+    event = json.dumps(_body(_event_data(broadcast_id=str(bid)))).encode()
+    body = _ChunkedBody(event + b" " * (2 * cap), cap)
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun",
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+    assert "content-length" not in resp.request.headers
+    assert resp.status_code == 413
+    assert resp.content == b""
+    assert cap < body.sent <= cap + body.chunk
+    assert await _status(session_factory, rid) is None
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_within_the_cap_is_processed(client, session_factory):
+    bid, rid = await _seed(session_factory)
+    cap = webhooks_module._MAX_BODY_BYTES
+    event = json.dumps(_body(_event_data(broadcast_id=str(bid)))).encode()
+    body = _ChunkedBody(event + b" " * (cap - len(event)), cap)
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun",
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+    assert "content-length" not in resp.request.headers
+    assert resp.status_code == 200
+    assert body.sent == cap
+    assert await _status(session_factory, rid) == "delivered"
+
+
 @pytest.mark.asyncio
 async def test_out_of_order_complained_then_delivered_stays(
     client, session_factory
@@ -468,3 +524,70 @@ async def test_replay_marker_outlives_a_future_timestamp_window(client, session_
     assert resp.status_code == 200
     left = seconds_until(state_db._U.c.expires_at, state_db._U.c.scope == "mailgun_webhook")
     assert left >= 2 * tol
+
+
+# ── BE-24: malformed values answer 4xx / 200-drop, never 500 ────────────
+
+
+def _raw(body: dict) -> bytes:
+    # allow_nan so the NaN / Infinity constants reach the wire as such.
+    return json.dumps(body, allow_nan=True).encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("constant", [float("inf"), float("-inf"), float("nan")])
+async def test_non_json_constants_are_400(client, constant):
+    body = _body(_event_data())
+    body["signature"]["timestamp"] = constant
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun",
+        content=_raw(body),
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,raw_value",
+    [
+        ("timestamp", "1e400"),                 # parses to a float infinity
+        ("signature", '"\\u00e9\\u00e9"'),       # non-ASCII signature
+        ("signature", '"\\ud800"'),             # lone surrogate signature
+        ("token", '"\\ud800tok"'),              # lone surrogate token
+        ("token", "123"),                       # non-string token
+    ],
+)
+async def test_malformed_signature_fields_are_401(client, session_factory, field, raw_value):
+    body = _body(_event_data())
+    marker = "__BE24__"
+    body["signature"][field] = marker
+    raw = json.dumps(body).replace(f'"{marker}"', raw_value).encode()
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun", content=raw, headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_verified_event_with_overflowing_broadcast_id_is_dropped(client, session_factory):
+    ed = _event_data(event="delivered")
+    ed["user-variables"]["broadcast_id"] = "__BID__"
+    raw = json.dumps(_body(ed)).replace('"__BID__"', "1e400").encode()
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun", content=raw, headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_ts", [1e300, "nan", "inf", -1e20])
+async def test_verified_event_with_unusable_event_time_uses_now(
+    client, session_factory, event_ts
+):
+    bid, rid = await _seed(session_factory)
+    ed = _event_data(event="delivered", broadcast_id=str(bid))
+    ed["timestamp"] = event_ts
+    resp = await client.post("/api/v1/webhooks/mailgun", json=_body(ed))
+    assert resp.status_code == 200
+    assert await _status(session_factory, rid) == "delivered"

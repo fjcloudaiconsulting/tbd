@@ -1,5 +1,4 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import ts from "typescript";
 import { describe, it, expect } from "vitest";
@@ -44,16 +43,15 @@ import { describe, it, expect } from "vitest";
  * * ``isAnimationActive={true}`` or the bare shorthand: **rejected.** Both
  *   mean literal ``true``, which overrides ``"auto"`` and animates regardless
  *   of the user's preference.
- * * ``isAnimationActive={false}``: **rejected since TBD-437, except at the
- *   exact sites in ``HARD_OFF_EXCEPTIONS``.** TBD-382 turned animation off
- *   for every report widget "for consistency", removing motion for users who
- *   never opted out, and TBD-428's version of this gate allowed it. For Bar,
- *   Area and Pie, ``"auto"`` handles reduced motion, so ``false`` only
- *   subtracts. ⚠ That is NOT true of recharts 3.8.1's ``<Line>``: it gates its
- *   stroke-dash override on the raw prop, so under reduced motion ``"auto"``
- *   draws a stale, partial stroke (line-geometry.test.tsx). The four app Lines
- *   therefore stay hard-off until the recharts bump (TBD-528), and the
- *   version tripwire below fails the day recharts moves.
+ * * ``isAnimationActive={false}``: **rejected since TBD-437.** TBD-382 turned
+ *   animation off for every report widget "for consistency", removing motion
+ *   for users who never opted out, and TBD-428's version of this gate allowed
+ *   it. ``"auto"`` handles reduced motion, so ``false`` only subtracts. The
+ *   app's four ``<Line>`` sites were the last exception: recharts 3.8.1 gated
+ *   a Line's stroke-dash override on the raw prop, so under reduced motion
+ *   ``"auto"`` drew a stale, partial stroke. 3.9.0 fixed it, and since the
+ *   bump (TBD-528) line-geometry.test.tsx proves the app's Lines draw whole
+ *   strokes on ``"auto"``.
  * * A **computed** value (``{shouldAnimate}``, a shorthand
  *   ``{ isAnimationActive }``, a non-literal computed key spread onto an
  *   element): rejected with a different message. It is refused rather than
@@ -66,9 +64,9 @@ import { describe, it, expect } from "vitest";
  *   ``animationDuration={220}``**, the ``chart-entrance`` motion token in
  *   ``docs/design/DESIGN.json``. Matched by IMPORT from ``"recharts"`` or a
  *   ``recharts/*`` deep import, so an alias or a namespace import cannot hide
- *   one. Without it a mark runs recharts' 1500ms default. The hard-off Lines
- *   are exempt; marks that predate this fence and set no duration are listed
- *   in ``NO_DURATION_BASELINE`` with exact counts.
+ *   one. Without it a mark runs recharts' 1500ms default. Marks that predate
+ *   this fence and set no duration are listed in ``NO_DURATION_BASELINE``
+ *   with exact counts.
  * * **Every nivo CHART component sets literal ``animate={false}``**, matched
  *   by IMPORT, not by the name at the call site. ``@nivo/core@0.99`` passes
  *   ``immediate: !animate`` to react-spring and never reads
@@ -338,21 +336,6 @@ const isNivo = (m: string) => m.startsWith("@nivo/");
 const RECHARTS_MARKS = new Set(["Bar", "Line", "Area", "Pie"]);
 
 /**
- * The ONLY recharts marks allowed ``isAnimationActive={false}``: the app's
- * four ``<Line>`` sites, hard-off because recharts 3.8.1 draws a stale,
- * partial stroke under reduced motion when a Line is left on ``"auto"``
- * (TBD-528; fenced behaviourally by line-geometry.test.tsx). Compared EXACTLY,
- * in both directions: a fifth site fails, and so does removing one of these.
- */
-const HARD_OFF_EXCEPTIONS = [
-  "components/reports/widgets/LineWidgetChart.tsx <Line>",
-  "components/reports/widgets/SparklineWidgetChart.tsx <Line>",
-  "components/scenarios/ComparisonView.tsx <Line>",
-  "components/scenarios/ProjectionChart.tsx <Line>",
-];
-const RECHARTS_WITH_LINE_DEFECT = "3.8.1";
-
-/**
  * Marks that predate TBD-437, set no ``animationDuration``, and so run
  * recharts' 1500ms default. The architect ruling named the report and
  * scenario marks only, so these were recorded rather than silently re-timed.
@@ -473,7 +456,7 @@ describe("TBD-428: no chart forces animation on past prefers-reduced-motion", ()
     ).toEqual([]);
   });
 
-  it("TBD-437: isAnimationActive={false} appears on exactly the TBD-528 Line sites", () => {
+  it("TBD-437: no call site sets isAnimationActive to a literal false", () => {
     const falses = offences.filter((o) => o.kind === "literal-false");
     const labels = falses.map((o) => {
       const m = markAt(o.file, o.elementPos);
@@ -483,34 +466,15 @@ describe("TBD-428: no chart forces animation on past prefers-reduced-motion", ()
     });
 
     expect(
-      [...labels].sort(),
+      labels,
       "isAnimationActive={false} removes chart motion for every user, " +
-        "including the ones who never asked for reduced motion; for Bar, Area " +
-        "and Pie recharts' \"auto\" default already skips it for those who did. " +
+        "including the ones who never asked for reduced motion; recharts' " +
+        "\"auto\" default already skips it for those who did. " +
         `Drop the prop and set animationDuration={${CHART_ENTRANCE_MS}} (${TOKEN_CITE}). ` +
-        "The only exceptions are the four <Line> sites in HARD_OFF_EXCEPTIONS " +
-        "(recharts 3.8.1 Line defect, TBD-528). If you removed one, recharts was " +
-        "bumped past the defect: delete it from the list too.\n" +
+        "If a recharts defect forces a mark off, fence it behaviourally first " +
+        "(line-geometry.test.tsx, TBD-528).\n" +
         falses.map((o, i) => `${labels[i]} (line ${o.line})`).join("\n"),
-    ).toEqual([...HARD_OFF_EXCEPTIONS].sort());
-  });
-
-  it(`TBD-528 tripwire: the hard-off Lines expire when recharts leaves ${RECHARTS_WITH_LINE_DEFECT}`, () => {
-    const pkg = createRequire(path.join(FRONTEND_ROOT, "package.json")).resolve(
-      "recharts/package.json",
-    );
-    const version = JSON.parse(readFileSync(pkg, "utf8")).version as string;
-    if (HARD_OFF_EXCEPTIONS.length === 0) return;
-    expect(
-      version,
-      `recharts is no longer ${RECHARTS_WITH_LINE_DEFECT}, so the reason for ` +
-        "HARD_OFF_EXCEPTIONS may be gone. Re-run " +
-        "tests/components/charts/line-geometry.test.tsx with the four Lines on " +
-        `"auto" (animationDuration={${CHART_ENTRANCE_MS}}, no isAnimationActive). ` +
-        "Since 3.9.0 the dash lives in LineDrawShape and is applied only while " +
-        "visibleLength is set; 3.10.1 measured clean. If it is green, delete the " +
-        "exceptions and move the Lines to the house duration (TBD-528).",
-    ).toBe(RECHARTS_WITH_LINE_DEFECT);
+    ).toEqual([]);
   });
 
   it("no call site computes isAnimationActive without a behavioural fence", () => {
@@ -680,15 +644,10 @@ describe("TBD-437: every recharts mark sets the chart-entrance duration", () => 
   });
 
   it(`every Bar / Line / Area / Pie sets animationDuration={${CHART_ENTRANCE_MS}}`, () => {
-    const hardOff = new Set(HARD_OFF_EXCEPTIONS);
     const wrong: string[] = [];
     const missing: Record<string, string[]> = {};
     for (const m of rechartsMarks) {
       const where = `${rel(m.file)}:${m.line} <${m.imported}>`;
-      const off = literalAttr(m.attrs, "isAnimationActive").value?.kind === ts.SyntaxKind.FalseKeyword;
-      // The hard-off Lines never animate, so a duration would be dead code.
-      // Which marks may be hard-off is policed by the exception test above.
-      if (off && hardOff.has(markLabel(m))) continue;
       const verdict = durationVerdict(m.attrs);
       if (verdict === "missing") (missing[rel(m.file)] ??= []).push(where);
       else if (verdict === "wrong") wrong.push(where);
