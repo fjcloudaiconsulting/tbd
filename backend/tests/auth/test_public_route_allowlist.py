@@ -198,7 +198,13 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # The invitee has no account yet, so there is no credential to
         # present. Gated by a signed, 7-day, email-bound invitation JWT;
         # every failure mode returns one uniform 410 so the response cannot
-        # distinguish "not yours" from "does not exist".
+        # distinguish "not yours" from "does not exist". TBD-738: the JWT
+        # travels in the POST body, never in the URL.
+        ("POST", "/api/v1/orgs/invitations/preview"),
+        # DEPRECATED (TBD-738), one release only: the same preview with the
+        # JWT in the query string, kept while a frontend that still calls it
+        # may be deployed. Same credential, same uniform 410, and the same
+        # rate-limit bucket as the POST. Remove with the route.
         ("GET", "/api/v1/orgs/invitations/preview"),
         # Creates the account, so it necessarily runs before the caller has
         # one. The signed invitation JWT is the credential: ``org_id`` and
@@ -428,14 +434,14 @@ def test_p6_allowlist_literal_is_the_expected_size():
     The count is asserted separately from the set so a diff that quietly
     reshapes the literal cannot land without touching this number.
     """
-    assert len(PUBLIC_ROUTES) == 30, (
-        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 30. If a "
+    assert len(PUBLIC_ROUTES) == 31, (
+        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 31. If a "
         "route was legitimately added to or removed from the public surface, "
         "update this number, CONTRIBUTING.md, and record the security review."
     )
     # Deduped count must match too: a duplicated (method, path) line would
     # otherwise inflate the literal while the comparison set stayed the same.
-    assert len(_PUBLIC_ROUTE_SET) == 30, (
+    assert len(_PUBLIC_ROUTE_SET) == 31, (
         "PUBLIC_ROUTES contains duplicate entries: "
         f"{sorted({e for e in PUBLIC_ROUTES if PUBLIC_ROUTES.count(e) > 1})}"
     )

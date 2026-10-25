@@ -122,6 +122,12 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
         "org_members.preview_invitation",
         "30/minute",
     ),
+    # TBD-738: the deprecated GET shape, one release only; shares the POST's
+    # bucket (``shared_limit`` on the same scope).
+    ("org_members", "preview_invitation_by_query"): (
+        "org_members.preview_invitation",
+        "30/minute",
+    ),
     ("org_members", "remove_member"): ("org_members.remove_member", "30/minute"),
     ("orgs", "rename_org_endpoint"): ("orgs.rename", "10/hour"),
     ("public_stats", "founder_count"): ("public_stats.founder_count", "60/minute"),
