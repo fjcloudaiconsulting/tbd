@@ -20,7 +20,6 @@ No module here may cause network egress (fenced by
 """
 from __future__ import annotations
 
-import dataclasses
 import datetime
 from typing import Literal
 
@@ -234,7 +233,7 @@ async def _budget_present(ctx: ToolContext, budget: Budget, args, changes: list[
     return Preview(
         summary=f"Change the amount of budget {budget.id} from {amount.before} to {amount.after}"
         + (f" {currency}" if currency else ""),
-        changes=[dataclasses.replace(amount, currency=currency)],
+        changes=[Change("budgets", budget.id, "amount", amount.before, amount.after, currency)],
         context={"category_name": category_name, "period_start": budget.period_start.isoformat()},
     )
 
@@ -395,8 +394,8 @@ register(route_tool(
 # ``update_transaction`` would write beyond the row or silently ignore:
 # a description edit on a recurring row (it renames the template and every
 # pending sibling), clearing a SETTLED row's settlement date (the service keeps
-# it), a date pair out of order and a skipped occurrence's date (both refused
-# at execute). A transfer leg is fine: none of these fields is mirrored to the
+# it), and a date pair out of order or a skipped occurrence's date (which the
+# service refuses only at execute). A transfer leg is fine: none of these fields is mirrored to the
 # partner, and the balance revert/apply on its own account nets to zero.
 
 async def _tx_update_check(ctx: ToolContext, tx: Transaction, args) -> None:
