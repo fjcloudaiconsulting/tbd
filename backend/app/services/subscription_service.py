@@ -243,7 +243,8 @@ async def enforce_user_limit(db: AsyncSession, org_id: int) -> None:
     enforce before billing is live is an owner decision.
 
     The org row is locked first so two concurrent accepts cannot both take
-    the last seat.
+    the last seat. A caller that also locks invitation rows takes this lock
+    before them (``invitation_service`` lock order, TBD-727).
     """
     if not settings.billing_ui_enabled:
         return
