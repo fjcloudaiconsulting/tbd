@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -31,6 +31,7 @@ from app.deps import get_current_user
 from app.models import Base
 from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
+from app.models.transaction import Transaction
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.import_router import MAX_UPLOAD_BYTES
@@ -233,6 +234,31 @@ def _confirm_row(n, description="Groceries"):
         "row_number": n, "date": "2026-04-06", "description": description,
         "amount": "1.00", "type": "expense", "skip": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_repeated_confirm_with_one_key_is_replayed(session_factory):
+    """TBD-737: the second POST with the same key imports nothing new."""
+    seed = await _seed(session_factory)
+    app = _make_app(session_factory, user_id=seed["user_id"])
+    rows = [dict(_confirm_row(n), skip=False) for n in (1, 2)]
+    payload = {
+        "account_id": seed["account_id"], "default_category_id": 1,
+        "file_name": "bank.csv", "source_format": "csv", "rows": rows,
+        "idempotency_key": "0f2d6c1e-5b7a-4c3e-9d8f-112233445566",
+    }
+    with TestClient(app) as client:
+        first = client.post("/api/v1/import/confirm", json=payload)
+        second = client.post("/api/v1/import/confirm", json=payload)
+    assert first.status_code == second.status_code == 200
+    assert first.json()["imported_count"] == 2 and first.json()["replayed"] is False
+    assert second.json() == {**first.json(), "replayed": True}
+    async with session_factory() as db:
+        count = await db.scalar(
+            select(func.count()).select_from(Transaction)
+            .where(Transaction.org_id == seed["org_id"])
+        )
+    assert count == 2
 
 
 @pytest.mark.asyncio
