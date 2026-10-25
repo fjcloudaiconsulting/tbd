@@ -34,7 +34,8 @@ from app.models.category import Category
 from app.models.recurring import RecurringTransaction
 from app.models.scenario import Scenario, ScenarioType
 from app.models.user import User
-from app.rate_limit import get_client_ip
+from app.rate_limit import get_client_ip, limiter, user_rate_limit_key
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.scenario import (
     COMPARE_MAX_SCENARIOS,
     CompareRequest,
@@ -51,6 +52,7 @@ from app.services.scenario_engine import (
     SimulationRequest,
     build_world_state,
     get_engine,
+    simulate_off_loop,
 )
 from app.services.scenario_engine_ai import run_ai_simulation
 
@@ -231,9 +233,20 @@ async def delete_scenario(
     await db.commit()
 
 
+# TBD-726: both engine routes are limited per user, not per address
+# (``user_rate_limit_key``). Generous for interactive use: the editor
+# re-simulates on a debounced save, about one call a second at most, and a
+# compare is an explicit click. ``shared_limit`` because simulate carries
+# ``{scenario_id}``: a plain ``limit`` would give every id its own budget.
 @router.post(
     "/{scenario_id}/simulate",
     response_model=ScenarioResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.shared_limit(
+    dynamic_limit("scenarios.simulate", "60/minute"),
+    scope="scenarios.simulate",
+    key_func=user_rate_limit_key,
 )
 async def simulate_scenario(
     scenario_id: int,
@@ -257,7 +270,8 @@ async def simulate_scenario(
       3. Builds a frozen WorldState snapshot via build_world_state
          (READ-ONLY).
       4. Runs the engine. For ``engine="analytic"`` the sync analytic
-         engine runs directly; for ``engine="ai_enhanced"`` we
+         engine runs in a worker thread (``simulate_off_loop``, TBD-726);
+         for ``engine="ai_enhanced"`` we
          delegate to the async ``run_ai_simulation`` orchestrator,
          which calls the LLM via ``call_llm_structured``, adjusts
          assumptions, and re-runs the analytic engine. The
@@ -301,7 +315,8 @@ async def simulate_scenario(
         engine_name = result.get("engine_name") or "ai_enhanced"
     else:
         # Analytic baseline (default). Sync engine; no DB session
-        # passed in — the engine math has no path to the DB.
+        # passed in — the engine math has no path to the DB. It runs in a
+        # worker thread on a detached copy of the row (TBD-726).
         engine = get_engine(payload.engine)
         sim_request = SimulationRequest(
             scenario=row,
@@ -314,7 +329,8 @@ async def simulate_scenario(
         # explicitly as a kwarg to the engine. The engine never reads
         # it from ``req.options`` — there is exactly one source of
         # truth.
-        result = engine.simulate(
+        result = await simulate_off_loop(
+            engine,
             sim_request,
             smooth_with_regression=payload.smooth_with_regression,
         )
@@ -331,8 +347,17 @@ async def simulate_scenario(
 # ── PR3: comparison view ────────────────────────────────────────────────
 
 
-@router.post("/compare", response_model=CompareResponse)
+@router.post(
+    "/compare",
+    response_model=CompareResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(
+    dynamic_limit("scenarios.compare", "30/minute"),
+    key_func=user_rate_limit_key,
+)
 async def compare_scenarios(
+    request: Request,
     body: CompareRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -349,7 +374,8 @@ async def compare_scenarios(
       ``scenario_type`` cap. If any scenario rejects it, the whole
       compare 422s with the offending scenario id in the message.
     - Engine runs are sequential — sub-second each, max 3, so parallel
-      gather adds complexity for no measurable win.
+      gather adds complexity for no measurable win. Each runs in a worker
+      thread, off the event loop (TBD-726).
     - World state is built ONCE and reused across all engine runs (it
       depends only on org_id/user_id, not on the scenario).
     """
@@ -391,7 +417,8 @@ async def compare_scenarios(
             horizon_months=body.horizon_months,
             options={},
         )
-        result = engine.simulate(
+        result = await simulate_off_loop(
+            engine,
             sim_request,
             smooth_with_regression=body.smooth_with_regression,
         )
