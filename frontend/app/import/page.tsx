@@ -186,6 +186,10 @@ function ImportPageContent() {
 
   // Results step
   const [results, setResults] = useState<ImportConfirmResponse | null>(null);
+  // TBD-737: one idempotency key per preview. A retried confirm of the same
+  // preview reuses it, so the server resumes or replays instead of importing
+  // twice; a new upload gets a new key.
+  const [confirmKey, setConfirmKey] = useState("");
 
   // Pre-select account from URL param or default
   useEffect(() => {
@@ -248,6 +252,7 @@ function ImportPageContent() {
         timeoutMs: IMPORT_REQUEST_TIMEOUT_MS,
       });
       setPreview(data);
+      setConfirmKey(crypto.randomUUID());
 
       // Initialize row states from preview
       setRowStates(
@@ -342,6 +347,7 @@ function ImportPageContent() {
           // the field).
           file_name: preview.file_name,
           source_format: preview.source_format ?? "csv",
+          idempotency_key: confirmKey || undefined,
         }),
         timeoutMs: IMPORT_REQUEST_TIMEOUT_MS,
       });
@@ -352,7 +358,7 @@ function ImportPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [preview, defaultCategoryId, rowStates, transferUi]);
+  }, [preview, defaultCategoryId, rowStates, transferUi, confirmKey]);
 
   // ── Row update helpers ───────────────────────────────────────────────────
   const updateRow = useCallback((rowNum: number, patch: Partial<ImportConfirmRow>) => {
