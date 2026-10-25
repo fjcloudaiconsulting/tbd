@@ -117,4 +117,23 @@ describe("AIForecastRefinePanel", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("shows ai_provider_not_supported reason copy (TBD-584)", async () => {
+    mockedFetch.mockResolvedValue({
+      est_prompt_tokens: 0,
+      est_output_tokens: 0,
+      est_cost_cents: 0,
+      duration_band: "~20-40s",
+      can_proceed: false,
+      reason: "ai_provider_not_supported",
+    });
+
+    render(<AIForecastRefinePanel onApplied={() => {}} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled(),
+    );
+    expect(screen.getByText("This AI provider is no longer supported. Choose another in AI settings.")).toBeInTheDocument();
+    expect(screen.queryByText(/ai_provider_not_supported/)).toBeNull();
+  });
 });

@@ -21,6 +21,7 @@ const FALLBACK_REASON_COPY: Record<string, string> = {
   ai_response_invalid_schema: "The AI response could not be applied this time, showing your baseline.",
   ai_structured_output_failed: "The AI response could not be read, showing your baseline.",
   ai_routing_not_configured: "Configure an AI provider in Settings to use this.",
+  ai_provider_not_supported: "This AI provider is no longer supported. Choose another in AI settings.",
   ai_cap_exceeded: "Your AI usage limit for this period has been reached.",
   ai_capability_not_supported: "The selected AI provider does not support this feature.",
   ai_native_not_available: "The built-in AI provider is not available yet.",
