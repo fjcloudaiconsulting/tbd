@@ -175,8 +175,13 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
             <h1 className="font-display text-3xl font-semibold text-text-primary">Check Your Email</h1>
           </div>
           <div className="space-y-5">
+            {/* TBD-654: the backend answers the same way whether or not the
+                email already has an account, so this copy must be true for
+                both: a new email gets a verification link, an existing one
+                gets a note to sign in instead. */}
             <div className={success}>
-              Account created! Check your email to verify your account.
+              We sent you an email with the next step. If it does not arrive in
+              a few minutes, check your spam folder.
             </div>
             <p className="text-center text-sm text-text-muted">
               <Link href="/login" className="text-accent hover:text-accent-hover">

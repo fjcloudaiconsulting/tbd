@@ -52,6 +52,7 @@ from app.schemas.auth import (
     MfaSetupResponse,
     MfaVerifyRequest,
     RegisterRequest,
+    RegisterResponse,
     ResendVerificationPublicRequest,
     ResetPasswordRequest,
     StepUpInitiateRequest,
@@ -90,7 +91,12 @@ from app.models.notification import NotificationCategory
 from app.rate_limit import get_client_ip, limiter, rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service, notification_service
-from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
+from app.services.email_service import (
+    send_existing_account_signup_email,
+    send_mfa_email_code,
+    send_password_reset_email,
+    send_verification_email,
+)
 from app.services.notification_templates import (
     user_mfa_disabled as _tpl_user_mfa_disabled,
     user_mfa_email_fallback_enabled as _tpl_user_mfa_email_fallback_enabled,
@@ -358,7 +364,46 @@ async def check_username(
     return UsernameCheckResponse(available=False, suggestion=suggestion)
 
 
-@router.post("/register", response_model=UserResponse, status_code=201)
+# TBD-654: `/register` gives this one answer to every request that passes its
+# checks, whether the email is new or already has an account, so the response
+# does not say which emails are registered. The account owner learns of the
+# attempt by email instead (below).
+REGISTER_ACCEPTED_DETAIL = "Check your email to finish signing up."
+
+# At most one "someone tried to sign up with your email" notice per account in
+# this window, counted in `used_tokens` so it holds across replicas. The route's
+# per-IP limit alone would let a client spread over many addresses fill the
+# owner's mailbox.
+EXISTING_ACCOUNT_NOTICE_SCOPE = "register_existing_notice"
+EXISTING_ACCOUNT_NOTICE_WINDOW_S = 24 * 60 * 60
+
+
+async def _queue_existing_account_notice(
+    background_tasks: BackgroundTasks, *, user_id: int, email: str, is_active: bool
+) -> str:
+    """Mail the owner of an existing account that someone tried to sign up
+    with their address, at most once per window, and return what happened.
+    Fails closed: if the throttle cannot be read, no mail goes out, and the
+    caller's answer is the same either way."""
+    if not is_active:
+        return "inactive"
+    try:
+        first = await state_db.claim_token(
+            EXISTING_ACCOUNT_NOTICE_SCOPE, str(user_id), EXISTING_ACCOUNT_NOTICE_WINDOW_S
+        )
+    except SQLAlchemyError as exc:
+        _LOGGER.warning(
+            "auth.register.existing_email.throttle_error",
+            extra={"error_class": type(exc).__name__},
+        )
+        return "throttle_error"
+    if not first:
+        return "throttled"
+    background_tasks.add_task(send_existing_account_signup_email, email)
+    return "queued"
+
+
+@router.post("/register", response_model=RegisterResponse, status_code=201)
 @limiter.limit("5/hour")
 async def register(
     request: Request,
@@ -414,17 +459,73 @@ async def register(
             },
         )
 
-    email_norm = normalize_email(body.email)
-    existing = await db.execute(
-        select(User).where(or_(User.username == body.username, User.email == email_norm))
-    )
-    if existing.scalar_one_or_none():
+    # TBD-654: from here to the branch below, an email that already has an
+    # account takes exactly the path a new one does, so neither a refusal nor
+    # the time taken depends on the email:
+    #   * the username check (a taken username is public via `/check-username`
+    #     anyway);
+    #   * the bcrypt hash, the dominant cost;
+    #   * the org insert and its seeded defaults. A chosen org name that is
+    #     taken answers 409 from the database's own UNIQUE on both paths, so no
+    #     preflight can disagree with the collation. For an existing email this
+    #     work is rolled back below and nothing is kept.
+    if await db.scalar(select(User.id).where(User.username == body.username)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Username or email already taken",
+            detail="Username already taken",
         )
 
-    org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+    password_hash = hash_password(body.password)
+
+    email_norm = normalize_email(body.email)
+    existing = (
+        await db.execute(
+            select(User.id, User.email, User.is_active).where(User.email == email_norm)
+        )
+    ).first()
+
+    if existing is None:
+        org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+    else:
+        # The same org work, inside a savepoint that is always rolled back: a
+        # taken chosen name still raises its 409 from in here, and otherwise
+        # nothing is kept. An explicit savepoint, not `db.rollback()`, so the
+        # discard holds on drivers that release an outermost savepoint as a
+        # commit (pysqlite in the tests).
+        async with db.begin_nested() as dry_run:
+            await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+            await dry_run.rollback()
+
+        # Nothing is created or changed for this account; its owner is told.
+        # What still differs from the new-email path is a few single-row writes
+        # (user, trial, two commits) against the throttle claim here, small
+        # beside the hash and the org seed both paths pay above.
+        notice = await _queue_existing_account_notice(
+            background_tasks,
+            user_id=existing.id,
+            email=existing.email,
+            is_active=existing.is_active,
+        )
+        # Counterpart of `auth.register.success` below, so each path writes one
+        # audit row. The actor is unknown; `actor_email` is the address tried.
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="auth.register.existing_email",
+            actor_user_id=None,
+            actor_email=email_norm,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=logs.CONTEXT.get({}).get("request_id"),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={
+                "method": "password",
+                "existing_user_id": existing.id,
+                "notice": notice,
+                "captcha_required": app_settings.captcha_required,
+            },
+        )
+        return RegisterResponse(detail=REGISTER_ACCEPTED_DETAIL)
 
     user = User(
         org_id=org.id,
@@ -432,7 +533,7 @@ async def register(
         email=email_norm,
         first_name=body.first_name,
         last_name=body.last_name,
-        password_hash=hash_password(body.password),
+        password_hash=password_hash,
         role=Role.OWNER,
         is_superadmin=is_first_user_setup,
         is_founder=True,
@@ -565,7 +666,7 @@ async def register(
         },
     )
 
-    return _user_response(user, org)
+    return RegisterResponse(detail=REGISTER_ACCEPTED_DETAIL)
 
 
 def _attempt_store_unavailable() -> HTTPException:

@@ -664,6 +664,45 @@ async def send_verification_email(to: str, token: str) -> bool:
     return await send_email(to, subject, body_html, body_text)
 
 
+async def send_existing_account_signup_email(to: str) -> bool:
+    """Tell an account owner that someone tried to sign up with their email.
+
+    Sent instead of an error when ``/register`` gets an address that already
+    has an account (TBD-654). It names no username and no requester detail,
+    and the router sends at most one per account per day.
+    """
+    login_url = f"{settings.app_url}/login"
+    reset_url = f"{settings.app_url}/forgot-password"
+    subject = "Someone tried to sign up for The Better Decision with your email"
+    body_html = _render_html(
+        heading="You already have an account",
+        paragraphs=[
+            "Someone (you, we hope) just tried to create a The Better Decision "
+            "account with this email address. It already has an account, so "
+            "no new one was created.",
+            "If it was you, sign in the way you usually do. If you forgot your "
+            f'password, you can <a href="{reset_url}">reset it</a>.',
+        ],
+        cta_label="Sign in",
+        cta_url=login_url,
+        footnote=(
+            "If it wasn't you, you can ignore this email. Nothing on your "
+            "account has changed."
+        ),
+    )
+    body_text = (
+        "You already have an account\n\n"
+        "Someone just tried to create a The Better Decision account with "
+        "this email address. It already has an account, so no new one was "
+        "created.\n\n"
+        f"If it was you, sign in: {login_url}\n"
+        f"Forgot your password? Reset it: {reset_url}\n\n"
+        "If it wasn't you, you can ignore this email. Nothing on your "
+        "account has changed."
+    )
+    return await send_email(to, subject, body_html, body_text)
+
+
 async def send_invitation_email(
     to: str, *, inviter_name: str, org_name: str, accept_url: str
 ) -> bool:

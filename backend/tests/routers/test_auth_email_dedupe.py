@@ -120,8 +120,10 @@ async def _count_users(factory) -> int:
 
 
 @pytest.mark.asyncio
-async def test_register_duplicate_email_rejected(session_factory) -> None:
-    """Posting /register with an email that already exists → 409."""
+async def test_register_duplicate_email_creates_nothing(session_factory) -> None:
+    """Posting /register with an email that already exists creates no second
+    account. Since TBD-654 it answers the same 201 as a new email does (see
+    ``test_register_uniform_response.py``)."""
     await _seed_local_user(session_factory, email="flamarion@example.com")
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -133,13 +135,13 @@ async def test_register_duplicate_email_rejected(session_factory) -> None:
                 "password": "another-password-1",
             },
         )
-    assert res.status_code == 409, res.text
+    assert res.status_code == 201, res.text
     assert await _count_users(session_factory) == 1
 
 
 @pytest.mark.asyncio
-async def test_register_duplicate_email_different_case_rejected(session_factory) -> None:
-    """Mixed-case duplicate is still rejected — Python normalization
+async def test_register_duplicate_email_different_case_creates_nothing(session_factory) -> None:
+    """Mixed-case duplicate is still caught — Python normalization
     runs before the DB ever sees the value."""
     await _seed_local_user(session_factory, email="flamarion@example.com")
     app = _make_app(session_factory)
@@ -152,7 +154,7 @@ async def test_register_duplicate_email_different_case_rejected(session_factory)
                 "password": "another-password-1",
             },
         )
-    assert res.status_code == 409, res.text
+    assert res.status_code == 201, res.text
     assert await _count_users(session_factory) == 1
 
 

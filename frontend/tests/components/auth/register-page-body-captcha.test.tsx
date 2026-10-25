@@ -179,10 +179,10 @@ describe("RegisterPageBody — captcha", () => {
     ).toBeInTheDocument();
   });
 
-  it("does NOT reset the widget on unrelated failures (e.g. 409 duplicate email)", async () => {
+  it("does NOT reset the widget on unrelated failures (e.g. 409 username taken)", async () => {
     mockStatus(true);
     registerMock.mockRejectedValue(
-      new ApiResponseError(409, "Username or email already taken"),
+      new ApiResponseError(409, "Username already taken"),
     );
     render(<RegisterPageBody cspNonce="test-nonce" />);
 
@@ -198,5 +198,28 @@ describe("RegisterPageBody — captcha", () => {
       expect(registerMock).toHaveBeenCalled();
     });
     expect(turnstileResetMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("RegisterPageBody — after a successful submit", () => {
+  it("shows the same neutral next step, never 'account created' (TBD-654)", async () => {
+    // The backend answers 201 with one fixed body whether or not the email
+    // already had an account, so the page cannot claim an account was made.
+    mockStatus(false);
+    registerMock.mockResolvedValue(undefined);
+    render(<RegisterPageBody cspNonce="test-nonce" />);
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith("/api/v1/auth/status");
+    });
+
+    await fillRequiredFields();
+    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: /check your email/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/we sent you an email with the next step/i)).toBeInTheDocument();
+    expect(screen.queryByText(/account created/i)).toBeNull();
+    expect(screen.getByRole("link", { name: /go to login/i })).toHaveAttribute("href", "/login");
   });
 });

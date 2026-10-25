@@ -116,6 +116,16 @@ class VerifyResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class RegisterResponse(BaseModel):
+    """What ``/register`` answers once a request passes its checks.
+
+    One fixed message, the same whether the email was new or already had an
+    account (TBD-654), so it carries no field of the account.
+    """
+
+    detail: str
+
+
 class UsernameCheckResponse(BaseModel):
     available: bool
     suggestion: str | None = None
