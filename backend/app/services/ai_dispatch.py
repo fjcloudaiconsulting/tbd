@@ -254,8 +254,9 @@ class NoRoutingConfigured(AIDispatchError):
 
 class RoutedProviderNotSupported(NoRoutingConfigured):
     """Routing resolves to a credential whose provider left the registry
-    (TBD-584: ``ollama``, ``native``). The row stays in place until an admin
-    deletes it, but is never dispatched. A ``NoRoutingConfigured`` so every
+    (TBD-584: ``ollama``, ``native``). Migration 096 deletes the ``ollama``
+    rows; one the previous release writes during the rolling deploy stays
+    until an admin deletes it, but is never dispatched. A ``NoRoutingConfigured`` so every
     caller's fallback still applies; 412 with its own code."""
 
     def __init__(self) -> None:
