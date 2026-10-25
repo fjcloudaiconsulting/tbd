@@ -6,7 +6,7 @@ Agents with Jira access use it to create, update and close the Jira issues.
 Every agent working on this effort keeps it current, so the next one starts from
 the real state and nobody needs a live conversation to catch up.
 
-Last updated: 2026-10-25 by the assessment session, after release 0.303.1
+Last updated: 2026-10-25 by the sprint coordinator session, after the follow-up PRs
 
 ## Disclosure note
 
@@ -56,6 +56,8 @@ exploit detail into public issues, PRs or commit messages.
   with their remaining work in a linked follow-up or owner-decision issue. The
   #1007 findings are In Progress. Needs owner and Not fixed findings are open.
   The project has no Jira versions, so the release is recorded in issue comments and in TBD-750.
+- **Follow-up PRs (2026-10-25):** the open follow-ups and earlier-audit
+  issues now have PRs. See "Follow-up PRs" below. None is merged yet.
 - **Next:** the owner works through the decision queue (item 1 first) and
   releases #1011; the coding session takes the follow-ups and "Incoming from
   Jira" below.
@@ -143,6 +145,37 @@ Dependency PRs handled in the same pass:
 | [#929](https://github.com/fjcloudaiconsulting/tbd/pull/929) | Python 3.15 runtime (replaced by #1017) | Closed |
 | [#937](https://github.com/fjcloudaiconsulting/tbd/pull/937) | TypeScript 7 (replaced by #1003) | Closed |
 | [#1017](https://github.com/fjcloudaiconsulting/tbd/pull/1017) | Python 3.14 runtime, Renovate held below 3.15 until PyYAML ships cp315 wheels (replaces #929) | Merged 2026-10-24 as `807721ee` |
+
+## Follow-up PRs
+
+Opened on 2026-10-25 for the follow-ups listed in **Owner action** and the
+"Incoming from Jira" issues. All are open and not merged.
+
+| PR | Jira | Finding | Scope |
+|---|---|---|---|
+| [#1033](https://github.com/fjcloudaiconsulting/tbd/pull/1033) | TBD-735, TBD-716, TBD-654 | BE-02, BE-26 | Per-user failure window on the remaining password re-checks; single-use TOTP on token-mint step-ups; reset tokens bound to a jti and an email digest |
+| [#1034](https://github.com/fjcloudaiconsulting/tbd/pull/1034) | TBD-654 | FE-03 | The MFA page no longer reads the challenge token from the query string |
+| [#1027](https://github.com/fjcloudaiconsulting/tbd/pull/1027) | TBD-718 | BE-27 | Tag-suggestion prefix escaping |
+| [#1031](https://github.com/fjcloudaiconsulting/tbd/pull/1031) | TBD-736 | BE-07 | Set-based import preview detectors |
+| [#1039](https://github.com/fjcloudaiconsulting/tbd/pull/1039) | TBD-737 | BE-08 | Chunked, idempotent import confirm (migration) |
+| [#1032](https://github.com/fjcloudaiconsulting/tbd/pull/1032) | TBD-726 | BE-22 | Scenario simulation off the event loop, per-user rate limits |
+| [#1036](https://github.com/fjcloudaiconsulting/tbd/pull/1036) | TBD-727 | BE-23 | One lock order for invitation create and accept |
+| [#1038](https://github.com/fjcloudaiconsulting/tbd/pull/1038) | TBD-738, follow-up TBD-751 | FE-03 | Invitation preview token in a request body; the GET form stays one release |
+| [#1041](https://github.com/fjcloudaiconsulting/tbd/pull/1041) | TBD-692 | BE-28 | Merchant dictionary votes computed server-side, one per org (migration) |
+| [#1030](https://github.com/fjcloudaiconsulting/tbd/pull/1030) | TBD-655 | DB-04 | App support for a separate migrations database URL; the user split stays in cloud-infra |
+| [#1035](https://github.com/fjcloudaiconsulting/tbd/pull/1035) | TBD-584 | none | Removes the local-model provider; base for the AI adapter follow-ups (migration) |
+| [#1042](https://github.com/fjcloudaiconsulting/tbd/pull/1042) | TBD-607 | BE-09 | Typed errors for malformed provider responses; token counts and costs never negative (stacked on #1035) |
+| [#1043](https://github.com/fjcloudaiconsulting/tbd/pull/1043) | TBD-719 | DB-06 | AI-key fingerprint keyed with an HMAC; old rows upgrade on revalidate (stacked on #1035) |
+| [#1029](https://github.com/fjcloudaiconsulting/tbd/pull/1029) | TBD-749 | none | Trial and period dates use the UTC date |
+| [#1040](https://github.com/fjcloudaiconsulting/tbd/pull/1040) | TBD-661 | FE-01 | Docs only: the founder-count endpoint has no caller |
+
+Merge notes for this set:
+
+- #1035, #1039 and #1041 each add a `095_*` migration on top of `094`. Merge
+  them one at a time; re-point the next one's `down_revision` to the previous
+  head (and renumber it) before merging.
+- #1032 and #1038 both edit `test_rate_limit_catalogue_drift.py` on different
+  lines; #1038 also moves the public-route count from 30 to 31.
 
 ## Merge notes
 
@@ -265,23 +298,42 @@ titles only; the detail is in Jira.
 
 | Jira | Topic | Related finding | Suggested action |
 |---|---|---|---|
-| TBD-653 | Sign-in and MFA attempt limits (earlier audit) | BE-02, BE-26 | Most of it shipped in #1009; check the rest against the follow-ups, then close |
-| TBD-611 | Login timing (earlier audit) | BE-25 | Shipped in #1009; confirm and close |
-| TBD-654 | Auth hardening lows (earlier audit) | BE-25, FE-03 | Partly shipped in #1009; check each item, then narrow or close |
+| TBD-653 | Sign-in and MFA attempt limits (earlier audit) | BE-02, BE-26 | Checked 2026-10-25: all three items shipped in #1009; the remaining paths are in #1033. Close when #1033 merges |
+| TBD-611 | Login timing (earlier audit) | BE-25 | Confirmed shipped in #1009; closed 2026-10-25 |
+| TBD-654 | Auth hardening lows (earlier audit) | BE-25, FE-03 | Items 1 and 3 (backend) shipped in #1009; item 3 (frontend) in #1034; item 4 in #1033; item 2 (register response) needs an owner decision |
 | TBD-609 | AI credential base URL handling | DB-02 | Shipped in #1008; confirm and close |
-| TBD-655 | Database user separation | DB-04 | Same work as DB-04; keep one |
+| TBD-655 | Database user separation | DB-04 | Same work as DB-04; the app part is #1030, the user split follows in cloud-infra |
 | TBD-477, TBD-401, TBD-475 | CSP report writer, audit retention, audit UI | BE-10 | The writer is bounded by #1008, and CSP rows have a 30-day retention since #1019; check each, then narrow or close |
-| TBD-607 | AI adapter error handling | BE-09 | Related hardening in the same code; still open |
-| TBD-661 | Founder-count endpoint and apex connect-src | FE-01 | Follows the CORS narrowing |
+| TBD-607 | AI adapter error handling | BE-09 | Related hardening in the same code; #1042, stacked on #1035 |
+| TBD-661 | Founder-count endpoint and apex connect-src | FE-01 | The apex CSP was already fixed in #1004; docs in #1040; keeping or dropping the endpoint needs an owner decision |
 | TBD-656 | Supply-chain and CI settings | INF-06, INF-07 | Same area as owner item 6 |
 | TBD-442 | First-user setup | INF-05 | Same area as owner item 2 |
 | TBD-610 | MCP server deployment | INF-02 | When it deploys: the same client-IP settings and network policy as staging, and the OAuth discovery paths routed to the backend |
 | TBD-658, TBD-659, TBD-639 | Python, Renovate and toolchain upgrades | INF-15 | Same decision as owner item 9 |
-| TBD-749 | A KPI test fails between local and UTC midnight | none | Raised during the assessment; small test fix |
+| TBD-749 | A KPI test fails between local and UTC midnight | none | Root cause was in the service (local date); fixed in #1029 |
 
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-10-25, follow-up PRs: sprint coordinator (Claude Code, with Jira access)
+
+- **Did:** ran parallel agent teams over the sprint and the assessment
+  follow-ups. Opened the PRs in "Follow-up PRs", each with CI green; an
+  independent review of #1033 and #1035 found nothing blocking, and its fixes
+  are in. Recorded each PR in Jira; closed TBD-611; opened TBD-751.
+- **Changed here:** Current state, the new "Follow-up PRs" section and the
+  "Incoming from Jira" rows for TBD-653, TBD-611, TBD-654, TBD-655, TBD-607,
+  TBD-661 and TBD-749. Finding statuses are unchanged until the PRs merge.
+- **Next:** the owner reviews and merges the follow-up PRs (mind the `095`
+  migration order; #1042 and #1043 after #1035), then the Jira agent closes
+  the follow-up issues and moves the Partial findings their PRs complete to
+  Fixed.
+- **Questions for the owner:** TBD-654 item 2 (register response); TBD-661
+  (keep or drop the founder-count endpoint); TBD-692 (existing vote counts,
+  vote withdrawal on opt-out, export exclusion); TBD-737 (whether the
+  idempotency key becomes required); TBD-719 (backfill old fingerprints or
+  let them upgrade on revalidate).
 
 ### 2026-10-25, release 0.303.1 and handoff: assessment session (Claude Code, with Jira access)
 
