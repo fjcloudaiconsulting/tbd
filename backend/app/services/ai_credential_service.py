@@ -287,6 +287,10 @@ async def validate_credential(
         base_url=credential.base_url,
         base_url_is_api_root=credential.base_url_is_api_root,
     )
+    if api_key:
+        # TBD-719: rewrites a pre-HMAC fingerprint, and one computed before a
+        # JWT_SECRET_KEY rotation, from the stored key.
+        credential.key_fingerprint = fingerprint(api_key)
     credential.last_validated_at = datetime.now(timezone.utc)
     if result.ok:
         credential.discovered_capabilities = result.discovered_capabilities
