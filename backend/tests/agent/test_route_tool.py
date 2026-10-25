@@ -180,6 +180,9 @@ def test_tb2_null_only_where_declared_nullable_and_required_is_required():
         spec.args.model_validate({"widget_id": 1, "note": "n"})  # name is required
     ok = spec.args.model_validate({"widget_id": 1, "name": "a", "note": None})
     assert ok.model_fields_set == {"widget_id", "name", "note"}
+    # An optional, non-nullable field does not advertise a null default.
+    props = _tool(fields=("name", "note"), nullable=("note",)).args.model_json_schema()["properties"]
+    assert "default" not in props["name"] and props["note"]["default"] is None
     with pytest.raises(ToolRegistrationError):
         _tool(fields=("name",), nullable=("note",))
 
@@ -191,7 +194,7 @@ def _unknown_dep():
 
 
 @pytest.mark.parametrize("router,match", [
-    (lambda: _router(Depends(require_interactive_session)), "interactive"),
+    (lambda: _router(Depends(require_interactive_session)), "requires an interactive session"),
     (lambda: _router(Depends(_unknown_dep)), "unknown dependency"),
     (lambda: _router(request=True), "request"),
     (lambda: _router(product=Feature.BUDGETS), "product area"),

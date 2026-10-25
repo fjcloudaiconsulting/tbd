@@ -174,11 +174,21 @@ def _without_none(annotation: Any) -> Any:
     return annotation
 
 
+def _no_default(schema: dict[str, Any]) -> None:
+    schema.pop("default", None)
+
+
 def _arg(info: Any, *, required: bool, nullable: bool) -> tuple[Any, Any]:
     annotation = info.annotation if nullable else _without_none(info.annotation)
     if info.metadata:
         annotation = Annotated[annotation, *info.metadata]
-    return annotation, Field(... if required else None, description=info.description)
+    if required:
+        return annotation, Field(..., description=info.description)
+    # Omitted means "leave alone". A non-nullable field does not advertise its
+    # internal None default, which would invite the model to send a null.
+    return annotation, Field(
+        None, description=info.description, json_schema_extra=None if nullable else _no_default,
+    )
 
 
 def _disclose(column: Any, value: Any) -> Any:
@@ -326,6 +336,8 @@ def _templated_preview(
             f"{name}: a templated preview needs an entity and exactly one id in the path"
         )
     table = entity.__table__
+    if "org_id" not in table.c:
+        raise ToolRegistrationError(f"{name}: {table.name} is not org-scoped")
     unknown = [f for f in fields if f not in table.c]
     if unknown:
         raise ToolRegistrationError(f"{name}: {unknown} is not a column of {table.name}")
