@@ -103,9 +103,14 @@ describe("AcceptInviteBody", () => {
     render(<AcceptInviteBody />);
 
     await screen.findByText(/Acme/);
-    expect(apiFetchMock).toHaveBeenCalledWith(
-      "/api/v1/orgs/invitations/preview?token=valid-token",
-    );
+    // TBD-738: the token travels in the POST body, never in the request URL.
+    expect(apiFetchMock).toHaveBeenCalledWith("/api/v1/orgs/invitations/preview", {
+      method: "POST",
+      body: JSON.stringify({ token: "valid-token" }),
+    });
+    for (const [url] of apiFetchMock.mock.calls) {
+      expect(String(url)).not.toContain("valid-token");
+    }
     expect(urlAtPreview).not.toContain("valid-token");
     expect(window.location.pathname).toBe("/accept-invite");
     expect(window.location.search).toBe("");

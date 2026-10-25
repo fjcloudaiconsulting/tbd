@@ -67,7 +67,9 @@ async def test_l4_db_down_fails_the_request_before_the_handler(
 ):
     await _seed_user(session_factory, password="right-password-1")
     ran = []
-    monkeypatch.setattr(auth_router, "verify_password", lambda *a: ran.append(1) or True)
+    monkeypatch.setattr(
+        auth_router, "verify_password_or_dummy", lambda *a: ran.append(1) or True
+    )
     with TestClient(_make_app(session_factory), raise_server_exceptions=False) as client:
         r = client.post(
             "/api/v1/auth/login", json={"login": "alice", "password": "right-password-1"}
