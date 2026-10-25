@@ -6,6 +6,8 @@ streamed as server-sent events (``app.services.agent_chat``).
 ``GET /api/v1/agent/actions`` (the review list). Interactive sessions only: a
 PAT can never confirm, and there is no model-facing confirm tool. Confirm takes
 NO request body: the action runs with the arguments stored at preview time.
+Confirm and cancel find the caller's actions by org and user, whichever channel
+staged them: a sensitive action a connected agent staged runs only from here.
 """
 from typing import Any, Literal
 
@@ -24,6 +26,7 @@ from app._time import utcnow_naive
 from app.models.agent_pending_action import (
     ActionChannel, ActionMode, ActionStatus, AgentPendingAction as Action,
 )
+from app.models.api_token import ApiToken
 from app.models.user import User
 from app.services import agent_chat as chat
 from app.rate_limit import limiter
@@ -51,7 +54,6 @@ _STATUS: dict[str, int] = {
     "not_found": 404,
     "preview_rate_limited": 429, "too_many_pending_actions": 429,
     "confirm_rate_limited": 429, "auto_budget_exhausted": 429,
-    "sensitive_budget_exhausted": 429,
     "limits_unavailable": 503,
 }
 
@@ -135,11 +137,19 @@ async def list_actions(
     rows = (await db.scalars(
         stmt.order_by(Action.created_at.desc(), Action.id.desc()).limit(limit).offset(offset)
     )).all()
+    # TBD-664: which of the user's own tokens staged an MCP row, by name.
+    staged_by = {r.api_token_id for r in rows if r.api_token_id is not None}
+    token_names = dict((await db.execute(
+        select(ApiToken.id, ApiToken.name).where(
+            ApiToken.id.in_(staged_by), ApiToken.created_by_user_id == user.id,
+        )
+    )).all()) if staged_by else {}
     return {
         "items": [
             wrap_untrusted({
                 "action_id": r.id, "tool": r.tool, "channel": r.channel.value,
                 "risk": r.risk.value, "mode": r.mode.value, "status": r.status.value,
+                "token_name": token_names.get(r.api_token_id),
                 "preview": r.preview_json, "result": r.result_json, "error_code": r.error_code,
                 "created_at": r.created_at.isoformat(), "expires_at": r.expires_at.isoformat(),
                 "decided_at": r.decided_at.isoformat() if r.decided_at else None,

@@ -34,21 +34,17 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 78
+MAX_GAPS = 74
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
     ("POST", "/api/v1/tags"): "TBD-664",
     ("DELETE", "/api/v1/tags/{tag_id}"): "TBD-664",
     ("PATCH", "/api/v1/tags/{tag_id}"): "TBD-664",
-    ("POST", "/api/v1/transactions"): "TBD-664",
     ("POST", "/api/v1/transactions/batch"): "TBD-664",
     ("POST", "/api/v1/transactions/bulk-delete"): "TBD-664",
     ("POST", "/api/v1/transactions/bulk-update"): "TBD-664",
     ("POST", "/api/v1/transactions/pair"): "TBD-664",
-    ("POST", "/api/v1/transactions/transfer"): "TBD-664",
-    ("DELETE", "/api/v1/transactions/{transaction_id}"): "TBD-664",
-    ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/convert-to-transfer"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/promote-to-recurring"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/skip"): "TBD-664",

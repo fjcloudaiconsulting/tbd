@@ -86,11 +86,18 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "accounts_list", "categories_list", "budgets_list",
         "transactions_search", "spending_by_category", "forecast_get", "transactions_get",
         "budgets_update_amount", "transactions_set_category", "transactions_update",
+        "transactions_update_money", "transactions_create", "transactions_delete",
+        "transactions_transfer",
     ])
-    assert {t.name for t in TOOLS if t.risk != "read"} == {
+    assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
     }
-    assert {t.risk for t in TOOLS} == {"read", "write"}
+    # TBD-664 B: everything that moves money, creates or deletes is sensitive
+    # (never auto, never confirmed over MCP).
+    assert {t.name for t in TOOLS if t.risk == "sensitive"} == {
+        "transactions_update_money", "transactions_create", "transactions_delete",
+        "transactions_transfer",
+    }
 
 
 # ── F-R1 ──────────────────────────────────────────────────────────────────
@@ -239,8 +246,14 @@ def _valid_base(tool) -> dict:
         return {"budget_id": 1, "amount": "10.00"}
     if tool.name == "transactions_set_category":
         return {"transaction_id": 1, "category_id": 2}
-    if tool.name in ("transactions_get", "transactions_update"):
+    if tool.name in ("transactions_get", "transactions_update", "transactions_update_money",
+                     "transactions_delete"):
         return {"transaction_id": 1}
+    if tool.name == "transactions_create":
+        return {"account_id": 1, "category_id": 2, "description": "x", "amount": "1.00",
+                "type": "expense", "date": "2026-01-01"}
+    if tool.name == "transactions_transfer":
+        return {"from_account_id": 1, "to_account_id": 2, "amount": "1.00", "date": "2026-01-01"}
     return {}
 
 

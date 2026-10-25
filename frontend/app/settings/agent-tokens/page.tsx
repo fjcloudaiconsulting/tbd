@@ -1,7 +1,8 @@
 "use client";
 
 // Agent access (TBD-581, spec TBD-558 4.5, A1.2, T7, T12): create, lower and
-// revoke agent tokens, review what agents changed, and see plan usage. The path
+// revoke agent tokens, confirm what they staged (TBD-664), review what agents
+// changed, and see plan usage. The path
 // is fixed by the backend: the SSO step-up for `agent_token_mint` and the token
 // notifications all link here.
 
@@ -13,6 +14,7 @@ import AgentActivity from "@/components/agent/AgentActivity";
 import AgentMintForm, { type AgentMintValues } from "@/components/agent/AgentMintForm";
 import AgentTokenList from "@/components/agent/AgentTokenList";
 import OrgAgentTokens from "@/components/agent/OrgAgentTokens";
+import PendingActions from "@/components/agent/PendingActions";
 import UsageMeters from "@/components/agent/UsageMeters";
 import { useAuth } from "@/components/auth/AuthProvider";
 import RevealOncePanel from "@/components/system/api-tokens/RevealOncePanel";
@@ -215,6 +217,8 @@ export default function AgentTokensPage() {
 
       {pageError && <p role="alert" className={`${errorCls} mb-4`}>{pageError}</p>}
       <p role="status" className={pageNote ? `${successCls} mb-4` : "sr-only"}>{pageNote}</p>
+
+      {entitled && <PendingActions />}
 
       {!showTokens && (
         ai ? (

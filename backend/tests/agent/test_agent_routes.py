@@ -170,6 +170,44 @@ async def test_b2_channel_filter_excludes_mcp_pending(factory, w, client):
     assert (await client.get("/api/v1/agent/actions", params={"channel": "bogus"})).status_code == 422
 
 
+async def test_the_browser_lists_and_applies_what_a_connected_agent_staged(factory, w, client):
+    """FENCE (TBD-664). Wrong implementation: the in-app confirm keyed on the
+    channel, so a sensitive action staged over MCP (which MCP may never
+    confirm) is listed in the app but no one can apply it."""
+    from tests.agent.test_actions import _invoke
+    from tests.agent.test_set_category import _tx
+
+    a = w["A"]
+    out = await _invoke(factory, a["member"], "transactions_delete", {"transaction_id": a["tx"]},
+                        channel="mcp", scope="agent:write", api_token_id=a["t1"])
+    _as(factory, a["member"])
+    pending = (await client.get("/api/v1/agent/actions", params={"status": "pending"})).json()["items"]
+    assert [(x["action_id"], x["channel"], x["risk"]) for x in pending] == [
+        (out["action_id"], "mcp", "sensitive")]
+    _as(factory, a["other"])  # another member of the org never reaches it
+    r = await client.post(f"/api/v1/agent/actions/{out['action_id']}/confirm")
+    assert (r.status_code, r.json()["detail"]["code"]) == (404, "action_not_found")
+    _as(factory, a["member"])
+    r = await client.post(f"/api/v1/agent/actions/{out['action_id']}/confirm")
+    assert r.status_code == 200, r.text
+    assert r.json()["result"] == {"deleted": True, "demoted_ids": []}
+    assert await _tx(factory, a["tx"]) is None
+
+
+async def test_the_list_names_the_token_that_staged_a_row(factory, w, client):
+    """TBD-664 review: the person sees which of their agents proposed a change
+    (the token's name); an in-app row names none."""
+    from tests.agent.test_actions import _invoke
+
+    a = w["A"]
+    await _invoke(factory, a["member"], "transactions_delete", {"transaction_id": a["tx"]},
+                  channel="mcp", scope="agent:write", api_token_id=a["t2"])
+    await _stage(factory, w, "120.00")
+    _as(factory, a["member"])
+    items = (await client.get("/api/v1/agent/actions", params={"status": "pending"})).json()["items"]
+    assert sorted((x["channel"], x["token_name"]) for x in items) == [("in_app", None), ("mcp", "t2")]
+
+
 def test_routes_carry_the_interactive_and_entitlement_guards():
     """A PAT must never confirm (F-L7 shape) and the plan key gates the surface."""
     seen = {}

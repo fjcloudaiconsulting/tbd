@@ -7,7 +7,8 @@ export type Wire = string | number | boolean | null | Untrusted;
 
 export interface ActionChange {
   entity: string;
-  id: Wire;
+  // A composite key (a tag link: [transaction id, tag id]) is a list.
+  id: Wire | Wire[];
   field: string;
   before: Wire;
   after: Wire;
@@ -22,6 +23,8 @@ export interface StagedAction {
   context: Record<string, unknown>;
   expires_at: string;
   requires_confirmation: boolean;
+  // A sensitive action a connected agent staged: only the app confirms it.
+  requires_browser_confirmation?: boolean;
 }
 
 export interface DriftRow {
@@ -48,6 +51,8 @@ export interface AgentActionRow {
   decided_at: string | null;
   // pending AND not past expires_at, decided server-side in one clock
   live: boolean;
+  // The name of the user's own agent token that staged an MCP row.
+  token_name?: string | null;
 }
 
 export type AgentScope = "agent:read" | "agent:write" | "agent:auto";
