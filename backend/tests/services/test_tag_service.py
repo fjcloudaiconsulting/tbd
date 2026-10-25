@@ -541,6 +541,46 @@ async def test_suggest_seed_bypasses_floor(db_session):
     assert any(s.name == "gym" and s.source == "shared_dictionary" for s in res)
 
 
+@pytest.mark.asyncio
+async def test_suggest_prefix_treats_like_wildcards_literally(db_session):
+    """TBD-718: ``%`` and ``_`` in the prefix are literal in every pass,
+    as in ``list_org_tags`` (BE-27). Tag names never contain them, so such
+    a prefix matches nothing."""
+    org, user = await _make_org_user(db_session, "wild")
+    acc, cat = await _make_account_and_category(db_session, org.id)
+    tx = await _make_transaction(db_session, org.id, acc.id, cat.id)
+    await _enable_share_tag_data(db_session, org.id)
+    db_session.add(TagDictionary(
+        name_normalized="gym",
+        contributor_org_count=0,
+        usage_count=0,
+        is_seed=True,
+    ))
+    await db_session.commit()
+    await tag_service.set_transaction_tags(
+        db_session, org_id=org.id, transaction_id=tx.id,
+        tag_names=["insurance"], created_by_user_id=user.id,
+    )
+    await tag_service.create_tag(
+        db_session, org_id=org.id, name="travel", created_by_user_id=user.id
+    )
+    await db_session.commit()
+
+    async def names(prefix):
+        res = await tag_service.suggest_tags(
+            db_session, org_id=org.id, prefix=prefix, category_id=cat.id, limit=10,
+        )
+        return sorted((s.name, s.source) for s in res)
+
+    # Org co-category, org recent and shared dictionary passes alike.
+    for prefix in ("%", "%y", "_", "i_s", "t_", "g_m", "\\"):
+        assert await names(prefix) == [], prefix
+    # A plain prefix still matches in each pass.
+    assert await names("ins") == [("insurance", "org_co_category")]
+    assert await names("tra") == [("travel", "org_recent")]
+    assert await names("gy") == [("gym", "shared_dictionary")]
+
+
 # ---------------------------------------------------------------------------
 # Cross-org contribution invariant
 # ---------------------------------------------------------------------------

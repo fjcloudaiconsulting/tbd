@@ -361,7 +361,7 @@ Legitimate use stays far below 30 a minute.
 
 ### Public endpoints (no auth required)
 
-Exactly **29** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 13 are genuinely **open**, and 16 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "29 public routes" is not 29 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
+Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 13 are genuinely **open**, and 17 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "30 public routes" is not 30 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
 
 **Open — no identity check at all (13)**
 
@@ -381,7 +381,7 @@ Exactly **29** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414), same reasons as the line above. |
 | `POST /api/v1/oauth/register` | Open dynamic client registration (RFC 7591, operator ruling). Public clients only, no secret issued; idempotent on identical metadata; new clients capped per https host, per loopback pool and IP, per IP per hour, and by a global row ceiling, all failing closed. |
 
-**Credential-bearing — authenticated, but no bearer token by construction (16)**
+**Credential-bearing — authenticated, but no bearer token by construction (17)**
 
 | Route | Credential, and why not a bearer token |
 | --- | --- |
@@ -397,7 +397,8 @@ Exactly **29** `(method, path)` pairs reach a handler without `get_current_user`
 | `POST /api/v1/auth/mfa/email-verify` | Short-lived `mfa_token` from the first login leg. |
 | `GET /api/v1/auth/google/callback` | Browser redirect from Google carrying `code` + `state`. A top-level navigation has no `Authorization` header; identity is bound by the state cookie and the provider's verified email. |
 | `GET /api/v1/auth/sso-stepup/callback` | Browser redirect from Google. Identity is bound by the httpOnly `oauth_state` cookie issued at `/sso-stepup/initiate`, which *does* require authentication, and re-checked against the Google account's verified email; the return target is an allowlisted key, never a caller-supplied URL. |
-| `GET /api/v1/orgs/invitations/preview` | The invitee has no account yet, so there is no credential to present. Gated by a signed, 7-day, email-bound invitation JWT; every failure mode returns one uniform `410` so the response cannot distinguish "not yours" from "does not exist". |
+| `POST /api/v1/orgs/invitations/preview` | The invitee has no account yet, so there is no credential to present. Gated by a signed, 7-day, email-bound invitation JWT, sent in the request body so it never sits in a URL (TBD-738); every failure mode returns one uniform `410` so the response cannot distinguish "not yours" from "does not exist". |
+| `GET /api/v1/orgs/invitations/preview` | **Deprecated, one release only (TBD-738).** The same preview with the JWT in the query string, kept while a frontend that still calls it may be deployed (backend and frontend deploy separately). Shares the POST's rate-limit bucket. Remove it, with its allowlist entry, in the next release. |
 | `POST /api/v1/orgs/invitations/accept` | Creates the account, so it necessarily runs before the caller has one. The signed invitation JWT is the credential: `org_id` and `role` are read from the locked DB row and never from the request body, the role can never be OWNER, and the token is consumed single-use under `SELECT ... FOR UPDATE`. |
 | `POST /api/v1/webhooks/mailgun` | HMAC signature-verified against the signing key on every call. Not open, just not bearer-authenticated. |
 | `POST /api/v1/oauth/token` | OAuth token endpoint (TBD-587). The credential is the authorization code plus its PKCE verifier, or a refresh token; an MCP client has no bearer token yet by construction. Limits are keyed on the credential, under a coarse per-IP ceiling. |
@@ -410,7 +411,7 @@ The table documents **reachability**, not a claim that every listed route is ful
 
 All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
-**MCP server component (separate app, `backend/app/mcp_main.py`, not part of the 29 above)**
+**MCP server component (separate app, `backend/app/mcp_main.py`, not part of the 30 above)**
 
 The MCP component is its own image and process and never imports `app.main`, so the allowlist test cannot see it. Its route set is exactly these two pairs, fenced by `backend/tests/mcp/test_mcp_server.py` (F-M1).
 
@@ -501,6 +502,8 @@ Three execution paths, picked by environment:
 - **Local dev (`./tbd start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
 - **Local prod simulation (`./tbd prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
 - **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `APP_ENV=production`) is set in cloud-infra `clusters/hetzner/tbd-prod/backend.yaml`.
+
+Every path connects with `MIGRATIONS_DATABASE_URL` when it is set (a user with DDL rights, TBD-655) and with `DATABASE_URL` otherwise.
 
 The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a failed migration blocks the rollout.
 

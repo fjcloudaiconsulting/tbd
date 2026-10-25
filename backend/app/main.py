@@ -198,6 +198,9 @@ async def _run_migrations() -> None:
         },
     )
 
+    # The child inherits this environment, so alembic/env.py migrates with
+    # MIGRATIONS_DATABASE_URL when it is set (TBD-655). The current-revision
+    # read above is a diagnostic on the app engine.
     result = subprocess.run(
         ["alembic", "upgrade", "head"],
         capture_output=True,
