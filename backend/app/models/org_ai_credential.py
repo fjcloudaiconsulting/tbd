@@ -32,9 +32,11 @@ class AiProvider(str, enum.Enum):
     """The provider registry: every value the app can dispatch to.
 
     TBD-584: ``ollama`` (bring-your-own local model) and the dead ``native``
-    stub left the registry. The column is VARCHAR, so a row that still holds
-    one of them loads as a plain ``str`` (see ``AiProviderType``) and stays
-    inert: listed and deletable, never validated, routed or dispatched.
+    stub left the registry, and migration 096 deletes the ``ollama`` rows.
+    The column is VARCHAR, so a row that still holds one of them (a pod of
+    the previous release can write one during the rolling deploy, after 096
+    ran) loads as a plain ``str`` (see ``AiProviderType``) and stays inert:
+    listed and deletable, never validated, routed or dispatched.
     """
 
     OPENAI = "openai"
