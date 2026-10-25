@@ -4,9 +4,9 @@ already has an account.
 A new email creates the account and mails a verification link. An email that
 already has an account creates and changes nothing, and mails the owner a
 "someone tried to sign up with your email" notice, at most once per window.
-Both answer the same status and body, and both pay for the password hash.
-Refusals that depend only on fields the caller chose (username, org name) are
-decided before the email is looked at, so they answer alike for both.
+Both answer the same status and body, and both pay for the password hash and
+the org insert with its defaults (rolled back for an existing email), so a
+taken username or org name answers the same 409 for both.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -47,6 +47,12 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # The migration's case-insensitive UNIQUE (034), as the squatting tests
+        # build it, so a taken org name answers 409 from the database here too.
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX uq_organizations_name_normalized "
+            "ON organizations (LOWER(name))"
+        ))
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as db:
         db.add(Plan(slug="free", name="Free", is_active=True, sort_order=0))
@@ -249,6 +255,44 @@ async def test_both_paths_hash_the_password(session_factory, monkeypatch):
         assert len(calls) == 1
         _register(client, username="intruder", email=OWNER_EMAIL)
         assert len(calls) == 2
+
+
+async def test_both_paths_build_the_org_and_only_the_new_one_keeps_it(
+    session_factory, sent, monkeypatch
+):
+    """Wrong implementation: an existing email returns before the org insert
+    and its seeded defaults, so it answers measurably sooner than a new one.
+    Both paths do the work; the existing-email path rolls it back."""
+    await _seed_owner(session_factory)
+    calls: list[str] = []
+    real = auth_module._create_org_with_defaults
+
+    async def _counting(db, org_name, *, username):
+        calls.append(username)
+        return await real(db, org_name, username=username)
+
+    monkeypatch.setattr(auth_module, "_create_org_with_defaults", _counting)
+    with TestClient(_make_app(session_factory)) as client:
+        _register(client, username="intruder", email=OWNER_EMAIL, org_name="Kept Nowhere")
+        after_existing = await _snapshot(session_factory)
+        _register(client, username="newcomer", email="newcomer@example.com")
+    assert calls == ["intruder", "newcomer"]
+    assert after_existing["orgs"] == 1
+    assert (await _snapshot(session_factory))["orgs"] == 2
+
+
+async def test_existing_email_writes_its_own_audit_row(session_factory, sent):
+    from app.models.audit_event import AuditEvent
+
+    owner_id = await _seed_owner(session_factory)
+    with TestClient(_make_app(session_factory)) as client:
+        _register(client, username="intruder", email=OWNER_EMAIL)
+    async with session_factory() as db:
+        rows = (await db.execute(select(AuditEvent))).scalars().all()
+    assert [r.event_type for r in rows] == ["auth.register.existing_email"]
+    assert rows[0].actor_user_id is None
+    assert rows[0].detail["existing_user_id"] == owner_id
+    assert rows[0].detail["notice"] == "queued"
 
 
 async def test_taken_org_name_answers_409_for_new_and_existing_email(session_factory, sent):

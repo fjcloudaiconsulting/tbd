@@ -377,38 +377,29 @@ EXISTING_ACCOUNT_NOTICE_SCOPE = "register_existing_notice"
 EXISTING_ACCOUNT_NOTICE_WINDOW_S = 24 * 60 * 60
 
 
-async def _org_name_taken(db: AsyncSession, name: str) -> bool:
-    """Preflight for a chosen org name, matching the rename check in
-    ``org_service``: SQL narrows on ``LOWER(name)``, Python compares exactly
-    (the UNIQUE is case-insensitive and accent-sensitive)."""
-    wanted = name.lower()
-    names = (
-        await db.scalars(select(Organization.name).where(func.lower(Organization.name) == wanted))
-    ).all()
-    return any(existing.lower() == wanted for existing in names)
-
-
-async def _queue_existing_account_notice(background_tasks: BackgroundTasks, user: User) -> None:
-    """Mail the owner of ``user`` that someone tried to sign up with their
-    address, at most once per window. Fails closed: if the throttle cannot be
-    read, no mail goes out, and the caller's answer is the same either way."""
-    if not user.is_active:
-        outcome = "inactive"
-    else:
-        try:
-            first = await state_db.claim_token(
-                EXISTING_ACCOUNT_NOTICE_SCOPE, str(user.id), EXISTING_ACCOUNT_NOTICE_WINDOW_S
-            )
-        except SQLAlchemyError as exc:
-            _LOGGER.warning(
-                "auth.register.existing_email.throttle_error",
-                extra={"error_class": type(exc).__name__},
-            )
-            return
-        outcome = "queued" if first else "throttled"
-        if first:
-            background_tasks.add_task(send_existing_account_signup_email, user.email)
-    _LOGGER.info("auth.register.existing_email", extra={"user_id": user.id, "notice": outcome})
+async def _queue_existing_account_notice(
+    background_tasks: BackgroundTasks, *, user_id: int, email: str, is_active: bool
+) -> str:
+    """Mail the owner of an existing account that someone tried to sign up
+    with their address, at most once per window, and return what happened.
+    Fails closed: if the throttle cannot be read, no mail goes out, and the
+    caller's answer is the same either way."""
+    if not is_active:
+        return "inactive"
+    try:
+        first = await state_db.claim_token(
+            EXISTING_ACCOUNT_NOTICE_SCOPE, str(user_id), EXISTING_ACCOUNT_NOTICE_WINDOW_S
+        )
+    except SQLAlchemyError as exc:
+        _LOGGER.warning(
+            "auth.register.existing_email.throttle_error",
+            extra={"error_class": type(exc).__name__},
+        )
+        return "throttle_error"
+    if not first:
+        return "throttled"
+    background_tasks.add_task(send_existing_account_signup_email, email)
+    return "queued"
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
@@ -467,33 +458,73 @@ async def register(
             },
         )
 
-    # TBD-654: every refusal below the captcha depends only on fields the
-    # caller chose (username, org name), never on the email, and all of them
-    # run before the email lookup. A taken username is already public through
-    # `/check-username`. The org-name preflight is what keeps a taken name from
-    # answering 409 for a new email and 201 for a registered one.
+    # TBD-654: from here to the branch below, an email that already has an
+    # account takes exactly the path a new one does, so neither a refusal nor
+    # the time taken depends on the email:
+    #   * the username check (a taken username is public via `/check-username`
+    #     anyway);
+    #   * the bcrypt hash, the dominant cost;
+    #   * the org insert and its seeded defaults. A chosen org name that is
+    #     taken answers 409 from the database's own UNIQUE on both paths, so no
+    #     preflight can disagree with the collation. For an existing email this
+    #     work is rolled back below and nothing is kept.
     if await db.scalar(select(User.id).where(User.username == body.username)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username already taken",
         )
-    if body.org_name and await _org_name_taken(db, body.org_name):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An organization with that name already exists",
-        )
 
-    # Hashed before the branch so both paths pay for bcrypt, the dominant cost.
     password_hash = hash_password(body.password)
 
     email_norm = normalize_email(body.email)
-    existing_user = await db.scalar(select(User).where(User.email == email_norm))
-    if existing_user is not None:
-        # Nothing is created or changed for this account; its owner is told.
-        await _queue_existing_account_notice(background_tasks, existing_user)
-        return RegisterResponse(detail=REGISTER_ACCEPTED_DETAIL)
+    existing = (
+        await db.execute(
+            select(User.id, User.email, User.is_active).where(User.email == email_norm)
+        )
+    ).first()
 
-    org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+    if existing is None:
+        org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+    else:
+        # The same org work, inside a savepoint that is always rolled back: a
+        # taken chosen name still raises its 409 from in here, and otherwise
+        # nothing is kept. An explicit savepoint, not `db.rollback()`, so the
+        # discard holds on drivers that release an outermost savepoint as a
+        # commit (pysqlite in the tests).
+        async with db.begin_nested() as dry_run:
+            await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+            await dry_run.rollback()
+
+        # Nothing is created or changed for this account; its owner is told.
+        # What still differs from the new-email path is a few single-row writes
+        # (user, trial, two commits) against the throttle claim here, small
+        # beside the hash and the org seed both paths pay above.
+        notice = await _queue_existing_account_notice(
+            background_tasks,
+            user_id=existing.id,
+            email=existing.email,
+            is_active=existing.is_active,
+        )
+        # Counterpart of `auth.register.success` below, so each path writes one
+        # audit row. The actor is unknown; `actor_email` is the address tried.
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="auth.register.existing_email",
+            actor_user_id=None,
+            actor_email=email_norm,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=logs.CONTEXT.get({}).get("request_id"),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={
+                "method": "password",
+                "existing_user_id": existing.id,
+                "notice": notice,
+                "captcha_required": app_settings.captcha_required,
+            },
+        )
+        return RegisterResponse(detail=REGISTER_ACCEPTED_DETAIL)
 
     user = User(
         org_id=org.id,
