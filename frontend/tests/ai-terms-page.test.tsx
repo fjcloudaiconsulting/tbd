@@ -25,6 +25,13 @@ describe("/ai-terms", () => {
     expect(t).not.toMatch(/—/);
   });
 
+  it("names the own-key providers and no longer offers Ollama (TBD-584)", () => {
+    // An editorial edit that narrows processing keeps the version (the fence above).
+    const t = render(<AiTermsPage />).container.textContent ?? "";
+    expect(t).toMatch(/OpenAI, Anthropic, or an OpenAI-compatible\s+service such as OpenRouter\)/);
+    expect(t).not.toMatch(/ollama/i);
+  });
+
   it("claims no DPA or SCCs, and states the AI exception to EU storage", () => {
     const t = render(<AiTermsPage />).container.textContent ?? "";
     expect(t).not.toMatch(/data processing agreement|Standard Contractual Clauses|\bDPA\b|\bSCCs?\b/);
