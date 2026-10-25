@@ -106,14 +106,17 @@ async def reauth_password(
     user: User,
     password: str | None,
     status_code: int = status.HTTP_403_FORBIDDEN,
-    detail: str = "Invalid password",
+    detail: str | dict = "Invalid password",
 ) -> None:
-    """Re-authenticate a signed-in user by password before an MFA change
-    (BE-32). Wrong passwords draw from the account's password budget, the one
-    ``/login`` uses, keyed on the user id: a stolen session cannot guess the
-    password here without limit, nor reopen the budget by renaming the
-    account. ``status_code`` / ``detail`` on a wrong password, 429 when the
-    budget is full.
+    """Re-authenticate a user by password: before an MFA change (BE-32), a
+    password or email change, a token-minting step-up and the confirmation of
+    an unverified address (TBD-735). Wrong passwords draw from the account's
+    password budget, the one ``/login`` uses, keyed on the user id: a stolen
+    session cannot guess the password here without limit, nor reopen the
+    budget by renaming the account. ``status_code`` / ``detail`` on a wrong
+    password, 429 when the budget is full; the right password empties it, as
+    at ``/login``. A missing password is refused the
+    same way but not counted: no guess was made.
     """
     try:
         retry_after = await attempts.password_retry_after(user.id)
@@ -125,7 +128,15 @@ async def reauth_password(
             detail=attempts.TOO_MANY_LOGIN_ATTEMPTS_DETAIL,
             headers={"Retry-After": str(retry_after)},
         )
-    if password and verify_password(password, user.password_hash):
+    if not password:
+        raise HTTPException(status_code=status_code, detail=detail)
+    if verify_password(password, user.password_hash):
+        # A right password empties the account's window, as at /login, so
+        # typos here do not leave /login one failure from its full refusal.
+        try:
+            await attempts.clear_password_failures(user.id)
+        except SQLAlchemyError as exc:
+            raise _unavailable() from exc
         return
     try:
         filled = await attempts.record_password_failure(None, user.id)
@@ -153,10 +164,15 @@ async def require_second_factor(
     code: str | None,
     status_code: int = status.HTTP_403_FORBIDDEN,
     detail: str = "Invalid authentication code",
+    totp_only: bool = False,
 ) -> None:
     """Require a current TOTP code or an unused recovery code from a signed-in
     MFA user before a change that could remove or bypass MFA (BE-32): turning
     it off, minting new recovery codes, moving the account email.
+
+    ``totp_only`` accepts an authenticator code alone, never a recovery code:
+    the step-ups that mint tokens (PAT, agent token, OAuth consent) take only
+    TOTP. Either way a TOTP code is accepted once (``verify_totp_once``).
 
     Wrong codes draw from the user's second-factor budget, the same one the
     sign-in challenge uses (BE-02). A recovery code is spent in the caller's
@@ -175,7 +191,12 @@ async def require_second_factor(
             headers={"Retry-After": str(retry_after)},
         )
     try:
-        accepted = bool(code) and await verify_second_factor(db, user, code)
+        if totp_only:
+            accepted = bool(code and user.totp_secret) and await verify_totp_once(
+                user, code.strip()
+            )
+        else:
+            accepted = bool(code) and await verify_second_factor(db, user, code)
         if accepted:
             await attempts.clear_mfa_failures(user_id)
         else:
