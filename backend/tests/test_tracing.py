@@ -158,6 +158,24 @@ async def test_invitation_preview_with_a_real_token_keeps_token_and_email_out_of
     _assert_absent(finished, token, email)
 
 
+async def test_invitation_preview_by_body_keeps_token_and_email_out_of_every_span(
+    real_app, session_factory, spans
+):
+    """TBD-738: the frontend now posts the token in the body."""
+    token, email = await _seed_invitation(session_factory)
+    response = TestClient(real_app).post(
+        "/api/v1/orgs/invitations/preview", json={"token": token}
+    )
+    assert response.status_code == 200
+    assert response.json()["email"] == email
+
+    finished = spans()
+    server = _server(finished)
+    assert set(server.attributes) == SERVER_KEYS
+    assert server.name == "POST /api/v1/orgs/invitations/preview"
+    _assert_absent(finished, token, email)
+
+
 async def test_google_callback_keeps_code_and_state_out_of_every_span(
     real_app, spans, monkeypatch
 ):

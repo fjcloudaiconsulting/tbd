@@ -108,7 +108,7 @@ async def test_a_password_reset_reopens_the_window(session_factory) -> None:
         assert _login(client, "alice@example.com", PASSWORD).status_code == 401
         reset = client.post(
             "/api/v1/auth/reset-password",
-            json={"token": create_password_reset_token(seed["user_id"]), "new_password": "a-new-passw0rd"},
+            json={"token": create_password_reset_token(seed["user_id"], "alice@example.com"), "new_password": "a-new-passw0rd"},
         )
         assert reset.status_code == 200, reset.text
         assert _login(client, "alice", "a-new-passw0rd").status_code == 200

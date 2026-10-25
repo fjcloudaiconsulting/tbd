@@ -26,6 +26,7 @@ from app.schemas.common import ListEnvelope
 from app.schemas.invitation import (
     InvitationAcceptRequest,
     InvitationCreateRequest,
+    InvitationPreviewRequest,
     InvitationPreviewResponse,
     InvitationResponse,
     MemberResponse,
@@ -220,20 +221,47 @@ async def delete_invitation(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get(
-    "/invitations/preview",
-    response_model=InvitationPreviewResponse,
-)
-@limiter.limit("30/minute")
-async def preview_invitation(
-    request: Request,
-    token: str = Query(..., min_length=1),
-    db: AsyncSession = Depends(get_db),
-):
+async def _preview(db: AsyncSession, token: str) -> dict:
     try:
         return await invitation_service.preview_invitation(db, token=token)
     except invitation_service.InvitationUnavailable:
         raise _invitation_unavailable()
+
+
+# TBD-738: the token travels in the POST body so it never sits in a URL (edge
+# access logs, browser history, Referer). Both shapes share ONE pre-auth
+# budget (``shared_limit`` on the same scope), so keeping the GET for a
+# release does not double it.
+@router.post(
+    "/invitations/preview",
+    response_model=InvitationPreviewResponse,
+)
+@limiter.shared_limit("30/minute", scope="org_members.preview_invitation")
+async def preview_invitation(
+    request: Request,
+    payload: InvitationPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    return await _preview(db, payload.token)
+
+
+# DEPRECATED (TBD-738): the query-string shape, kept for one release only.
+# Backend and frontend images deploy separately, so a frontend still on the
+# GET must keep working until the frontend that posts is live. Delete this
+# route (and its PUBLIC_ROUTES and DECORATOR_PATTERNS entries) in the next
+# release.
+@router.get(
+    "/invitations/preview",
+    response_model=InvitationPreviewResponse,
+    deprecated=True,
+)
+@limiter.shared_limit("30/minute", scope="org_members.preview_invitation")
+async def preview_invitation_by_query(
+    request: Request,
+    token: str = Query(..., min_length=1),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _preview(db, token)
 
 
 @router.post("/invitations/accept", response_model=TokenResponse)
@@ -346,8 +374,8 @@ async def list_members(
 # over N members N private budgets. The stated intent and the actual behaviour
 # disagreed; this makes the behaviour match the comment.
 #
-# NOTE the sibling `@limiter.limit("30/minute")` on `preview_invitation` above
-# is CORRECT as a plain `limit`: its path carries no parameter.
+# NOTE the preview routes above carry no path parameter either; they use
+# `shared_limit` only so the deprecated GET and the POST share one budget.
 @limiter.shared_limit(dynamic_limit("org_members.remove_member", "30/minute"), scope="org_members.remove_member")
 async def remove_member(
     user_id: int,

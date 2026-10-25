@@ -61,6 +61,7 @@ import logging
 from slowapi import Limiter
 from starlette.requests import Request
 
+from app import logs
 from app import rate_limit_db  # noqa: F401  (registers tbd-db://)
 from app.config import settings
 
@@ -211,6 +212,24 @@ def rate_limit_key(request: Request) -> str:
     if ip.ipv4_mapped:
         return str(ip.ipv4_mapped)
     return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+
+
+def user_rate_limit_key(request: Request) -> str:
+    """Bucket key for per-user limits (TBD-726): the authenticated user.
+
+    For routes whose cost is per caller rather than per address, so users
+    behind one NAT do not share a budget and one user cannot spread across
+    addresses. slowapi calls the key function inside the route wrapper, after
+    the dependencies, and ``get_current_user`` (JWT and PAT alike) binds
+    ``user_id`` into the request's log context, the same channel
+    ``audit_service`` reads identity from. A request with no bound user falls
+    back to the per-IP key, so use this only on routes that depend on
+    ``get_current_user``.
+    """
+    user_id = logs.CONTEXT.get({}).get("user_id")
+    if isinstance(user_id, int):
+        return f"user:{user_id}"
+    return rate_limit_key(request)
 
 
 def _build_limiter() -> Limiter:

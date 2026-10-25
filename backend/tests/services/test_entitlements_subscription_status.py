@@ -18,6 +18,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app._time import utcnow_naive
 from app.auth.feature_catalog import ALL_FEATURE_KEYS, DEFAULT_TURN_INPUT_TOKENS
 from app.config import settings
 from app.models import Base
@@ -196,7 +197,7 @@ async def test_expired_trial_keeps_its_plan_until_the_expiry_sweep(factory):
     ``check_trial_expiry`` moves it to Free (ACTIVE), which then resolves as
     Free through the plan row, not through the status."""
     await _plans(factory)
-    yesterday = datetime.date.today() - DAY
+    yesterday = utcnow_naive().date() - DAY  # the UTC date, as the app uses (TBD-749)
     org = await _org_on_pro(factory, SubscriptionStatus.TRIALING, trial_end=yesterday)
     assert (await _ent(factory, org)).features == PRO_FEATURES
 
