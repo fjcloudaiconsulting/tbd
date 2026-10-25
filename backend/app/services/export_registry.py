@@ -279,6 +279,13 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     # full export hands over no live capability.
     "invitations": Include(OrgColumn(), "addresses the org typed in; already shown in-app"),
     "merchant_dictionary": Exclude("cross-org PUBLIC normalisation dictionary, not org data"),
+    # Server-internal and never serialized, like tag_dictionary_contributors.
+    # A row only records that this org confirmed a dictionary suggestion; the
+    # org's own choices are already exported through category_rules.
+    "merchant_dictionary_votes": Exclude(
+        "cross-org PRIVATE vote rows on the public dictionary; server-internal "
+        "counting substrate, the org's choices are exported via category_rules"
+    ),
     "notifications": Include(
         Via("users", "user_id"), "in-app notifications the subject received"
     ),

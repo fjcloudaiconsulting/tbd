@@ -3,9 +3,13 @@
 Covers Task 7 of L3.10.
 
   Accept (row.category_id == row.suggested_category_id):
-    -> learn_from_choice(source="user_pick"); bump shared vote if org opted in.
+    -> learn_from_choice(source="user_pick").
   Override (row.category_id != row.suggested_category_id, or no suggestion):
-    -> learn_from_choice(source="user_edit"); do NOT bump shared vote.
+    -> learn_from_choice(source="user_edit").
+  Shared-dictionary vote (BE-28): only for an org that shares merchant data,
+    only when the SERVER's own suggestion for the row is the dictionary's and
+    the confirmed category matches it, and at most once per org per entry.
+    The client's suggested_category_id / suggestion_source play no part.
   Transfer rows: skip both.
   Aggregate metric: one smart_rules.import_executed event after the loop;
                     smart_rules.miss once per UNIQUE missed token.
@@ -24,7 +28,7 @@ from app.models import Base
 from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.merchant_dictionary import MerchantDictionaryEntry
+from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
@@ -159,6 +163,73 @@ async def test_accept_without_opt_in_does_not_bump_shared(db_session: AsyncSessi
     await import_service.execute_import(db_session, org_id=seed["org_id"], body=body)
     entry = (await db_session.execute(select(MerchantDictionaryEntry))).scalar_one()
     assert entry.vote_count == 0
+
+
+def _row(n: int, category_id: int, **suggestion) -> ImportConfirmRow:
+    return ImportConfirmRow(
+        row_number=n, date=datetime.date(2026, 5, n),
+        description=f"POS LIDL *{n:04d}", amount=Decimal("12.50"), type="expense",
+        category_id=category_id, **suggestion,
+    )
+
+
+async def _confirm(db: AsyncSession, seed: dict, rows: list[ImportConfirmRow]) -> None:
+    body = ImportConfirmRequest(
+        account_id=seed["account_id"],
+        default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
+        rows=rows,
+    )
+    await import_service.execute_import(db, org_id=seed["org_id"], body=body)
+
+
+async def _votes(db: AsyncSession) -> tuple[int, int]:
+    entry = (await db.execute(select(MerchantDictionaryEntry))).scalar_one()
+    await db.refresh(entry)
+    n = len((await db.execute(select(MerchantDictionaryVote))).scalars().all())
+    return entry.vote_count, n
+
+
+async def test_client_claimed_dictionary_suggestion_casts_no_vote(
+    db_session: AsyncSession,
+) -> None:
+    """BE-28: the client says the dictionary suggested the category it picked,
+    but the server's suggestion for LIDL is Groceries, not Restaurants."""
+    seed = await _seed(db_session, share=True)
+    await _confirm(db_session, seed, [_row(
+        1, seed["restaurants_id"],
+        suggested_category_id=seed["restaurants_id"],
+        suggestion_source="shared_dictionary",
+    )])
+    assert await _votes(db_session) == (0, 0)
+
+
+async def test_vote_is_recomputed_without_client_suggestion_fields(
+    db_session: AsyncSession,
+) -> None:
+    """The vote follows the server's suggestion: a row with no suggestion
+    fields that confirms the dictionary's category still counts."""
+    seed = await _seed(db_session, share=True)
+    await _confirm(db_session, seed, [_row(1, seed["groceries_id"])])
+    assert await _votes(db_session) == (1, 1)
+
+
+async def test_repeated_rows_and_imports_count_one_vote_per_org(
+    db_session: AsyncSession,
+) -> None:
+    seed = await _seed(db_session, share=True)
+    accepted = {
+        "suggested_category_id": seed["groceries_id"],
+        "suggestion_source": "shared_dictionary",
+    }
+    await _confirm(db_session, seed, [
+        _row(n, seed["groceries_id"], **accepted) for n in (1, 2, 3)
+    ])
+    await _confirm(db_session, seed, [
+        _row(n, seed["groceries_id"], **accepted) for n in (4, 5)
+    ])
+    assert await _votes(db_session) == (1, 1)
 
 
 async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:

@@ -42,10 +42,10 @@ from app.services.transaction_service import (
     get_account_for_update,
 )
 from app.services.category_rules_service import (
-    bump_shared_vote,
     infer_category,
     learn_from_choice,
     normalize_description,
+    record_shared_vote,
     should_skip_learning,
 )
 from app.services.import_parser import ParsedRow
@@ -775,6 +775,18 @@ async def execute_import(
             source = "user_pick" if accepted else "user_edit"
             try:
                 async with db.begin_nested():
+                    # BE-28: the shared-dictionary vote is recomputed from the
+                    # server's own suggestion, not from the client's
+                    # suggested_category_id / suggestion_source, and counts
+                    # once per org. Before learn_from_choice, whose rule would
+                    # otherwise become the suggestion.
+                    if share_merchant_data:
+                        await record_shared_vote(
+                            db,
+                            org_id=org_id,
+                            description=row.description,
+                            category_id=row.category_id,
+                        )
                     await learn_from_choice(
                         db,
                         org_id=org_id,
@@ -782,11 +794,6 @@ async def execute_import(
                         category_id=row.category_id,
                         source=source,
                     )
-                    if (
-                        accepted and share_merchant_data
-                        and row.suggestion_source == "shared_dictionary"
-                    ):
-                        await bump_shared_vote(db, description=row.description)
                 # savepoint released on normal exit; outer transaction unchanged
             except Exception as exc:
                 # savepoint already rolled back by the begin_nested context

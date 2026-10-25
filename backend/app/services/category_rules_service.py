@@ -8,12 +8,13 @@ import re
 import unicodedata
 from typing import Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.merchant_dictionary import MerchantDictionaryEntry
+from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
 from app.services.transaction_filters import is_transfer_leg
 
 # URL scheme prefix (HTTP / HTTPS) — stripped before bank-noise so `HTTPS://AMAZON…` collapses cleanly.
@@ -282,21 +283,96 @@ async def learn_from_choice(
     rule.match_count = (rule.match_count or 0) + 1
 
 
-async def bump_shared_vote(db: AsyncSession, *, description: str) -> None:
-    """Atomically increment vote_count on the matching shared-dictionary entry.
+async def record_shared_vote(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    description: str,
+    category_id: int,
+) -> bool:
+    """Count ``org_id``'s vote for a shared-dictionary entry (BE-28).
 
-    No-op if the normalized token isn't in the dictionary — promotion of
-    new tokens is a future feature. Caller controls the transaction.
+    The vote is decided here, never from the client's suggestion fields:
+    the server recomputes its own suggestion for ``description``
+    (``infer_category``) and the org votes only when that suggestion came
+    from the shared dictionary and ``category_id`` is the category it
+    resolved to. Call it BEFORE ``learn_from_choice`` for the same row,
+    since the rule that call writes would make the org's own rule the
+    suggestion.
 
-    Uses ``UPDATE ... SET vote_count = vote_count + 1`` so concurrent imports
-    from different orgs don't lose increments under repeatable-read isolation
-    (the previous read-modify-write pattern would clobber peers under load).
+    One vote per org per entry: a ``MerchantDictionaryVote`` row is inserted
+    under ``UNIQUE(entry_id, org_id)`` and ``vote_count`` goes up by one only
+    when that insert creates a new row, so repeating a confirm is a no-op.
+    The insert runs in a SAVEPOINT: a concurrent confirm by the same org
+    waits on the unique key and then fails it, which rolls back only the
+    savepoint. Returns True iff a new vote was counted. Caller commits.
     """
-    token = normalize_description(description)
-    if not token:
-        return
+    suggested_id, source = await infer_category(
+        db, org_id=org_id, description=description
+    )
+    if source != "shared_dictionary" or suggested_id != category_id:
+        return False
+
+    entry_id = (await db.execute(
+        select(MerchantDictionaryEntry.id).where(
+            MerchantDictionaryEntry.normalized_token
+            == normalize_description(description)
+        )
+    )).scalar_one_or_none()
+    if entry_id is None:
+        return False
+
+    existing = (await db.execute(
+        select(MerchantDictionaryVote.id).where(
+            MerchantDictionaryVote.entry_id == entry_id,
+            MerchantDictionaryVote.org_id == org_id,
+        )
+    )).scalar_one_or_none()
+    if existing is not None:
+        return False
+    try:
+        async with db.begin_nested():
+            db.add(MerchantDictionaryVote(entry_id=entry_id, org_id=org_id))
+            await db.flush()
+    except IntegrityError:
+        # Counted already by a concurrent confirm of the same org.
+        return False
+
+    # ``vote_count + 1`` in SQL so concurrent votes from different orgs
+    # don't lose increments under repeatable-read isolation.
     await db.execute(
         update(MerchantDictionaryEntry)
-        .where(MerchantDictionaryEntry.normalized_token == token)
+        .where(MerchantDictionaryEntry.id == entry_id)
         .values(vote_count=MerchantDictionaryEntry.vote_count + 1)
     )
+    return True
+
+
+async def withdraw_shared_votes(db: AsyncSession, *, org_id: int) -> int:
+    """Remove every shared-dictionary vote of ``org_id`` (org reset or delete).
+
+    Each entry loses the one count the org's vote added, then the vote rows
+    go, so ``vote_count`` keeps its legacy baseline plus one per remaining
+    vote row. The rows are read with a locking read, so a vote committed
+    while this transaction waited is withdrawn too. Staged on the caller's
+    session; the caller commits. Returns the number of votes removed.
+    """
+    rows = (await db.execute(
+        select(MerchantDictionaryVote.id, MerchantDictionaryVote.entry_id)
+        .where(MerchantDictionaryVote.org_id == org_id)
+        .with_for_update()
+    )).all()
+    if not rows:
+        return 0
+    for _, entry_id in rows:
+        await db.execute(
+            update(MerchantDictionaryEntry)
+            .where(MerchantDictionaryEntry.id == entry_id)
+            .values(vote_count=MerchantDictionaryEntry.vote_count - 1)
+        )
+    await db.execute(
+        delete(MerchantDictionaryVote).where(
+            MerchantDictionaryVote.id.in_([vote_id for vote_id, _ in rows])
+        )
+    )
+    return len(rows)
