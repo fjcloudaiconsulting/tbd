@@ -10,6 +10,8 @@ Mocks the adapter (no network) and pins:
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import os
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, patch
@@ -25,8 +27,8 @@ from app.config import settings as app_settings
 from app.models import Base
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.user import Organization
-from app.schemas.org_ai_credential import OrgAICredentialCreate
-from app.services import ai_credential_service
+from app.schemas.org_ai_credential import OrgAICredentialCreate, OrgAICredentialResponse
+from app.services import ai_credential_crypto, ai_credential_service
 from app.services.ai_providers.base import ValidateResult
 
 
@@ -364,3 +366,97 @@ async def test_retired_provider_row_is_refused_before_any_adapter(
     assert await ai_credential_service.get_credential_for_org(
         db, org_id=org.id, credential_id=row.id
     ) is None
+
+
+# ---------------------------------------------------------------
+# TBD-719: the key fingerprint is an HMAC under a purpose-bound
+# server key, marked ``h1:``. A row stored before it holds 16 bare
+# hex chars of an unkeyed sha256 and stays valid until a revalidate
+# or rotate rewrites it.
+# ---------------------------------------------------------------
+
+def _legacy(api_key: str) -> str:
+    """The pre-TBD-719 value: an unkeyed sha256 prefix."""
+    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+
+def test_fingerprint_key_is_purpose_bound():
+    """Never the raw JWT secret: an HMAC directly under it differs."""
+    raw = hmac.new(
+        app_settings.jwt_secret_key.encode(), b"sk-test-fixture", "sha256"
+    ).hexdigest()[:16]
+    assert ai_credential_crypto.fingerprint("sk-test-fixture") != f"h1:{raw}"
+
+
+def test_fingerprint_follows_the_server_secret(monkeypatch):
+    """Rotating JWT_SECRET_KEY changes newly computed fingerprints; a
+    revalidate or rotate rewrites the stored one (see below)."""
+    before = ai_credential_crypto.fingerprint("sk-test-fixture")
+    monkeypatch.setattr(app_settings, "jwt_secret_key", "x" * 64)
+    assert ai_credential_crypto.fingerprint("sk-test-fixture") != before
+
+
+async def test_create_and_rotate_store_the_keyed_fingerprint(db, session_factory, org):
+    row = await _seed_credential(
+        db, session_factory, org, provider=AiProvider.OPENAI, api_key="sk-test-fixture-aaaa"
+    )
+    assert row.key_fingerprint == ai_credential_crypto.fingerprint("sk-test-fixture-aaaa")
+    with _patch_adapter(_ok_validate()):
+        rotated = await ai_credential_service.rotate_credential(
+            db, credential=row, new_api_key="sk-test-fixture-bbbb",
+            session_factory=session_factory, **_ACTOR_KW,
+        )
+    assert rotated.key_fingerprint == ai_credential_crypto.fingerprint("sk-test-fixture-bbbb")
+
+
+async def _legacy_row(db, session_factory, org, api_key: str) -> OrgAICredential:
+    """A row as stored before TBD-719."""
+    row = await _seed_credential(
+        db, session_factory, org, provider=AiProvider.OPENAI, api_key=api_key
+    )
+    row.key_fingerprint = _legacy(api_key)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def test_legacy_row_still_serializes(db, session_factory, org):
+    row = await _legacy_row(db, session_factory, org, "sk-test-fixture-cccc")
+    body = OrgAICredentialResponse.model_validate(row)
+    assert body.key_fingerprint == _legacy("sk-test-fixture-cccc")
+
+
+@pytest.mark.parametrize("ok", [True, False], ids=["valid", "rejected"])
+async def test_revalidate_upgrades_a_legacy_fingerprint(db, session_factory, org, ok):
+    row = await _legacy_row(db, session_factory, org, "sk-test-fixture-dddd")
+    with _patch_adapter(_ok_validate() if ok else _bad_validate()):
+        updated = await ai_credential_service.validate_credential(
+            db, credential=row, session_factory=session_factory, **_ACTOR_KW,
+        )
+    assert updated.key_fingerprint == ai_credential_crypto.fingerprint("sk-test-fixture-dddd")
+
+
+async def test_revalidate_keeps_a_current_fingerprint(db, session_factory, org):
+    row = await _seed_credential(
+        db, session_factory, org, provider=AiProvider.OPENAI, api_key="sk-test-fixture-eeee"
+    )
+    before = row.key_fingerprint
+    with _patch_adapter(_ok_validate()):
+        updated = await ai_credential_service.validate_credential(
+            db, credential=row, session_factory=session_factory, **_ACTOR_KW,
+        )
+    assert updated.key_fingerprint == before
+
+
+async def test_revalidate_after_a_secret_rotation_refreshes_the_fingerprint(
+    db, session_factory, org, monkeypatch
+):
+    row = await _seed_credential(
+        db, session_factory, org, provider=AiProvider.OPENAI, api_key="sk-test-fixture-ffff"
+    )
+    monkeypatch.setattr(app_settings, "jwt_secret_key", "y" * 64)
+    with _patch_adapter(_ok_validate()):
+        updated = await ai_credential_service.validate_credential(
+            db, credential=row, session_factory=session_factory, **_ACTOR_KW,
+        )
+    assert updated.key_fingerprint == ai_credential_crypto.fingerprint("sk-test-fixture-ffff")

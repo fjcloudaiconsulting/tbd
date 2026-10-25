@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
 
 import pytest
 from cryptography.fernet import Fernet
 
 from app.config import settings as app_settings
+from app.security import derive_hmac_key
 from app.services import ai_credential_crypto as crypto
 
 
@@ -54,11 +56,14 @@ def test_decrypt_without_prev_raises_when_token_is_stale(monkeypatch):
         crypto.decrypt(token)
 
 
-def test_fingerprint_is_stable_first_16_hex_of_sha256():
+def test_fingerprint_is_h1_and_first_16_hex_of_the_purpose_keyed_hmac():
+    """TBD-719: keyed by a purpose-bound derivation of JWT_SECRET_KEY, never a
+    plain sha256 of the key (rows stored before it keep that legacy value)."""
     plaintext = "sk-fixture-secret-value"
-    expected = hashlib.sha256(plaintext.encode()).hexdigest()[:16]
+    key = derive_hmac_key(b"ai-key-fingerprint-v1")
+    expected = "h1:" + hmac.new(key, plaintext.encode(), hashlib.sha256).hexdigest()[:16]
     assert crypto.fingerprint(plaintext) == expected
-    assert len(crypto.fingerprint(plaintext)) == 16
+    assert crypto.fingerprint(plaintext) != hashlib.sha256(plaintext.encode()).hexdigest()[:16]
     # Stable across calls
     assert crypto.fingerprint(plaintext) == crypto.fingerprint(plaintext)
 
