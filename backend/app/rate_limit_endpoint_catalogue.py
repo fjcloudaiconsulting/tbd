@@ -177,11 +177,10 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "oauth.token",
     "org_members.accept_invitation",
     "org_members.preview_invitation",
-    # Backfilled by TBD-353. These three decorators pre-date this
+    # Backfilled by TBD-353. These two decorators pre-date this
     # catalogue entry and had none, which made the module's own
     # "single source of truth" claim false and left the admin UI's
     # dropdown implying the routes were unlimited.
-    "public_stats.founder_count",
     "security.csp_report",
     "webhooks.mailgun",
 })

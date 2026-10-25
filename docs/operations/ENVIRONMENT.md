@@ -235,7 +235,6 @@ These are secrets (never plain env):
 - `CAPTCHA_SECRET`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
-- `FOUNDER_COUNT_EXCLUDE_USERNAMES` (names the smoke account, TBD-371)
 
 The manifests read each one they set through `secretKeyRef`. When adding a variable, check whether it is a secret before making it plain env.
 
