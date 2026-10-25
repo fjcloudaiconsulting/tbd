@@ -37,6 +37,11 @@ from app.security import (
 )
 
 
+STARTING_PASSWORD = "starting-password"
+RESET_PASSWORD = "reset-password"
+SECOND_RESET_PASSWORD = "second-reset-password"
+
+
 @pytest_asyncio.fixture
 async def session_factory():
     engine = create_async_engine(
@@ -83,7 +88,7 @@ async def _seed_user(session_factory, *, password_set: bool) -> int:
             org_id=org.id,
             username="alice",
             email="alice@acme.io",
-            password_hash=hash_password("starting-password"),
+            password_hash=hash_password(STARTING_PASSWORD),
             role=Role.OWNER,
             is_active=True,
             email_verified=True,
@@ -145,7 +150,7 @@ async def test_reset_password_keeps_password_set_true_for_classic_user(session_f
 # ── TBD-654: the token is single-use (jti) and bound to the address ─────────
 
 
-def _reset(client, token: str, new_password: str = "fresh-strong-password"):
+def _reset(client, token: str, new_password: str = RESET_PASSWORD):
     return client.post(
         "/api/v1/auth/reset-password", json={"token": token, "new_password": new_password}
     )
@@ -166,10 +171,10 @@ async def test_a_token_resets_once(session_factory):
     token = create_password_reset_token(user_id, "alice@acme.io")
     with TestClient(_make_app(session_factory)) as client:
         assert _reset(client, token).status_code == 200
-        replay = _reset(client, token, "a-second-new-password")
+        replay = _reset(client, token, SECOND_RESET_PASSWORD)
     assert replay.status_code == 400
     async with session_factory() as db:
-        assert verify_password("fresh-strong-password", (await db.get(User, user_id)).password_hash)
+        assert verify_password(RESET_PASSWORD, (await db.get(User, user_id)).password_hash)
 
 
 @pytest.mark.asyncio
@@ -185,7 +190,7 @@ async def test_a_token_dies_with_an_email_change(session_factory):
     assert res.status_code == 400
     assert res.json()["detail"] == "Invalid or expired reset token"
     async with session_factory() as db:
-        assert verify_password("starting-password", (await db.get(User, user_id)).password_hash)
+        assert verify_password(STARTING_PASSWORD, (await db.get(User, user_id)).password_hash)
 
 
 @pytest.mark.asyncio

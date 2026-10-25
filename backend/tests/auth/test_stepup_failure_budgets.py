@@ -52,6 +52,10 @@ from tests.routers.test_api_tokens import (  # noqa: F401  (fixtures + helpers)
 )
 
 
+WRONG_PASSWORD = "wrong"
+NEW_PASSWORD = "new-password"
+
+
 @pytest.fixture(autouse=True)
 def mfa_key(monkeypatch):
     monkeypatch.setattr(app_settings, "mfa_encryption_key", Fernet.generate_key().decode())
@@ -166,7 +170,7 @@ async def test_wrong_mint_passwords_draw_from_the_password_budget(factory) -> No
     jwt = await _jwt_for(factory, uid)
     await _fill_password_budget_but_one(uid)
     with _make_client(factory) as client:
-        assert _mint(client, jwt, current_password="not-the-password") == 401
+        assert _mint(client, jwt, current_password=WRONG_PASSWORD) == 401
         # The same budget /login checks, keyed on the user id.
         assert await attempts.password_retry_after(uid) is not None
         assert _mint(client, jwt, current_password=PASSWORD) == 429
@@ -189,7 +193,7 @@ async def test_wrong_current_passwords_at_password_change_draw_from_the_budget(
 ) -> None:
     user_id, auth = await _signed_in(session_factory)
     await _fill_password_budget_but_one(user_id)
-    body = {"current_password": "not-the-password", "new_password": "a-new-passw0rd-1"}
+    body = {"current_password": WRONG_PASSWORD, "new_password": NEW_PASSWORD}
     with TestClient(_app(session_factory)) as client:
         res = client.post("/api/v1/users/me/password", json=body, headers=auth)
         assert res.status_code == 400, res.text
@@ -207,7 +211,7 @@ async def test_wrong_current_passwords_at_password_change_draw_from_the_budget(
 async def test_wrong_passwords_at_email_change_draw_from_the_budget(session_factory) -> None:
     user_id, auth = await _signed_in(session_factory)
     await _fill_password_budget_but_one(user_id)
-    body = {"email": "moved@example.com", "current_password": "not-the-password"}
+    body = {"email": "moved@example.com", "current_password": WRONG_PASSWORD}
     with TestClient(_app(session_factory)) as client:
         res = client.put("/api/v1/users/me", json=body, headers=auth)
         assert res.status_code == 400, res.text
@@ -242,7 +246,7 @@ async def test_wrong_passwords_at_verify_email_draw_from_the_budget(session_fact
         assert await attempts.password_retry_after(user_id) is None
 
         wrong = client.post(
-            "/api/v1/auth/verify-email", json={"token": token, "password": "not-the-password"}
+            "/api/v1/auth/verify-email", json={"token": token, "password": WRONG_PASSWORD}
         )
         assert wrong.status_code == 400
         assert wrong.json()["detail"]["code"] == "password_incorrect"
