@@ -874,9 +874,11 @@ def _call_cost_micros(
 ) -> int:
     """What one provider call cost: the provider's billed figure when it
     reported one (a reported 0 is a real 0, e.g. a free model), else the
-    platform's reserved (padded) catalog prices, else the BYOK table estimate."""
+    platform's reserved (padded) catalog prices, else the BYOK table estimate.
+    Never negative: a hostile count must not lower the period's cost (TBD-607)."""
+    prompt, completion = max(0, prompt), max(0, completion)
     if reported is not None:
-        return reported
+        return max(0, reported)
     if prepared.platform is not None:
         return platform_ai.cost_micros(prompt, completion, *prepared.platform.price)
     return estimate_cost_micros(
@@ -906,6 +908,11 @@ async def _write_ledger_row(
     billing_source: str = "org_key",
     cost_estimated: bool = False,
 ) -> AIUsageLedger:
+    # The aggregate the hard cap reads is a SUM over these rows, so a negative
+    # count or cost here would buy headroom (TBD-607). Adapters clamp already.
+    prompt_tokens = max(0, prompt_tokens)
+    completion_tokens = max(0, completion_tokens)
+    cost_micros_value = max(0, cost_micros_value)
     row = AIUsageLedger(
         org_id=org_id,
         credential_id=credential_id,
