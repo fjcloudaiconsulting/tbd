@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.304.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.303.1...v0.304.0) (2026-10-25)
+
+
+### Features
+
+* **ai:** route_tool factory, transactions_get and transactions_update (TBD-664) ([#1037](https://github.com/fjcloudaiconsulting/tbd/issues/1037)) ([f5187bd](https://github.com/fjcloudaiconsulting/tbd/commit/f5187bd0b92195d22a4dab7e0c03a74e5a4aaf58))
+
+
+### Bug Fixes
+
+* **ai:** staged agent actions keep only the fields set, with an honesty fence over agent writes (TBD-664) ([#1001](https://github.com/fjcloudaiconsulting/tbd/issues/1001)) ([36bd73f](https://github.com/fjcloudaiconsulting/tbd/commit/36bd73f1441e8248009c368ea39551e55bc4c4cf))
+* **auth:** per-user limits on password re-checks and token-mint step-ups, bound reset tokens (TBD-735) ([#1033](https://github.com/fjcloudaiconsulting/tbd/issues/1033)) ([dbb7c96](https://github.com/fjcloudaiconsulting/tbd/commit/dbb7c967f41f9dca075799aae8ca4c25166c4c86))
+* **auth:** stop reading the MFA challenge token from the query string (TBD-654) ([#1034](https://github.com/fjcloudaiconsulting/tbd/issues/1034)) ([d39dd92](https://github.com/fjcloudaiconsulting/tbd/commit/d39dd9287a3e968c3c0950029c51c305ee3abe40))
+* **deps:** upgrade react-grid-layout to v2 and drop @types/react-grid-layout (TBD-638) ([#1028](https://github.com/fjcloudaiconsulting/tbd/issues/1028)) ([e682c43](https://github.com/fjcloudaiconsulting/tbd/commit/e682c439cafa03fa30c212cb0e572db50841ccc2))
+* **import:** commit the confirm in chunks and make it idempotent (TBD-737) ([#1039](https://github.com/fjcloudaiconsulting/tbd/issues/1039)) ([8d713d9](https://github.com/fjcloudaiconsulting/tbd/commit/8d713d9444583d1c19e6b3d1f693596eb65c2386))
+* **invitations:** lock the org row before invitation rows on create and accept (TBD-727) ([#1036](https://github.com/fjcloudaiconsulting/tbd/issues/1036)) ([1e6358f](https://github.com/fjcloudaiconsulting/tbd/commit/1e6358fbd1e9f158470ecbd30a187da65a689e6c))
+* **invitations:** send the invitation preview token in the request body (TBD-738) ([#1038](https://github.com/fjcloudaiconsulting/tbd/issues/1038)) ([9c9603e](https://github.com/fjcloudaiconsulting/tbd/commit/9c9603eb4cd4a152b776ae0f8f0452f27019b91b))
+* **scenarios:** run the simulation off the event loop and rate limit it per user (TBD-726) ([#1032](https://github.com/fjcloudaiconsulting/tbd/issues/1032)) ([4223a93](https://github.com/fjcloudaiconsulting/tbd/commit/4223a9395348d6e08b1378a245378561484395d2))
+* **security:** let migrations run with their own database URL (TBD-655) ([#1030](https://github.com/fjcloudaiconsulting/tbd/issues/1030)) ([4ed71c9](https://github.com/fjcloudaiconsulting/tbd/commit/4ed71c908394bd2f084a660b6893c421808e26e4))
+* **security:** remove the unused public founder-count endpoint (TBD-661) ([#1040](https://github.com/fjcloudaiconsulting/tbd/issues/1040)) ([d000481](https://github.com/fjcloudaiconsulting/tbd/commit/d0004813e16b9e20e70726e30cedb85309f50700))
+* **subscriptions:** use the UTC date for trial and period dates (TBD-749) ([#1029](https://github.com/fjcloudaiconsulting/tbd/issues/1029)) ([bf5d220](https://github.com/fjcloudaiconsulting/tbd/commit/bf5d2207fc81f1b6266bc5677d9b0147ccffd67e))
+* **tags:** treat % and _ in the tag-suggestion prefix as literal characters (TBD-718) ([#1027](https://github.com/fjcloudaiconsulting/tbd/issues/1027)) ([cc2092f](https://github.com/fjcloudaiconsulting/tbd/commit/cc2092f48a30edaa068e5cfb017690c23a2ba3ca))
+
+
+### Performance Improvements
+
+* **import:** batch the preview detectors into set-based queries (TBD-736) ([#1031](https://github.com/fjcloudaiconsulting/tbd/issues/1031)) ([4a7a6d9](https://github.com/fjcloudaiconsulting/tbd/commit/4a7a6d95d6acef7d7da267b0df6047993b6c4f54))
+
 ## [0.303.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.303.0...v0.303.1) (2026-10-24)
 
 
