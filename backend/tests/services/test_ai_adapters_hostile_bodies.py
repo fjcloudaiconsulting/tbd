@@ -323,8 +323,7 @@ async def test_hostile_stream_event_is_a_typed_provider_error(monkeypatch, facto
     assert exc.value.code == "provider_unexpected_shape"
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
+_STREAM_ADAPTERS = pytest.mark.parametrize(
     "factory,tail",
     [
         (_openai, ["[DONE]"]),
@@ -333,14 +332,36 @@ async def test_hostile_stream_event_is_a_typed_provider_error(monkeypatch, facto
     ],
     ids=["openai", "openai_compatible", "anthropic"],
 )
-@pytest.mark.parametrize("bad_line", [DEEP, b"{not json"], ids=["deep-nesting", "non-json"])
-async def test_unparseable_stream_line_is_skipped(monkeypatch, factory, tail, bad_line):
-    """An unparseable SSE line is skipped, as before; deep nesting is one."""
+
+
+def _with_bad_line(factory, tail, bad_line: bytes) -> bytes:
     delta = OPENAI_DELTA if factory is not _anthropic else ANTHROPIC_DELTA
-    _serve(monkeypatch, _sse(delta, bad_line, delta, *tail), "text/event-stream")
+    return _sse(delta, bad_line, delta, *tail)
+
+
+@pytest.mark.asyncio
+@_STREAM_ADAPTERS
+async def test_unparseable_stream_line_is_skipped(monkeypatch, factory, tail):
+    """An SSE line that is not JSON is skipped, as before."""
+    _serve(monkeypatch, _with_bad_line(factory, tail, b"{not json"), "text/event-stream")
     chunks = await _drain(factory())
     assert [c.delta_text for c in chunks if not c.done] == ["x", "x"]
     assert chunks[-1].done is True
+
+
+@pytest.mark.asyncio
+@_STREAM_ADAPTERS
+async def test_deeply_nested_stream_line_never_escapes_untyped(monkeypatch, factory, tail):
+    """Whether the runtime's parser hits its recursion limit (line skipped) or
+    parses it (a non-object event, a typed error) depends on the interpreter;
+    either way nothing untyped escapes."""
+    _serve(monkeypatch, _with_bad_line(factory, tail, DEEP), "text/event-stream")
+    try:
+        chunks = await _drain(factory())
+    except AIProviderError as exc:
+        assert exc.code == "provider_unexpected_shape"
+    else:
+        assert chunks[-1].done is True
 
 
 # ---------- negative token counts --------------------------------------------
