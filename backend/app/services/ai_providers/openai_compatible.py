@@ -40,9 +40,18 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+    UNEXPECTED_MODELS_RESPONSE,
+    UNEXPECTED_SHAPE_ERRORS,
+    embedding_vectors,
+    model_ids,
+    openai_message_content,
+    parse_openai_stream_event,
     provider_reason,
     parse_openai_tool_calls,
+    response_model,
     to_openai_messages,
+    token_count,
+    usage_of,
 )
 from app.services.ai_pricing import usd_to_micros
 from app.services.ai_providers.egress_guard import (
@@ -209,11 +218,10 @@ class OpenAICompatibleAdapter:
             payload = resp.json()
         except ValueError:
             return ValidateResult(ok=False, error="Provider returned invalid JSON")
-        models = [
-            m["id"]
-            for m in payload.get("data", [])
-            if isinstance(m, dict) and "id" in m
-        ]
+        try:
+            models = model_ids(payload)
+        except TypeError:
+            return ValidateResult(ok=False, error=UNEXPECTED_MODELS_RESPONSE)
         return ValidateResult(
             ok=True,
             discovered_models=models,
@@ -254,18 +262,19 @@ class OpenAICompatibleAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            content = payload["choices"][0]["message"]["content"] or ""
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (KeyError, IndexError, TypeError):
+            content = openai_message_content(payload)
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+            completion_tokens = token_count(usage.get("completion_tokens"))
+            cost_micros = self._cost_micros(usage)
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return LLMResponse(
             content=content,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
-            cost_micros=self._cost_micros(usage),
+            model=response_model(payload, model),
+            cost_micros=cost_micros,
         )
 
     async def embed(
@@ -304,19 +313,14 @@ class OpenAICompatibleAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            data = payload.get("data", []) or []
-            vectors = [
-                [float(x) for x in (row.get("embedding") or [])]
-                for row in data
-                if isinstance(row, dict)
-            ]
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        except (KeyError, TypeError, ValueError):
+            vectors = embedding_vectors(payload)
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return EmbedResponse(
             vectors=vectors,
-            model=payload.get("model", model) or model,
+            model=response_model(payload, model),
             prompt_tokens=prompt_tokens,
         )
 
@@ -370,18 +374,19 @@ class OpenAICompatibleAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            content = payload["choices"][0]["message"]["content"] or ""
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (KeyError, IndexError, TypeError):
+            content = openai_message_content(payload)
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+            completion_tokens = token_count(usage.get("completion_tokens"))
+            cost_micros = self._cost_micros(usage)
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return LLMResponse(
             content=content,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
-            cost_micros=self._cost_micros(usage),
+            model=response_model(payload, model),
+            cost_micros=cost_micros,
         )
 
     async def function_call(
@@ -427,33 +432,26 @@ class OpenAICompatibleAdapter:
             )
         try:
             payload = resp.json()
-        except (ValueError, RecursionError):
+        except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
             message = payload["choices"][0]["message"]
             tool_calls = parse_openai_tool_calls(message)
             content = message.get("content")
             content = content if isinstance(content, str) else ""
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (
-            KeyError,
-            IndexError,
-            TypeError,
-            ValueError,
-            AttributeError,
-            OverflowError,
-            RecursionError,
-        ):
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+            completion_tokens = token_count(usage.get("completion_tokens"))
+            cost_micros = self._cost_micros(usage)
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,
             content=content,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
-            cost_micros=self._cost_micros(usage),
+            model=response_model(payload, model),
+            cost_micros=cost_micros,
         )
 
     async def stream(
@@ -506,27 +504,28 @@ class OpenAICompatibleAdapter:
                             break
                         try:
                             event = json.loads(data)
-                        except ValueError:
+                        except (ValueError, RecursionError):
+                            # malformed line (deep nesting included) — skip;
+                            # per-line resilience
                             continue
-                        choices = event.get("choices") or []
-                        if choices:
-                            delta = choices[0].get("delta") or {}
-                            delta_text = str(delta.get("content") or "")
-                            if delta_text:
-                                yield StreamChunk(
-                                    delta_text=delta_text, done=False
+                        try:
+                            delta_text, usage = parse_openai_stream_event(event)
+                            if usage is not None:
+                                final_usage = TokenUsage(
+                                    prompt_tokens=token_count(
+                                        usage.get("prompt_tokens")
+                                    ),
+                                    completion_tokens=token_count(
+                                        usage.get("completion_tokens")
+                                    ),
+                                    cost_micros=self._cost_micros(usage),
                                 )
-                        usage = event.get("usage")
-                        if isinstance(usage, dict):
-                            final_usage = TokenUsage(
-                                prompt_tokens=int(
-                                    usage.get("prompt_tokens", 0) or 0
-                                ),
-                                completion_tokens=int(
-                                    usage.get("completion_tokens", 0) or 0
-                                ),
-                                cost_micros=self._cost_micros(usage),
-                            )
+                        except UNEXPECTED_SHAPE_ERRORS:
+                            raise AIProviderError(
+                                code="provider_unexpected_shape"
+                            ) from None
+                        if delta_text:
+                            yield StreamChunk(delta_text=delta_text, done=False)
         except AIProviderError:
             raise
         except (httpx.HTTPError, httpx.TimeoutException) as exc:

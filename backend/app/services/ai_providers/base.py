@@ -29,6 +29,7 @@ no adapter: ``get_adapter`` raises ``ProviderNotSupported``.
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -201,6 +202,140 @@ class AIProviderError(Exception):
         self.status_code = status_code
         # The provider's own error type/code (token-shaped only, never its message).
         self.provider_reason = provider_reason
+
+
+# Every way a hostile or broken 200 body can fail to parse into the expected
+# shape (wrong types, missing keys, out-of-range numbers, deep nesting). Each
+# adapter maps them to ``provider_unexpected_shape`` (TBD-607).
+UNEXPECTED_SHAPE_ERRORS = (
+    KeyError,
+    IndexError,
+    TypeError,
+    ValueError,
+    AttributeError,
+    OverflowError,
+    RecursionError,
+)
+
+# Far above any real call, and low enough that prompt + completion still fits
+# the ledger's INT ``total_tokens`` column.
+MAX_TOKEN_COUNT = 1_000_000_000
+
+
+def token_count(value: object) -> int:
+    """A provider-reported token count as a non-negative int.
+
+    Missing (None) is 0, and so is a negative count: it must never lower the
+    month's metered cost. Anything else that is not an integral JSON number
+    up to ``MAX_TOKEN_COUNT`` (a string, a bool, NaN, infinity, a fraction)
+    raises one of ``UNEXPECTED_SHAPE_ERRORS``.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("token count is not a number")
+    if isinstance(value, float):
+        if not value.is_integer():  # also NaN and infinity
+            raise ValueError("token count is not an integer")
+        value = int(value)
+    if value > MAX_TOKEN_COUNT:
+        raise ValueError("token count out of range")
+    return max(0, value)
+
+
+def usage_of(container: object, key: str = "usage") -> dict:
+    """The usage object under ``key``: {} when absent, else it must be an object."""
+    if not isinstance(container, dict):
+        raise TypeError("expected an object")
+    usage = container.get(key)
+    if usage is None:
+        return {}
+    if not isinstance(usage, dict):
+        raise TypeError("usage is not an object")
+    return usage
+
+
+def text_or_empty(value: object) -> str:
+    """Provider text: None is "", anything but a string is a shape error."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError("text is not a string")
+    return value
+
+
+def response_model(payload: dict, requested: str) -> str:
+    """The model the provider echoed, or the requested one when the echo is
+    not a usable model name."""
+    echoed = payload.get("model")
+    if isinstance(echoed, str) and 0 < len(echoed) <= MODEL_NAME_MAX_LENGTH:
+        return echoed
+    return requested
+
+
+def openai_message_content(payload: object) -> str:
+    """Assistant text of an OpenAI-shape chat completion."""
+    return text_or_empty(payload["choices"][0]["message"]["content"])  # type: ignore[index]
+
+
+def parse_openai_stream_event(event: object) -> tuple[str, Optional[dict]]:
+    """(delta text, usage object or None) of one OpenAI-shape SSE event.
+
+    Raises one of ``UNEXPECTED_SHAPE_ERRORS`` on a wrongly shaped event.
+    """
+    if not isinstance(event, dict):
+        raise TypeError("event is not an object")
+    text = ""
+    choices = event.get("choices") or []
+    if choices:
+        delta = choices[0].get("delta") or {}
+        text = text_or_empty(delta.get("content"))
+    usage = event.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise TypeError("usage is not an object")
+    return text, usage
+
+
+def model_ids(payload: object) -> list:
+    """Model ids of a ``GET /models`` body; ``TypeError`` on a wrong shape."""
+    if not isinstance(payload, dict):
+        raise TypeError("expected an object")
+    data = payload.get("data") or []
+    if not isinstance(data, list):
+        raise TypeError("data is not a list")
+    return [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+
+
+UNEXPECTED_MODELS_RESPONSE = "Provider returned an unexpected response"
+
+
+def embedding_vectors(payload: object) -> list[list[float]]:
+    """One float vector per ``data`` row of an OpenAI-shape embeddings body.
+
+    Every value must be a finite JSON number; raises one of
+    ``UNEXPECTED_SHAPE_ERRORS`` otherwise.
+    """
+    if not isinstance(payload, dict):
+        raise TypeError("expected an object")
+    data = payload.get("data") or []
+    if not isinstance(data, list):
+        raise TypeError("data is not a list")
+    vectors: list[list[float]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        embedding = row.get("embedding") or []
+        if not isinstance(embedding, list):
+            raise TypeError("embedding is not a list")
+        vector: list[float] = []
+        for x in embedding:
+            if isinstance(x, bool) or not isinstance(x, (int, float)):
+                raise TypeError("embedding value is not a number")
+            if not math.isfinite(x):
+                raise ValueError("embedding value is not finite")
+            vector.append(float(x))
+        vectors.append(vector)
+    return vectors
 
 
 _REASON_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
