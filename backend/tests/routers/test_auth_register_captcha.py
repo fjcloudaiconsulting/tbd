@@ -144,6 +144,20 @@ async def _count_users(factory) -> int:
         return await db.scalar(select(func.count()).select_from(User)) or 0
 
 
+async def _stored(factory, username: str) -> tuple[User, Organization]:
+    """The account and org ``/register`` created. Since TBD-654 the body is
+    one fixed message for every outcome, so identity is read from the DB."""
+    async with factory() as db:
+        row = (
+            await db.execute(
+                select(User, Organization)
+                .join(Organization, Organization.id == User.org_id)
+                .where(User.username == username)
+            )
+        ).one()
+    return row[0], row[1]
+
+
 async def _captcha_failed_audit_rows(factory) -> list[AuditEvent]:
     async with factory() as db:
         result = await db.execute(
@@ -234,7 +248,8 @@ async def test_register_succeeds_when_verify_ok(
     assert res.status_code == 201, res.text
     assert await _count_users(session_factory) == 2
     # Founding-members program: every registration is flagged a founder.
-    assert res.json()["is_founder"] is True
+    user, _org = await _stored(session_factory, "newuser")
+    assert user.is_founder is True
 
 
 @pytest.mark.asyncio
@@ -371,7 +386,7 @@ async def test_successful_registration_writes_an_audit_row(
             },
         )
     assert res.status_code == 201, res.text
-    created = res.json()
+    created, created_org = await _stored(session_factory, "newuser")
 
     rows = await _register_success_audit_rows(session_factory)
     assert len(rows) == 1, f"expected exactly one success row, got {len(rows)}"
@@ -380,11 +395,11 @@ async def test_successful_registration_writes_an_audit_row(
     # Identity, not just presence: a row that cannot be tied to the account it
     # created is no use as a denominator. `is not None` would NOT establish that
     # tie — an implementation that recorded the SEEDED user's id and org would
-    # satisfy it — so both are asserted equal to the ids in the 201 body.
+    # satisfy it — so both are asserted equal to the ids of the stored account.
     assert row.actor_email == "new@example.com"
-    assert row.actor_user_id == created["id"]
-    assert row.target_org_id == created["org_id"]
-    assert row.target_org_name == created["org_name"]
+    assert row.actor_user_id == created.id
+    assert row.target_org_id == created.org_id
+    assert row.target_org_name == created_org.name
     assert row.outcome == "success"
     assert row.detail["method"] == "password"
     assert row.detail["is_first_user"] is False
@@ -538,10 +553,10 @@ async def test_register_divergent_state_grants_no_superadmin(
     # Independent witness, from outside the users table: the gate ran, so this
     # is provably not the bootstrap path.
     assert len(verify_calls) == 1
-    body = res.json()
-    assert body["is_superadmin"] is False, (
+    created, _org = await _stored(session_factory, "newuser")
+    assert created.is_superadmin is False, (
         "a public self-signup received superadmin on an install that merely "
-        f"lacks one. body={body}"
+        "lacks one."
     )
 
     async with session_factory() as db:
@@ -558,8 +573,8 @@ async def test_register_divergent_state_grants_no_superadmin(
     assert len(rows) == 1
     detail = rows[0].detail
     assert detail["is_first_user"] is False
-    assert detail["granted_superadmin"] == body["is_superadmin"] is False
-    assert detail["email_verified_on_create"] == body["email_verified"] is False
+    assert detail["granted_superadmin"] == created.is_superadmin is False
+    assert detail["email_verified_on_create"] == created.email_verified is False
 
 
 # ── TBD-291: `request_id` must be the SANITIZED value ────────────────────────

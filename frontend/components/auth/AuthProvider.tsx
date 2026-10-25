@@ -390,7 +390,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     lastName?: string,
     captchaToken?: string,
   ) => {
-    await apiFetch<User>("/api/v1/auth/register", {
+    // TBD-654: the body is one fixed message whether or not the email had an
+    // account, so nothing is read from it and no session starts here.
+    await apiFetch<{ detail: string }>("/api/v1/auth/register", {
       method: "POST",
       body: JSON.stringify({
         username,

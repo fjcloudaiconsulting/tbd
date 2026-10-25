@@ -203,6 +203,15 @@ async def _counts(factory) -> tuple[int, int]:
     return int(total or 0), int(supers or 0)
 
 
+async def _stored(factory, username: str) -> User:
+    """The account row ``/register`` created. Since TBD-654 the response body
+    is one fixed message for every outcome, so the flags are read here."""
+    async with factory() as db:
+        user = await db.scalar(select(User).where(User.username == username))
+    assert user is not None, f"no account stored for {username!r}"
+    return user
+
+
 async def _register_success_detail(factory) -> dict:
     """The `detail` dict off the single `auth.register.success` audit row.
 
@@ -283,10 +292,10 @@ async def test_f1_bootstrap_register_then_login_succeeds(session_factory) -> Non
     )
     assert login.json()["access_token"]
 
-    body = res.json()
-    assert body["email_verified"] is True, (
+    stored = await _stored(session_factory, "founder")
+    assert stored.email_verified is True, (
         "login succeeded but the account was CREATED unverified — the fix was "
-        f"applied at the gate instead of at the mint. body={body}"
+        "applied at the gate instead of at the mint."
     )
 
     # The audit row must record that the grant happened. Positive side of the
@@ -299,9 +308,9 @@ async def test_f1_bootstrap_register_then_login_succeeds(session_factory) -> Non
     # every negative fence in `test_auth_google_callback_first_run.py`, and
     # ships a fresh install with no superadmin account at all — the same class
     # of defect as the one this file was created for, and equally invisible.
-    assert body["is_superadmin"] is True, (
+    assert stored.is_superadmin is True, (
         "the first account on an empty install did not receive superadmin; "
-        f"the install has no operator. body={body}"
+        "the install has no operator."
     )
     total, supers = await _counts(session_factory)
     assert (total, supers) == (1, 1), (
@@ -311,7 +320,7 @@ async def test_f1_bootstrap_register_then_login_succeeds(session_factory) -> Non
 
     detail = await _register_success_detail(session_factory)
     assert detail["email_verified_on_create"] is True
-    assert detail["email_verified_on_create"] == body["email_verified"]
+    assert detail["email_verified_on_create"] == stored.email_verified
     # The three-way invariant, positive leg. ⚠ WEAK BY CONSTRUCTION: on a cold
     # install every first-ness value is True under every implementation under
     # consideration, so this cannot separate them. Its only kill is hardcoding
@@ -350,7 +359,7 @@ async def test_f2_second_user_is_not_auto_verified(session_factory) -> None:
     with TestClient(app) as client:
         res = _register(client, username="newuser", email="new@example.com")
         assert res.status_code == 201, res.text
-        assert res.json()["email_verified"] is False, (
+        assert (await _stored(session_factory, "newuser")).email_verified is False, (
             "an ordinary public signup was auto-verified; email verification "
             "is effectively off"
         )
@@ -421,7 +430,7 @@ async def test_f3_bootstrap_grant_keys_on_empty_table_not_flag_count(
         res = _register(client, username="newuser", email="new@example.com")
         # (b) LIVENESS — the handler ran to completion.
         assert res.status_code == 201, res.text
-        body = res.json()
+        stored = await _stored(session_factory, "newuser")
 
         # (c) POST-CONDITION CONTROL — the load-bearing one.
         after = await _counts(session_factory)
@@ -430,12 +439,12 @@ async def test_f3_bootstrap_grant_keys_on_empty_table_not_flag_count(
             f"that is not the bootstrap. before={before} after={after}"
         )
 
-        # (d) the flags under test, on the wire
-        assert body["is_superadmin"] is False, (
+        # (d) the flags under test, on the stored row
+        assert stored.is_superadmin is False, (
             "a public self-signup received superadmin on an install that "
             "merely lacks one — the escalation TBD-365 removed"
         )
-        assert body["email_verified"] is False, (
+        assert stored.email_verified is False, (
             "verification was granted on the superadmin-count predicate "
             "rather than the empty-table predicate"
         )
@@ -455,11 +464,11 @@ async def test_f3_bootstrap_grant_keys_on_empty_table_not_flag_count(
     # equality and this fence reports it.
     detail = await _register_success_detail(session_factory)
     assert detail["is_first_user"] is False
-    assert detail["granted_superadmin"] == body["is_superadmin"] is False, (
+    assert detail["granted_superadmin"] == stored.is_superadmin is False, (
         "the audit row disagrees with the account it describes — "
-        f"detail={detail}, body={body}"
+        f"detail={detail}"
     )
-    assert detail["email_verified_on_create"] == body["email_verified"] is False
+    assert detail["email_verified_on_create"] == stored.email_verified is False
     assert (
         detail["is_first_user"]
         == detail["granted_superadmin"]

@@ -1,12 +1,13 @@
 """Snapshot + security tests for L5.6 brand-aligned email templates.
 
-Covers the five customer email helpers in ``app.services.email_service``:
+Covers the six customer email helpers in ``app.services.email_service``:
 
 * send_password_reset_email
 * send_mfa_email_code
 * send_verification_email
 * send_invitation_email
 * send_trial_expiring_email
+* send_existing_account_signup_email
 
 Tests assert:
 
@@ -182,6 +183,26 @@ async def test_verification_email_template(captured_send: list[dict[str, Any]]):
     assert "Confirm email" in msg["body_html"]
     assert "/verify-email?token=verifytoken123" in msg["body_html"]
     assert "/verify-email?token=verifytoken123" in msg["body_text"]
+
+
+@pytest.mark.asyncio
+async def test_existing_account_signup_template(captured_send: list[dict[str, Any]]):
+    """TBD-654: the notice sent instead of a "taken" error on /register."""
+    ok = await email_service.send_existing_account_signup_email("user@example.com")
+    assert ok is True
+    msg = captured_send[0]
+
+    assert msg["to"] == "user@example.com"
+    assert _WORDMARK_TEXT in msg["subject"]
+    _assert_brand_chrome(msg["body_html"])
+    _assert_brand_voice(msg["subject"], msg["body_html"], msg["body_text"])
+
+    login_url = f"{email_service.settings.app_url}/login"
+    reset_url = f"{email_service.settings.app_url}/forgot-password"
+    for body in (msg["body_html"], msg["body_text"]):
+        assert login_url in body
+        assert reset_url in body
+        assert "already has an account" in body
 
 
 @pytest.mark.asyncio
@@ -483,8 +504,9 @@ async def test_no_offbrand_phrases_anywhere(monkeypatch: pytest.MonkeyPatch):
         accept_url="http://localhost/accept-invite?token=t",
     )
     await email_service.send_trial_expiring_email("u@x.com", 3, "Doe Household")
+    await email_service.send_existing_account_signup_email("u@x.com")
 
-    assert len(captured) == 5
+    assert len(captured) == 6
     for m in captured:
         _assert_brand_voice(m["subject"], m["body_html"], m["body_text"])
         # Strip HTML tags for a soft emoji sweep over the visible text.

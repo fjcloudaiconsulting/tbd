@@ -52,6 +52,7 @@ from app.schemas.auth import (
     MfaSetupResponse,
     MfaVerifyRequest,
     RegisterRequest,
+    RegisterResponse,
     ResendVerificationPublicRequest,
     ResetPasswordRequest,
     StepUpInitiateRequest,
@@ -89,7 +90,12 @@ from app.models.notification import NotificationCategory
 from app.rate_limit import get_client_ip, limiter, rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service, notification_service
-from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
+from app.services.email_service import (
+    send_existing_account_signup_email,
+    send_mfa_email_code,
+    send_password_reset_email,
+    send_verification_email,
+)
 from app.services.notification_templates import (
     user_mfa_disabled as _tpl_user_mfa_disabled,
     user_mfa_email_fallback_enabled as _tpl_user_mfa_email_fallback_enabled,
@@ -357,7 +363,55 @@ async def check_username(
     return UsernameCheckResponse(available=False, suggestion=suggestion)
 
 
-@router.post("/register", response_model=UserResponse, status_code=201)
+# TBD-654: `/register` gives this one answer to every request that passes its
+# checks, whether the email is new or already has an account, so the response
+# does not say which emails are registered. The account owner learns of the
+# attempt by email instead (below).
+REGISTER_ACCEPTED_DETAIL = "Check your email to finish signing up."
+
+# At most one "someone tried to sign up with your email" notice per account in
+# this window, counted in `used_tokens` so it holds across replicas. The route's
+# per-IP limit alone would let a client spread over many addresses fill the
+# owner's mailbox.
+EXISTING_ACCOUNT_NOTICE_SCOPE = "register_existing_notice"
+EXISTING_ACCOUNT_NOTICE_WINDOW_S = 24 * 60 * 60
+
+
+async def _org_name_taken(db: AsyncSession, name: str) -> bool:
+    """Preflight for a chosen org name, matching the rename check in
+    ``org_service``: SQL narrows on ``LOWER(name)``, Python compares exactly
+    (the UNIQUE is case-insensitive and accent-sensitive)."""
+    wanted = name.lower()
+    names = (
+        await db.scalars(select(Organization.name).where(func.lower(Organization.name) == wanted))
+    ).all()
+    return any(existing.lower() == wanted for existing in names)
+
+
+async def _queue_existing_account_notice(background_tasks: BackgroundTasks, user: User) -> None:
+    """Mail the owner of ``user`` that someone tried to sign up with their
+    address, at most once per window. Fails closed: if the throttle cannot be
+    read, no mail goes out, and the caller's answer is the same either way."""
+    if not user.is_active:
+        outcome = "inactive"
+    else:
+        try:
+            first = await state_db.claim_token(
+                EXISTING_ACCOUNT_NOTICE_SCOPE, str(user.id), EXISTING_ACCOUNT_NOTICE_WINDOW_S
+            )
+        except SQLAlchemyError as exc:
+            _LOGGER.warning(
+                "auth.register.existing_email.throttle_error",
+                extra={"error_class": type(exc).__name__},
+            )
+            return
+        outcome = "queued" if first else "throttled"
+        if first:
+            background_tasks.add_task(send_existing_account_signup_email, user.email)
+    _LOGGER.info("auth.register.existing_email", extra={"user_id": user.id, "notice": outcome})
+
+
+@router.post("/register", response_model=RegisterResponse, status_code=201)
 @limiter.limit("5/hour")
 async def register(
     request: Request,
@@ -413,15 +467,31 @@ async def register(
             },
         )
 
-    email_norm = normalize_email(body.email)
-    existing = await db.execute(
-        select(User).where(or_(User.username == body.username, User.email == email_norm))
-    )
-    if existing.scalar_one_or_none():
+    # TBD-654: every refusal below the captcha depends only on fields the
+    # caller chose (username, org name), never on the email, and all of them
+    # run before the email lookup. A taken username is already public through
+    # `/check-username`. The org-name preflight is what keeps a taken name from
+    # answering 409 for a new email and 201 for a registered one.
+    if await db.scalar(select(User.id).where(User.username == body.username)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Username or email already taken",
+            detail="Username already taken",
         )
+    if body.org_name and await _org_name_taken(db, body.org_name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An organization with that name already exists",
+        )
+
+    # Hashed before the branch so both paths pay for bcrypt, the dominant cost.
+    password_hash = hash_password(body.password)
+
+    email_norm = normalize_email(body.email)
+    existing_user = await db.scalar(select(User).where(User.email == email_norm))
+    if existing_user is not None:
+        # Nothing is created or changed for this account; its owner is told.
+        await _queue_existing_account_notice(background_tasks, existing_user)
+        return RegisterResponse(detail=REGISTER_ACCEPTED_DETAIL)
 
     org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
 
@@ -431,7 +501,7 @@ async def register(
         email=email_norm,
         first_name=body.first_name,
         last_name=body.last_name,
-        password_hash=hash_password(body.password),
+        password_hash=password_hash,
         role=Role.OWNER,
         is_superadmin=is_first_user_setup,
         is_founder=True,
@@ -564,7 +634,7 @@ async def register(
         },
     )
 
-    return _user_response(user, org)
+    return RegisterResponse(detail=REGISTER_ACCEPTED_DETAIL)
 
 
 def _attempt_store_unavailable() -> HTTPException:
