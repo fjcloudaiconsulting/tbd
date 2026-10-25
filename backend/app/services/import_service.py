@@ -38,12 +38,13 @@ from app.services.transaction_service import (
     _link_pair,
     _load_opts,
     find_duplicate_of_linked_leg,
-    find_match_candidates,
+    find_duplicate_of_linked_leg_batch,
+    find_match_candidates_batch,
     get_account_for_update,
 )
 from app.services.category_rules_service import (
     bump_shared_vote,
-    infer_category,
+    infer_categories,
     learn_from_choice,
     normalize_description,
     should_skip_learning,
@@ -199,6 +200,31 @@ async def build_preview(
         existing_fitids = {row.fitid for row in fitid_result.all() if row.fitid}
     seen_fitids: set[tuple[int, str]] = set()
 
+    # ── Batched detectors (TBD-736) ──
+    # Smart-rules suggestions and both transfer detectors resolve every row
+    # with a fixed number of set-based queries instead of several per row.
+    # Each lookup returns exactly what the per-row helper returns for the
+    # same inputs (fenced in tests/services/test_import_preview_batching.py).
+    def _tx_type(row: ParsedRow) -> TransactionType:
+        return TransactionType.EXPENSE if row.type == "expense" else TransactionType.INCOME
+
+    detector_keys = {(_tx_type(r), r.amount, r.date) for r in parsed_rows}
+    suggestions = await infer_categories(
+        db, org_id=org_id, descriptions=[r.description for r in parsed_rows]
+    )
+    dup_linked_by_key = await find_duplicate_of_linked_leg_batch(
+        db, org_id,
+        account_id=account_id,
+        currency=destination_account.currency,
+        keys=detector_keys,
+    )
+    match_candidates_by_key = await find_match_candidates_batch(
+        db, org_id,
+        account_id_excluded=account_id,
+        currency=destination_account.currency,
+        keys=detector_keys,
+    )
+
     preview_rows: list[ImportPreviewRow] = []
     duplicate_count = 0
 
@@ -224,25 +250,14 @@ async def build_preview(
                 seen_fitids.add(fitid_key)
 
         # ── Smart-rules suggestion ──
-        suggested_category_id, suggestion_source = await infer_category(
-            db, org_id=org_id, description=row.description
-        )
+        suggested_category_id, suggestion_source = suggestions[row.description]
 
         if is_dup:
             duplicate_count += 1
 
         # ── Detector 1: same-account already-linked match → flag duplicate-of-linked-leg ──
-        row_tx_type = (
-            TransactionType.EXPENSE if row.type == "expense" else TransactionType.INCOME
-        )
-        dup_linked_candidates = await find_duplicate_of_linked_leg(
-            db, org_id,
-            account_id=account_id,
-            amount=row.amount,
-            type=row_tx_type,
-            date=row.date,
-            currency=destination_account.currency,
-        )
+        row_key = (_tx_type(row), row.amount, row.date)
+        dup_linked_candidates = dup_linked_by_key[row_key]
         is_dup_of_linked = bool(dup_linked_candidates)
         duplicate_candidate_obj: DuplicateCandidate | None = None
         if is_dup_of_linked:
@@ -267,14 +282,7 @@ async def build_preview(
             pair_with_id: int | None = None
             candidate_models: list[TransferCandidate] = []
         else:
-            match_candidates = await find_match_candidates(
-                db, org_id,
-                source_type=row_tx_type,
-                amount=row.amount,
-                account_id_excluded=account_id,
-                date=row.date,
-                currency=destination_account.currency,
-            )
+            match_candidates = match_candidates_by_key[row_key]
             if not match_candidates:
                 action, confidence, pair_with_id, candidate_models = (
                     "none", None, None, [],

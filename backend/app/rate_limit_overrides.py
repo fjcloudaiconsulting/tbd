@@ -21,7 +21,8 @@ static default applies.
 Pre-auth routes (``PRE_AUTH_ENDPOINT_PATTERNS``) have no identity when the
 limiter runs and keep static string limits; tune them in code.
 
-Known limits: the bucket key is still the client IP, and changing an
+Known limits: the bucket key is the client IP unless the decorator passes
+its own ``key_func`` (the scenarios routes key per user), and changing an
 override starts a fresh counter (the ``limits`` storage key embeds the
 amount).
 """
