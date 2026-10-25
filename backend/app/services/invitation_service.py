@@ -17,6 +17,11 @@ isolation:
   gets the same pending row and the same 201 as a new address; the router
   asks :func:`is_registered_elsewhere` and sends nothing, and accept
   refuses it. Per-org caps bound pending and newly created invitations.
+- Lock order (TBD-727): the organizations row first, then invitation rows.
+  Create and accept both start with :func:`_lock_org`, before they lock or
+  write any invitation, so two concurrent requests for one org queue on the
+  org row instead of each holding the lock the other wants. Any new path
+  here that locks both must keep this order.
 """
 
 from __future__ import annotations
@@ -87,6 +92,18 @@ def _normalize_email(value: str) -> str:
     return _normalize_email_shared(value)
 
 
+async def _lock_org(db: AsyncSession, org_id: int) -> None:
+    """Take the org row lock: step one of the module's lock order (TBD-727).
+
+    Unconditional, unlike the seat check's own lock (live only with billing),
+    so the order holds in every configuration. ``enforce_user_limit`` locks
+    the same row again later in the transaction, which InnoDB grants at once.
+    """
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
+
+
 async def _clear_expired_open_invites(
     db: AsyncSession, *, org_id: int, email: str
 ) -> None:
@@ -118,6 +135,9 @@ async def create_invitation(
     """Create a pending invitation. Caller must have already verified the
     requesting user has OWNER or ADMIN role."""
     norm = _normalize_email(email)
+    # Lock order: org row before the invitation rows the lazy clear below
+    # updates and the insert at the end writes (TBD-727).
+    await _lock_org(db, org_id)
 
     # Reject if a user with that email exists ACTIVE in this org. Inactive
     # same-org user → reactivation, allowed. A user in ANOTHER org is not
@@ -359,10 +379,20 @@ async def accept_invitation(
     state, :class:`ConflictError` for username collisions on new users.
     Caller must commit the session.
     """
+    invitation_id = _decode_id_or_raise(token)
+    # Lock order: org row first, then the invitation row (TBD-727). A plain
+    # read finds the org; the locked read below re-fetches the row, and its
+    # ``org_id`` filter refuses a row that no longer matches the lock taken.
+    org_id = await db.scalar(
+        select(Invitation.org_id).where(Invitation.id == invitation_id)
+    )
+    if org_id is None:
+        raise InvitationUnavailable()
+    await _lock_org(db, org_id)
     inv = (
         await db.execute(
             select(Invitation)
-            .where(Invitation.id == _decode_id_or_raise(token))
+            .where(Invitation.id == invitation_id, Invitation.org_id == org_id)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
