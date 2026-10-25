@@ -23,6 +23,14 @@ class InvitationCreateRequest(BaseModel):
     _check_email = field_validator("email")(reject_non_ascii_email)
 
 
+class InvitationPreviewRequest(BaseModel):
+    """TBD-738: the preview token travels in the body, never in the URL, so it
+    stays out of edge access logs, browser history and the Referer. Capped
+    well above a real invitation JWT."""
+
+    token: str = Field(min_length=1, max_length=4096)
+
+
 class InvitationAcceptRequest(BaseModel):
     token: str = Field(min_length=1)
     # Lenient at the request layer so reactivation doesn't reject a

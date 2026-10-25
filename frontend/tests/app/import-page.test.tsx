@@ -678,6 +678,42 @@ describe("ImportPage transfer pill column", () => {
     expect(body.rows[0].recategorize).toBe(true);
   });
 
+  it("a retried confirm reuses the preview's idempotency key (TBD-737)", async () => {
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    await renderAndPreview(preview);
+
+    const selects = document.querySelectorAll("select");
+    const defaultCatSelect = selects[selects.length - 1] as HTMLSelectElement;
+    fireEvent.change(defaultCatSelect, { target: { value: "5" } });
+
+    // First confirm fails (e.g. the network dropped), the second succeeds.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockRejectedValueOnce(new Error("network down") as never);
+    apiFetchMock.mockResolvedValueOnce({
+      imported_count: 1,
+      paired_count: 0,
+      dropped_duplicate_count: 0,
+      skipped_count: 0,
+      error_count: 0,
+      errors: [],
+      import_id: 7,
+      replayed: true,
+    } as never);
+
+    fireEvent.click(screen.getByRole("button", { name: /import 1 transaction/i }));
+    await screen.findByText(/network down|import failed/i);
+    fireEvent.click(screen.getByRole("button", { name: /import 1 transaction/i }));
+    await screen.findByText(/import complete/i);
+
+    const keys = apiFetchMock.mock.calls
+      .filter(([url]) => url === "/api/v1/import/confirm")
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string).idempotency_key);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
   it("results page surfaces paired_count and dropped_duplicate_count", async () => {
     const preview = basePreview([baseRow({ row_number: 1 })]);
 

@@ -123,7 +123,7 @@ async def test_password_reset_deletes_every_session_family(session_factory) -> N
         _, refresh_token = _sign_in(client)
         res = client.post(
             "/api/v1/auth/reset-password",
-            json={"token": create_password_reset_token(seed["user_id"]), "new_password": NEW_PASSWORD},
+            json={"token": create_password_reset_token(seed["user_id"], "alice@example.com"), "new_password": NEW_PASSWORD},
         )
         assert res.status_code == 200, res.text
         assert _families(seed["user_id"]) == set()
@@ -162,7 +162,7 @@ async def test_a_reset_at_a_sub_second_fraction_refuses_that_seconds_tokens(
     with TestClient(_app(session_factory)) as client:
         res = client.post(
             "/api/v1/auth/reset-password",
-            json={"token": create_password_reset_token(seed["user_id"]), "new_password": NEW_PASSWORD},
+            json={"token": create_password_reset_token(seed["user_id"], "alice@example.com"), "new_password": NEW_PASSWORD},
         )
     assert res.status_code == 200, res.text
     async with session_factory() as db:
@@ -222,7 +222,7 @@ async def test_a_challenge_from_before_a_reset_is_refused(session_factory) -> No
     with TestClient(_app(session_factory)) as client:
         reset = client.post(
             "/api/v1/auth/reset-password",
-            json={"token": create_password_reset_token(seed["user_id"]), "new_password": NEW_PASSWORD},
+            json={"token": create_password_reset_token(seed["user_id"], "alice@example.com"), "new_password": NEW_PASSWORD},
         )
         assert reset.status_code == 200, reset.text
         res = client.post("/api/v1/auth/mfa/recovery", json={"mfa_token": challenge, "code": codes[0]})
