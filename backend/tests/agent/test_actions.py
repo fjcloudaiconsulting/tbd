@@ -820,6 +820,7 @@ _WRITE_CASES = {
     "budgets_update_amount": lambda a: {"budget_id": a["b1"], "amount": "120.00"},
     # A reportable row on the confirm path: the category rule upsert is disclosed.
     "transactions_set_category": lambda a: {"transaction_id": a["tx"], "category_id": a["c2"]},
+    "transactions_update": lambda a: {"transaction_id": a["tx"], "description": "Renamed"},
 }
 
 # A derived row is disclosed by its natural key, not its surrogate id: the

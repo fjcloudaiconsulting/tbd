@@ -188,7 +188,7 @@ def inverse_args(spec: ToolSpec, args_json: dict[str, Any], preview_json: dict[s
     changes = preview_json["changes"]
     p = changes[0]
     restore = {
-        c["field"]: c["before"] for c in changes
+        c["field"]: registry.unwrap_untrusted(c["before"]) for c in changes
         if (c["entity"], c["id"]) == (p["entity"], p["id"])
     }
     if not restore.keys() <= spec.args.model_fields.keys():

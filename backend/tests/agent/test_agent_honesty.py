@@ -13,7 +13,7 @@ visible) around EVERY preview call and around execute, and checks, both ways:
 4. inserts: one-to-one with insert groups, every named column equals the row,
    every unnamed column is exempt or the column default;
 5. deletes: one-to-one with delete groups, named befores equal the row;
-6. identity and value normalisation;
+6. identity and value normalisation (a ``{"untrusted": s}`` value is ``s``);
 7. pinned exemption lists (bookkeeping, insert identity);
 8. tier: a ``write`` tool never moves or names ``accounts.balance``.
 
@@ -195,8 +195,17 @@ def _locate(table, id_, pre, post, org_id):
     return ("insert", pk) if in_post else ("missing", None)
 
 
+def _unwrap(v):
+    """Rule 6: user text is disclosed wrapped (F-R10); the row holds the string."""
+    if isinstance(v, dict):
+        assert set(v) == {"untrusted"} and isinstance(v["untrusted"], str), f"rule 6: value {v!r}"
+        return v["untrusted"]
+    return v
+
+
 def check_execute(w: Window, changes: list[dict], org_id: int, risk: str) -> None:
     pre, post = w.pre, w.post
+    changes = [{**c, "before": _unwrap(c["before"]), "after": _unwrap(c["after"])} for c in changes]
 
     # 8. tier
     if risk == "write":
@@ -363,6 +372,32 @@ def _category(a):
     return "transactions_set_category", {"transaction_id": a["tx"], "category_id": a["c2"]}
 
 
+def _tx_description(a):
+    return "transactions_update", {"transaction_id": a["tx"], "description": "  Music  "}
+
+
+def _tx_dates(a):
+    later = (P_START + datetime.timedelta(days=3)).isoformat()
+    return "transactions_update", {"transaction_id": a["tx"], "date": later, "settled_date": later}
+
+
+def _tx_clear_expected(a):
+    return "transactions_update", {"transaction_id": a["tx"], "settled_date": None}
+
+
+async def _pending(f, a):
+    async with f() as db:
+        await db.execute(update(Transaction).where(Transaction.id == a["tx"]).values(
+            status=TransactionStatus.PENDING, settled_date=P_START + datetime.timedelta(days=5)))
+        await db.commit()
+
+
+async def _transfer_leg(f, a):
+    from tests.agent.test_set_category import _make_pair
+
+    await _make_pair(f, a)
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -371,6 +406,11 @@ SCENARIOS = [
     ("category-creates-a-new-rule", _category, _none, False),
     ("category-onto-a-rule-already-there-is-a-no-op-change", _category, _rule_to_c2, False),
     ("category-auto-learns-no-rule", _category, _none, True),
+    ("tx-update-description", _tx_description, _none, False),
+    ("tx-update-description-auto", _tx_description, _none, True),
+    ("tx-update-dates-of-a-settled-row", _tx_dates, _none, False),
+    ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
+    ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
 ]
 COVERED = {build({"b1": 0, "tx": 0, "c2": 0})[0] for _, build, _, _ in SCENARIOS}
 
