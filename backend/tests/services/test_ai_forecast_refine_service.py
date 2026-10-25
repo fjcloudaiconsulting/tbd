@@ -401,6 +401,34 @@ async def test_estimate_refine_ample_budget_allows(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["ollama", "native"])
+async def test_estimate_refine_refuses_a_retired_provider(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization, provider
+):
+    """TBD-584: routing to a row still naming a removed provider must not
+    offer Confirm with a cost: the confirmed run would only fall back."""
+    from sqlalchemy import text
+
+    _patch_estimate_internals(monkeypatch, est_cost_micros=800_000)
+    await db_session.execute(
+        text("UPDATE org_ai_credentials SET provider = :p WHERE org_id = :o"),
+        {"p": provider, "o": seeded_org.id},
+    )
+    await db_session.commit()
+
+    est = await svc.estimate_refine(
+        db_session,
+        org_id=seeded_org.id,
+        period_start=None,
+        timeframe_months=6,
+        scope=Scope.TOP_20,
+    )
+    assert est.can_proceed is False
+    assert est.reason == "ai_provider_not_supported"
+    assert est.est_cost_cents == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("spent,proceed", [(9_700, False), (9_500, True)])
 async def test_fence_estimate_compares_micros_and_reports_ceil_cents(
     monkeypatch, db_session: AsyncSession, seeded_org: Organization, spent, proceed
