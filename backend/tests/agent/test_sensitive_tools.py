@@ -86,6 +86,9 @@ async def test_delete_gives_a_settled_amount_back_and_takes_the_other_leg(factor
     out, _ = await _apply(factory, a, "transactions_delete", {"transaction_id": a["tx"]})
     assert "other leg" in out["summary"]
     assert {c["id"] for c in out["changes"] if c["field"] == "type"} == {a["tx"], partner}
+    # the rows that cease to exist are stated, not inferred from nulls
+    assert out["context"]["deleted"] == [
+        {"entity": "transactions", "id": i} for i in sorted([a["tx"], partner])]
     assert await _balance(factory, a["acct"]) == before + Decimal("9.99")
     assert await _tx(factory, partner) is None
 

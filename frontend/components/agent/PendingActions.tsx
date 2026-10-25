@@ -25,6 +25,13 @@ function staged(r: AgentActionRow): StagedAction {
   };
 }
 
+// Who proposed it: a revert is the person's own; an MCP row names its token.
+function origin(r: AgentActionRow): string {
+  if (r.preview.context?.reverts) return "Your revert";
+  if (r.channel === "mcp") return r.token_name ? `From your agent ${r.token_name}` : "From a connected agent";
+  return "From the assistant";
+}
+
 // The activity list shows what was applied: refresh it after a decision.
 const isActivity = (k: unknown) => typeof k === "string" && k.startsWith("/api/v1/agent/actions?status=done");
 
@@ -55,9 +62,7 @@ export default function PendingActions() {
       <ul className="space-y-4 px-6 pb-6 pt-4">
         {rows.map((r, i) => (
           <li key={r.action_id}>
-            <p className="mb-1 text-xs text-text-secondary">
-              {r.channel === "mcp" ? "From a connected agent" : "From the assistant"}
-            </p>
+            <p className="mb-1 text-xs text-text-secondary [overflow-wrap:anywhere]">{origin(r)}</p>
             <PreviewCard
               tool={r.tool}
               action={staged(r)}

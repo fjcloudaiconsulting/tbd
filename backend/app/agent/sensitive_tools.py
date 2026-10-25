@@ -339,9 +339,13 @@ async def _delete_present(ctx: ToolContext, tx: Transaction, args, changes: list
         )
     if any(c.field == "balance_delta" for c in changes):
         warnings.append(MONEY)
+    deleted = [{"entity": "transactions", "id": rid} for rid in sorted(gone)] + [
+        {"entity": "transaction_tags", "id": c.id} for c in changes if c.entity == "transaction_tags"
+    ]
     return Preview(
         summary=f"Delete transaction {tx.id}" + (" and the other leg of its transfer" if len(gone) > 1 else ""),
-        changes=changes, warnings=warnings, context={"description": tx.description},
+        changes=changes, warnings=warnings,
+        context={"description": tx.description, "deleted": deleted},
     )
 
 

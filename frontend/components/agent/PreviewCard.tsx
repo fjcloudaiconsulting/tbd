@@ -61,20 +61,18 @@ function subject(tool: string, ctx: Record<string, unknown>): string {
   return text(tool.startsWith("transactions_") ? ctx.description : ctx.category_name);
 }
 
-const rowKey = (c: ActionChange) => `${c.entity}:${JSON.stringify(c.id)}`;
+const rowKey = (c: { entity: string; id: unknown }) => `${c.entity}:${JSON.stringify(c.id)}`;
 
 // How each change row reads: a counter or balance by its movement, a new row
-// by its value, a deleted row (every field going to nothing) as deleted.
-function shapes(changes: ActionChange[]) {
-  const byRow = new Map<string, ActionChange[]>();
-  for (const c of changes) byRow.set(rowKey(c), [...(byRow.get(rowKey(c)) ?? []), c]);
-  const deleted = new Set(
-    [...byRow].filter(([, cs]) => cs.every((c) => c.after === null) && (cs.length > 1 || cs[0].entity === "transaction_tags"))
-      .map(([k]) => k),
-  );
+// by its value, and a deleted row as deleted. Deletion is what the server
+// states in `context.deleted`, never inferred from fields going to null (an
+// edit can clear several fields).
+function shapes(changes: ActionChange[], ctx: Record<string, unknown>) {
+  const stated = Array.isArray(ctx.deleted) ? (ctx.deleted as { entity: string; id: unknown }[]) : [];
+  const deleted = new Set(stated.map(rowKey));
   // Name the row only when the preview touches several rows of one kind.
   const kinds = new Map<string, number>();
-  for (const k of byRow.keys()) kinds.set(k.split(":")[0], (kinds.get(k.split(":")[0]) ?? 0) + 1);
+  for (const k of new Set(changes.map(rowKey))) kinds.set(k.split(":")[0], (kinds.get(k.split(":")[0]) ?? 0) + 1);
   return {
     deleted: (c: ActionChange) => deleted.has(rowKey(c)),
     named: (c: ActionChange) => (kinds.get(c.entity) ?? 0) > 1,
@@ -167,7 +165,7 @@ export default function PreviewCard({
 
   const ctx = action.context ?? {};
   const primary = action.changes[0];
-  const shape = shapes(action.changes);
+  const shape = shapes(action.changes, ctx);
   const about = subject(tool, ctx);
   const link = drillDown(primary);
   const headingId = `preview-${action.action_id}`;

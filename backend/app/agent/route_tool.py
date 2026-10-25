@@ -37,7 +37,8 @@ the tool runs the code REST runs instead of a second adapter over a service.
     hand-written ``cascade`` (a :class:`CascadeDisclosure`) lists what the
     delete does beyond the row. Its ``covers`` must name every foreign key
     that references the table, or registration fails, so a new FK cannot go
-    undisclosed.
+    undisclosed. ``context["deleted"]`` lists the rows that cease to exist
+    (the row, plus any ``present`` adds).
 
   Every other route (a verb, a create of several rows) needs a hand-written
   ``preview``.
@@ -494,10 +495,17 @@ def _delete_preview(
             for c in describe
         ] + beyond
         if present is not None:
-            return await present(ctx, row, args, changes)
-        return Preview(
-            summary=f"Delete {label.lower()} {row.id}", changes=changes,
-            warnings=["A delete cannot be undone."],
-        )
+            pv = await present(ctx, row, args, changes)
+        else:
+            pv = Preview(
+                summary=f"Delete {label.lower()} {row.id}", changes=changes,
+                warnings=["A delete cannot be undone."],
+            )
+        # The rows that cease to exist, stated rather than left to be inferred
+        # from fields going to null (a cleared field is not a deletion).
+        deleted = pv.context.setdefault("deleted", [])
+        if {"entity": table.name, "id": row.id} not in deleted:
+            deleted.insert(0, {"entity": table.name, "id": row.id})
+        return pv
 
     return _preview

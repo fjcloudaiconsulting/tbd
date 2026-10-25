@@ -51,6 +51,8 @@ export interface AgentActionRow {
   decided_at: string | null;
   // pending AND not past expires_at, decided server-side in one clock
   live: boolean;
+  // The name of the user's own agent token that staged an MCP row.
+  token_name?: string | null;
 }
 
 export type AgentScope = "agent:read" | "agent:write" | "agent:auto";

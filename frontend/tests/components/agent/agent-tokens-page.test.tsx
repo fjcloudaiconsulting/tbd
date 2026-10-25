@@ -319,7 +319,7 @@ const PENDING: AgentActionRow = {
       { entity: "accounts", id: 3, field: "balance_delta", before: null, after: "4.50", currency: "EUR" },
     ],
     warnings: ["A delete cannot be undone."],
-    context: { description: { untrusted: "Coffee" } },
+    context: { description: { untrusted: "Coffee" }, deleted: [{ entity: "transactions", id: 7 }] },
   },
   error_code: null, created_at: "2099-10-08T09:00:00", expires_at: "2099-10-08T09:10:00",
   decided_at: null, live: true,
@@ -354,6 +354,34 @@ describe("waiting for confirmation (TBD-664)", () => {
     await waitFor(() => expect(within(preview).getByText("Applied")).toBeInTheDocument());
     expect(fetchMock.mock.calls.some(([u]) => u === "/api/v1/agent/actions/p1/confirm")).toBe(true);
     await waitFor(() => expect(activityLoads()).toBeGreaterThan(before));
+  });
+
+  it("names the agent token that staged it, and marks the person's own revert", async () => {
+    routes[pendingKey] = () => json(200, { items: [
+      { ...PENDING, token_name: "Claude Desktop" },
+      { ...PENDING, action_id: "p2", channel: "in_app", tool: "budgets_update_amount",
+        preview: { ...DONE.preview, context: { reverts: "x1" } } },
+    ], limit: 20, offset: 0 });
+    renderWithSWR(<AgentTokensPage />);
+    const section = (await screen.findByText("Waiting for your confirmation")).closest("section")!;
+    expect(within(section).getByText("From your agent Claude Desktop")).toBeInTheDocument();
+    expect(within(section).getByText("Your revert")).toBeInTheDocument();
+    expect(within(section).queryByText("From the assistant")).toBeNull();
+  });
+
+  it("an edit that clears two fields is not shown as a delete", async () => {
+    routes[pendingKey] = () => json(200, { items: [{
+      ...PENDING, tool: "transactions_update", risk: "write",
+      preview: { summary: "s", warnings: [], context: {}, changes: [
+        { entity: "transactions", id: 7, field: "settled_date", before: "2026-10-05", after: null },
+        { entity: "transactions", id: 7, field: "description", before: { untrusted: "Coffee" }, after: null },
+      ] },
+    }], limit: 20, offset: 0 });
+    renderWithSWR(<AgentTokensPage />);
+    const preview = within((await screen.findByText("Waiting for your confirmation")).closest("section")!)
+      .getByTestId("preview-card");
+    expect(within(preview).queryByText("Deleted")).toBeNull();
+    expect(within(preview).getAllByText("None")).toHaveLength(2);
   });
 
   it("discarding sends a cancel, never a confirm", async () => {
