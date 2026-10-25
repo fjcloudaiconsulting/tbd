@@ -121,7 +121,7 @@ def _is_retryable(exc: BaseException) -> bool:
 def _resolve_database_url(alembic_cfg: Config) -> Optional[str]:
     """Same resolution as env.py: MIGRATIONS_DATABASE_URL, else DATABASE_URL
     (TBD-655), else alembic.ini."""
-    return migrations_database_url(alembic_cfg.get_main_option("sqlalchemy.url"))
+    return migrations_database_url() or alembic_cfg.get_main_option("sqlalchemy.url")
 
 
 def _get_current_revision_sync(database_url: str) -> Optional[str]:

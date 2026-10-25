@@ -57,16 +57,17 @@ def test_blank_migrations_url_falls_back_to_database_url(env, blank):
     assert migrations_database_url() == APP_URL
 
 
-def test_falls_back_to_the_default_when_neither_is_set(env):
+def test_none_when_neither_is_set(env):
+    """Callers then read alembic.ini."""
     env()
-    assert migrations_database_url("sqlite:///ini.db") == "sqlite:///ini.db"
     assert migrations_database_url() is None
 
 
 def test_migrate_wrapper_uses_the_migrations_url(env):
     """The migrations image's wrapper reads alembic_version (and logs the
     redacted target) through the same URL alembic migrates with."""
-    cfg = Config(str(BACKEND / "alembic.ini"))
+    # A config whose file does not exist: an env URL must not need it.
+    cfg = Config("/nonexistent/alembic.ini")
     env(database_url=APP_URL, migrations_url=MIGRATE_URL)
     assert migrate._resolve_database_url(cfg) == MIGRATE_URL
     env(database_url=APP_URL)

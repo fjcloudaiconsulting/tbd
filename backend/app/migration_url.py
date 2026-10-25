@@ -19,13 +19,14 @@ MIGRATIONS_DATABASE_URL_ENV = "MIGRATIONS_DATABASE_URL"
 DATABASE_URL_ENV = "DATABASE_URL"
 
 
-def migrations_database_url(default: Optional[str] = None) -> Optional[str]:
-    """``MIGRATIONS_DATABASE_URL``, else ``DATABASE_URL``, else ``default``.
+def migrations_database_url() -> Optional[str]:
+    """``MIGRATIONS_DATABASE_URL``, else ``DATABASE_URL``, else None.
 
-    A blank value counts as unset.
+    A blank value counts as unset. Callers fall back to ``alembic.ini`` on
+    None, lazily: reading it needs the file to exist.
     """
     for name in (MIGRATIONS_DATABASE_URL_ENV, DATABASE_URL_ENV):
         value = os.getenv(name, "").strip()
         if value:
             return value
-    return default
+    return None

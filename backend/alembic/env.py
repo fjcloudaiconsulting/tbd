@@ -17,7 +17,7 @@ logs.configure()
 target_metadata = Base.metadata
 
 # MIGRATIONS_DATABASE_URL (its own DB user, TBD-655), else DATABASE_URL, else alembic.ini.
-db_url = migrations_database_url(config.get_main_option("sqlalchemy.url"))
+db_url = migrations_database_url() or config.get_main_option("sqlalchemy.url")
 
 
 def run_migrations_offline() -> None:
