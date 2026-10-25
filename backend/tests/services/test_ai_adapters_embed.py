@@ -1,6 +1,6 @@
 """Adapter ``embed()`` tests (PR3 of AI tier train).
 
-OpenAI, Ollama, OpenAI-compatible: happy path + sanitized error.
+OpenAI, OpenAI-compatible: happy path + sanitized error.
 Anthropic: NotImplementedError (no public embeddings API).
 
 Sanitization invariant from PR2 carries through — provider error
@@ -15,7 +15,6 @@ import pytest
 
 from app.services.ai_providers.anthropic import AnthropicAdapter
 from app.services.ai_providers.base import AIProviderError
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import (
     OpenAICompatibleAdapter,
@@ -123,73 +122,6 @@ async def test_anthropic_embed_raises_not_implemented():
     with pytest.raises(NotImplementedError) as exc_info:
         await adapter.embed(texts=["x"])
     assert "Anthropic" in str(exc_info.value)
-
-
-# ---------- Ollama ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ollama_embed_no_bearer(monkeypatch):
-    requests_seen: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        requests_seen.append(body)
-        assert "Authorization" not in request.headers
-        return httpx.Response(
-            200,
-            json={
-                "model": "nomic-embed-text",
-                "embedding": [0.7, 0.8, 0.9],
-            },
-        )
-
-    _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434", api_key="x"
-    )
-    resp = await adapter.embed(texts=["a", "b"], model="nomic-embed-text")
-    # One request per text.
-    assert len(requests_seen) == 2
-    assert resp.vectors == [[0.7, 0.8, 0.9], [0.7, 0.8, 0.9]]
-    assert resp.model == "nomic-embed-text"
-    # Estimated tokens (4 chars / token), minimum 1.
-    assert resp.prompt_tokens >= 1
-
-
-@pytest.mark.asyncio
-async def test_ollama_embed_with_bearer_token(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["Authorization"] == "Bearer secret-bearer"
-        return httpx.Response(
-            200,
-            json={"model": "nomic-embed-text", "embedding": [0.1, 0.2]},
-        )
-
-    _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434",
-        api_key="x",
-        bearer_token="secret-bearer",
-    )
-    resp = await adapter.embed(texts=["x"], model="nomic-embed-text")
-    assert resp.vectors == [[0.1, 0.2]]
-
-
-@pytest.mark.asyncio
-async def test_ollama_embed_error_sanitized(monkeypatch):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            503, text=f"down — {LEAKED_SECRET_MARKER}"
-        )
-
-    _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434", api_key="x"
-    )
-    with pytest.raises(AIProviderError) as exc_info:
-        await adapter.embed(texts=["x"], model="nomic-embed-text")
-    assert LEAKED_SECRET_MARKER not in str(exc_info.value)
 
 
 # ---------- OpenAI-compatible ----------------------------------------
