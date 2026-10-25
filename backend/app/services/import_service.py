@@ -49,10 +49,13 @@ from app.services.transaction_service import (
     get_account_for_update,
 )
 from app.services.category_rules_service import (
-    bump_shared_vote,
     infer_categories,
     learn_from_choice,
     normalize_description,
+    record_shared_vote,
+    SHARE_MERCHANT_DATA_KEY,
+    share_merchant_data_still_enabled,
+    share_merchant_data_value_enabled,
     should_skip_learning,
 )
 from app.services.import_parser import ParsedRow
@@ -577,10 +580,13 @@ async def execute_import(
         await transaction_service.validate_account(db, body.account_id, org_id)
 
     # ── Smart-rules learning: fetch share flag once ──
+    # BE-28: each chunk re-reads it under its row lock before voting
+    # (``_apply_confirm_rows``). This plain read keeps non-sharing orgs (the
+    # default) lock-free.
     share_flag = (await db.execute(
         select(OrgSetting.value).where(
             OrgSetting.org_id == org_id,
-            OrgSetting.key == "share_merchant_data",
+            OrgSetting.key == SHARE_MERCHANT_DATA_KEY,
         )
     )).scalar_one_or_none()
 
@@ -588,7 +594,7 @@ async def execute_import(
         org_id=org_id,
         body=body,
         currency=destination_account.currency,
-        share_merchant_data=(share_flag == "true"),
+        share_merchant_data=share_merchant_data_value_enabled(share_flag),
     )
 
     if user_id is None:
@@ -779,6 +785,16 @@ async def _apply_confirm_rows(
     org_id = ctx.org_id
     body = ctx.body
     currency = ctx.currency
+    # BE-28: re-read the share flag under its row lock at the start of every
+    # chunk. Each chunk commits on its own, so a lock taken once would be
+    # released at the first commit; held per chunk, turning sharing off and
+    # this chunk's votes are exclusive (the opt-out either waits for the
+    # chunk to commit and withdraws its votes, or commits first and the
+    # chunk sees sharing off). Once seen off, it stays off for the rest of
+    # the confirm. A resumed or repeated confirm cannot vote twice: a vote is
+    # one row per (entry, org).
+    if ctx.share_merchant_data:
+        ctx.share_merchant_data = await share_merchant_data_still_enabled(db, org_id)
     share_merchant_data = ctx.share_merchant_data
     result = _ChunkResult()
     errors = result.errors
@@ -1121,6 +1137,18 @@ async def _apply_confirm_rows(
             source = "user_pick" if accepted else "user_edit"
             try:
                 async with db.begin_nested():
+                    # BE-28: the shared-dictionary vote is recomputed from the
+                    # server's own suggestion, not from the client's
+                    # suggested_category_id / suggestion_source, and counts
+                    # once per org. Before learn_from_choice, whose rule would
+                    # otherwise become the suggestion.
+                    if share_merchant_data:
+                        await record_shared_vote(
+                            db,
+                            org_id=org_id,
+                            description=row.description,
+                            category_id=row.category_id,
+                        )
                     await learn_from_choice(
                         db,
                         org_id=org_id,
@@ -1128,11 +1156,6 @@ async def _apply_confirm_rows(
                         category_id=row.category_id,
                         source=source,
                     )
-                    if (
-                        accepted and share_merchant_data
-                        and row.suggestion_source == "shared_dictionary"
-                    ):
-                        await bump_shared_vote(db, description=row.description)
                 # savepoint released on normal exit; outer transaction unchanged
             except Exception as exc:
                 # savepoint already rolled back by the begin_nested context

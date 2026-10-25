@@ -3,9 +3,13 @@
 Covers Task 7 of L3.10.
 
   Accept (row.category_id == row.suggested_category_id):
-    -> learn_from_choice(source="user_pick"); bump shared vote if org opted in.
+    -> learn_from_choice(source="user_pick").
   Override (row.category_id != row.suggested_category_id, or no suggestion):
-    -> learn_from_choice(source="user_edit"); do NOT bump shared vote.
+    -> learn_from_choice(source="user_edit").
+  Shared-dictionary vote (BE-28): only for an org that shares merchant data,
+    only when the SERVER's own suggestion for the row is the dictionary's and
+    the confirmed category matches it, and at most once per org per entry.
+    The client's suggested_category_id / suggestion_source play no part.
   Transfer rows: skip both.
   Aggregate metric: one smart_rules.import_executed event after the loop;
                     smart_rules.miss once per UNIQUE missed token.
@@ -24,7 +28,7 @@ from app.models import Base
 from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.merchant_dictionary import MerchantDictionaryEntry
+from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
@@ -159,6 +163,131 @@ async def test_accept_without_opt_in_does_not_bump_shared(db_session: AsyncSessi
     await import_service.execute_import(db_session, org_id=seed["org_id"], body=body)
     entry = (await db_session.execute(select(MerchantDictionaryEntry))).scalar_one()
     assert entry.vote_count == 0
+
+
+def _row(n: int, category_id: int, **suggestion) -> ImportConfirmRow:
+    return ImportConfirmRow(
+        row_number=n, date=datetime.date(2026, 5, n),
+        description=f"POS LIDL *{n:04d}", amount=Decimal("12.50"), type="expense",
+        category_id=category_id, **suggestion,
+    )
+
+
+async def _confirm(db: AsyncSession, seed: dict, rows: list[ImportConfirmRow]) -> None:
+    body = ImportConfirmRequest(
+        account_id=seed["account_id"],
+        default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
+        rows=rows,
+    )
+    await import_service.execute_import(db, org_id=seed["org_id"], body=body)
+
+
+async def _votes(db: AsyncSession) -> tuple[int, int]:
+    entry = (await db.execute(select(MerchantDictionaryEntry))).scalar_one()
+    await db.refresh(entry)
+    n = len((await db.execute(select(MerchantDictionaryVote))).scalars().all())
+    return entry.vote_count, n
+
+
+async def test_client_claimed_dictionary_suggestion_casts_no_vote(
+    db_session: AsyncSession,
+) -> None:
+    """BE-28: the client says the dictionary suggested the category it picked,
+    but the server's suggestion for LIDL is Groceries, not Restaurants."""
+    seed = await _seed(db_session, share=True)
+    await _confirm(db_session, seed, [_row(
+        1, seed["restaurants_id"],
+        suggested_category_id=seed["restaurants_id"],
+        suggestion_source="shared_dictionary",
+    )])
+    assert await _votes(db_session) == (0, 0)
+
+
+async def test_vote_is_recomputed_without_client_suggestion_fields(
+    db_session: AsyncSession,
+) -> None:
+    """The vote follows the server's suggestion: a row with no suggestion
+    fields that confirms the dictionary's category still counts."""
+    seed = await _seed(db_session, share=True)
+    await _confirm(db_session, seed, [_row(1, seed["groceries_id"])])
+    assert await _votes(db_session) == (1, 1)
+
+
+async def test_repeated_rows_and_imports_count_one_vote_per_org(
+    db_session: AsyncSession,
+) -> None:
+    seed = await _seed(db_session, share=True)
+    accepted = {
+        "suggested_category_id": seed["groceries_id"],
+        "suggestion_source": "shared_dictionary",
+    }
+    await _confirm(db_session, seed, [
+        _row(n, seed["groceries_id"], **accepted) for n in (1, 2, 3)
+    ])
+    await _confirm(db_session, seed, [
+        _row(n, seed["groceries_id"], **accepted) for n in (4, 5)
+    ])
+    assert await _votes(db_session) == (1, 1)
+
+
+async def test_vote_rechecks_merchant_sharing_under_the_lock(
+    db_session: AsyncSession, monkeypatch,
+) -> None:
+    """The plain read said "sharing", but the row says otherwise by the time
+    the import would vote (an opt-out committed in between): no vote. Wrong
+    implementation: trusting the first, unlocked read."""
+    seed = await _seed(db_session, share=False)
+    db_session.add(OrgSetting(
+        org_id=seed["org_id"], key="share_merchant_data", value="false",
+    ))
+    await db_session.commit()
+    monkeypatch.setattr(
+        import_service, "share_merchant_data_value_enabled", lambda _value: True
+    )
+
+    await _confirm(db_session, seed, [_row(1, seed["groceries_id"])])
+
+    assert await _votes(db_session) == (0, 0)
+
+
+async def test_each_chunk_rechecks_merchant_sharing(
+    db_session: AsyncSession, monkeypatch,
+) -> None:
+    """Each chunk commits on its own, so the share flag is re-read under its
+    lock per chunk: sharing turned off after the first chunk committed stops
+    the votes of the next one. Wrong implementation: one locked read for the
+    whole confirm, released at the first chunk's commit."""
+    seed = await _seed(db_session, share=True)
+    db_session.add(MerchantDictionaryEntry(
+        normalized_token="ALDI", category_slug="groceries", is_seed=True, vote_count=0,
+    ))
+    await db_session.commit()
+    monkeypatch.setattr(import_service, "CONFIRM_CHUNK_ROWS", 1)
+    original = import_service._apply_confirm_rows
+    calls = {"n": 0}
+
+    async def opt_out_after_first_chunk(db_, ctx, chunk_rows):
+        result = await original(db_, ctx, chunk_rows)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            setting = await db_.scalar(select(OrgSetting).where(
+                OrgSetting.org_id == seed["org_id"],
+                OrgSetting.key == "share_merchant_data",
+            ))
+            setting.value = "false"
+        return result
+
+    monkeypatch.setattr(import_service, "_apply_confirm_rows", opt_out_after_first_chunk)
+    rows = [_row(1, seed["groceries_id"]), _row(2, seed["groceries_id"])]
+    rows[1] = rows[1].model_copy(update={"description": "POS ALDI *0002"})
+    await _confirm(db_session, seed, rows)
+
+    counts = dict((await db_session.execute(select(
+        MerchantDictionaryEntry.normalized_token, MerchantDictionaryEntry.vote_count,
+    ).execution_options(populate_existing=True))).all())
+    assert counts == {"LIDL": 1, "ALDI": 0}
 
 
 async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
