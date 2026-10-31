@@ -11,8 +11,8 @@ dependencies = []
 app = [
     "fastapi==0.162.0",
     "uvicorn[standard]==0.54.0",
-    "pydantic[email]==2.14.1",
-    "pydantic-settings==2.16.1",
+    "pydantic[email]==2.14.2",
+    "pydantic-settings==2.16.2",
     "sqlalchemy[asyncio]==2.1.6",
     "aiomysql==0.3.2",
     # PyMySQL is a transitive dep of aiomysql; pin explicitly because
@@ -25,7 +25,7 @@ app = [
     "alembic==1.20.1",
     "PyJWT[crypto]==2.15.1",
     "bcrypt==5.0.0",
-    "python-multipart==0.0.32",
+    "python-multipart==0.0.33",
     "python-dateutil==3.0.0",
     "httpx==0.28.1",
     "slowapi==0.1.10",
@@ -40,8 +40,8 @@ app = [
     "opentelemetry-exporter-otlp-proto-http==1.45.1",
 ]
 dev = [
-    "pytest==9.1.1",
-    "pytest-asyncio==1.4.0",
+    "pytest==9.2.0",
+    "pytest-asyncio==1.4.1",
     "pytest-split==0.11.0",
     "pytest-xdist==3.8.0",
     "pytest-cov==7.1.0",
@@ -52,8 +52,8 @@ dev = [
 mcp = [
     "fastapi==0.162.0",
     "uvicorn[standard]==0.54.0",
-    "pydantic[email]==2.14.1",
-    "pydantic-settings==2.16.1",
+    "pydantic[email]==2.14.2",
+    "pydantic-settings==2.16.2",
     "sqlalchemy[asyncio]==2.1.6",
     "aiomysql==0.3.2",
     "PyMySQL==1.2.3",
