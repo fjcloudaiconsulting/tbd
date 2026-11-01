@@ -12,6 +12,7 @@ import { useMemo } from "react";
 
 import { runQuery } from "./api";
 import { astLimitForBarFamily } from "./breakdown";
+import { localDay, todayIso } from "./date-presets";
 import {
   resolveFilters,
   sourceSupportsDateFilter,
@@ -245,36 +246,6 @@ export function resolvePriorWindow(
     prior: [fromEpochDay(start - lengthDays), fromEpochDay(start - 1)],
     refusal: null,
   };
-}
-
-/**
- * Today's calendar date as `YYYY-MM-DD`, from the LOCAL clock.
- *
- * ⚠ Local, not `toISOString()`. The windows this is compared against are built
- * by `date-presets.ts` from local-clock components, so a UTC day index would
- * be off by one either side of midnight in a non-zero offset and would clamp
- * `this_month` to the wrong number of days.
- *
- * Reports saved before TBD-759, and from templates before then, persist a
- * frozen absolute window (templates computed it from the SERVER clock). A
- * client an hour behind the server could meet a window that starts
- * "tomorrow"; it fails SAFE: `effectiveEnd < start` yields the
- * `future_window` refusal, so the KPI renders its value with no delta and
- * self-heals within a day. New
- * reports and templates persist a token resolved on this clock, so the skew
- * no longer arises for them. Do not "fix" it by loosening the refusal.
- */
-function todayIso(): string {
-  const d = new Date();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${m}-${day}`;
-}
-
-/** Local midnight of a `YYYY-MM-DD` day: the `now` a calendar token resolves against. */
-function localDay(iso: string): Date {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d);
 }
 
 interface UseComparisonQueryResult {
@@ -515,6 +486,7 @@ export function buildSeriesQueryAst(
   canvasFilters: CanvasFilters | undefined,
   sourceSupportsDate = true,
   sourceSupportsStatus = true,
+  now: Date = new Date(),
 ): ReportsQuery {
   const widgetFilters: WidgetFilters | undefined =
     "filters" in widget.config ? widget.config.filters : undefined;
@@ -523,6 +495,7 @@ export function buildSeriesQueryAst(
     widgetFilters,
     sourceSupportsDate,
     sourceSupportsStatus,
+    now,
   );
   const dimensions =
     "dimensions" in widget.config ? widget.config.dimensions : [];
@@ -633,6 +606,9 @@ export function useSeriesQueries(
     sources,
     widget.config.dataset,
   );
+  // Keyed on the day like `useReportQuery`, so a session crossing midnight
+  // re-resolves a calendar preset token here too (TBD-759).
+  const today = todayIso();
   const queries = useMemo(
     () =>
       measures.map((m) =>
@@ -642,9 +618,10 @@ export function useSeriesQueries(
           canvasFilters,
           supportsDate,
           supportsStatus,
+          localDay(today),
         ),
       ),
-    [widget, canvasFilters, measures, supportsDate, supportsStatus],
+    [widget, canvasFilters, measures, supportsDate, supportsStatus, today],
   );
   const order = useMemo(() => canonicalizeQueryOrder(queries), [queries]);
   const canonicalQueries = useMemo(

@@ -94,3 +94,37 @@ export function matchPreset(
   }
   return "custom";
 }
+
+/**
+ * Today's calendar date as `YYYY-MM-DD`, from the LOCAL clock.
+ *
+ * ⚠ Local, not `toISOString()`. The windows this is compared against are built
+ * by this module from local-clock components, so a UTC day index would
+ * be off by one either side of midnight in a non-zero offset and would clamp
+ * `this_month` to the wrong number of days.
+ *
+ * The day it returns is also the `now` every widget hook resolves calendar
+ * preset tokens against (via `localDay`), and a memo dep in those hooks, so a
+ * session crossing midnight re-resolves every widget together (TBD-759).
+ *
+ * Reports saved before TBD-759, and from templates before then, persist a
+ * frozen absolute window (templates computed it from the SERVER clock). A
+ * client an hour behind the server could meet a window that starts
+ * "tomorrow"; it fails SAFE: `resolvePriorWindow`'s `effectiveEnd < start`
+ * yields the `future_window` refusal, so the KPI renders its value with no
+ * delta and self-heals within a day. New reports and templates persist a
+ * token resolved on this clock, so the skew no longer arises for them. Do
+ * not "fix" it by loosening the refusal.
+ */
+export function todayIso(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/** Local midnight of a `YYYY-MM-DD` day: the `now` a calendar token resolves against. */
+export function localDay(iso: string): Date {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}

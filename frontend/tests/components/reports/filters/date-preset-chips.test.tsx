@@ -1,9 +1,34 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 
 import DatePresetChips, {
   buildPresetRanges,
 } from "@/components/reports/filters/DatePresetChips";
 import { matchPreset } from "@/lib/reports/date-presets";
+import type { CanvasDateRange } from "@/lib/reports/types";
+
+/** Controlled host so the chips see the value they wrote, as in the app. */
+function Host({
+  initial,
+  onChange,
+  now,
+}: {
+  initial: CanvasDateRange | undefined;
+  onChange: (v: CanvasDateRange | undefined) => void;
+  now: Date;
+}) {
+  const [value, setValue] = useState(initial);
+  return (
+    <DatePresetChips
+      value={value}
+      now={now}
+      onChange={(v) => {
+        onChange(v);
+        setValue(v);
+      }}
+    />
+  );
+}
 
 describe("DatePresetChips", () => {
   it("renders the six preset chips (incl. Next cycle)", () => {
@@ -81,6 +106,70 @@ describe("DatePresetChips", () => {
     fireEvent.click(screen.getByTestId("date-preset-custom"));
     // Custom path doesn't auto-fill a range; it just enables the inputs.
     expect(onChange).toHaveBeenCalledWith({});
+  });
+
+  // TBD-759: with a token stored, "Custom" used to be inert (the value was
+  // non-empty, and the chip kept reading the token).
+  it("Custom on a calendar token starts from that window as editable dates", () => {
+    const now = new Date(2026, 4, 15);
+    const onChange = vi.fn();
+    render(<Host initial={{ preset: "this_month" }} onChange={onChange} now={now} />);
+    fireEvent.click(screen.getByTestId("date-preset-custom"));
+
+    expect(onChange).toHaveBeenLastCalledWith({ start: "2026-05-01", end: "2026-05-31" });
+    expect(
+      screen.getByTestId("date-preset-custom").getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("date-preset-this_month").getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(screen.getByTestId("date-preset-from")).toHaveValue("2026-05-01");
+    expect(screen.getByTestId("date-preset-to")).toHaveValue("2026-05-31");
+  });
+
+  it("Custom on next_cycle clears to an empty range and shows the inputs", () => {
+    const now = new Date(2026, 4, 15);
+    const onChange = vi.fn();
+    render(<Host initial={{ preset: "next_cycle" }} onChange={onChange} now={now} />);
+    fireEvent.click(screen.getByTestId("date-preset-custom"));
+
+    expect(onChange).toHaveBeenLastCalledWith({});
+    expect(
+      screen.getByTestId("date-preset-custom").getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(screen.getByTestId("date-preset-from")).toBeInTheDocument();
+  });
+
+  it("editing a custom date never writes a preset alongside start/end", () => {
+    const now = new Date(2026, 4, 15);
+    const onChange = vi.fn();
+    render(<Host initial={{ preset: "this_month" }} onChange={onChange} now={now} />);
+    fireEvent.click(screen.getByTestId("date-preset-custom"));
+    fireEvent.change(screen.getByTestId("date-preset-from"), {
+      target: { value: "2026-05-10" },
+    });
+
+    const written = onChange.mock.calls.at(-1)?.[0];
+    expect(written).toEqual({ start: "2026-05-10", end: "2026-05-31" });
+    expect(written).not.toHaveProperty("preset");
+    // Still custom, even though nothing about the dates is preset-shaped now.
+    expect(
+      screen.getByTestId("date-preset-custom").getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("picking a preset after Custom stores the token again", () => {
+    const now = new Date(2026, 4, 15);
+    const onChange = vi.fn();
+    render(<Host initial={{ preset: "this_month" }} onChange={onChange} now={now} />);
+    fireEvent.click(screen.getByTestId("date-preset-custom"));
+    fireEvent.click(screen.getByTestId("date-preset-ytd"));
+
+    expect(onChange).toHaveBeenLastCalledWith({ preset: "ytd" });
+    expect(
+      screen.getByTestId("date-preset-ytd").getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(screen.queryByTestId("date-preset-from")).not.toBeInTheDocument();
   });
 
   it("marks the active preset with aria-pressed", () => {
