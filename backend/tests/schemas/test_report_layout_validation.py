@@ -215,6 +215,17 @@ def test_valid_canvas_filters_next_cycle_preset():
     assert body.canvas_filters_json["date_range"]["preset"] == "next_cycle"
 
 
+@pytest.mark.parametrize("token", ["this_month", "last_month", "ytd", "last_12_months"])
+def test_valid_canvas_filters_calendar_preset(token):
+    # TBD-759: a calendar preset persists as a token (no start/end) so a
+    # report saved as "This month" keeps meaning the current month.
+    body = ReportCreate(
+        name="r",
+        canvas_filters_json={"date_range": {"preset": token}},
+    )
+    assert body.canvas_filters_json["date_range"] == {"preset": token}
+
+
 # ─── malformed → ValidationError ────────────────────────────────────
 
 
@@ -393,14 +404,15 @@ def test_reject_canvas_filters_bad_preset():
         )
 
 
-def test_reject_canvas_filters_preset_with_absolute_dates():
+@pytest.mark.parametrize("token", ["next_cycle", "this_month", "last_12_months"])
+def test_reject_canvas_filters_preset_with_absolute_dates(token):
     # A relative preset carries no absolute window; a blob with both is
     # contradictory and rejected (the _preset_excludes_absolute invariant).
     with pytest.raises(ValidationError):
         ReportCreate(
             name="r",
             canvas_filters_json={
-                "date_range": {"preset": "next_cycle", "start": "2026-01-01"}
+                "date_range": {"preset": token, "start": "2026-01-01"}
             },
         )
 

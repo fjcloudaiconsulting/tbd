@@ -537,6 +537,56 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
     await settle();
   });
 
+  // TBD-759: new reports persist `{preset:"this_month"}`, not frozen dates.
+  // The token resolves to a `between` window on the client, so the prior
+  // period (refused for `op:"relative"`) still computes and still clamps.
+  it("B1t: a `this_month` TOKEN resolves and clamps exactly like the frozen window", async () => {
+    respondByWindowStart({
+      "2026-09-01": 250,
+      "2026-08-30": 500,
+    });
+    const w = makeKpi({ date_range: { preset: "this_month" } }, true);
+
+    renderWithSWR(<>{renderReportWidget(w, NO_CANVAS, false)}</>);
+    const delta = await screen.findByTestId("kpi-widget-delta");
+
+    const prior = runQueryMock.mock.calls.map((c) => c[0]).filter(isPriorWindowFor("2026-08-30"));
+    expect(prior).toHaveLength(1);
+    expect(dateFilterOf(prior[0])).toEqual({
+      field: "date",
+      op: "between",
+      value: ["2026-08-30", "2026-08-31"],
+    });
+    expect(delta.textContent).toContain("-50.0%");
+    await settle();
+  });
+
+  it("B1u: crossing into a new month re-resolves the token's value AND prior window together", async () => {
+    vi.setSystemTime(new Date(2026, 8, 30, 23, 0, 0)); // Sep 30
+    respondByWindowStart({
+      "2026-09-01": 300, // September (30 elapsed days)
+      "2026-08-02": 300, // Aug 2-31
+      "2026-10-01": 100, // October, day one
+      "2026-09-30": 50, // the day before
+    });
+    const w = makeKpi({ date_range: { preset: "this_month" } }, true);
+    const ui = () => <>{renderReportWidget(w, NO_CANVAS, false)}</>;
+
+    const { rerender } = renderWithSWR(ui());
+    expect((await screen.findByTestId("kpi-widget-delta")).textContent).toContain("0.0%");
+
+    vi.setSystemTime(new Date(2026, 9, 1, 0, 5, 0)); // Oct 1, just after midnight
+    rerender(ui());
+
+    // October's value (100) against Sep 30 (50). A main query still holding
+    // September (300) would read +500% against the re-derived prior window.
+    await waitFor(() =>
+      expect(screen.getByTestId("kpi-widget-delta").textContent).toContain("100.0%"),
+    );
+    expect(screen.getByTestId("kpi-widget-delta").textContent).not.toContain("500");
+    await settle();
+  });
+
   it("B1b: on the FIRST of the month it is one day against one day", async () => {
     vi.setSystemTime(new Date(2026, 8, 1, 9, 0, 0));
     respondByWindowStart({

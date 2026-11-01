@@ -76,6 +76,24 @@ class RelativeDateToken(str, enum.Enum):
     NEXT_CYCLE = "next_cycle"
 
 
+class CalendarDatePreset(str, enum.Enum):
+    """Calendar date presets a saved ``CanvasDateRange.preset`` can carry
+    (TBD-759), so "This month" stays the CURRENT month after the calendar
+    rolls over. The FRONTEND resolves these against the viewer's local clock
+    and sends a plain ``between`` window; they are persistence-only.
+
+    Deliberately a separate enum from ``RelativeDateToken``: that one also
+    gates the query AST's ``op='relative'`` value, and the server resolver
+    has no calendar arm, so widening it would turn a stray
+    ``{op:'relative', value:'this_month'}`` into a 500 instead of a 422.
+    Mirrors ``buildPresetRanges`` in ``frontend/lib/reports/date-presets.ts``."""
+
+    THIS_MONTH = "this_month"
+    LAST_MONTH = "last_month"
+    YTD = "ytd"
+    LAST_12_MONTHS = "last_12_months"
+
+
 class TxnStatus(str, enum.Enum):
     """Closed transaction-status filter value. Shared atom so the saved
     ``canvas_filters_json`` status and the live AST status filter cannot
