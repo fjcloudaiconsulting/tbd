@@ -3,11 +3,13 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { X } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import Pagination from "@/components/ui/Pagination";
+import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { SeriesScopeChoice, type SeriesScope } from "@/components/transactions/SeriesScopeChoice";
@@ -19,8 +21,10 @@ import {
   paginate,
   pageCount,
   type SortDir,
+  type TableState,
 } from "@/lib/hooks/use-table-state";
-import { SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
+import { usePersistedFilters } from "@/lib/hooks/use-persisted-filters";
+import { FILTERS_KEY_RECURRING, SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
 import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, input as inputCls, label as labelCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { RecurringTransaction } from "@/lib/types";
 import { instalmentDone, seriesRunning } from "@/lib/recurring";
@@ -64,6 +68,12 @@ const ALLOWED_SORT_FIELDS: readonly SortField[] = [
   "next_due_date",
   "amount",
 ];
+
+const DEFAULT_SORT_FIELD: SortField = "next_due_date";
+const DEFAULT_SORT_DIR: SortDir = "asc";
+
+// TBD-761. Module scope: `usePersistedFilters` resets to this exact object.
+const RECURRING_FILTER_DEFAULTS = { search: "" };
 
 // Comparator helpers. Nulls/empties always sort last regardless of direction.
 // `factor` is +1 for ascending, -1 for descending. It is applied ONLY to the
@@ -118,10 +128,53 @@ function sortRecurring(
   return sorted;
 }
 
+// TBD-761. The client twin of the transactions search's amount parse
+// (`_parse_search_amount`): drop currency symbols, spaces and thousands
+// commas, so "12.5", "$12.50" and "1,200" all read as numbers. The sign is
+// kept apart: the rows SHOW one ("-$12.50"), so a typed sign narrows to that
+// side and an unsigned amount matches both.
+function parseSearchAmount(q: string): { value: number; sign: "+" | "-" | null } | null {
+  let s = q.replace(/[$€£,\s]/g, "");
+  let sign: "+" | "-" | null = null;
+  if (s.startsWith("+") || s.startsWith("-")) {
+    sign = s[0] as "+" | "-";
+    s = s.slice(1);
+  }
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(s)) return null;
+  return { value: Number(s), sign };
+}
+
+// Name, account, category, or amount: the displayed amount as a substring
+// ("1,200"), or the number itself ("12.5" finds 12.50). `query` arrives
+// trimmed and lower-cased.
+function matchesSearch(
+  r: RecurringTransaction,
+  query: string,
+  money: (value: number | string) => string,
+): boolean {
+  const sign = r.type === "income" ? "+" : "-";
+  if (
+    [r.description, r.account_name, r.category_name, `${sign}${money(r.amount)}`]
+      .some((text) => text != null && text.toLowerCase().includes(query))
+  ) {
+    return true;
+  }
+  const amount = parseSearchAmount(query);
+  return (
+    amount !== null &&
+    (amount.sign === null || amount.sign === sign) &&
+    amount.value === Number(r.amount)
+  );
+}
+
 interface RecurringTableProps {
   title: string;
-  storageKey: string;
+  table: TableState<SortField>;
   items: RecurringTransaction[];
+  // TBD-761. The page filters; the table needs the unfiltered count for its
+  // "x of y" title and to tell "no templates" from "no matches".
+  totalCount: number;
+  searching: boolean;
   paused?: boolean;
   emptyLabel: string;
   onStop?: (item: RecurringTransaction) => void;
@@ -136,8 +189,10 @@ interface RecurringTableProps {
 
 function RecurringTable({
   title,
-  storageKey,
+  table,
   items,
+  totalCount,
+  searching,
   paused = false,
   emptyLabel,
   onStop,
@@ -149,13 +204,9 @@ function RecurringTable({
   targetId,
 }: RecurringTableProps) {
   const money = useMoney();
-  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
-    useTableState<SortField>({
-      key: storageKey,
-      defaultSortField: "next_due_date",
-      defaultSortDir: "asc",
-      allowedSortFields: ALLOWED_SORT_FIELDS,
-    });
+  // TBD-761: owned by the page, so its one Reset can reach both tables.
+  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } = table;
+  const emptyText = totalCount > 0 ? "No recurring transactions match your search." : emptyLabel;
 
   const sorted = useMemo(
     () => sortRecurring(items, sortField, sortDir),
@@ -216,7 +267,7 @@ function RecurringTable({
     <div className={`${card} overflow-x-auto`} data-testid={testId}>
       <div className={cardHeader}>
         <h2 className={cardTitle}>
-          {title} ({items.length})
+          {title} ({searching ? `${items.length} of ${totalCount}` : items.length})
         </h2>
       </div>
 
@@ -374,7 +425,7 @@ function RecurringTable({
             {items.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-6 py-8 text-center text-sm text-text-muted">
-                  {emptyLabel}
+                  {emptyText}
                 </td>
               </tr>
             )}
@@ -475,7 +526,7 @@ function RecurringTable({
           </article>
         ))}
         {items.length === 0 && (
-          <div className="px-4 py-8 text-center text-sm text-text-muted">{emptyLabel}</div>
+          <div className="px-4 py-8 text-center text-sm text-text-muted">{emptyText}</div>
         )}
       </div>
 
@@ -484,7 +535,7 @@ function RecurringTable({
           <Pagination
             page={safePage}
             pageSize={pageSize}
-            total={items.length}
+            total={sorted.length}
             onPageChange={setPage}
             onPageSizeChange={setPageSize}
           />
@@ -528,6 +579,46 @@ function RecurringPage() {
   const money = useMoney();
   const signed = (r: RecurringTransaction, value: number | string) =>
     `${r.type === "income" ? "+" : "-"}${money(value)}`;
+
+  // TBD-761. Sort lives here, not in each table, so the one Reset reaches both.
+  const activeTable = useTableState<SortField>({
+    key: `${SORT_KEY_RECURRING}:active`,
+    defaultSortField: DEFAULT_SORT_FIELD,
+    defaultSortDir: DEFAULT_SORT_DIR,
+    allowedSortFields: ALLOWED_SORT_FIELDS,
+  });
+  const pausedTable = useTableState<SortField>({
+    key: `${SORT_KEY_RECURRING}:stopped`,
+    defaultSortField: DEFAULT_SORT_FIELD,
+    defaultSortDir: DEFAULT_SORT_DIR,
+    allowedSortFields: ALLOWED_SORT_FIELDS,
+  });
+  const sortIsDefault = [activeTable, pausedTable].every(
+    (t) => t.sortField === DEFAULT_SORT_FIELD && t.sortDir === DEFAULT_SORT_DIR,
+  );
+  const persistedFilters = usePersistedFilters(FILTERS_KEY_RECURRING, RECURRING_FILTER_DEFAULTS);
+  const { search } = persistedFilters.filters;
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Back to page 1 of the new matches, in the handler rather than an effect:
+  // an effect here would run after the tables' deep-link jump and undo it.
+  function setSearch(value: string) {
+    persistedFilters.setField("search", value);
+    activeTable.setPage(1);
+    pausedTable.setPage(1);
+  }
+
+  // TBD-761. The deep link addresses one template: a persisted search that
+  // hides it is dropped, once, on landing, and the table's jump then finds it.
+  // A search that shows it, or a search typed later, is left alone.
+  const deepLinkCheckedRef = useRef(false);
+  const resetSearch = persistedFilters.reset;
+  useEffect(() => {
+    if (fetching || deepLinkCheckedRef.current) return;
+    deepLinkCheckedRef.current = true;
+    const target = items.find((r) => r.id === targetId);
+    const q = search.trim().toLowerCase();
+    if (target && q !== "" && !matchesSearch(target, q, money)) resetSearch();
+  }, [fetching, items, targetId, search, money, resetSearch]);
 
   const reload = useCallback(async () => {
     const data = await apiFetch<RecurringTransaction[]>("/api/v1/recurring");
@@ -682,6 +773,13 @@ function RecurringPage() {
   const activeItems = items.filter((r) => r.is_active);
   const pausedItems = items.filter((r) => !r.is_active);
 
+  // TBD-761. A client-side filter over the one fetch, applied before each
+  // table's sort and pagination.
+  const query = search.trim().toLowerCase();
+  const searching = query !== "";
+  const visibleActive = searching ? activeItems.filter((r) => matchesSearch(r, query, money)) : activeItems;
+  const visiblePaused = searching ? pausedItems.filter((r) => matchesSearch(r, query, money)) : pausedItems;
+
   return (
     <AppShell>
       {/* Responsive header: title + HelpAnchor stay together in the
@@ -731,10 +829,54 @@ function RecurringPage() {
         <Spinner />
       ) : (
         <div className="space-y-6">
+          {items.length > 0 && (
+            // TBD-761. Same box as the transactions search; the Reset sits
+            // beside it as there is no filter panel here.
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative w-full sm:max-w-sm">
+                <label htmlFor="recurring-search" className="sr-only">Search recurring transactions</label>
+                <input
+                  ref={searchInputRef}
+                  id="recurring-search"
+                  type="text"
+                  placeholder="Search by name, account, category or amount..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className={`${inputCls} pr-10`}
+                />
+                {search && (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => {
+                      setSearch("");
+                      searchInputRef.current?.focus();
+                    }}
+                    className="absolute inset-y-0 right-0 flex items-center rounded-md px-3 text-text-muted hover:text-text-primary"
+                  >
+                    <X aria-hidden="true" className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <ResetSortFiltersButton
+                className="self-start sm:self-auto"
+                visible={!persistedFilters.isDefault || !sortIsDefault}
+                onClick={() => {
+                  persistedFilters.reset();
+                  activeTable.reset();
+                  pausedTable.reset();
+                  // The button unmounts on reset; keep focus nearby.
+                  searchInputRef.current?.focus();
+                }}
+              />
+            </div>
+          )}
           <RecurringTable
             title="Active"
-            storageKey={`${SORT_KEY_RECURRING}:active`}
-            items={activeItems}
+            table={activeTable}
+            items={visibleActive}
+            totalCount={activeItems.length}
+            searching={searching}
             emptyLabel="No active recurring transactions."
             onStop={handleStop}
             onSkipNext={setConfirmSkip}
@@ -747,8 +889,10 @@ function RecurringPage() {
           {pausedItems.length > 0 && (
             <RecurringTable
               title="Paused"
-              storageKey={`${SORT_KEY_RECURRING}:stopped`}
-              items={pausedItems}
+              table={pausedTable}
+              items={visiblePaused}
+              totalCount={pausedItems.length}
+              searching={searching}
               paused
               emptyLabel="No paused recurring transactions."
               onResume={handleResume}
