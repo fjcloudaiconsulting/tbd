@@ -42,7 +42,7 @@ from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction
 from app.models.usage_counter import UsageCounter
 from app.services.org_bootstrap_service import seed_org_defaults
-from app.services import tag_service
+from app.services import category_rules_service, tag_service
 
 
 async def _decrement_dictionary_counts_for_org(
@@ -195,6 +195,12 @@ async def wipe_org_data(
     counts["tags"] = (
         await db.execute(delete(Tag).where(Tag.org_id == org_id))
     ).rowcount or 0
+
+    # Shared merchant-dictionary votes (BE-28): each one takes its count
+    # off ``merchant_dictionary.vote_count`` as it goes.
+    counts["merchant_dictionary_votes"] = (
+        await category_rules_service.withdraw_shared_votes(db, org_id=org_id)
+    )
 
     # Metered usage goes with the org. Deliberately NOT in reset_org_data.
     counts["usage_counters"] = (
@@ -359,6 +365,10 @@ async def reset_org_data(
     counts["tags"] = (
         await db.execute(delete(Tag).where(Tag.org_id == org_id))
     ).rowcount or 0
+    # Shared merchant-dictionary votes (BE-28), as in ``wipe_org_data``.
+    counts["merchant_dictionary_votes"] = (
+        await category_rules_service.withdraw_shared_votes(db, org_id=org_id)
+    )
     await db.commit()
 
     # Re-seed the post-registration defaults. Idempotent: if the

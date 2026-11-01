@@ -37,7 +37,13 @@ from app.schemas.settings import (
     PlanningToolResponse,
     PlanningToolToggle,
 )
-from app.services import audit_service, billing_service, currency_service, tag_service
+from app.services import (
+    audit_service,
+    billing_service,
+    category_rules_service,
+    currency_service,
+    tag_service,
+)
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.feature_gate import (
     Feature,
@@ -287,6 +293,15 @@ async def upsert_setting(
     if stops_tag_sharing:
         await db.flush()
         await tag_service.withdraw_dictionary_contributions(db, org_id=current_user.org_id)
+    # BE-28: the same for merchant sharing and the org's votes on the shared
+    # merchant dictionary (``category_rules_service.share_merchant_data_still_enabled``).
+    stops_merchant_sharing = (
+        key_cf == category_rules_service.SHARE_MERCHANT_DATA_KEY
+        and not category_rules_service.share_merchant_data_value_enabled(body.value)
+    )
+    if stops_merchant_sharing:
+        await db.flush()
+        await category_rules_service.withdraw_shared_votes(db, org_id=current_user.org_id)
 
     try:
         await db.commit()
@@ -304,6 +319,11 @@ async def upsert_setting(
         if stops_tag_sharing:
             await db.flush()
             await tag_service.withdraw_dictionary_contributions(
+                db, org_id=current_user.org_id
+            )
+        if stops_merchant_sharing:
+            await db.flush()
+            await category_rules_service.withdraw_shared_votes(
                 db, org_id=current_user.org_id
             )
         await db.commit()
@@ -348,6 +368,10 @@ async def delete_setting(
     if setting.key.casefold() == tag_service.SHARE_TAG_DATA_KEY:
         await db.flush()
         await tag_service.withdraw_dictionary_contributions(db, org_id=current_user.org_id)
+    # BE-28: likewise, no ``share_merchant_data`` row means merchant sharing is off.
+    if setting.key.casefold() == category_rules_service.SHARE_MERCHANT_DATA_KEY:
+        await db.flush()
+        await category_rules_service.withdraw_shared_votes(db, org_id=current_user.org_id)
     await db.commit()
 
 

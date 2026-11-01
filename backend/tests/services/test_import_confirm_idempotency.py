@@ -24,6 +24,8 @@ from app.models import Base
 from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
 from app.models.import_batch import ImportBatch
+from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
+from app.models.settings import OrgSetting
 from app.models.transaction import Transaction
 from app.models.user import Organization, User
 from app.schemas.import_schemas import ImportConfirmRequest, ImportConfirmRow
@@ -226,6 +228,49 @@ async def test_failure_between_chunks_then_retry_applies_each_row_once(
     )
     assert third.model_dump() == retried.model_dump()
     assert (await _state(factory, seed))["tx"] == 4
+
+
+async def test_resumed_confirm_counts_a_dictionary_vote_once(
+    db, factory, seed, small_chunks, monkeypatch,
+):
+    """BE-28: a vote cast in a chunk that failed is rolled back with it, the
+    resumed confirm casts it once, and a replay adds nothing."""
+    db.add(MerchantDictionaryEntry(normalized_token="LIDL", category_slug="general",
+                                   is_seed=True, vote_count=0))
+    db.add(OrgSetting(org_id=seed["org_id"], key="share_merchant_data", value="true"))
+    await db.commit()
+    lidl = {"description": "POS LIDL *0001", "category_id": seed["category_id"]}
+    rows = _rows(5, {3: lidl, 4: lidl, 5: lidl})
+    original = import_service._apply_confirm_rows
+    calls = {"n": 0}
+
+    async def crash_in_second_chunk(db_, ctx, chunk_rows):
+        result = await original(db_, ctx, chunk_rows)
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("connection lost")  # after the vote flushed
+        return result
+
+    async def votes() -> tuple[int, int]:
+        async with factory() as s:
+            count = await s.scalar(select(MerchantDictionaryEntry.vote_count))
+            rows_ = await s.scalar(select(func.count()).select_from(MerchantDictionaryVote))
+            return count, rows_
+
+    monkeypatch.setattr(import_service, "_apply_confirm_rows", crash_in_second_chunk)
+    with pytest.raises(RuntimeError):
+        await import_service.execute_import(
+            db, seed["org_id"], _body(seed, rows), user_id=seed["user_id"]
+        )
+    await db.rollback()
+    assert await votes() == (0, 0)
+
+    monkeypatch.setattr(import_service, "_apply_confirm_rows", original)
+    for _ in range(2):  # the resume, then a replay
+        await import_service.execute_import(
+            db, seed["org_id"], _body(seed, rows), user_id=seed["user_id"]
+        )
+        assert await votes() == (1, 1)
 
 
 async def test_same_key_with_different_content_is_refused(db, factory, seed):

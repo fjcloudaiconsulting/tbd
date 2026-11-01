@@ -29,7 +29,7 @@ from app.models.feature_override import OrgFeatureOverride
 from app.models.limit_override import OrgLimitOverride
 from app.models.usage_counter import UsageCounter
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
-from app.models.merchant_dictionary import MerchantDictionaryEntry
+from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
 from app.models.forecast_plan import (
     ForecastItemType, ForecastPlan, ForecastPlanItem, ItemSource, PlanStatus,
 )
@@ -302,6 +302,7 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
         "recurring_transactions", "forecast_plans", "billing_periods",
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
+        "merchant_dictionary_votes",
         "cc_cycle_payments", "agent_pending_actions", "usage_counters",
     }
     assert set(counts.keys()) == expected_keys
@@ -310,7 +311,10 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
         # deleted earlier in the same wipe pass, so the explicit DELETE
         # at the end has no work to do. Tolerate a 0 there; the
         # assertion below confirms the join rows are actually gone.
-        if key == "transaction_tags":
+        # The full-org fixture casts no shared-dictionary vote;
+        # test_wipe_and_reset_withdraw_the_orgs_shared_dictionary_votes
+        # covers that key with real rows.
+        if key in ("transaction_tags", "merchant_dictionary_votes"):
             assert n >= 0
             continue
         assert n >= 1, f"expected >=1 row deleted from {key}, got {n}"
@@ -375,6 +379,54 @@ async def test_wipe_does_not_touch_merchant_dictionary(session_factory):
         )).scalars().all()
         assert len(rows) == 1
         assert rows[0].normalized_token == "LIDL"
+
+
+async def _seed_votes(session_factory, *org_ids: int) -> int:
+    """One shared-dictionary entry voted for by each of ``org_ids``."""
+    async with session_factory() as db:
+        entry = MerchantDictionaryEntry(
+            normalized_token="LIDL", category_slug="groceries",
+            is_seed=True, vote_count=len(org_ids),
+        )
+        db.add(entry)
+        await db.flush()
+        db.add_all([
+            MerchantDictionaryVote(entry_id=entry.id, org_id=org_id)
+            for org_id in org_ids
+        ])
+        await db.commit()
+        return entry.id
+
+
+async def _vote_state(session_factory) -> tuple[int, set[int]]:
+    async with session_factory() as db:
+        entry = (await db.execute(select(MerchantDictionaryEntry))).scalar_one()
+        voters = set((await db.execute(
+            select(MerchantDictionaryVote.org_id)
+        )).scalars().all())
+        return entry.vote_count, voters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["wipe", "reset"])
+async def test_wipe_and_reset_withdraw_the_orgs_shared_dictionary_votes(
+    session_factory, path,
+):
+    """BE-28: ``vote_count`` stays equal to the number of vote rows when an
+    org's data goes away; other orgs' votes and the entry itself stay."""
+    target = await _seed_full_org(session_factory, name="Target")
+    keep = await _seed_full_org(session_factory, name="Keep")
+    await _seed_votes(session_factory, target["org_id"], keep["org_id"])
+
+    async with session_factory() as db:
+        if path == "wipe":
+            counts = await org_data_service.wipe_org_data(db, org_id=target["org_id"])
+        else:
+            counts = await org_data_service.reset_org_data(db, org_id=target["org_id"])
+        await db.commit()
+
+    assert counts["merchant_dictionary_votes"] == 1
+    assert await _vote_state(session_factory) == (1, {keep["org_id"]})
 
 
 @pytest.mark.asyncio
@@ -442,6 +494,7 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
         "recurring_transactions", "forecast_plans", "billing_periods",
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
+        "merchant_dictionary_votes",
         "cc_cycle_payments", "agent_pending_actions",
         "seeded_account_types", "seeded_categories",
     }

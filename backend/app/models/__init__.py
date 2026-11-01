@@ -13,7 +13,7 @@ from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus,
 from app.models.subscription import Plan, Subscription, SubscriptionStatus, BillingInterval
 from app.models.invitation import Invitation
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.merchant_dictionary import MerchantDictionaryEntry
+from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
 from app.models.feature_override import OrgFeatureOverride  # noqa: F401
 from app.models.limit_override import OrgLimitOverride  # noqa: F401
 from app.models.usage_counter import UsageCounter  # noqa: F401
@@ -106,6 +106,7 @@ __all__ = [
     "CategoryRule",
     "RuleSource",
     "MerchantDictionaryEntry",
+    "MerchantDictionaryVote",
     "OrgFeatureOverride",
     "OrgLimitOverride",
     "UsageCounter",
