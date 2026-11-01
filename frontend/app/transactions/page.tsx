@@ -14,6 +14,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatLocalDate, maskMoneyText, toEditAmount, todayISO } from "@/lib/format";
 import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import { demotionNotice } from "@/lib/demotion";
+import { SeriesScopeChoice, type SeriesScope } from "@/components/transactions/SeriesScopeChoice";
 import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar, warning as warningCls } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts } from "@/lib/hooks/use-accounts";
@@ -566,6 +567,24 @@ function TransactionsPageContent() {
   // the visible list when possible, otherwise fetched on demand. Used to
   // filter the Account select and to render the mirror-amount notice.
   const [editPartner, setEditPartner] = useState<Transaction | null>(null);
+  // TBD-756. Where a new amount or date lands. Asked only on a stored PENDING
+  // occurrence whose amount or date actually changed, and never alongside a
+  // type change or on a row whose type left its series': the server refuses
+  // "future" for all of those. Rendered inside the recurring block, so the
+  // first two terms repeat that block's gate: Save must never wait on a choice
+  // the form does not show.
+  const [editSeriesScope, setEditSeriesScope] = useState<SeriesScope | null>(null);
+  const editingTx = transactions.find((t) => t.id === editingId) ?? null;
+  const editAsksSeriesScope =
+    editingTx !== null &&
+    editPartner === null &&
+    canPromoteToRecurring(editingTx) &&
+    editingTx.recurring_id !== null &&
+    editingTx.status === "pending" &&
+    editType === editingTx.type &&
+    (!editingSeries || editingSeries.type === editingTx.type) &&
+    // Amounts are Decimal strings on the wire: compare as numbers.
+    (Number(editAmount) !== Number(editingTx.amount) || editDate !== editingTx.date);
 
   // TBD-535: filter changes fire overlapping loads. Only the newest may write
   // the list, or a slow earlier response overwrites the rows for the current
@@ -985,6 +1004,7 @@ function TransactionsPageContent() {
     setEditRecFrequency("monthly");
     setEditRecNextDue(defaultNextDueISO());
     setEditRecOccurrenceCount("");
+    setEditSeriesScope(null);
     // Hydrate partner for linked rows so the Account select can filter
     // currency-compatible options and the mirror-amount notice can render.
     //
@@ -1104,6 +1124,12 @@ function TransactionsPageContent() {
         return;
       }
     }
+    if (editAsksSeriesScope && editSeriesScope === null) {
+      setError(
+        "Choose whether the new amount or date applies to this occurrence only or to future occurrences too",
+      );
+      return;
+    }
     try {
       const isLinked = editPartner !== null;
       const body: Record<string, unknown> = {
@@ -1123,6 +1149,9 @@ function TransactionsPageContent() {
       // server's authoritative value.
       if (editStatus === "pending") {
         body.settled_date = editSettledDate || null;
+      }
+      if (editAsksSeriesScope) {
+        body.series_scope = editSeriesScope;
       }
       await apiFetch(`/api/v1/transactions/${editingId}`, {
         method: "PUT",
@@ -1990,6 +2019,13 @@ function TransactionsPageContent() {
                                     Editing the name, category, or account also updates this
                                     recurring series and its upcoming occurrences.
                                   </p>
+                                  {editAsksSeriesScope && (
+                                    <SeriesScopeChoice
+                                      idSuffix={String(tx.id)}
+                                      value={editSeriesScope}
+                                      onChange={setEditSeriesScope}
+                                    />
+                                  )}
                                   {/* TBD-277. The control for the SERIES lives on
                                       another page, and nothing here said so: a
                                       user who wants the subscription to stop
@@ -2579,6 +2615,13 @@ function TransactionsPageContent() {
                                       Editing the name, category, or account also updates this
                                       recurring series and its upcoming occurrences.
                                     </p>
+                                    {editAsksSeriesScope && (
+                                      <SeriesScopeChoice
+                                        idSuffix={`mobile-${tx.id}`}
+                                        value={editSeriesScope}
+                                        onChange={setEditSeriesScope}
+                                      />
+                                    )}
                                     {/* TBD-277 -- MOBILE twin of the series
                                         pointer in the desktop row above. Same
                                         copy, same tokens, same gate. */}

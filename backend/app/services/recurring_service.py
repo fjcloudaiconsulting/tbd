@@ -26,6 +26,7 @@ from app.services.recurring_filters import (
 from app.services.transaction_filters import non_reverted_transaction_filter
 from app.services.transaction_service import (
     _load_opts as _tx_load_opts,
+    _propagate_fields_to_series,
     _settle_batch_counters_and_demote_orphans,
     apply_balance,
     get_account_for_update,
@@ -274,12 +275,16 @@ async def update_recurring(
     if today is None:
         today = datetime.date.today()
 
-    result = await db.execute(
+    # TBD-756: an amount change moves the pending occurrences still at the OLD
+    # amount, so that old amount must be read under the lock.
+    q = (
         select(RecurringTransaction)
         .options(*_load_opts())
         .where(RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id)
     )
-    r = result.scalar_one_or_none()
+    if body.amount is not None:
+        q = q.with_for_update().execution_options(populate_existing=True)
+    r = (await db.execute(q)).scalar_one_or_none()
     if r is None:
         raise NotFoundError("Recurring transaction")
 
@@ -287,6 +292,8 @@ async def update_recurring(
     # detectable below even though both fields are written in this same block.
     was_active = r.is_active
     had_remaining = has_remaining_occurrences(r)
+    old_amount = r.amount
+    old_type = TransactionType(r.type)
 
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
@@ -375,6 +382,16 @@ async def update_recurring(
     # up compliant.
     if body.next_due_date is not None or body.frequency is not None:
         await validate_frontier(db, org_id, r.next_due_date, today=today)
+
+    # TBD-756: the pending occurrences still at the old amount follow the new
+    # one; a row the user changed keeps its value. A ``next_due_date`` edit
+    # moves no materialised row: the frontier is the next UN-materialised
+    # occurrence, and callers move it by whole periods to skip or re-anchor.
+    if r.amount != old_amount:
+        await _propagate_fields_to_series(
+            db, org_id, r.id, description=None, category_id=None, tx_type=old_type,
+            amount=r.amount, amount_was=old_amount,
+        )
 
     await db.commit()
 
