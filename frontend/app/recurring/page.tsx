@@ -28,7 +28,7 @@ import { FILTERS_KEY_RECURRING, SORT_KEY_RECURRING } from "@/lib/hooks/persisted
 import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, input as inputCls, label as labelCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { RecurringTransaction } from "@/lib/types";
 import { instalmentDone, seriesRunning } from "@/lib/recurring";
-import { useMoney } from "@/lib/hooks/use-org-currency";
+import { useBalancesHidden, useMoney } from "@/lib/hooks/use-org-currency";
 
 const FREQ_LABELS: Record<string, string> = {
   weekly: "Weekly",
@@ -129,12 +129,20 @@ function sortRecurring(
 }
 
 // TBD-761. The client twin of the transactions search's amount parse
-// (`_parse_search_amount`): drop currency symbols, spaces and thousands
-// commas, so "12.5", "$12.50" and "1,200" all read as numbers. The sign is
-// kept apart: the rows SHOW one ("-$12.50"), so a typed sign narrows to that
-// side and an unsigned amount matches both.
+// (`_parse_search_amount`): drop currency symbols, spaces and the locale's
+// group separator, so "12.5", "$12.50" and "1,200" all read as numbers. The
+// separators come from the same default locale `formatAmount` uses: in de-DE
+// "12,50" is twelve and a half and "1.200" twelve hundred. The sign is kept
+// apart: the rows SHOW one ("-$12.50"), so a typed sign narrows to that side
+// and an unsigned amount matches both.
 function parseSearchAmount(q: string): { value: number; sign: "+" | "-" | null } | null {
-  let s = q.replace(/[$€£,\s]/g, "");
+  // Seven digits: some locales (es-ES) do not group four.
+  const parts = new Intl.NumberFormat().formatToParts(1234567.5);
+  const group = parts.find((p) => p.type === "group")?.value;
+  const decimal = parts.find((p) => p.type === "decimal")?.value ?? ".";
+  let s = q.replace(/[$€£\s]/g, "");
+  if (group) s = s.split(group).join("");
+  s = s.split(decimal).join(".");
   let sign: "+" | "-" | null = null;
   if (s.startsWith("+") || s.startsWith("-")) {
     sign = s[0] as "+" | "-";
@@ -146,25 +154,28 @@ function parseSearchAmount(q: string): { value: number; sign: "+" | "-" | null }
 
 // Name, account, category, or amount: the displayed amount as a substring
 // ("1,200"), or the number itself ("12.5" finds 12.50). `query` arrives
-// trimmed and lower-cased.
-function matchesSearch(
-  r: RecurringTransaction,
+// trimmed and lower-cased. With balances hidden the rows show a mask, so the
+// number is not matched: "1 of 4" would reveal the amount it hides.
+function searchMatcher(
   query: string,
   money: (value: number | string) => string,
-): boolean {
-  const sign = r.type === "income" ? "+" : "-";
-  if (
-    [r.description, r.account_name, r.category_name, `${sign}${money(r.amount)}`]
-      .some((text) => text != null && text.toLowerCase().includes(query))
-  ) {
-    return true;
-  }
-  const amount = parseSearchAmount(query);
-  return (
-    amount !== null &&
-    (amount.sign === null || amount.sign === sign) &&
-    amount.value === Number(r.amount)
-  );
+  amountsHidden: boolean,
+): (r: RecurringTransaction) => boolean {
+  const amount = amountsHidden ? null : parseSearchAmount(query);
+  return (r) => {
+    const sign = r.type === "income" ? "+" : "-";
+    if (
+      [r.description, r.account_name, r.category_name, `${sign}${money(r.amount)}`]
+        .some((text) => text != null && text.toLowerCase().includes(query))
+    ) {
+      return true;
+    }
+    return (
+      amount !== null &&
+      (amount.sign === null || amount.sign === sign) &&
+      amount.value === Number(r.amount)
+    );
+  };
 }
 
 interface RecurringTableProps {
@@ -577,6 +588,7 @@ function RecurringPage() {
   >(null);
   const [submitting, setSubmitting] = useState(false);
   const money = useMoney();
+  const amountsHidden = useBalancesHidden();
   const signed = (r: RecurringTransaction, value: number | string) =>
     `${r.type === "income" ? "+" : "-"}${money(value)}`;
 
@@ -593,7 +605,9 @@ function RecurringPage() {
     defaultSortDir: DEFAULT_SORT_DIR,
     allowedSortFields: ALLOWED_SORT_FIELDS,
   });
-  const sortIsDefault = [activeTable, pausedTable].every(
+  // The Paused table's sort counts only while that table is shown.
+  const hasPaused = items.some((r) => !r.is_active);
+  const sortIsDefault = (hasPaused ? [activeTable, pausedTable] : [activeTable]).every(
     (t) => t.sortField === DEFAULT_SORT_FIELD && t.sortDir === DEFAULT_SORT_DIR,
   );
   const persistedFilters = usePersistedFilters(FILTERS_KEY_RECURRING, RECURRING_FILTER_DEFAULTS);
@@ -617,8 +631,8 @@ function RecurringPage() {
     deepLinkCheckedRef.current = true;
     const target = items.find((r) => r.id === targetId);
     const q = search.trim().toLowerCase();
-    if (target && q !== "" && !matchesSearch(target, q, money)) resetSearch();
-  }, [fetching, items, targetId, search, money, resetSearch]);
+    if (target && q !== "" && !searchMatcher(q, money, amountsHidden)(target)) resetSearch();
+  }, [fetching, items, targetId, search, money, amountsHidden, resetSearch]);
 
   const reload = useCallback(async () => {
     const data = await apiFetch<RecurringTransaction[]>("/api/v1/recurring");
@@ -777,8 +791,13 @@ function RecurringPage() {
   // table's sort and pagination.
   const query = search.trim().toLowerCase();
   const searching = query !== "";
-  const visibleActive = searching ? activeItems.filter((r) => matchesSearch(r, query, money)) : activeItems;
-  const visiblePaused = searching ? pausedItems.filter((r) => matchesSearch(r, query, money)) : pausedItems;
+  const matches = searchMatcher(query, money, amountsHidden);
+  const visibleActive = searching ? activeItems.filter(matches) : activeItems;
+  const visiblePaused = searching ? pausedItems.filter(matches) : pausedItems;
+  const shownCount = visibleActive.length + visiblePaused.length;
+  const resultCountText = searching
+    ? `${shownCount} of ${items.length} recurring transactions match your search`
+    : `${items.length} recurring ${items.length === 1 ? "transaction" : "transactions"}`;
 
   return (
     <AppShell>
@@ -825,6 +844,13 @@ function RecurringPage() {
         page or the Dashboard and check the &quot;Repeats&quot; option.
       </p>
 
+      {/* TBD-761. Announces the result count as the search narrows it. Its
+          own always-mounted region, outside the loading switch, like the
+          transactions page's. */}
+      <p className="sr-only" role="status" aria-live="polite" data-testid="recurring-result-count">
+        {fetching ? "" : resultCountText}
+      </p>
+
       {fetching ? (
         <Spinner />
       ) : (
@@ -862,9 +888,11 @@ function RecurringPage() {
                 className="self-start sm:self-auto"
                 visible={!persistedFilters.isDefault || !sortIsDefault}
                 onClick={() => {
+                  // Sort only: like the transactions Reset, the page size the
+                  // user picked stays.
                   persistedFilters.reset();
-                  activeTable.reset();
-                  pausedTable.reset();
+                  activeTable.setSort(DEFAULT_SORT_FIELD, DEFAULT_SORT_DIR);
+                  pausedTable.setSort(DEFAULT_SORT_FIELD, DEFAULT_SORT_DIR);
                   // The button unmounts on reset; keep focus nearby.
                   searchInputRef.current?.focus();
                 }}

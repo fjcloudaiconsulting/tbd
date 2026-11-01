@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import RecurringPage from "@/app/recurring/page";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { setBalancesHidden } from "@/lib/format";
 import { FILTERS_KEY_RECURRING, SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
 import type { RecurringTransaction } from "@/lib/types";
 
@@ -109,6 +110,10 @@ beforeEach(() => {
     user: USER as never, loading: false, needsSetup: false,
     login: vi.fn(), register: vi.fn(), logout: vi.fn(), refreshMe: vi.fn(),
   } as never);
+});
+
+afterEach(() => {
+  setBalancesHidden(false);
 });
 
 const MIXED = [
@@ -374,5 +379,168 @@ describe("RecurringPage — search and the ?recurring_id deep link (TBD-761)", {
     render(<RecurringPage />);
     await waitFor(() => expect(rowsOf(ACTIVE)).toEqual(["Rent"]));
     expect(searchBox().value).toBe("rent");
+  });
+});
+
+describe("RecurringPage — search review fixes (TBD-761)", { timeout: 20_000 }, () => {
+  // FENCE: separators follow the viewer's locale, the same default locale
+  // formatAmount uses. In de-DE "12,50" is twelve and a half (not 1250) and
+  // "1.200" is twelve hundred (not 1.2).
+  describe("in a de-DE locale", () => {
+    const RealNumberFormat = Intl.NumberFormat;
+    const realToLocaleString = Number.prototype.toLocaleString;
+    beforeEach(() => {
+      Intl.NumberFormat = function (locales?: string | string[], opts?: Intl.NumberFormatOptions) {
+        return new RealNumberFormat(locales ?? "de-DE", opts);
+      } as unknown as typeof Intl.NumberFormat;
+      Number.prototype.toLocaleString = function (this: number, locales?: string | string[], opts?: Intl.NumberFormatOptions) {
+        return realToLocaleString.call(this, locales ?? "de-DE", opts);
+      };
+    });
+    afterEach(() => {
+      Intl.NumberFormat = RealNumberFormat;
+      Number.prototype.toLocaleString = realToLocaleString;
+    });
+
+    const DE = [
+      rec({ id: 1, description: "Twelve fifty", amount: "12.50", next_due_date: "2026-01-01" }),
+      rec({ id: 2, description: "Twelve fifty hundred", amount: "1250.00", next_due_date: "2026-01-02" }),
+      rec({ id: 3, description: "Twelve hundred", amount: "1200.00", next_due_date: "2026-01-03" }),
+      rec({ id: 4, description: "One twenty", amount: "1.20", next_due_date: "2026-01-04" }),
+    ];
+
+    it.each([
+      ["12,50", ["Twelve fifty"]],
+      ["12,5", ["Twelve fifty"]],
+      ["1.200", ["Twelve hundred"]],
+      ["1.200,00", ["Twelve hundred"]],
+      ["1200", ["Twelve hundred"]],
+      ["1,20", ["One twenty"]],
+    ])("matches amount %s", async (query, expected) => {
+      mockApiWith(DE);
+      render(<RecurringPage />);
+      await waitFor(() => expect(rowsOf(ACTIVE)).toHaveLength(4));
+      typeSearch(query);
+      expect(rowsOf(ACTIVE)).toEqual(expected);
+    });
+  });
+
+  // FENCE: with balances hidden the rows show a mask, so a search must not
+  // narrow them by amount ("1 of 4" would reveal one).
+  it("does not match amounts while balances are hidden, and does again when shown", async () => {
+    mockApiWith(MIXED);
+    render(<RecurringPage />);
+    await waitFor(() => expect(rowsOf(ACTIVE)).toHaveLength(4));
+    act(() => setBalancesHidden(true));
+
+    typeSearch("1200");
+    expect(rowsOf(ACTIVE)).toEqual([]);
+    typeSearch("12.5");
+    expect(rowsOf(ACTIVE)).toEqual([]);
+    // Text still matches.
+    typeSearch("rent");
+    expect(rowsOf(ACTIVE)).toEqual(["Rent"]);
+
+    typeSearch("1200");
+    act(() => setBalancesHidden(false));
+    expect(rowsOf(ACTIVE)).toEqual(["Rent"]);
+  });
+
+  // FENCE: like the transactions Reset, it resets sort and filters, not the
+  // page size the user picked.
+  it("Reset keeps each table's page size", async () => {
+    window.localStorage.setItem(
+      `${SORT_KEY_RECURRING}:active`,
+      JSON.stringify({ sortField: "description", sortDir: "desc", pageSize: 10 }),
+    );
+    const rows = Array.from({ length: 30 }, (_, i) =>
+      rec({
+        id: i + 1,
+        description: `Row ${String(i + 1).padStart(2, "0")}`,
+        next_due_date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+      }),
+    );
+    mockApiWith(rows);
+    render(<RecurringPage />);
+    await waitFor(() => expect(rowsOf(ACTIVE)).toHaveLength(10));
+    expect(rowsOf(ACTIVE)[0]).toBe("Row 30");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset filters and sort" }));
+    expect(rowsOf(ACTIVE)[0]).toBe("Row 01");
+    expect(rowsOf(ACTIVE)).toHaveLength(10);
+    expect(JSON.parse(window.localStorage.getItem(`${SORT_KEY_RECURRING}:active`) ?? "{}")).toEqual({
+      sortField: "next_due_date", sortDir: "asc", pageSize: 10,
+    });
+  });
+
+  // GUARD: a Paused sort counts toward Reset only while the Paused table shows.
+  it("ignores a stored Paused sort when there is no Paused table", async () => {
+    window.localStorage.setItem(
+      `${SORT_KEY_RECURRING}:stopped`,
+      JSON.stringify({ sortField: "description", sortDir: "desc", pageSize: 25 }),
+    );
+    mockApiWith(MIXED.filter((r) => r.is_active));
+    render(<RecurringPage />);
+    await waitFor(() => expect(rowsOf(ACTIVE)).toHaveLength(4));
+    expect(screen.queryByTestId(PAUSED)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset filters and sort" })).toBeNull();
+  });
+
+  it("announces the combined result count in a live region", async () => {
+    mockApiWith(MIXED);
+    render(<RecurringPage />);
+    await waitFor(() => expect(rowsOf(ACTIVE)).toHaveLength(4));
+    const status = screen.getByTestId("recurring-result-count");
+    expect(status).toHaveAttribute("role", "status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toHaveTextContent("6 recurring transactions");
+
+    typeSearch("rent");
+    expect(status).toHaveTextContent("2 of 6 recurring transactions match your search");
+    typeSearch("netflix");
+    expect(status).toHaveTextContent("1 of 6 recurring transactions match your search");
+  });
+
+  // FENCE: the search resets the Paused table's page too.
+  it("resets the Paused table to page 1", async () => {
+    const paused = Array.from({ length: 30 }, (_, i) =>
+      rec({
+        id: i + 1,
+        is_active: false,
+        description: `Paused ${String(i + 1).padStart(2, "0")}`,
+        next_due_date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+      }),
+    );
+    mockApiWith([rec({ id: 100, description: "Active one" }), ...paused]);
+    render(<RecurringPage />);
+    await waitFor(() => expect(rowsOf(PAUSED)).toHaveLength(25));
+
+    const table = screen.getByTestId(PAUSED);
+    fireEvent.click(within(table).getByRole("button", { name: /Next page/ }));
+    await waitFor(() => expect(rowsOf(PAUSED)).toHaveLength(5));
+
+    typeSearch("paused");
+    expect(rowsOf(PAUSED)).toHaveLength(25);
+    expect(rowsOf(PAUSED)[0]).toBe("Paused 01");
+  });
+
+  // The jump uses the target's position among the MATCHES.
+  it("deep link lands on page 2 of the filtered results", async () => {
+    window.localStorage.setItem(FILTERS_KEY_RECURRING, JSON.stringify({ search: "keep" }));
+    // 40 rows; every 4th is "Drop", so "keep" matches 30. Target id 39 is
+    // the 30th match (page 2 at 25 per page) but 39th overall.
+    const rows = Array.from({ length: 40 }, (_, i) =>
+      rec({
+        id: i + 1,
+        description: (i + 1) % 4 === 0 ? `Drop ${i + 1}` : `Keep ${String(i + 1).padStart(2, "0")}`,
+        next_due_date: `2026-${String(Math.floor(i / 28) + 1).padStart(2, "0")}-${String((i % 28) + 1).padStart(2, "0")}`,
+      }),
+    );
+    searchParamsState.value = new URLSearchParams("recurring_id=39");
+    mockApiWith(rows);
+    render(<RecurringPage />);
+    await waitFor(() => expect(highlighted()).toEqual(["recurring-row:Keep 39", "recurring-card:Keep 39"]));
+    expect(searchBox().value).toBe("keep");
+    expect(within(screen.getByTestId(ACTIVE)).getByText(/Page 2 of 2/)).toBeInTheDocument();
   });
 });
