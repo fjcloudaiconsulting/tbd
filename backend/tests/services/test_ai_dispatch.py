@@ -1697,6 +1697,46 @@ async def test_fence_reported_cost_beats_the_estimate(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt,completion,reported",
+    [(-1_000_000_000, 0, None), (0, -1_000_000_000, None), (-5, -5, -999_999)],
+    ids=["negative-prompt", "negative-completion", "negative-reported-cost"],
+)
+async def test_fence_negative_usage_never_lowers_the_period_cost(
+    db, org, admin_user, credential, default_routing, prompt, completion, reported
+):
+    """FENCE (TBD-607): a negative token count or cost that reaches dispatch is
+    recorded as 0 and never lowers the period's aggregate, so it cannot buy
+    headroom under the hard cap."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=None, hard_cap_cents=100, period="monthly"
+        )
+    )
+    db.add(_row_micros(org.id, credential.id, 500_000))
+    await db.commit()
+    before = await ai_dispatch.remaining_hard_cap_micros(
+        db, org_id=org.id, feature_key="chat"
+    )
+    hostile = LLMResponse(
+        content="x", prompt_tokens=prompt, completion_tokens=completion,
+        model="gpt-4o-mini", cost_micros=reported,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=_make_adapter(hostile)
+    ):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": [], "max_tokens": 1})
+    row = (await db.execute(select(AIUsageLedger).order_by(AIUsageLedger.id.desc()))).scalars().first()
+    assert row.prompt_tokens >= 0 and row.completion_tokens >= 0
+    assert row.total_tokens == row.prompt_tokens + row.completion_tokens
+    assert row.cost_micros >= 0
+    assert await ai_dispatch.remaining_hard_cap_micros(
+        db, org_id=org.id, feature_key="chat"
+    ) <= before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("prior,fires,before", [(9_800, True, 10_205), (9_500, False, None)])
 async def test_fence_soft_cap_is_compared_in_micros(
     db, org, admin_user, credential, default_routing, monkeypatch,
