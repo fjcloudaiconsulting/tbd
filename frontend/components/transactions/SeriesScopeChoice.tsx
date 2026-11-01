@@ -24,16 +24,20 @@ export function SeriesScopeChoice({
   value,
   onChange,
   legend = "Apply the new amount or date to",
+  stacked = false,
 }: {
   idSuffix: string;
   value: SeriesScope | null;
   onChange: (v: SeriesScope) => void;
   legend?: string;
+  // One card per row at every width: the side-by-side break is keyed to the
+  // viewport, which is wrong inside a narrow dialog.
+  stacked?: boolean;
 }) {
   return (
     <fieldset className="mt-2" data-testid={`edit-series-scope-${idSuffix}`}>
       <legend className={label}>{legend}</legend>
-      <div className="mt-1 grid grid-cols-1 gap-2 md:grid-cols-2">
+      <div className={`mt-1 grid grid-cols-1 gap-2 ${stacked ? "" : "md:grid-cols-2"}`}>
         {OPTIONS.map((o) => (
           <label
             key={o.value}

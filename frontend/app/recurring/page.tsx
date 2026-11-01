@@ -824,6 +824,7 @@ function RecurringPage() {
             <SeriesScopeChoice
               idSuffix="edit-next"
               legend="Apply the new amount to"
+              stacked
               value={editNext.scope}
               onChange={(scope) => setEditNext({ ...editNext, scope })}
             />
