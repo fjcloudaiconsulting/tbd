@@ -54,9 +54,20 @@ export function useReportQuery(
     sources,
     widget.config.dataset,
   );
+  // The day is a memo dep so a session that crosses midnight re-resolves a
+  // calendar preset token (TBD-759) here in step with `useComparisonQuery`,
+  // which keys on the same day; otherwise a KPI could pair last month's
+  // value with this month's prior window.
+  const today = todayIso();
   const query = useMemo<ReportsQuery>(() => {
-    return buildQueryAst(widget, canvasFilters, supportsDate, supportsStatus);
-  }, [widget, canvasFilters, supportsDate, supportsStatus]);
+    return buildQueryAst(
+      widget,
+      canvasFilters,
+      supportsDate,
+      supportsStatus,
+      localDay(today),
+    );
+  }, [widget, canvasFilters, supportsDate, supportsStatus, today]);
 
   const swrKey = ["report-query", widget.id, JSON.stringify(query)];
   const { data, error, isLoading } = useSWR<ReportsQueryResponse>(
@@ -157,8 +168,8 @@ function fromEpochDay(day: number): string {
  *
  * ⚠⚠ THE CLAMP TO `today` IS LOAD-BEARING, NOT A REFINEMENT (TBD-383 B1).
  * `draft.ts` seeds every new report with the `this_month` preset, and
- * `buildPresetRanges` freezes that as the WHOLE calendar month
- * (`startOfMonth(now)..endOfMonth(now)`), not month-to-date. Unclamped, on
+ * `resolveFilters` resolves that token via `buildPresetRanges` to the WHOLE
+ * calendar month (`startOfMonth(now)..endOfMonth(now)`), not month-to-date. Unclamped, on
  * 2026-09-02 that compared 2 days of September against 30 complete days of
  * August and rendered roughly "-92% vs prior period" for a user whose
  * spending had not changed — about -100% on the 1st of any month. That is the
@@ -244,20 +255,26 @@ export function resolvePriorWindow(
  * be off by one either side of midnight in a non-zero offset and would clamp
  * `this_month` to the wrong number of days.
  *
- * ⚠ FOR THE RECORD, NOT A BUG TO FIX HERE: a second skew exists on the server
- * side. `backend/app/reports/templates.py` computes its `this_month` /
- * `last_12_months` windows from Python's `date.today()` — the SERVER clock —
- * and those windows persist into `canvas_filters_json` when a report is created
- * from a template. A client an hour behind the server can therefore meet a
- * window that starts "tomorrow". It fails SAFE: `effectiveEnd < start` yields
- * the `future_window` refusal, so the KPI renders its value with no delta and
- * self-heals within a day. Do not "fix" it by loosening the refusal.
+ * Reports saved before TBD-759, and from templates before then, persist a
+ * frozen absolute window (templates computed it from the SERVER clock). A
+ * client an hour behind the server could meet a window that starts
+ * "tomorrow"; it fails SAFE: `effectiveEnd < start` yields the
+ * `future_window` refusal, so the KPI renders its value with no delta and
+ * self-heals within a day. New
+ * reports and templates persist a token resolved on this clock, so the skew
+ * no longer arises for them. Do not "fix" it by loosening the refusal.
  */
 function todayIso(): string {
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/** Local midnight of a `YYYY-MM-DD` day: the `now` a calendar token resolves against. */
+function localDay(iso: string): Date {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
 }
 
 interface UseComparisonQueryResult {
@@ -310,7 +327,13 @@ export function useComparisonQuery(
     refusal: PriorWindowRefusal | null;
   }>(() => {
     if (!enabled) return { query: null, refusal: null };
-    const base = buildQueryAst(widget, canvasFilters, supportsDate, supportsStatus);
+    const base = buildQueryAst(
+      widget,
+      canvasFilters,
+      supportsDate,
+      supportsStatus,
+      localDay(today),
+    );
     const resolved = resolvePriorWindow(base.filters, today);
     if (resolved.prior === null) {
       return { query: null, refusal: resolved.refusal };
@@ -360,6 +383,7 @@ export function buildQueryAst(
   canvasFilters: CanvasFilters | undefined,
   sourceSupportsDate = true,
   sourceSupportsStatus = true,
+  now: Date = new Date(),
 ): ReportsQuery {
   const widgetFilters: WidgetFilters | undefined =
     "filters" in widget.config ? widget.config.filters : undefined;
@@ -368,6 +392,7 @@ export function buildQueryAst(
     widgetFilters,
     sourceSupportsDate,
     sourceSupportsStatus,
+    now,
   );
   // Opt-in "raw activity" flag — transactions-only. On any other source the
   // backend ignores it, but we drop it here too so the AST (and its SWR

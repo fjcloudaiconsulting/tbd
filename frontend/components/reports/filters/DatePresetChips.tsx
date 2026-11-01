@@ -2,15 +2,14 @@
 
 /**
  * Date range filter — a row of preset chips above the absolute date
- * inputs. Clicking a chip fills both ``from`` and ``to`` with the
- * resolved ISO date range. Clicking "Custom" clears the chip
- * selection and exposes the absolute date inputs.
+ * inputs. Clicking a chip stores the preset TOKEN (``{preset}``, no
+ * start/end). Clicking "Custom" clears the chip selection and exposes
+ * the absolute date inputs.
  *
- * Presets resolved relative to the local clock at click time so the
- * stored value is an absolute window. The architect-locked AST
- * doesn't model relative ranges; freezing the absolute window at
- * authoring time keeps the same report layout reproducible across
- * sessions until the user picks a new preset.
+ * Presets stay relative (TBD-759): a calendar token is resolved against
+ * the local clock at query time by ``resolveFilters``, and ``next_cycle``
+ * by the backend. Freezing the window at click time made a report saved
+ * as "This month" read and query last month once the month rolled over.
  */
 import { useMemo } from "react";
 
@@ -78,9 +77,9 @@ export default function DatePresetChips({
     [now, todayKey],
   );
 
-  // Detect which preset matches the current value (if any). The check
-  // is exact ISO equality on start + end; user-typed custom ranges fall
-  // through to "custom".
+  // Detect which preset matches the current value (if any). A stored
+  // token wins; a legacy absolute value matches by exact ISO equality on
+  // start + end, and user-typed custom ranges fall through to "custom".
   const activePreset = matchPreset(value, presetRanges);
   const showDateInputs = activePreset === "custom" || (!activePreset && value);
 
@@ -93,15 +92,11 @@ export default function DatePresetChips({
       }
       return;
     }
-    if (key === "next_cycle") {
-      // Dynamic relative token — write ONLY the preset marker (no
-      // absolute start/end). The backend resolves the window per
-      // request; ``presetRanges`` intentionally has no ``next_cycle``
-      // entry (it's calendar-only).
-      onChange({ preset: "next_cycle" });
-      return;
-    }
-    onChange(presetRanges[key]);
+    // Every non-custom preset is a relative token — write ONLY the preset
+    // marker (no absolute start/end). Calendar tokens resolve against the
+    // local clock at query time (``resolveFilters``); ``next_cycle`` is
+    // resolved by the backend per request.
+    onChange({ preset: key });
   }
 
   return (

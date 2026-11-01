@@ -22,17 +22,15 @@ directly. A shape mismatch renders a blank widget. The shapes used here:
   primitive.
 - Dimensions are drawn from the closed ``Dimension`` union: only
   ``category`` / ``month`` / ``day`` are used below.
-- ``canvas_filters_json.date_range`` is a ``CanvasDateRange`` =
-  ``{start, end}`` of ABSOLUTE ISO dates. The implemented frontend does
-  NOT store relative preset strings: ``DatePresetChips`` resolves a
-  preset to an absolute window at click time ("the backend AST doesn't
-  model relative ranges; freezing the absolute window at click time").
-  We mirror that here, computing the windows relative to the current
-  date so the starter range is sensible when the template is cloned.
+- ``canvas_filters_json.date_range`` (and a widget ``filters.date_range``)
+  is a ``CanvasDateRange``. Templates use the RELATIVE preset token
+  (``{"preset": "this_month"}``, no start/end), exactly what
+  ``DatePresetChips`` stores (TBD-759). The frontend resolves the token
+  against the viewer's clock on every query, so a report created from a
+  template keeps showing the current period instead of freezing the
+  window of the day it was created.
 """
 from __future__ import annotations
-
-from datetime import date, timedelta
 
 
 def _measure(agg: str, field: str = "amount") -> dict:
@@ -45,48 +43,26 @@ def _series(agg: str, label: str, field: str = "amount") -> dict:
     return {"measure": _measure(agg, field), "label": label}
 
 
-def _iso(d: date) -> str:
-    return d.isoformat()
+# Relative date-range tokens (``CanvasDateRange.preset``, values of
+# ``CalendarDatePreset``). Built per call so a mutation of one request's
+# templates can't leak into the next.
+def _this_month() -> dict:
+    return {"preset": "this_month"}
 
 
-def _this_month_range(today: date) -> dict:
-    """``{start, end}`` for the calendar month containing ``today``.
-
-    Mirrors ``DatePresetChips.buildPresetRanges`` ``this_month``.
-    """
-    start = today.replace(day=1)
-    # First day of next month, minus one day, is the last day of this month.
-    if today.month == 12:
-        first_next = date(today.year + 1, 1, 1)
-    else:
-        first_next = date(today.year, today.month + 1, 1)
-    last = first_next - timedelta(days=1)
-    return {"start": _iso(start), "end": _iso(last)}
-
-
-def _last_12_months_range(today: date) -> dict:
-    """``{start, end}`` for the trailing 12 months.
-
-    Mirrors ``DatePresetChips.buildPresetRanges`` ``last_12_months``:
-    start = first day of the same month one year ago, end = today.
-    """
-    start = date(today.year - 1, today.month, 1)
-    return {"start": _iso(start), "end": _iso(today)}
+def _last_12_months() -> dict:
+    return {"preset": "last_12_months"}
 
 
 def get_report_templates() -> list[dict]:
-    """Build the starter report templates with fresh date windows.
+    """Build the starter report templates.
 
-    The ``canvas_filters_json.date_range`` windows are computed from
-    ``date.today()`` at CALL TIME (not module import) so a long-running
-    backend always serves a window relative to the current date. The
-    endpoint calls this per request; "this month" / "trailing 12 months"
-    therefore roll over with the calendar instead of staying frozen to
-    the date the process booted.
+    Built per call (not a module constant) so each request gets its own
+    dicts. The date ranges are relative tokens, so nothing here depends on
+    the server clock.
     """
-    today = date.today()
-    this_month = _this_month_range(today)
-    last_12_months = _last_12_months_range(today)
+    this_month = _this_month()
+    last_12_months = _last_12_months()
 
     return [
     {

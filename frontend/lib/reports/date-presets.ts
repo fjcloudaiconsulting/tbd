@@ -7,17 +7,21 @@
  * owns the pure preset arithmetic.
  *
  * Presets resolve relative to the ``now`` passed in, producing an
- * absolute ISO ``{ start, end }`` window. The architect-locked AST
- * doesn't model relative ranges; freezing the absolute window at
- * authoring time keeps the same report layout reproducible across
- * sessions until the user picks a new preset.
+ * absolute ISO ``{ start, end }`` window. That window is computed at
+ * QUERY time (``resolveFilters``) and for display, never persisted: a
+ * report stores the preset token (TBD-759), so "This month" saved in
+ * October still means the current month in November.
  */
 // ``PresetKey`` is owned by ``types.ts`` (so ``CanvasDateRange`` can
 // carry ``preset`` without a type-only import cycle); re-export it here
 // for the ~handful of importers that reach for it via this module.
-import type { CanvasDateRange, PresetKey } from "@/lib/reports/types";
+import type {
+  CalendarPresetKey,
+  CanvasDateRange,
+  PresetKey,
+} from "@/lib/reports/types";
 
-export type { PresetKey };
+export type { CalendarPresetKey, PresetKey };
 
 function isoDate(d: Date): string {
   // Build YYYY-MM-DD from local-clock components so a UTC-shifting
@@ -42,7 +46,7 @@ function endOfMonth(d: Date): Date {
 // ``Record`` key set alongside ``custom``.
 export function buildPresetRanges(
   now: Date,
-): Record<Exclude<PresetKey, "custom" | "next_cycle">, CanvasDateRange> {
+): Record<CalendarPresetKey, CanvasDateRange> {
   const startThisMonth = startOfMonth(now);
   const endThisMonth = endOfMonth(now);
 
@@ -61,15 +65,29 @@ export function buildPresetRanges(
   };
 }
 
+export function isCalendarPreset(
+  key: string | undefined,
+): key is CalendarPresetKey {
+  return (
+    key === "this_month" ||
+    key === "last_month" ||
+    key === "ytd" ||
+    key === "last_12_months"
+  );
+}
+
 export function matchPreset(
   value: CanvasDateRange | undefined,
-  ranges: Record<Exclude<PresetKey, "custom" | "next_cycle">, CanvasDateRange>,
+  ranges: Record<CalendarPresetKey, CanvasDateRange>,
 ): PresetKey | null {
-  // A preset-only relative value (``next_cycle``) carries no start/end,
-  // so it must be matched BEFORE the empty-range early-return below —
-  // that guard fires first and would otherwise return ``null``.
-  if (value?.preset === "next_cycle") return "next_cycle";
+  // A persisted token is the preset's identity: read it first, BEFORE the
+  // empty-range early-return below (a token carries no start/end, so that
+  // guard would otherwise return ``null``). Re-inferring from dates is what
+  // made an October "This month" read as "Last month" in November.
+  if (value?.preset) return value.preset;
   if (!value || (!value.start && !value.end)) return null;
+  // Legacy absolute blob (saved before TBD-759, or a custom range): match
+  // by exact dates against the windows for ``now``.
   for (const k of Object.keys(ranges) as Array<keyof typeof ranges>) {
     const r = ranges[k];
     if (r.start === value.start && r.end === value.end) return k;

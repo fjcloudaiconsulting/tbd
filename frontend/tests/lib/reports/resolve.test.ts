@@ -329,7 +329,57 @@ describe("resolveFilters next_cycle relative preset (Feature 2)", () => {
     expect(out.some((f) => f.field === "date")).toBe(false);
   });
 
-  it("REGRESSION: frozen calendar presets still emit an absolute between filter", () => {
+  // TBD-759: a calendar token resolves against the ``now`` passed in, so a
+  // report saved in May queries June once the month rolls over. It still
+  // emits ``between`` (not ``relative``): the window is local-clock, and the
+  // KPI prior-period comparison refuses ``relative``.
+  it("a calendar token resolves against the passed now (between, not relative)", () => {
+    const canvas = { date_range: { preset: "this_month" } } as CanvasFilters;
+    const may = resolveFilters(canvas, {}, true, true, new Date(2026, 4, 20));
+    expect(may).toContainEqual({
+      field: "date",
+      op: "between",
+      value: ["2026-05-01", "2026-05-31"],
+    });
+    const june = resolveFilters(canvas, {}, true, true, new Date(2026, 5, 1));
+    expect(june).toContainEqual({
+      field: "date",
+      op: "between",
+      value: ["2026-06-01", "2026-06-30"],
+    });
+    expect(june.some((f) => f.op === "relative")).toBe(false);
+    expect(june.filter((f) => f.field === "date")).toHaveLength(1);
+  });
+
+  it.each([
+    ["last_month", ["2026-05-01", "2026-05-31"]],
+    ["ytd", ["2026-01-01", "2026-06-10"]],
+    ["last_12_months", ["2025-06-01", "2026-06-10"]],
+  ] as const)("resolves a %s token against the passed now", (preset, window) => {
+    const out = resolveFilters(
+      { date_range: { preset } } as CanvasFilters,
+      {},
+      true,
+      true,
+      new Date(2026, 5, 10),
+    );
+    expect(out).toContainEqual({ field: "date", op: "between", value: window });
+  });
+
+  it("a widget calendar token overrides the canvas and resolves against now", () => {
+    const out = resolveFilters(
+      { date_range: { preset: "this_month" } } as CanvasFilters,
+      { date_range: { preset: "last_12_months" } } as WidgetFilters,
+      true,
+      true,
+      new Date(2026, 5, 10),
+    );
+    expect(out.filter((f) => f.field === "date")).toEqual([
+      { field: "date", op: "between", value: ["2025-06-01", "2026-06-10"] },
+    ]);
+  });
+
+  it("a legacy saved absolute window still emits that frozen between (no backfill)", () => {
     const out = resolveFilters(
       { date_range: { start: "2026-05-01", end: "2026-05-31" } } as CanvasFilters,
       {},
@@ -340,6 +390,33 @@ describe("resolveFilters next_cycle relative preset (Feature 2)", () => {
       value: ["2026-05-01", "2026-05-31"],
     });
     expect(out.some((f) => f.op === "relative")).toBe(false);
+  });
+
+  it("registers a widget token that differs from the canvas token as an override", () => {
+    expect(
+      isFieldOverridden(
+        "date_range",
+        { date_range: { preset: "last_12_months" } },
+        { date_range: { preset: "this_month" } } as CanvasFilters,
+      ),
+    ).toBe(true);
+    expect(
+      isFieldOverridden(
+        "date_range",
+        { date_range: { preset: "next_cycle" } },
+        { date_range: { preset: "this_month" } } as CanvasFilters,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not register a widget token equal to the canvas token as an override", () => {
+    expect(
+      isFieldOverridden(
+        "date_range",
+        { date_range: { preset: "this_month" } },
+        { date_range: { preset: "this_month" } } as CanvasFilters,
+      ),
+    ).toBe(false);
   });
 
   it("pickDateRange treats a widget preset range as a value (wins over canvas)", () => {
