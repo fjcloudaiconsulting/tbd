@@ -435,7 +435,7 @@ async def _series_sync_targets(
     db: AsyncSession,
     org_id: int,
     recurring_id: int,
-    tx_type: TransactionType,
+    tx_type: TransactionType | None,
     *,
     exclude_id: int | None = None,
     after: datetime.date | None = None,
@@ -447,6 +447,8 @@ async def _series_sync_targets(
     rows a bank row was reconcile-matched against (an inbound referrer: their
     amount and date are now the bank's business). ``after`` keeps only rows
     dated after it ("this and future"); ``exclude_id`` is the edited row.
+    ``tx_type=None`` keeps rows of every type: the template's name/account
+    sync (TBD-760) is type-independent and filters category by type itself.
 
     Selected first and written by id, not by one UPDATE with the referrer
     EXISTS inline: MySQL refuses a subquery on the UPDATE's own table (1093).
@@ -463,13 +465,14 @@ async def _series_sync_targets(
         Transaction.recurring_id == recurring_id,
         Transaction.org_id == org_id,
         Transaction.status == TransactionStatus.PENDING,
-        Transaction.type == tx_type,
         Transaction.linked_transaction_id.is_(None),
         Transaction.reconciliation_state.not_in(REVERTED_RECONCILIATION_STATES),
         ~exists().where(
             referrer.org_id == org_id, referrer.linked_transaction_id == Transaction.id
         ),
     )
+    if tx_type is not None:
+        q = q.where(Transaction.type == tx_type)
     if exclude_id is not None:
         q = q.where(Transaction.id != exclude_id)
     if after is not None:
@@ -604,6 +607,9 @@ async def _propagate_fields_to_series(
     category_id: int | None,
     tx_type: TransactionType,
     account_id: int | None = None,
+    description_was: str | None = None,
+    category_was: int | None = None,
+    account_was: int | None = None,
     amount: Decimal | None = None,
     amount_was: Decimal | None = None,
     amount_after: datetime.date | None = None,
@@ -611,8 +617,9 @@ async def _propagate_fields_to_series(
     date_move: SeriesDateMove | None = None,
 ) -> None:
     """Sync name/category/account from an edited recurring-linked transaction to its
-    template and PENDING sibling instances. Pass only the fields that actually
-    changed; None means leave that field untouched.
+    template and PENDING sibling instances, or from an edited template
+    (``update_recurring``) to its PENDING instances. Pass only the fields that
+    actually changed; None means leave that field untouched.
 
     `description` is type-independent: it propagates to the template and ALL
     PENDING siblings. `category_id` is type-dependent: a (type, category) pair
@@ -623,10 +630,11 @@ async def _propagate_fields_to_series(
 
     `account_id` (TBD-315) is type-independent like `description`: template and
     ALL PENDING siblings, with deliberately NO "still on the old account" guard
-    (it would strand a pending row whenever the template was moved from the
-    recurring page). The caller passes the already-VALIDATED ``tx.account_id``.
-    No balance logic: PENDING amounts are never inside ``accounts.balance``,
-    and SETTLED rows are excluded by the status filter. The target account may
+    on the occurrence call (it would strand a pending row a template move from
+    the recurring page left behind before TBD-760; the template call itself
+    guards, see `account_was` below). The caller passes the already-VALIDATED
+    ``tx.account_id``. No balance logic: PENDING amounts are never inside
+    ``accounts.balance``, and SETTLED rows are excluded by the status filter. The target account may
     differ in currency from the old one: ``validate_account`` checks the org
     only, and legacy multi-currency orgs exist (no guard here, by ruling).
 
@@ -648,6 +656,15 @@ async def _propagate_fields_to_series(
     which has already refused every unsafe shape; a moved row's expected
     settlement date keeps its offset from the row's own date.
 
+    `description_was` / `category_was` / `account_was` (TBD-760) are the
+    template call's: the pre-edit template value, read under the template
+    lock. Passed with its field, it replaces that field's "ALL PENDING
+    siblings" UPDATE with the amount rule: only ``_series_sync_targets`` rows
+    (of any type; category still only on `tx_type` rows) still holding the
+    old value follow, so a row whose value differs keeps it. The occurrence
+    call passes none of them and keeps the unguarded behaviour above, which
+    is also what still pulls a row an older template edit left behind.
+
     SETTLED instances are never modified (historical fact). Concurrency: two
     edits to different siblings race last-writer-wins on the template, which is
     acceptable (no invariant at stake). Callers holding sibling ORM objects must
@@ -662,6 +679,7 @@ async def _propagate_fields_to_series(
             )
             .values(description=description)
         )
+    if description is not None and description_was is None:
         await db.execute(
             update(Transaction)
             .where(
@@ -683,6 +701,7 @@ async def _propagate_fields_to_series(
             )
             .values(category_id=category_id)
         )
+    if category_id is not None and category_was is None:
         await db.execute(
             update(Transaction)
             .where(
@@ -717,6 +736,7 @@ async def _propagate_fields_to_series(
             )
             .values(account_id=account_id)
         )
+    if account_id is not None and account_was is None:
         await db.execute(
             update(Transaction)
             .where(
@@ -753,6 +773,30 @@ async def _propagate_fields_to_series(
                 .where(Transaction.id.in_(ids), Transaction.org_id == org_id)
                 .values(amount=amount)
             )
+    # TBD-760: the template call's guarded name/category/account sync. After
+    # every template write above, so this keeps template -> pending rows.
+    guarded = [
+        (field, value, was, only_type)
+        for field, value, was, only_type in (
+            ("description", description, description_was, None),
+            ("category_id", category_id, category_was, tx_type),
+            ("account_id", account_id, account_was, None),
+        )
+        if value is not None and was is not None
+    ]
+    if guarded:
+        targets = await _series_sync_targets(db, org_id, recurring_id, None)
+        for field, value, was, only_type in guarded:
+            ids = [
+                t.id for t in targets
+                if getattr(t, field) == was and (only_type is None or t.type == only_type)
+            ]
+            if ids:
+                await db.execute(
+                    update(Transaction)
+                    .where(Transaction.id.in_(ids), Transaction.org_id == org_id)
+                    .values({field: value})
+                )
     if date_move is not None:
         for tx_id, (new_date, new_settled_date) in date_move.moves.items():
             await db.execute(
