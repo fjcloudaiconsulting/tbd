@@ -43,10 +43,10 @@ class RecurringUpdate(BaseModel):
     # deliberately no ``occurrences_elapsed`` field here -- progress is written
     # by generation only.
     #
-    # ⚠ Like every other field on this model, ``None`` means "not supplied" and
-    # is indistinguishable from an explicit ``null``, so a counted series
-    # cannot be converted back to open-ended through this endpoint. Raising the
-    # count is the supported escape.
+    # ⚠ The ONE field on this model where an explicit ``null`` differs from an
+    # omitted key (TBD-762): ``null`` makes the series open-ended ("never
+    # ends"); omitted leaves the count alone. ``update_recurring`` reads
+    # ``model_fields_set`` for it. Every other field: ``None`` = not supplied.
     occurrence_count: Optional[int] = Field(default=None, gt=0, le=1200)
 
 

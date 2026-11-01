@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from sqlalchemy import (
     JSON,
@@ -22,17 +22,70 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
+from sqlalchemy.types import TypeDecorator
 
 from app.models.base import Base
 
 
 class AiProvider(str, enum.Enum):
+    """The provider registry: every value the app can dispatch to.
+
+    TBD-584: ``ollama`` (bring-your-own local model) and the dead ``native``
+    stub left the registry, and migration 096 deletes the ``ollama`` rows.
+    The column is VARCHAR, so a row that still holds one of them (a pod of
+    the previous release can write one during the rolling deploy, after 096
+    ran) loads as a plain ``str`` (see ``AiProviderType``) and stays inert:
+    listed and deletable, never validated, routed or dispatched.
+    """
+
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
-    OLLAMA = "ollama"
     OPENAI_COMPATIBLE = "openai_compatible"
-    NATIVE = "native"
+
+
+PROVIDER_MAX_LENGTH = 32
+
+
+class AiProviderType(TypeDecorator):
+    """``org_ai_credentials.provider`` as VARCHAR(32) (TBD-584).
+
+    A registry value loads as its ``AiProvider`` member; any other stored
+    value (a retired provider) loads as the plain string, so reading a row
+    never raises. Adding a vendor needs no DDL, and removing one cannot crash
+    a reader that does not know the value, as a native ENUM column would.
+    Writes are checked by ``OrgAICredential._check_provider``.
+    """
+
+    impl = String(PROVIDER_MAX_LENGTH)
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, AiProvider):
+            return value.value
+        return str(value)
+
+    def process_result_value(self, value: Any, dialect: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            return AiProvider(value)
+        except ValueError:
+            return value
+
+
+def is_supported_provider(value: Any) -> bool:
+    """True when ``value`` is a provider the app can still dispatch to."""
+    return isinstance(value, AiProvider)
+
+
+def provider_key(value: Any) -> Optional[str]:
+    """The stored string of a provider, registry member or retired value."""
+    if value is None:
+        return None
+    return value.value if isinstance(value, AiProvider) else str(value)
 
 
 PLATFORM_PROVIDER = Enum(
@@ -60,13 +113,10 @@ class OrgAICredential(Base):
         nullable=False,
         index=True,
     )
-    provider: Mapped[AiProvider] = mapped_column(
-        Enum(
-            AiProvider,
-            name="ai_provider",
-            values_callable=lambda x: [e.value for e in x],
-        ),
-        nullable=False,
+    # TBD-584: VARCHAR, validated against ``AiProvider`` on write. A row
+    # holding a retired provider reads back as ``str``.
+    provider: Mapped[Union[AiProvider, str]] = mapped_column(
+        AiProviderType(), nullable=False
     )
     # TBD-586: set only on a platform (house-key) row; NULL on every BYOK row.
     platform_provider: Mapped[Optional[str]] = mapped_column(
@@ -114,8 +164,14 @@ class OrgAICredential(Base):
         String(500), nullable=True
     )
 
+    @validates("provider")
+    def _check_provider(self, _key: str, value: Any) -> AiProvider:
+        # Only writes pass here (a load does not): a retired or unknown
+        # provider can never be stored again.
+        return AiProvider(value)
+
     def __repr__(self) -> str:  # pragma: no cover - debug repr
-        provider = self.provider.value if self.provider else None
+        provider = provider_key(self.provider)
         masked = f"***{self.last_four}" if self.last_four else "***"
         return (
             f"<OrgAICredential id={self.id} provider={provider} "

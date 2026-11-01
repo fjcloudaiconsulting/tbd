@@ -20,6 +20,7 @@ import { useMemo } from "react";
 
 import { runSankeyQuery, type SankeyQueryBody } from "./api";
 import { resolveFilters } from "./resolve";
+import { localDay, todayIso } from "./date-presets";
 import type {
   CanvasFilters,
   FilterField,
@@ -75,9 +76,12 @@ export function useSankeyQuery(
   widget: SankeyWidget,
   canvasFilters: CanvasFilters | undefined,
 ): UseSankeyQueryResult {
+  // Keyed on the day like `useReportQuery`, so a session crossing midnight
+  // re-resolves a calendar preset token here too (TBD-759).
+  const today = todayIso();
   const query = useMemo<SankeyQueryBody>(
-    () => buildSankeyBody(widget, canvasFilters),
-    [widget, canvasFilters],
+    () => buildSankeyBody(widget, canvasFilters, localDay(today)),
+    [widget, canvasFilters, today],
   );
 
   const swrKey = ["sankey-query", widget.id, JSON.stringify(query)];
@@ -112,6 +116,7 @@ export function useSankeyQuery(
 export function buildSankeyBody(
   widget: SankeyWidget,
   canvasFilters: CanvasFilters | undefined,
+  now: Date = new Date(),
 ): SankeyQueryBody {
   const widgetFilters = widget.config.filters;
 
@@ -135,6 +140,7 @@ export function buildSankeyBody(
     widgetFilters,
     true, // transactions always supports date filter
     true, // transactions publishes status → canvas status scopes Sankey
+    now, // resolves a calendar preset token (TBD-759)
   );
   const filters = resolvedFilters.filter((f) =>
     (SANKEY_SUPPORTED_FILTER_FIELDS as string[]).includes(f.field),

@@ -88,6 +88,16 @@ def test_f4_inverse_restores_every_primary_field_and_ignores_derived():
     assert out == {"thing_id": 1, "amount": "1.00", "note": "old"}
 
 
+def test_f4_inverse_unwraps_disclosed_user_text():
+    """FENCE F4 (TBD-664). Wrong implementation: restoring the wrapped
+    ``{"untrusted": ...}`` disclosure as the argument, so a text edit could
+    never be reverted (the stored args would no longer validate)."""
+    spec = SimpleNamespace(args=_Two)
+    preview = {"changes": [_chg("things", 1, "note", {"untrusted": "old"}, {"untrusted": "new"})]}
+    out = actions.inverse_args(spec, {"thing_id": 1, "amount": "2.00", "note": "new"}, preview)
+    assert out == {"thing_id": 1, "amount": "2.00", "note": "old"}
+
+
 def test_f4_a_primary_field_the_tool_does_not_take_is_no_inverse():
     spec = SimpleNamespace(args=_Two)
     preview = {"changes": [_chg("things", 1, "colour", "a", "b")]}
@@ -211,6 +221,23 @@ async def test_f6_category_drift_is_409(factory, w):
     [d] = err.data["drift"]
     assert (d["entity"], d["expected"], d["current"]) == ("transactions", a["c2"], c3)
     assert (await _tx(factory, a["tx"])).category_id == c3
+
+
+async def test_f6_description_drift_is_409_and_compares_the_wrapped_text(factory, w):
+    """FENCE F6 (TBD-664). Wrong implementation: comparing a wrapped
+    disclosure with a bare string, so text drift is never seen (or always)."""
+    a = w["A"]
+    out = await _invoke(factory, a["member"], "transactions_update",
+                        {"transaction_id": a["tx"], "description": "Renamed"})
+    orig = (await _confirm(factory, a["member"], out["action_id"]))["action_id"]
+    async with factory() as db:
+        await db.execute(update(Transaction).where(Transaction.id == a["tx"]).values(description="Other"))
+        await db.commit()
+    err = await _refused(_revert(factory, a["member"], orig))
+    assert err.code == "revert_drift"
+    [d] = err.data["drift"]
+    assert (d["field"], d["expected"], d["current"]) == (
+        "description", {"untrusted": "Renamed"}, {"untrusted": "Other"})
 
 
 async def test_f7_only_the_derived_rule_drifting_is_not_drift(factory, w):

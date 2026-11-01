@@ -14,8 +14,6 @@ Fixtures (``session_factory``, ``_make_app``, ``_seed``, ``_resolver``,
 """
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -57,9 +55,8 @@ def _layout(widget_id: str = "w1") -> dict:
 
 
 _LAYOUT = _layout("w1")
-# Absolute date window — mirrors what ``DatePresetChips`` actually stores
-# (presets resolve to an absolute {start, end} at click time; the canvas
-# never persists relative preset strings).
+# Absolute date window — a custom range (or a legacy pre-TBD-759 preset,
+# which froze its window at click time). Presets now persist as tokens.
 _FILTERS = {"date_range": {"start": "2026-01-01", "end": "2026-01-31"}}
 
 
@@ -439,34 +436,32 @@ async def test_settled_vs_pending_template_breaks_down_by_status(session_factory
 
 
 @pytest.mark.asyncio
-async def test_templates_date_windows_reflect_current_month(session_factory):
-    # The date windows must be computed per request from date.today(),
-    # not frozen at module import. Assert the monthly_review window starts
-    # on the first day of the current month and ends on the last day.
+async def test_templates_date_windows_are_relative_tokens(session_factory):
+    # TBD-759: a template's date windows persist as RELATIVE tokens, not
+    # absolute dates frozen when the report was created, so a report made
+    # from "Monthly review" keeps showing the current month after the
+    # calendar rolls over (the frontend resolves the token per query).
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))
     with TestClient(app) as client:
         res = client.get("/api/v1/reports/templates")
     assert res.status_code == 200, res.text
-    body = res.json()
+    by_key = {t["key"]: t for t in res.json()}
 
-    today = date.today()
-    first_of_month = today.replace(day=1)
-
-    by_key = {t["key"]: t for t in body}
-    monthly = by_key["monthly_review"]
-    date_range = monthly["canvas_filters_json"]["date_range"]
-    assert date_range["start"] == first_of_month.isoformat()
-    # end is the last day of the current month (>= today, same month)
-    end = date.fromisoformat(date_range["end"])
-    assert end >= today
-    assert end.year == today.year and end.month == today.month
-
-    # trailing-12-months template ends at today
-    cash_flow = by_key["cash_flow_trend"]
-    cf_range = cash_flow["canvas_filters_json"]["date_range"]
-    assert cf_range["end"] == today.isoformat()
-    assert cf_range["start"] == date(today.year - 1, today.month, 1).isoformat()
+    assert by_key["monthly_review"]["canvas_filters_json"]["date_range"] == {
+        "preset": "this_month"
+    }
+    assert by_key["cash_flow_trend"]["canvas_filters_json"]["date_range"] == {
+        "preset": "last_12_months"
+    }
+    # No template anywhere (canvas or widget) persists a frozen window.
+    for t in by_key.values():
+        ranges = [t["canvas_filters_json"].get("date_range")] + [
+            (w["config"].get("filters") or {}).get("date_range")
+            for w in t["layout_json"]["widgets"]
+        ]
+        for dr in filter(None, ranges):
+            assert set(dr) == {"preset"}, (t["key"], dr)
 
 
 @pytest.mark.asyncio

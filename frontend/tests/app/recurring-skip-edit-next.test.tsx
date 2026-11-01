@@ -239,9 +239,12 @@ describe("recurring page: skip next (TBD-272)", () => {
 });
 
 describe("recurring page: edit next amount (TBD-273)", () => {
-  async function openEdit() {
+  // TBD-756: the dialog asks where the amount lands, with nothing pre-selected.
+  // Every flow below picks "Only this occurrence" unless it says otherwise.
+  async function openEdit(scope: RegExp | null = /Only this occurrence/) {
     const dialog = await open("Edit next amount: Rent");
     const input = within(dialog).getByLabelText("Amount for 2026-10-01") as HTMLInputElement;
+    if (scope) fireEvent.click(within(dialog).getByLabelText(scope));
     return { dialog, input, save: within(dialog).getByRole("button", { name: "Save amount" }) };
   }
 
@@ -254,7 +257,7 @@ describe("recurring page: edit next amount (TBD-273)", () => {
     const { dialog, input, save } = await openEdit();
     expect(input.value).toBe("1200.00");
     expect(dialog.textContent).toContain(
-      `Change the amount of "Rent" on 2026-10-01 only. The series stays at ${signed(1200)}.`,
+      `Change the amount of "Rent" on 2026-10-01. The series is at ${signed(1200)}.`,
     );
     fireEvent.change(input, { target: { value: "1150.50" } });
     fireEvent.click(save);
@@ -268,12 +271,43 @@ describe("recurring page: edit next amount (TBD-273)", () => {
     expect(keys.filter((k) => k.startsWith("PUT"))).toEqual(["PUT /api/v1/transactions/777"]);
     expect(JSON.parse(String(calls()[m].body))).toEqual({ occurrence_date: "2026-10-01" });
     const body = JSON.parse(String(calls()[p].body));
-    expect(Object.keys(body)).toEqual(["amount"]);
+    expect(Object.keys(body)).toEqual(["amount", "series_scope"]);
     expect(Number(body.amount)).toBe(1150.5);
+    expect(body.series_scope).toBe("this");
     expect(listLoadsAfter("PUT /api/v1/transactions/777")).toBeGreaterThanOrEqual(1);
     expect(
       screen.getByText(`"Rent" on 2026-10-01 is now ${signed(1150.5)}. Later occurrences stay at ${signed(1200)}.`),
     ).toBeInTheDocument();
+  });
+
+  it("TBD-756: \"This and future\" sends series_scope=future and says the series moved", async () => {
+    mockApi({
+      "POST /api/v1/recurring/41/materialise-next": () => ({ id: 777 }),
+      "PUT /api/v1/transactions/777": () => ({ id: 777 }),
+    });
+    render(<RecurringPage />);
+    const { input, save } = await openEdit(/This and future occurrences/);
+    fireEvent.change(input, { target: { value: "1150.50" } });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const put = calls().find((c) => c.key === "PUT /api/v1/transactions/777")!;
+    expect(JSON.parse(String(put.body)).series_scope).toBe("future");
+    expect(
+      screen.getByText(`"Rent" is now ${signed(1150.5)} from 2026-10-01 on.`),
+    ).toBeInTheDocument();
+  });
+
+  it("TBD-756: a valid amount with no scope chosen keeps Save disabled", async () => {
+    mockApi();
+    render(<RecurringPage />);
+    const { dialog, input, save } = await openEdit(null);
+    const radios = within(dialog).getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.map((r) => r.checked)).toEqual([false, false]);
+    fireEvent.change(input, { target: { value: "99.99" } });
+    expect(save).toBeDisabled();
+    fireEvent.click(within(dialog).getByLabelText(/Only this occurrence/));
+    expect(save).not.toBeDisabled();
   });
 
   const ABOVE_ZERO = "Enter an amount above 0.";

@@ -159,11 +159,12 @@ def _body_fields(route) -> set[str]:
 def _problems(routes, tools, gaps, exempt, never=registry._never_exposable, live=None) -> list[str]:
     """routes: {key: body+query field set}; live: every live (method, path), reads included. Every returned string is a failure."""
     live = set(routes) if live is None else live
-    mirrored = {
-        t.mirrors_route
-        for t in tools
-        if t.mirrors_route in routes and routes[t.mirrors_route] <= set(t.args.model_fields)
-    }
+    # TBD-664: several tools may mirror one route (a non-money edit and a money
+    # edit of the same PUT); the route is mirrored when their UNION covers it.
+    covered: dict[tuple[str, str], set[str]] = {}
+    for t in tools:
+        covered.setdefault(t.mirrors_route, set()).update(t.args.model_fields)
+    mirrored = {k for k, f in covered.items() if k in routes and routes[k] <= f}
     out = []
     for key in sorted(routes):
         n = [
@@ -249,6 +250,19 @@ def test_partial_mirror_without_gap_entry_fails_and_with_one_passes():
     t = [_T(_R, ["id"])]
     assert _problems({_R: {"a"}}, t, {}, {}, never=lambda p: False)
     assert not _problems({_R: {"a"}}, t, {_R: "TBD-1"}, {}, never=lambda p: False)
+
+
+def test_tools_mirroring_one_route_are_covered_by_their_union():
+    """FENCE (TBD-664 parity field union). Wrong implementations: requiring one
+    tool to cover the whole route (a money/non-money split stays a gap
+    forever), or counting a route as mirrored when the union still misses a
+    field."""
+    route = {_R: {"a", "b", "id"}}
+    split = [_T(_R, ["id", "a"]), _T(_R, ["id", "b"])]
+    assert not _problems(route, split, {}, {}, never=lambda p: False)
+    assert any("exactly one" in p for p in _problems(route, split, {_R: "TBD-1"}, {}, never=lambda p: False))
+    assert _problems(route, split[:1], {}, {}, never=lambda p: False)
+    assert not _problems(route, split[:1], {_R: "TBD-1"}, {}, never=lambda p: False)
 
 
 def test_fence_catches_tool_mirroring_missing_route():

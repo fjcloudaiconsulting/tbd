@@ -130,6 +130,10 @@ async def _org(
 async def _call(factory, user, name, args=None):
     async with factory() as db:
         u = await db.get(User, user.id)
+        if args is None and name == "transactions_get":  # the org's own row
+            args = {"transaction_id": await db.scalar(
+                select(Transaction.id).where(Transaction.org_id == u.org_id).order_by(Transaction.id)
+            )}
         return await invoke(db, u, name, _args(name) if args is None else args, channel="in_app")
 
 
@@ -237,6 +241,12 @@ async def test_fr3_other_orgs_ids_and_periods_return_nothing_of_theirs(factory):
         assert exc.value.code == "period_not_found", name
         control = await _call(factory, b["user"], name, {"period_start": str(B_START)})
         assert control["data"]["period_start"] == str(B_START)
+
+    with pytest.raises(ToolError) as exc:
+        await _call(factory, a["user"], "transactions_get", {"transaction_id": b["tx"].id})
+    assert exc.value.code == "not_found"
+    control = await _call(factory, b["user"], "transactions_get", {"transaction_id": b["tx"].id})
+    assert control["data"]["id"] == b["tx"].id
 
     accts = {r["id"] for r in (await _call(factory, a["user"], "accounts_list"))["data"]}
     cats = {r["id"] for r in (await _call(factory, a["user"], "categories_list"))["data"]}

@@ -129,6 +129,11 @@ def occurrences_in_window(
       two occurrences into one key;
     * a ``frequency`` or frontier edit invalidates every UNMATERIALISED key,
       deliberately and under any key choice; materialised rows keep theirs.
+    * a "this and future" date edit (TBD-756,
+      ``transaction_service._plan_series_date_move``) RE-KEYS the edited row,
+      its pending on-grid siblings and the frontier onto the grid walked from
+      the new date, together. It refuses any move that would alias a key or
+      leave a row at or after the new frontier.
 
     Rejected: an ordinal key (``occurrences_elapsed`` does not move on the
     resume re-anchor, so ordinals shift under a resume) and a stored occurrence

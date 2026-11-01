@@ -16,7 +16,10 @@
  */
 import { currencyPrefix } from "@/lib/currencies";
 import { BALANCE_MASK, isBalancesHidden } from "@/lib/format";
-import { buildPresetRanges } from "@/lib/reports/date-presets";
+import {
+  buildPresetRanges,
+  isCalendarPreset,
+} from "@/lib/reports/date-presets";
 import {
   asTxnTypeArray,
   isFieldOverridden,
@@ -249,6 +252,10 @@ function dateLabel(range: CanvasDateRange, now: Date): string {
   // authoritative absolute window lives server-side. v1 renders the
   // label, not a concrete MMM D – MMM D range.
   if (range.preset === "next_cycle") return "Next cycle";
+  // Calendar token: the label IS the token (TBD-759). Re-inferring it from
+  // dates is what turned an October "This month" into "Last month".
+  if (isCalendarPreset(range.preset)) return PRESET_LABELS[range.preset];
+  // Legacy absolute blob: name it when it matches a window for ``now``.
   const presets = buildPresetRanges(now);
   for (const key of Object.keys(presets) as Array<keyof typeof presets>) {
     const r = presets[key];

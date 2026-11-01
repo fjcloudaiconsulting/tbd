@@ -188,7 +188,7 @@ def inverse_args(spec: ToolSpec, args_json: dict[str, Any], preview_json: dict[s
     changes = preview_json["changes"]
     p = changes[0]
     restore = {
-        c["field"]: c["before"] for c in changes
+        c["field"]: registry.unwrap_untrusted(c["before"]) for c in changes
         if (c["entity"], c["id"]) == (p["entity"], p["id"])
     }
     if not restore.keys() <= spec.args.model_fields.keys():
@@ -228,8 +228,9 @@ async def propose(
     pv = _preview_dict(await registry.call_mapped(spec.preview, ctx, args))
     if reverts is not None:
         pv["context"]["reverts"] = reverts
+    # keep only the fields the caller set, so a confirm never writes an omitted field as null
     row = _new_row(
-        ctx, user_id, spec, args.model_dump(mode="json"), pv,
+        ctx, user_id, spec, args.model_dump(mode="json", exclude_unset=True), pv,
         ActionMode.AUTO if auto else ActionMode.CONFIRM,
     )
     action_id = row.id

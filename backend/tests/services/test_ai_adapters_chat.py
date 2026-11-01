@@ -1,6 +1,6 @@
 """Adapter chat() method tests (PR2 of AI tier train).
 
-Each adapter (OpenAI, Anthropic, Ollama, OpenAI-compatible) is mocked
+Each adapter (OpenAI, Anthropic, OpenAI-compatible) is mocked
 via ``httpx.MockTransport`` and asserted against:
 
 - Request URL is correct for the provider.
@@ -15,14 +15,12 @@ via ``httpx.MockTransport`` and asserted against:
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 import httpx
 import pytest
 
 from app.services.ai_providers.anthropic import AnthropicAdapter
 from app.services.ai_providers.base import AIProviderError
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import (
     OpenAICompatibleAdapter,
@@ -171,82 +169,6 @@ async def test_anthropic_4xx_is_sanitized(monkeypatch):
         )
     assert LEAKED_SECRET_MARKER not in str(exc_info.value)
     assert exc_info.value.code == "provider_status_401"
-
-
-# ---------- Ollama ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ollama_chat_no_bearer(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        assert body["stream"] is False
-        assert body["model"] == "llama3:8b"
-        assert "Authorization" not in request.headers
-        return httpx.Response(
-            200,
-            json={
-                "model": "llama3:8b",
-                "message": {"role": "assistant", "content": "ack"},
-                "prompt_eval_count": 7,
-                "eval_count": 3,
-            },
-        )
-
-    captured = _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434", api_key="x"
-    )
-    resp = await adapter.chat(
-        model="llama3:8b", messages=[{"role": "user", "content": "yo"}]
-    )
-    assert resp.content == "ack"
-    assert resp.prompt_tokens == 7
-    assert resp.completion_tokens == 3
-    assert str(captured[0].url) == "http://10.0.0.10:11434/api/chat"
-
-
-@pytest.mark.asyncio
-async def test_ollama_chat_with_bearer_token(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["Authorization"] == "Bearer secret-bearer"
-        return httpx.Response(
-            200,
-            json={
-                "model": "llama3:8b",
-                "message": {"role": "assistant", "content": "ok"},
-                "prompt_eval_count": 1,
-                "eval_count": 1,
-            },
-        )
-
-    _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434",
-        api_key="x",
-        bearer_token="secret-bearer",
-    )
-    resp = await adapter.chat(
-        model="llama3:8b", messages=[{"role": "user", "content": "x"}]
-    )
-    assert resp.content == "ok"
-
-
-@pytest.mark.asyncio
-async def test_ollama_5xx_is_sanitized(monkeypatch):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503, text=f"down — {LEAKED_SECRET_MARKER}")
-
-    _install_transport(monkeypatch, handler)
-    adapter = OllamaAdapter(
-        base_url="http://10.0.0.10:11434", api_key="x"
-    )
-    with pytest.raises(AIProviderError) as exc_info:
-        await adapter.chat(
-            model="llama3:8b",
-            messages=[{"role": "user", "content": "x"}],
-        )
-    assert LEAKED_SECRET_MARKER not in str(exc_info.value)
 
 
 # ---------- OpenAI-compatible ----------------------------------------

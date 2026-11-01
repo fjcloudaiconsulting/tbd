@@ -49,7 +49,6 @@ from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.schemas.recurring import RecurringUpdate
 from app.schemas.transaction import PromoteToRecurringRequest
 from app.services import forecast_service, recurring_service, transaction_service
 from app.services.billing_service import current_cycle_window
@@ -580,21 +579,20 @@ async def test_f16_probe_suppresses_already_materialised_occurrences(db_session)
     Once ``recurring_*`` is bounded by the occurrence rather than by the
     frontier, a template whose frontier has NOT advanced past the window is
     selected even though its occurrence is already a row. ``PUT /recurring``
-    reaches that state directly: ``RecurringUpdate.next_due_date`` has no
-    schema validator and ``update_recurring`` assigns it verbatim, so a user
-    who rewinds the schedule of a template that already generated re-creates
-    exactly this shape (the same shape
-    ``test_recurring_generate_fill_period.test_dedup_guard_...`` uses).
+    reached that state directly until TBD-762: a user who rewound the schedule
+    of a template that already generated re-created exactly this shape (the
+    same shape ``test_recurring_generate_fill_period.test_dedup_guard_...``
+    uses). ``update_recurring`` now refuses a MOVED frontier that does not
+    clear the series' rows (a locking read of them), so the fixture writes the
+    frontier directly. The probe stays as defence in depth for frontiers stored
+    before the guard and for any writer that does not go through it.
 
-    ⚠ Since TBD-283 the rewind is FLOORED, not free: ``update_recurring`` runs
-    ``validate_frontier`` on the post-write state whenever the request carries
-    ``next_due_date`` or ``frequency``, so a rewind earlier than the org's
-    current cycle start is a 400. The reachability argument survives intact
-    because the shallowest rewind here lands ON ``p_start`` — the lowest date
-    the bound still allows. That is not a coincidence: this test is the reason
-    the bound is ``>= p_start`` and not the obvious ``>= today``, which would
-    400 inside this very fixture (``test_recurring_frontier_lower_bound`` F2
-    pins the same allowance directly, with an injected clock).
+    ⚠ Before TBD-762 the rewind was FLOORED, not free (TBD-283):
+    ``validate_frontier`` 400s a rewind earlier than the org's current cycle
+    start, and the shallowest rewind here lands ON ``p_start``, the lowest date
+    the bound allows. That is why the bound is ``>= p_start`` and not the
+    obvious ``>= today`` (``test_recurring_frontier_lower_bound`` F2 pins the
+    allowance directly, with an injected clock).
 
     Three templates, three materialised occurrences at three positions —
     ``p_start`` (the probe's LOWER bound), an interior date, and ``window_end``
@@ -638,12 +636,12 @@ async def test_f16_probe_suppresses_already_materialised_occurrences(db_session)
     rows = await _rows(db_session, seed["org_id"])
     assert [r.date for r in rows] == [p_start, interior, window_end]
 
-    # Rewind every frontier through the real update path.
+    # Rewind every frontier. Written directly: since TBD-762 the update path
+    # refuses this very rewind (a moved next due date must clear the series'
+    # rows). ``test_recurring_edit_series`` fences the refusal.
     for t, (due, _amount) in zip(templates, placements):
-        await recurring_service.update_recurring(
-            db_session, seed["org_id"], t.id,
-            RecurringUpdate(next_due_date=due),
-        )
+        t.next_due_date = due
+    await db_session.commit()
     # Precondition: every template is still SELECTED by the query gate, so the
     # probe is genuinely the thing under test.
     for t, (due, _amount) in zip(templates, placements):

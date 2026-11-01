@@ -12,6 +12,7 @@ instead of HTTPException — callers map these to the appropriate response.
 
 import datetime
 from collections.abc import Callable
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 import logging
@@ -34,6 +35,7 @@ from app.schemas.transaction import (
     TransferCreate,
 )
 from app.services.category_rules_service import learn_from_choice
+from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.transaction_filters import (
@@ -429,6 +431,173 @@ async def create_transaction(
     return result.scalar_one()
 
 
+async def _series_sync_targets(
+    db: AsyncSession,
+    org_id: int,
+    recurring_id: int,
+    tx_type: TransactionType | None,
+    *,
+    exclude_id: int | None = None,
+    after: datetime.date | None = None,
+) -> list[Transaction]:
+    """The PENDING siblings an amount or date sync may rewrite (TBD-756), locked.
+
+    Skipped: rows of another type (their amount means something else), transfer
+    legs (a bulk write cannot mirror the partner), skipped/rejected rows, and
+    rows a bank row was reconcile-matched against (an inbound referrer: their
+    amount and date are now the bank's business). ``after`` keeps only rows
+    dated after it ("this and future"); ``exclude_id`` is the edited row.
+    ``tx_type=None`` keeps rows of every type: the template's name/account
+    sync (TBD-760) is type-independent and filters category by type itself.
+
+    Selected first and written by id, not by one UPDATE with the referrer
+    EXISTS inline: MySQL refuses a subquery on the UPDATE's own table (1093).
+
+    ⚠ Lock order: both callers hold the template when they get here, so this
+    takes template -> pending rows, while ``_settle_due_auto`` takes due
+    pending rows -> template. That is the TBD-512 edge the account block below
+    describes, now also reached by ``update_recurring`` (amount) and by two
+    concurrent "this and future" edits of different siblings. InnoDB resolves
+    it by aborting one side (1213); nothing here retries.
+    """
+    referrer = aliased(Transaction)
+    q = select(Transaction).where(
+        Transaction.recurring_id == recurring_id,
+        Transaction.org_id == org_id,
+        Transaction.status == TransactionStatus.PENDING,
+        Transaction.linked_transaction_id.is_(None),
+        Transaction.reconciliation_state.not_in(REVERTED_RECONCILIATION_STATES),
+        ~exists().where(
+            referrer.org_id == org_id, referrer.linked_transaction_id == Transaction.id
+        ),
+    )
+    if tx_type is not None:
+        q = q.where(Transaction.type == tx_type)
+    if exclude_id is not None:
+        q = q.where(Transaction.id != exclude_id)
+    if after is not None:
+        q = q.where(Transaction.date > after)
+    rows = await db.execute(q.order_by(Transaction.date, Transaction.id).with_for_update())
+    return list(rows.scalars().all())
+
+
+@dataclass(frozen=True)
+class SeriesDateMove:
+    """A validated "this and future" date move (TBD-756). ``moves`` maps a
+    sibling id to its new (date, settled_date); ``next_due_date`` is the new
+    frontier."""
+
+    moves: dict[int, tuple[datetime.date, datetime.date | None]]
+    next_due_date: datetime.date
+
+
+async def _plan_series_date_move(
+    db: AsyncSession,
+    org_id: int,
+    template: RecurringTransaction,
+    *,
+    row_id: int,
+    old_date: datetime.date,
+    new_date: datetime.date,
+    tx_type: TransactionType,
+) -> SeriesDateMove:
+    """Re-walk the series grid from the edited row's new date. Writes nothing.
+
+    A sibling k steps after ``old_date`` on the template's grid lands k steps
+    after ``new_date``; the frontier likewise. Never a day count: Jan 3 -> Jan
+    31 is +28 days, which would turn Feb 3 into Mar 3 and empty February. The
+    grid is ``advance_date`` iterated, exactly as generation walks it, so the
+    new frontier is where generation itself would have arrived.
+
+    Refuses (nothing written yet, so nothing to undo):
+    - a move of one period or more, which re-orders occurrences;
+    - a new date before the current billing cycle (user writes never land in a
+      closed period, as in ``materialise_next``);
+    - a frontier that is not on this row's grid (the schedule was moved apart
+      from the row, so there is no honest mapping);
+    - a moved row landing on the date of a series row that stays put: occurrence
+      identity is ``(recurring_id, date)`` with no unique constraint behind it;
+    - a new frontier on or before any row of the series. Generation's and the
+      forecasts' materialised probes key on ``(recurring_id, date)``, so a row
+      at or after the frontier would be counted twice.
+    Siblings off the old grid are left where they are, as the amount sync
+    leaves a deliberately changed amount.
+    """
+    # Local import: recurring_service imports this module at load.
+    from app.services.recurring_service import frontier_lower_bound
+
+    freq = template.frequency
+    if not (new_date < advance_date(old_date, freq) and old_date < advance_date(new_date, freq)):
+        raise ValidationError(
+            f"To apply a new date to future occurrences, move it by less than one "
+            f"{freq.value} period, or change only this occurrence."
+        )
+    p_start = await frontier_lower_bound(db, org_id)
+    if new_date < p_start:
+        raise ValidationError(
+            f"A date applied to future occurrences cannot be earlier than "
+            f"{p_start.isoformat()}, the start of the current billing cycle."
+        )
+
+    old_grid: list[datetime.date] = []
+    d = advance_date(old_date, freq)
+    while d < template.next_due_date:
+        old_grid.append(d)
+        d = advance_date(d, freq)
+    if d != template.next_due_date:
+        raise ValidationError(
+            f"This occurrence is not on its series' schedule (the next one is due "
+            f"{template.next_due_date.isoformat()}), so the new date cannot be applied "
+            f"to future occurrences. Change only this occurrence."
+        )
+    new_grid: list[datetime.date] = []
+    d = new_date
+    for _ in old_grid:
+        d = advance_date(d, freq)
+        new_grid.append(d)
+    new_frontier = advance_date(d, freq)
+
+    slot = {old: new for old, new in zip(old_grid, new_grid)}
+    targets = await _series_sync_targets(
+        db, org_id, template.id, tx_type, exclude_id=row_id, after=old_date,
+    )
+    # A pending row's settled_date is its EXPECTED settlement: it keeps its
+    # offset from the row's own date, so the period it buckets into moves too.
+    moves = {
+        t.id: (
+            slot[t.date],
+            t.settled_date + (slot[t.date] - t.date) if t.settled_date is not None else None,
+        )
+        for t in targets
+        if t.date in slot
+    }
+
+    staying_q = select(Transaction.date).where(
+        Transaction.org_id == org_id,
+        Transaction.recurring_id == template.id,
+        Transaction.id != row_id,
+    )
+    if moves:
+        staying_q = staying_q.where(Transaction.id.not_in(list(moves)))
+    staying_dates = set((await db.execute(staying_q)).scalars().all())
+    landing = [new_date, *(new for new, _ in moves.values())]
+    for when in sorted(landing):
+        if when in staying_dates:
+            raise ConflictError(
+                f"The series already has a transaction on {when.isoformat()}, so the "
+                f"new date cannot be applied to future occurrences. Change only this "
+                f"occurrence, or move that transaction first."
+            )
+    latest = max([*staying_dates, *landing])
+    if latest >= new_frontier:
+        raise ConflictError(
+            f"The series has a transaction on {latest.isoformat()}, on or after where "
+            f"its next occurrence would move ({new_frontier.isoformat()}). Change only "
+            f"this occurrence."
+        )
+    return SeriesDateMove(moves=moves, next_due_date=new_frontier)
+
+
 async def _propagate_fields_to_series(
     db: AsyncSession,
     org_id: int,
@@ -438,10 +607,19 @@ async def _propagate_fields_to_series(
     category_id: int | None,
     tx_type: TransactionType,
     account_id: int | None = None,
+    description_was: str | None = None,
+    category_was: int | None = None,
+    account_was: int | None = None,
+    amount: Decimal | None = None,
+    amount_was: Decimal | None = None,
+    amount_after: datetime.date | None = None,
+    exclude_id: int | None = None,
+    date_move: SeriesDateMove | None = None,
 ) -> None:
     """Sync name/category/account from an edited recurring-linked transaction to its
-    template and PENDING sibling instances. Pass only the fields that actually
-    changed; None means leave that field untouched.
+    template and PENDING sibling instances, or from an edited template
+    (``update_recurring``) to its PENDING instances. Pass only the fields that
+    actually changed; None means leave that field untouched.
 
     `description` is type-independent: it propagates to the template and ALL
     PENDING siblings. `category_id` is type-dependent: a (type, category) pair
@@ -452,10 +630,11 @@ async def _propagate_fields_to_series(
 
     `account_id` (TBD-315) is type-independent like `description`: template and
     ALL PENDING siblings, with deliberately NO "still on the old account" guard
-    (it would strand a pending row whenever the template was moved from the
-    recurring page). The caller passes the already-VALIDATED ``tx.account_id``.
-    No balance logic: PENDING amounts are never inside ``accounts.balance``,
-    and SETTLED rows are excluded by the status filter. The target account may
+    on the occurrence call (it would strand a pending row a template move from
+    the recurring page left behind before TBD-760; the template call itself
+    guards, see `account_was` below). The caller passes the already-VALIDATED
+    ``tx.account_id``. No balance logic: PENDING amounts are never inside
+    ``accounts.balance``, and SETTLED rows are excluded by the status filter. The target account may
     differ in currency from the old one: ``validate_account`` checks the org
     only, and legacy multi-currency orgs exist (no guard here, by ruling).
 
@@ -466,6 +645,25 @@ async def _propagate_fields_to_series(
     breaks the transfer-category rule. A pending recurring row never carries a
     one-way reconcile link (those live on the imported row), so the clause
     skips only transfer legs. Description still reaches legs: harmless.
+
+    `amount` and `date_move` (TBD-756) reach the template and only the siblings
+    ``_series_sync_targets`` picks. `amount` reaches a sibling only while it
+    still holds `amount_was` (the template's amount, read under the template
+    lock), so a deliberately changed row keeps its value; `amount_after` and
+    `exclude_id` narrow it to "this and future" for an occurrence edit. The
+    template call (``update_recurring``) passes neither and reaches every
+    pending occurrence. `date_move` comes from ``_plan_series_date_move``,
+    which has already refused every unsafe shape; a moved row's expected
+    settlement date keeps its offset from the row's own date.
+
+    `description_was` / `category_was` / `account_was` (TBD-760) are the
+    template call's: the pre-edit template value, read under the template
+    lock. Passed with its field, it replaces that field's "ALL PENDING
+    siblings" UPDATE with the amount rule: only ``_series_sync_targets`` rows
+    (of any type; category still only on `tx_type` rows) still holding the
+    old value follow, so a row whose value differs keeps it. The occurrence
+    call passes none of them and keeps the unguarded behaviour above, which
+    is also what still pulls a row an older template edit left behind.
 
     SETTLED instances are never modified (historical fact). Concurrency: two
     edits to different siblings race last-writer-wins on the template, which is
@@ -481,6 +679,7 @@ async def _propagate_fields_to_series(
             )
             .values(description=description)
         )
+    if description is not None and description_was is None:
         await db.execute(
             update(Transaction)
             .where(
@@ -502,6 +701,7 @@ async def _propagate_fields_to_series(
             )
             .values(category_id=category_id)
         )
+    if category_id is not None and category_was is None:
         await db.execute(
             update(Transaction)
             .where(
@@ -536,6 +736,7 @@ async def _propagate_fields_to_series(
             )
             .values(account_id=account_id)
         )
+    if account_id is not None and account_was is None:
         await db.execute(
             update(Transaction)
             .where(
@@ -546,6 +747,63 @@ async def _propagate_fields_to_series(
             )
             .values(account_id=account_id)
         )
+    if amount is not None or date_move is not None:
+        # Template first, pending rows second: the same order as account above.
+        template_values: dict = {}
+        if amount is not None:
+            template_values["amount"] = amount
+        if date_move is not None:
+            template_values["next_due_date"] = date_move.next_due_date
+        await db.execute(
+            update(RecurringTransaction)
+            .where(
+                RecurringTransaction.id == recurring_id,
+                RecurringTransaction.org_id == org_id,
+            )
+            .values(**template_values)
+        )
+    if amount is not None:
+        targets = await _series_sync_targets(
+            db, org_id, recurring_id, tx_type, exclude_id=exclude_id, after=amount_after,
+        )
+        ids = [t.id for t in targets if t.amount == amount_was]
+        if ids:
+            await db.execute(
+                update(Transaction)
+                .where(Transaction.id.in_(ids), Transaction.org_id == org_id)
+                .values(amount=amount)
+            )
+    # TBD-760: the template call's guarded name/category/account sync. After
+    # every template write above, so this keeps template -> pending rows.
+    guarded = [
+        (field, value, was, only_type)
+        for field, value, was, only_type in (
+            ("description", description, description_was, None),
+            ("category_id", category_id, category_was, tx_type),
+            ("account_id", account_id, account_was, None),
+        )
+        if value is not None and was is not None
+    ]
+    if guarded:
+        targets = await _series_sync_targets(db, org_id, recurring_id, None)
+        for field, value, was, only_type in guarded:
+            ids = [
+                t.id for t in targets
+                if getattr(t, field) == was and (only_type is None or t.type == only_type)
+            ]
+            if ids:
+                await db.execute(
+                    update(Transaction)
+                    .where(Transaction.id.in_(ids), Transaction.org_id == org_id)
+                    .values({field: value})
+                )
+    if date_move is not None:
+        for tx_id, (new_date, new_settled_date) in date_move.moves.items():
+            await db.execute(
+                update(Transaction)
+                .where(Transaction.id == tx_id, Transaction.org_id == org_id)
+                .values(date=new_date, settled_date=new_settled_date)
+            )
 
 
 async def update_transaction(
@@ -699,6 +957,60 @@ async def update_transaction(
     old_status = tx.status
     old_category_id = tx.category_id
     old_description = tx.description
+    old_date = tx.date
+    old_settled_date = tx.settled_date
+
+    # TBD-756: "this and future". Every refusal lands here, before any write.
+    # The template is locked so the "still at the template amount" guard reads
+    # a value no concurrent template edit can move under it.
+    series_template: RecurringTransaction | None = None
+    series_date_move: SeriesDateMove | None = None
+    if body.series_scope == "future":
+        if tx.recurring_id is None:
+            raise ValidationError(
+                "Only a recurring transaction can apply a change to its future occurrences"
+            )
+        if old_status != TransactionStatus.PENDING:
+            raise ValidationError(
+                "Only a pending occurrence can apply a change to its future occurrences"
+            )
+        if tx.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+            raise ValidationError(
+                f"A {tx.reconciliation_state} occurrence cannot apply a change to its "
+                "future occurrences"
+            )
+        # The RAW column, as ``promote_to_recurring`` and the edit form's gate
+        # use it: a transfer leg's amount mirrors its partner and its date move
+        # would strand the partner, and the sibling sync skips linked rows for
+        # the same reasons.
+        if tx.linked_transaction_id is not None:
+            raise ValidationError(
+                "A linked transaction cannot apply a change to its future occurrences"
+            )
+        if body.type is not None and TransactionType(body.type) != old_type:
+            raise ValidationError(
+                "A type change applies to this occurrence only; send it without "
+                "applying to future occurrences"
+            )
+        series_template = (await db.execute(
+            select(RecurringTransaction)
+            .where(
+                RecurringTransaction.id == tx.recurring_id,
+                RecurringTransaction.org_id == org_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalar_one()
+        if series_template.type != old_type.value:
+            raise ValidationError(
+                "This occurrence's type differs from its series, so its changes "
+                "cannot apply to future occurrences"
+            )
+        if body.date is not None and body.date != old_date:
+            series_date_move = await _plan_series_date_move(
+                db, org_id, series_template, row_id=tx.id, old_date=old_date,
+                new_date=body.date, tx_type=old_type,
+            )
 
     new_account_id = body.account_id if body.account_id is not None else old_account_id
     new_status = TransactionStatus(body.status) if body.status is not None else old_status
@@ -821,6 +1133,17 @@ async def update_transaction(
                 # clear the historical actual so it doesn't leak as an
                 # "expected" date for the now-pending row.
                 tx.settled_date = None
+        # TBD-756: on a "this and future" move, a still-pending row's expected
+        # settlement keeps its offset, exactly as each moved sibling's does.
+        # Only when the request left it as it was (the form re-sends it); a
+        # newly chosen date wins.
+        if (
+            series_date_move is not None
+            and tx.status == TransactionStatus.PENDING
+            and old_settled_date is not None
+            and body.settled_date in (None, old_settled_date)
+        ):
+            tx.settled_date = old_settled_date + (tx.date - old_date)
 
         # Validate date ordering after the partial update is applied. Use
         # the resolved date+settled_date pair so a request that touches
@@ -879,11 +1202,18 @@ async def update_transaction(
     # changed (a re-save with the same value must not propagate).
     # Settled siblings keep their snapshot values. See spec
     # specs/recurring-transaction-field-sync.md.
+    # TBD-756: amount and date join only on "this and future". Compared with
+    # the old values, not ``amount_was_changed``: the edit form always sends
+    # both keys, so presence means nothing.
     if tx.recurring_id is not None:
         desc_changed = body.description is not None and tx.description != old_description
         cat_changed = body.category_id is not None and tx.category_id != old_category_id
         acct_changed = body.account_id is not None and tx.account_id != old_account_id
-        if desc_changed or cat_changed or acct_changed:
+        series_amount_changed = series_template is not None and tx.amount != old_amount
+        if (
+            desc_changed or cat_changed or acct_changed
+            or series_amount_changed or series_date_move is not None
+        ):
             await _propagate_fields_to_series(
                 db,
                 org_id,
@@ -892,6 +1222,11 @@ async def update_transaction(
                 category_id=tx.category_id if cat_changed else None,
                 tx_type=tx.type,
                 account_id=tx.account_id if acct_changed else None,
+                amount=tx.amount if series_amount_changed else None,
+                amount_was=series_template.amount if series_template is not None else None,
+                amount_after=old_date,
+                exclude_id=tx.id,
+                date_move=series_date_move,
             )
 
     await db.commit()
@@ -1098,67 +1433,42 @@ def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
         tx.date = body.date
 
 
-async def _settle_batch_counters_and_demote_orphans(
-    db: AsyncSession,
+@dataclass(frozen=True)
+class BatchSettlementPlan:
+    """What ``apply_batch_settlement`` will write, decided without writing.
+
+    ``demoted`` are the inbound referrers to mark REJECTED (``prior_states``
+    holds each one's state before); the three ``*_delta`` maps are the
+    decrements per import batch id; ``unlocked_ids`` are delete-set ids the
+    caller did not lock (reported, never counted). An agent preview renders
+    this plan, so the preview and the write cannot disagree.
+    """
+
+    deleted_ids: frozenset[int]
+    demoted: list[Transaction]
+    prior_states: dict[int, str]
+    accepted_delta: dict[int, int]
+    pending_delta: dict[int, int]
+    row_delta: dict[int, int]
+    unlocked_ids: list[int]
+
+    @property
+    def demoted_ids(self) -> list[int]:
+        return [r.id for r in self.demoted]
+
+
+def plan_batch_settlement(
     org_id: int,
     *,
     locked_rows: dict[int, Transaction],
     deleted_ids: set[int],
-) -> list[int]:
-    """The single pre-delete side-effect pass for every delete path.
+) -> BatchSettlementPlan:
+    """The decision half of ``_settle_batch_counters_and_demote_orphans``.
 
-    Two jobs, deliberately in ONE function and ONE ``import_batches`` write:
-
-    * **TBD-294** -- mark every row that points AT a row we are about to
-      delete, and whose amount is NOT inside ``accounts.balance``, as
-      REJECTED.
-    * **TBD-311** -- settle the import-batch counters for the rows the caller
-      is about to delete, which no state transition will ever do for them.
-
-    They are not separable. A deleted row and a demoted referrer can sit in
-    the SAME batch and both decrement ``pending_count``, and the counter write
-    below is one floored UPDATE per batch issued in ascending batch id -- a
-    shape arrived at deliberately to kill the self-inversion between two
-    concurrent deletes (see the long comment on that loop). A second helper
-    with its own ``UPDATE import_batches`` would re-create exactly that
-    ordering edge, invisibly, since no test can see a lock-order inversion.
-    It is also why "a fifth delete path must route through the same helper"
-    stays enforceable by a single grep: one helper, not two to remember.
-
-    THE HOLE TBD-294 CLOSES. ``transactions.linked_transaction_id`` is
-    ``ON DELETE SET NULL``. A reconcile-matched duplicate ``M -> T`` had its
-    contribution reverted at match time and is excluded from balance
-    reconstruction and from reports SOLELY because of that link's direction.
-    Delete ``T`` and the FK erases the discriminator: ``M`` becomes
-    byte-identical to an ordinary row, re-enters
-    ``balance_contribution_filter`` (so reconstruction counts an amount that
-    is not in ``accounts.balance``) AND ``reportable_transaction_filter`` (so
-    budgets and reports are wrong too).
-
-    THE FIX IS A STATE WRITE, NOT A REFUSAL. ``REJECTED`` is in
-    ``_RECON_EXCLUDED_STATES``, which BOTH of those filters consult. One
-    write moves the discriminator out of a column the FK erases and into one
-    it cannot touch, at the instant of erasure. No migration, and the delete
-    still succeeds -- refusing it would strand the user with a row they
-    cannot remove.
-
-    ``contributes_to_cached_balance(R, target)`` is the discriminator, not
-    "is the link one-way": a RECIPROCAL partner is inside the balance and its
-    own delete is already handled by the transfer cascade, so it must be left
-    alone. Rows already in a reverted state are skipped -- their
-    contribution is already out of both filters, and REJECTED is terminal, so
-    rewriting SKIPPED to REJECTED would burn a state for nothing.
-
-    Caller MUST have locked every row in ``locked_rows`` FOR UPDATE, in the
-    same ascending-id query that locked the delete set. Mutates state in
-    place and adjusts the owning ``ImportBatch`` counters; the caller owns
-    the transaction scope.
+    Pure: no SQL, no ORM mutation. It reads only ``locked_rows``, so call it
+    on the rows the caller locked, before anything is written.
     """
-    from app.services.reconciliation_service import (
-        PENDING_STATES,
-        close_batch_if_complete,
-    )
-    from app.models.import_batch import ImportBatch
+    from app.services.reconciliation_service import PENDING_STATES
 
     demoted: list[Transaction] = []
     for r in locked_rows.values():
@@ -1194,6 +1504,7 @@ async def _settle_batch_counters_and_demote_orphans(
     accepted_delta: dict[int, int] = {}
     pending_delta: dict[int, int] = {}
     row_delta: dict[int, int] = {}
+    unlocked_ids: list[int] = []
 
     # TBD-311. THE ROWS THE CALLER IS ABOUT TO DELETE.
     #
@@ -1227,13 +1538,7 @@ async def _settle_batch_counters_and_demote_orphans(
             # delete path must route through it", and a fifth path that
             # passed an id it forgot to lock would reintroduce TBD-311
             # silently, with the suite green. Say so rather than skipping.
-            logger.warning(
-                "transactions.delete_counter_skipped_unlocked_row",
-                extra={
-                    "org_id": org_id,
-                    "transaction_id": tid,
-                },
-            )
+            unlocked_ids.append(tid)
             continue
         if r.import_batch_id is None:
             continue
@@ -1244,8 +1549,10 @@ async def _settle_batch_counters_and_demote_orphans(
         elif r.reconciliation_state in PENDING_STATES:
             pending_delta[bid] = pending_delta.get(bid, 0) + 1
 
+    prior_states: dict[int, str] = {}
     for r in demoted:
         prior = r.reconciliation_state
+        prior_states[r.id] = prior
         if r.import_batch_id is not None:
             if prior == "accepted":
                 accepted_delta[r.import_batch_id] = (
@@ -1255,6 +1562,37 @@ async def _settle_batch_counters_and_demote_orphans(
                 pending_delta[r.import_batch_id] = (
                     pending_delta.get(r.import_batch_id, 0) + 1
                 )
+
+    return BatchSettlementPlan(
+        deleted_ids=frozenset(deleted_ids),
+        demoted=demoted,
+        prior_states=prior_states,
+        accepted_delta=accepted_delta,
+        pending_delta=pending_delta,
+        row_delta=row_delta,
+        unlocked_ids=unlocked_ids,
+    )
+
+
+async def apply_batch_settlement(
+    db: AsyncSession, org_id: int, plan: BatchSettlementPlan
+) -> list[int]:
+    """The write half of ``_settle_batch_counters_and_demote_orphans``: it
+    performs exactly ``plan`` and returns the demoted ids."""
+    from app.services.reconciliation_service import close_batch_if_complete
+    from app.models.import_batch import ImportBatch
+
+    for tid in plan.unlocked_ids:
+        logger.warning(
+            "transactions.delete_counter_skipped_unlocked_row",
+            extra={
+                "org_id": org_id,
+                "transaction_id": tid,
+            },
+        )
+
+    for r in plan.demoted:
+        prior = plan.prior_states[r.id]
         r.reconciliation_state = "rejected"
         # NOT SILENT (ruling condition 2). REJECTED is terminal and
         # ``reconciliation_state`` is not settable through ``TransactionUpdate``,
@@ -1273,6 +1611,9 @@ async def _settle_batch_counters_and_demote_orphans(
             },
         )
 
+    accepted_delta, pending_delta, row_delta = (
+        plan.accepted_delta, plan.pending_delta, plan.row_delta
+    )
     # ⚠ THE EARLY RETURN LIVES HERE, BELOW BOTH DELTA CLASSES, AND MUST STAY
     # THERE. It used to sit above, guarding on ``demoted`` alone. Moving the
     # deleted-row work in without moving this is the one way to write a
@@ -1281,7 +1622,7 @@ async def _settle_batch_counters_and_demote_orphans(
     # ``demoted`` is non-empty in all of them and the whole suite stays green
     # while an ordinary delete still strands its batch. F17/F18 exist with no
     # matched pair precisely to kill that variant.
-    if not demoted and not row_delta:
+    if not plan.demoted and not row_delta:
         return []
 
     await db.flush()
@@ -1364,19 +1705,105 @@ async def _settle_batch_counters_and_demote_orphans(
         )
         if batch is not None:
             await close_batch_if_complete(
-                db, batch=batch, exclude_transaction_ids=deleted_ids
+                db, batch=batch, exclude_transaction_ids=set(plan.deleted_ids)
             )
 
-    return [r.id for r in demoted]
+    return plan.demoted_ids
 
 
-async def delete_transaction(
-    db: AsyncSession, org_id: int, transaction_id: int
+async def _settle_batch_counters_and_demote_orphans(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    locked_rows: dict[int, Transaction],
+    deleted_ids: set[int],
 ) -> list[int]:
-    """Delete one transaction (cascading to a RECIPROCAL partner only).
+    """The single pre-delete side-effect pass for every delete path.
 
-    Returns the ids of any rows demoted to REJECTED because the row they
-    pointed at is being deleted (TBD-294). See ``_settle_batch_counters_and_demote_orphans``.
+    Two jobs, deliberately in ONE function and ONE ``import_batches`` write:
+
+    * **TBD-294** -- mark every row that points AT a row we are about to
+      delete, and whose amount is NOT inside ``accounts.balance``, as
+      REJECTED.
+    * **TBD-311** -- settle the import-batch counters for the rows the caller
+      is about to delete, which no state transition will ever do for them.
+
+    They are not separable. A deleted row and a demoted referrer can sit in
+    the SAME batch and both decrement ``pending_count``, and the counter write
+    below is one floored UPDATE per batch issued in ascending batch id -- a
+    shape arrived at deliberately to kill the self-inversion between two
+    concurrent deletes (see the long comment on that loop). A second helper
+    with its own ``UPDATE import_batches`` would re-create exactly that
+    ordering edge, invisibly, since no test can see a lock-order inversion.
+    It is also why "a fifth delete path must route through the same helper"
+    stays enforceable by a single grep: one helper, not two to remember.
+
+    THE HOLE TBD-294 CLOSES. ``transactions.linked_transaction_id`` is
+    ``ON DELETE SET NULL``. A reconcile-matched duplicate ``M -> T`` had its
+    contribution reverted at match time and is excluded from balance
+    reconstruction and from reports SOLELY because of that link's direction.
+    Delete ``T`` and the FK erases the discriminator: ``M`` becomes
+    byte-identical to an ordinary row, re-enters
+    ``balance_contribution_filter`` (so reconstruction counts an amount that
+    is not in ``accounts.balance``) AND ``reportable_transaction_filter`` (so
+    budgets and reports are wrong too).
+
+    THE FIX IS A STATE WRITE, NOT A REFUSAL. ``REJECTED`` is in
+    ``_RECON_EXCLUDED_STATES``, which BOTH of those filters consult. One
+    write moves the discriminator out of a column the FK erases and into one
+    it cannot touch, at the instant of erasure. No migration, and the delete
+    still succeeds -- refusing it would strand the user with a row they
+    cannot remove.
+
+    ``contributes_to_cached_balance(R, target)`` is the discriminator, not
+    "is the link one-way": a RECIPROCAL partner is inside the balance and its
+    own delete is already handled by the transfer cascade, so it must be left
+    alone. Rows already in a reverted state are skipped -- their
+    contribution is already out of both filters, and REJECTED is terminal, so
+    rewriting SKIPPED to REJECTED would burn a state for nothing.
+
+    TBD-664: it is ``plan_batch_settlement`` (the decision, pure) then
+    ``apply_batch_settlement`` (the writes), so a preview can state what a
+    delete will do. A delete path calls this function, or both halves on the
+    same locked rows (only ``plan_transaction_delete`` /
+    ``apply_transaction_delete`` do, so a preview can render the plan).
+
+    Caller MUST have locked every row in ``locked_rows`` FOR UPDATE, in the
+    same ascending-id query that locked the delete set. Mutates state in
+    place and adjusts the owning ``ImportBatch`` counters; the caller owns
+    the transaction scope.
+    """
+    return await apply_batch_settlement(
+        db,
+        org_id,
+        plan_batch_settlement(org_id, locked_rows=locked_rows, deleted_ids=deleted_ids),
+    )
+
+
+@dataclass(frozen=True)
+class TransactionDeletePlan:
+    """What ``apply_transaction_delete`` will do to delete one transaction.
+
+    ``rows`` is every row locked FOR UPDATE (the lock set); ``deleted`` the
+    delete set (the row, plus its partner when the link is reciprocal);
+    ``reverts`` the deleted rows whose amount comes back out of
+    ``accounts.balance``; ``settlement`` the demotions and batch counters.
+    """
+
+    transaction_id: int
+    rows: dict[int, Transaction]
+    deleted: dict[int, Transaction]
+    reverts: list[Transaction]
+    settlement: BatchSettlementPlan
+
+
+async def plan_transaction_delete(
+    db: AsyncSession, org_id: int, transaction_id: int
+) -> TransactionDeletePlan:
+    """Lock and decide a single delete, writing nothing (TBD-664).
+
+    Takes the locks ``delete_transaction`` takes, in the same order; the
+    caller applies the plan in the same transaction or rolls back.
     """
     # Unlocked pre-read to discover any transfer pair, then acquire tx-row
     # locks in one FOR UPDATE query ordered by ascending id. This matches
@@ -1502,6 +1929,23 @@ async def delete_transaction(
         )
     ]
 
+    return TransactionDeletePlan(
+        transaction_id=transaction_id,
+        rows=rows,
+        deleted=to_delete,
+        reverts=to_revert,
+        settlement=plan_batch_settlement(
+            org_id, locked_rows=rows, deleted_ids=set(to_delete)
+        ),
+    )
+
+
+async def apply_transaction_delete(
+    db: AsyncSession, org_id: int, plan: TransactionDeletePlan
+) -> list[int]:
+    """Perform ``plan`` and commit. Returns the demoted ids."""
+    to_revert, to_delete = plan.reverts, plan.deleted
+
     async with db.begin_nested():
         # Lock every affected account in ascending id order (deadlock-free),
         # then revert per row against its OWN account.
@@ -1514,15 +1958,26 @@ async def delete_transaction(
         # TBD-294: demote BEFORE the delete, so the discriminator has moved
         # into ``reconciliation_state`` by the time ON DELETE SET NULL erases
         # the link.
-        demoted_ids = await _settle_batch_counters_and_demote_orphans(
-            db, org_id, locked_rows=rows, deleted_ids=set(to_delete)
-        )
+        demoted_ids = await apply_batch_settlement(db, org_id, plan.settlement)
 
         for r in to_delete.values():
             await db.delete(r)
 
     await db.commit()
     return demoted_ids
+
+
+async def delete_transaction(
+    db: AsyncSession, org_id: int, transaction_id: int
+) -> list[int]:
+    """Delete one transaction (cascading to a RECIPROCAL partner only).
+
+    Returns the ids of any rows demoted to REJECTED because the row they
+    pointed at is being deleted (TBD-294). See ``_settle_batch_counters_and_demote_orphans``.
+    It is ``plan_transaction_delete`` then ``apply_transaction_delete``.
+    """
+    plan = await plan_transaction_delete(db, org_id, transaction_id)
+    return await apply_transaction_delete(db, org_id, plan)
 
 
 async def bulk_delete_transactions(
@@ -1684,25 +2139,51 @@ async def bulk_update_transactions(
     status: str | None = None,
     account_id: int | None = None,
     tags: list[str] | None = None,
+    date: datetime.date | None = None,
+    settled_date: datetime.date | None = None,
     actor_user_id: int,
-) -> tuple[int, list[tuple[int, str]]]:
+) -> tuple[int, list[tuple[int, str]], list[tuple[int, str]]]:
     """Apply an optional set of field updates to many transactions.
 
     Per-row partial success: a row that successfully applies at least one field
     counts as updated; a row that can apply nothing is returned in ``skipped``
     with a human reason. Transfer legs only accept ``category_id`` (which
     cascades to the partner via update_transaction); ``status``/``account_id``/
-    ``tags`` are skipped for them. Reuses update_transaction for all balance,
-    transfer-guard, and partner-cascade logic (it commits per row, so this is
-    naturally partial-success).
+    ``tags``/``date``/``settled_date`` are skipped for them. Reuses
+    update_transaction for all balance, transfer-guard, and partner-cascade
+    logic (it commits per row, so this is naturally partial-success).
 
-    Returns (updated_count, skipped) where skipped is a list of (id, reason).
+    TBD-763: ``date`` and ``settled_date`` SET a date (no shift) and travel in
+    the SAME ``TransactionUpdate`` as category/status/account, so a row stays
+    all-or-nothing: if that update fails (e.g. settled_date before date) the
+    row is skipped with the reason and none of those fields land on it.
+
+    - ``date`` is not applied to recurring occurrences (several rows of one
+      series on one date alias the ``(recurring_id, date)`` identity) nor to
+      transfer legs (the partner is not mirrored). A PENDING row keeps its
+      expected-settlement gap, the rule the TBD-756 series move uses. A SETTLED
+      row whose new date would pass its settled_date keeps its date unless the
+      batch sets settled_date too: it is never auto-shifted, that would move
+      its cash period silently.
+    - ``settled_date`` applies only to rows that are SETTLED, or are being
+      settled in this batch (they settle on that date instead of today). On a
+      row that stays pending it is only an expectation the auto-settle sweep
+      overwrites, so it is not applied. On a row that keeps its date (the
+      skips above) a settled_date before that date is dropped with a note,
+      so the row's other fields still land.
+    - A row settled in this batch onto a date after today without a
+      settled_date is skipped with that reason (settling stamps today).
+
+    Returns (updated_count, skipped, notes): skipped is a list of (id, reason)
+    for rows where nothing applied; notes is a list of (id, note) for rows
+    that were updated but left a requested field unapplied.
     """
     from app.services.tag_service import set_transaction_tags
 
     requested = list(dict.fromkeys(ids))
     updated = 0
     skipped: list[tuple[int, str]] = []
+    notes: list[tuple[int, str]] = []
 
     def _reason(exc: Exception) -> str:
         return getattr(exc, "detail", None) or str(exc)
@@ -1763,6 +2244,80 @@ async def bulk_update_transactions(
                 row_notes.append("account not applied to transfers")
             else:
                 update_kwargs["account_id"] = account_id
+        # TBD-763: the row's status once this update lands. Transfer legs
+        # never take ``status`` (above), so theirs stays what it is.
+        settles = (
+            TransactionStatus(update_kwargs["status"])
+            if "status" in update_kwargs
+            else row.status
+        ) == TransactionStatus.SETTLED
+        takes_settled_date = (
+            settled_date is not None and not is_transfer and settles
+        )
+        # The date is decided FIRST: whether this row keeps its date decides
+        # whether the batch's settled_date can still land on it.
+        if date is not None:
+            if is_transfer:
+                row_notes.append("date not applied to transfers")
+            elif row.recurring_id is not None:
+                row_notes.append("date not applied to recurring occurrences")
+            elif (
+                not takes_settled_date
+                and settles
+                and row.status == TransactionStatus.SETTLED
+                and row.settled_date is not None
+                and date > row.settled_date
+            ):
+                row_notes.append(
+                    f"date not applied: settled on {row.settled_date.isoformat()}; "
+                    "set the settlement date too"
+                )
+            else:
+                update_kwargs["date"] = date
+        if settled_date is not None:
+            if is_transfer:
+                row_notes.append("settlement date not applied to transfers")
+            elif not settles:
+                row_notes.append(
+                    "settlement date not applied: set status to settled to apply"
+                )
+            elif (
+                date is not None
+                and "date" not in update_kwargs
+                and settled_date < row.date
+            ):
+                # Chosen for the new date, but this row keeps its old one: it
+                # would fail the ordering check and take the rest of the row
+                # down with it. Drop it so category/status/... still land.
+                row_notes.append(
+                    "settlement date not applied: before the unchanged date "
+                    f"{row.date.isoformat()}"
+                )
+            else:
+                update_kwargs["settled_date"] = settled_date
+        if "date" in update_kwargs and "settled_date" not in update_kwargs:
+            if settles and row.status != TransactionStatus.SETTLED:
+                # Being settled here stamps today (update_transaction); a new
+                # date after today would fail the ordering check with a reason
+                # naming neither field the user touched. Skip with this one.
+                if date > datetime.date.today():
+                    skipped.append((tx_id, "; ".join([
+                        "date is after today's settlement; set the settlement "
+                        "date too",
+                        *row_notes,
+                    ])))
+                    continue
+            elif (
+                not settles
+                and row.status == TransactionStatus.PENDING
+                and row.settled_date is not None
+            ):
+                # A row that stays pending keeps its expected-settlement gap
+                # (the TBD-756 series rule); without it a date moved past the
+                # expectation fails the ordering check and the row is skipped.
+                update_kwargs["settled_date"] = row.settled_date + (
+                    date - row.date
+                )
         if update_kwargs:
             try:
                 await update_transaction(
@@ -1779,7 +2334,8 @@ async def bulk_update_transactions(
                 # transaction) rather than aborting the whole batch — parity
                 # with the tags branch below.
                 await db.rollback()
-                skipped.append((tx_id, _reason(exc)))
+                # Keep what the row would not have taken anyway in the reason.
+                skipped.append((tx_id, "; ".join([_reason(exc), *row_notes])))
                 continue
 
         # 2) tags MERGE (regular rows only)
@@ -1812,14 +2368,20 @@ async def bulk_update_transactions(
                     if applied:
                         row_notes.append(f"tags not applied ({_reason(exc)})")
                     else:
-                        skipped.append((tx_id, f"Tags: {_reason(exc)}"))
+                        skipped.append(
+                            (tx_id, "; ".join([f"Tags: {_reason(exc)}", *row_notes]))
+                        )
                         continue
 
         if applied:
             updated += 1
+            # TBD-763: a field this row did not take is reported, not dropped.
+            if row_notes:
+                notes.append((tx_id, "; ".join(row_notes)))
         else:
-            # Nothing applied — only happens for a transfer leg whose only
-            # requested fields were status/account/tags.
+            # Nothing applied — every requested field was one this row does
+            # not take (a transfer leg's status/account/tags/dates, a
+            # recurring occurrence's date, a pending row's settled_date...).
             reason = (
                 "; ".join(row_notes)
                 if row_notes
@@ -1827,7 +2389,7 @@ async def bulk_update_transactions(
             )
             skipped.append((tx_id, reason))
 
-    return updated, skipped
+    return updated, skipped, notes
 
 
 async def _link_pair(

@@ -120,29 +120,16 @@ class Settings(BaseSettings):
 
     # AI credentials (BYO provider keys, PR1 of AI tier train)
     # Fernet key for encrypting per-org provider API keys in
-    # ``org_ai_credentials.encrypted_api_key`` / ``encrypted_bearer_token``.
+    # ``org_ai_credentials.encrypted_api_key`` (and ``encrypted_bearer_token``,
+    # which only rows of the removed ollama provider hold).
     # MUST be a different Fernet key from ``mfa_encryption_key`` — the
     # lifespan KEK guard refuses to boot when the two SHA-256 hashes match.
     # ``_PREV`` is the previous-rotation key; decrypt falls back to it
     # when the current key fails, enabling lazy rotation in place.
     ai_credential_encryption_key: str = ""
     ai_credential_encryption_key_prev: str = ""
-    # Connect-time SSRF guard escape hatch for the ollama provider ONLY.
-    # By default every outbound request to an org-configured base_url
-    # resolves the hostname, validates EVERY A/AAAA record against the
-    # egress denylist (loopback, RFC1918/ULA, link-local, metadata,
-    # multicast, reserved, non-global), and pins the connection to a
-    # validated IP (see services/ai_providers/egress_guard.py). A
-    # self-hosted operator who genuinely runs Ollama on a private or
-    # loopback address can set AI_PROVIDER_ALLOW_PRIVATE_NETWORKS=1 to
-    # permit private + loopback targets for ollama credentials.
-    # Link-local / cloud-metadata / multicast / reserved addresses stay
-    # blocked regardless, and openai_compatible always gets the full
-    # denylist. Default OFF in all environments.
-    ai_provider_allow_private_networks: bool = False
-    # Master gate for the native (server-hosted) provider option. Stays
-    # OFF in PR1 — flipped on later when the native adapter ships
-    # alongside the consent UI (PR4).
+    # Master env gate for platform (hosted) AI. The ``native`` provider
+    # stub it was named after was removed in TBD-584.
     ai_native_enabled: bool = False
     # MCP OAuth authorization server (TBD-587). Off: every route in
     # ``app.routers.oauth`` answers 404 like an unknown path. Stays off in
@@ -210,27 +197,6 @@ class Settings(BaseSettings):
     # Throttle for the per-user last_active_at stamp: only re-stamp when the
     # stored value is older than this many seconds (≤1 write/user/window).
     last_active_stamp_throttle_seconds: int = 3600
-    # Usernames excluded from the public founder count (smoke/seed accounts).
-    # CSV, mirrors the cors-origins parsing pattern.
-    #
-    # ⚠⚠ NO DEFAULT VALUE, DELIBERATELY (TBD-371). This list names the
-    # production post-deploy smoke account, so no value is committed.
-    # Supply it from the environment.
-    #
-    # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint
-    # guards with ``if excluded:`` (routers/public_stats.py), so an empty list
-    # simply stops excluding and inflates an advertised public number by one.
-    #
-    # ⚠⚠ That is NOT guarded by refusing to boot, deliberately. The blast
-    # radius of this value being unset is one wrong integer on a marketing
-    # counter; the blast radius of a boot refusal is the whole application
-    # down. ``api_token_hmac_key`` earns its prod-required validator because
-    # losing it breaks PAT authentication -- a security primitive. This does
-    # not, and treating the two the same trades an outage for a cosmetic
-    # defect. ``public_stats`` logs ``public.founder_count.no_exclusions``
-    # at ERROR instead, which is greppable and alertable without taking
-    # production down.
-    founder_count_exclude_usernames: str = ""
 
     # Billing
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
@@ -638,14 +604,6 @@ class Settings(BaseSettings):
         self,
     ) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
         return _parse_forwarded_allow_ips(self.forwarded_allow_ips)
-
-    @property
-    def founder_count_exclude_list(self) -> list[str]:
-        return [
-            u.strip()
-            for u in self.founder_count_exclude_usernames.split(",")
-            if u.strip()
-        ]
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

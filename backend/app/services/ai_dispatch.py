@@ -82,7 +82,7 @@ from app.database import async_session
 from app.models.ai_usage_ledger import AIUsageLedger
 from app.models.notification import NotificationCategory
 from app.models.org_ai_caps import OrgAIDefaultCaps, OrgAIFeatureCaps
-from app.models.org_ai_credential import OrgAICredential
+from app.models.org_ai_credential import OrgAICredential, is_supported_provider
 from app.models.user import Role, User
 from app.services import (
     ai_consent_service,
@@ -252,6 +252,17 @@ class NoRoutingConfigured(AIDispatchError):
         super().__init__("ai_routing_not_configured")
 
 
+class RoutedProviderNotSupported(NoRoutingConfigured):
+    """Routing resolves to a credential whose provider left the registry
+    (TBD-584: ``ollama``, ``native``). Migration 096 deletes the ``ollama``
+    rows; one the previous release writes during the rolling deploy stays
+    until an admin deletes it, but is never dispatched. A ``NoRoutingConfigured`` so every
+    caller's fallback still applies; 412 with its own code."""
+
+    def __init__(self) -> None:
+        AIDispatchError.__init__(self, "ai_provider_not_supported")
+
+
 class AICapExceeded(AIDispatchError):
     """Hard cap was exceeded at the dispatch chokepoint. Spec §3 maps
     this to HTTP 402.
@@ -335,8 +346,8 @@ class AICapabilityNotSupported(AIDispatchError):
     surface a "reconfigure routing" hint to the user.
 
     Distinct from ``CapabilityNotSupported`` (adapter-level — raised
-    when the wire-call itself isn't honored, e.g. Ollama function
-    calling on a non-tool model). This dispatch-level error fires
+    when the wire-call itself isn't honored, e.g. function calling on a
+    model that cannot call tools). This dispatch-level error fires
     BEFORE the adapter call.
     """
 
@@ -1463,6 +1474,19 @@ async def _prepare_dispatch(
             },
         )
         raise NoRoutingConfigured()
+    if cred.platform_provider is None and not is_supported_provider(cred.provider):
+        # TBD-584: before the consent check, ``decrypt`` and any adapter. A
+        # platform row never reads ``provider`` (its host and key are fixed).
+        logger.info(
+            "ai.dispatch.provider.unsupported",
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "credential_id": credential_id,
+                "capability": capability,
+            },
+        )
+        raise RoutedProviderNotSupported()
 
     # The org AI master switch (TBD-627), BYOK and platform alike, before the
     # capability check, ``_prepare_platform``, ``decrypt`` and any reservation.
@@ -1547,15 +1571,9 @@ async def _prepare_dispatch(
         api_key = (
             decrypt(cred.encrypted_api_key) if cred.encrypted_api_key else None
         )
-        bearer = (
-            decrypt(cred.encrypted_bearer_token)
-            if cred.encrypted_bearer_token
-            else None
-        )
         adapter = get_adapter(
             cred.provider,
             api_key=api_key,
-            bearer_token=bearer,
             base_url=cred.base_url,
             base_url_is_api_root=cred.base_url_is_api_root,
         )
@@ -2106,8 +2124,8 @@ async def call_llm_function(
     except NativeNotAvailable:
         raise
     except CapabilityNotSupported as exc:
-        # Adapter-level (model-level) refusal — Ollama with a non-tool
-        # model. Surface as a dispatch-level 412 so the caller can
+        # Adapter-level (model-level) refusal — a model that cannot call
+        # tools. Surface as a dispatch-level 412 so the caller can
         # reconfigure to a supported model.
         latency_ms = int((time.perf_counter() - start) * 1000)
         await _write_ledger_row(
