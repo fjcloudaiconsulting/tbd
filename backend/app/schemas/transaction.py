@@ -231,6 +231,11 @@ class BulkUpdateRequest(BaseModel):
     # Tags are ADDED (merged) to each eligible row, not replaced. Capped at the
     # per-transaction max for the number you can add in one batch call.
     tags: Optional[list[str]] = Field(default=None, max_length=MAX_TAGS_PER_TRANSACTION)
+    # TBD-763: both SET a date on every eligible row (no shift). ``date`` skips
+    # recurring occurrences and transfer legs; ``settled_date`` applies only to
+    # rows that are, or are being, settled. See bulk_update_transactions.
+    date: Optional[datetime.date] = None
+    settled_date: Optional[datetime.date] = None
 
     @model_validator(mode="after")
     def _at_least_one_field(self) -> "BulkUpdateRequest":
@@ -241,6 +246,8 @@ class BulkUpdateRequest(BaseModel):
             and self.status is None
             and self.account_id is None
             and not self.tags
+            and self.date is None
+            and self.settled_date is None
         ):
             raise ValueError("Provide at least one field to update")
         return self
@@ -251,10 +258,19 @@ class BulkUpdateSkip(BaseModel):
     reason: str
 
 
+class BulkUpdateNote(BaseModel):
+    id: int
+    note: str
+
+
 class BulkUpdateResponse(BaseModel):
     requested_count: int
     updated_count: int
     skipped: list[BulkUpdateSkip]
+    # TBD-763: rows that WERE updated but left a requested field unapplied
+    # (e.g. the date on a recurring occurrence while its category applied).
+    # Before this the partial application was silent.
+    notes: list[BulkUpdateNote] = Field(default_factory=list)
 
 
 class TransactionPairRequest(BaseModel):

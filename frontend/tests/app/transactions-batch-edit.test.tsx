@@ -96,6 +96,7 @@ type BulkResponse = {
   requested_count: number;
   updated_count: number;
   skipped: { id: number; reason: string }[];
+  notes?: { id: number; note: string }[];
 };
 
 function setupApiFetch(txs: Tx[], bulkResponse: BulkResponse) {
@@ -212,5 +213,80 @@ describe("TransactionsPage - batch edit wiring", () => {
     expect(
       await screen.findByText(/Updated 1 of 2\..*1 skipped.*Manual balance adjustments/i),
     ).toBeTruthy();
+  });
+  // TBD-763
+  it("posts the two dates with the selected ids", async () => {
+    const txs = [
+      makeTx({ id: 90, description: "One" }),
+      makeTx({ id: 91, description: "Two" }),
+    ];
+    setupApiFetch(txs, { requested_count: 2, updated_count: 2, skipped: [], notes: [] });
+    renderWithSWR(<TransactionsPage />);
+
+    const dialog = await selectAllAndOpenModal();
+    fireEvent.change(within(dialog).getByLabelText(/^set date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/^set settlement date$/i), {
+      target: { value: "2026-05-12" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /apply/i }));
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    await waitFor(() => {
+      const post = apiFetchMock.mock.calls.find(
+        (c) =>
+          c[0] === "/api/v1/transactions/bulk-update" &&
+          (c[1] as RequestInit | undefined)?.method === "POST",
+      );
+      expect(post).toBeTruthy();
+    });
+    const post = apiFetchMock.mock.calls.find(
+      (c) =>
+        c[0] === "/api/v1/transactions/bulk-update" &&
+        (c[1] as RequestInit | undefined)?.method === "POST",
+    )!;
+    const body = JSON.parse((post[1] as RequestInit).body as string);
+    expect(Object.keys(body).sort()).toEqual(["date", "ids", "settled_date"]);
+    expect(body.ids.slice().sort((a: number, b: number) => a - b)).toEqual([90, 91]);
+    expect(body.date).toBe("2026-05-10");
+    expect(body.settled_date).toBe("2026-05-12");
+    // Nothing to report: no notes banner.
+    await waitFor(() =>
+      expect(screen.queryByTestId("transactions-batch-edit-notes")).toBeNull(),
+    );
+  });
+
+  it("announces fields a row did not take in the status region, not as an error", async () => {
+    const txs = [
+      makeTx({ id: 92, description: "One" }),
+      makeTx({ id: 93, description: "Two", recurring_id: 5 }),
+      makeTx({ id: 94, description: "Three", recurring_id: 5 }),
+    ];
+    setupApiFetch(txs, {
+      requested_count: 3,
+      updated_count: 3,
+      skipped: [],
+      notes: [
+        { id: 93, note: "date not applied to recurring occurrences" },
+        { id: 94, note: "date not applied to recurring occurrences" },
+      ],
+    });
+    renderWithSWR(<TransactionsPage />);
+
+    const dialog = await selectAllAndOpenModal();
+    fireEvent.change(within(dialog).getByLabelText(/^set date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /apply/i }));
+
+    const banner = await screen.findByTestId("transactions-batch-edit-notes");
+    // The same note on two rows is said once, with the row count.
+    expect(banner.textContent).toBe(
+      "Updated 3 of 3. 2 kept a field unchanged: date not applied to recurring occurrences",
+    );
+    expect(screen.getByTestId("transactions-live-region").contains(banner)).toBe(true);
+    expect(screen.getByTestId("transactions-live-region").getAttribute("role")).toBe("status");
+    expect(banner.className).not.toMatch(/danger/);
   });
 });

@@ -163,4 +163,69 @@ describe("BatchEditModal", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith({ category_id: 11 });
   });
+  // TBD-763: batch-set the transaction date and the settlement date.
+  it("shows the two date inputs, empty by default", () => {
+    renderModal();
+    const date = screen.getByLabelText(/^set date$/i) as HTMLInputElement;
+    const settled = screen.getByLabelText(/^set settlement date$/i) as HTMLInputElement;
+    expect(date.type).toBe("date");
+    expect(settled.type).toBe("date");
+    expect(date.value).toBe("");
+    expect(settled.value).toBe("");
+  });
+
+  it("setting only a date submits exactly { date }", () => {
+    const { onSubmit } = renderModal();
+    fireEvent.change(screen.getByLabelText(/^set date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    const apply = screen.getByRole("button", { name: /apply/i }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(false);
+    fireEvent.click(apply);
+    expect(onSubmit).toHaveBeenCalledWith({ date: "2026-05-10" });
+  });
+
+  it("status settled + a settlement date submits both", () => {
+    const { onSubmit } = renderModal();
+    fireEvent.change(screen.getByLabelText(/status/i), { target: { value: "settled" } });
+    fireEvent.change(screen.getByLabelText(/^set settlement date$/i), {
+      target: { value: "2026-05-07" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+    expect(onSubmit).toHaveBeenCalledWith({ status: "settled", settled_date: "2026-05-07" });
+  });
+
+  it("warns about CSV re-import duplicates only once a date is set", () => {
+    renderModal();
+    const copy = /re-importing the same file may duplicate imported transactions you move/i;
+    expect(screen.queryByText(copy)).toBeNull();
+    fireEvent.change(screen.getByLabelText(/^set date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    expect(screen.getByText(copy)).toBeTruthy();
+  });
+
+  it("explains which rows each date applies to", () => {
+    renderModal();
+    expect(
+      screen.getByText(/not applied to recurring occurrences or transfers/i),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/applied only to settled transactions, or ones you set to settled above/i),
+    ).toBeTruthy();
+  });
+
+  it("clears the dates when the modal reopens", () => {
+    const props = {
+      count: 3, categories: CATEGORIES, accounts: ACCOUNTS, submitting: false,
+      onSubmit: vi.fn(), onCancel: vi.fn(),
+    };
+    const { rerender } = render(<BatchEditModal open {...props} />);
+    fireEvent.change(screen.getByLabelText(/^set date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    rerender(<BatchEditModal open={false} {...props} />);
+    rerender(<BatchEditModal open {...props} />);
+    expect((screen.getByLabelText(/^set date$/i) as HTMLInputElement).value).toBe("");
+  });
 });
