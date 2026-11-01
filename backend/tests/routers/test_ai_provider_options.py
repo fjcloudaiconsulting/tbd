@@ -1,10 +1,10 @@
-"""Provider-options endpoint + native-rejection via the router (PR1).
+"""Provider-options endpoint (PR1, TBD-584).
 
 Pins:
-- ``/options`` lists 5 providers; native is the only one with
-  ``availability != 'available'`` until AI_NATIVE_ENABLED flips on.
-- POSTing a credential with provider=native always returns
-  ``native_not_available`` regardless of the gate.
+- ``/options`` lists exactly the provider registry: TBD-584 removed
+  ``ollama`` (bring-your-own local model) and the ``native`` stub.
+- POSTing a credential with a removed provider is a 422, whatever
+  ``AI_NATIVE_ENABLED`` says.
 """
 from __future__ import annotations
 
@@ -114,10 +114,11 @@ async def _get_user(factory, user_id: int) -> User:
         return result.scalar_one()
 
 
-async def test_options_endpoint_lists_five_providers_native_not_yet(
-    session_factory, monkeypatch
+@pytest.mark.parametrize("gate", [False, True])
+async def test_options_endpoint_lists_the_provider_registry(
+    session_factory, monkeypatch, gate
 ):
-    monkeypatch.setattr(app_settings, "ai_native_enabled", False)
+    monkeypatch.setattr(app_settings, "ai_native_enabled", gate)
     owner_id = await _seed(session_factory)
 
     async def resolver(_factory):
@@ -127,13 +128,12 @@ async def test_options_endpoint_lists_five_providers_native_not_yet(
     resp = client.get("/api/v1/settings/ai-providers/options")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["ai_native_enabled"] is False
-    keys = {p["key"]: p for p in body["providers"]}
-    assert set(keys) == {
-        "openai", "anthropic", "ollama", "openai_compatible", "native",
-    }
-    assert keys["native"]["availability"] == "not_yet_available"
-    assert keys["openai"]["availability"] == "available"
+    assert body["ai_native_enabled"] is gate
+    assert body["providers"] == [
+        {"key": "openai", "label": "OpenAI", "availability": "available"},
+        {"key": "anthropic", "label": "Anthropic", "availability": "available"},
+        {"key": "openai_compatible", "label": "OpenAI-compatible", "availability": "available"},
+    ]
     # TBD-590: OpenRouter and Gemini are openai_compatible presets.
     assert body["presets"] == [
         {
@@ -151,32 +151,12 @@ async def test_options_endpoint_lists_five_providers_native_not_yet(
     ]
 
 
-async def test_options_returns_not_yet_available_for_native_when_flag_true(
-    session_factory, monkeypatch
+@pytest.mark.parametrize("gate", [False, True])
+@pytest.mark.parametrize("provider", ["native", "ollama"])
+async def test_create_credential_with_a_removed_provider_is_422(
+    session_factory, monkeypatch, gate, provider
 ):
-    """Architect-locked: /options must NOT lie when the gate flips on.
-
-    PR1 ships no native backend, so the create path always refuses
-    native regardless of ``AI_NATIVE_ENABLED``. The /options endpoint
-    must match — advertising ``available`` while creation rejects would
-    be a UI lie. The env flag is reported back for visibility only.
-    """
-    monkeypatch.setattr(app_settings, "ai_native_enabled", True)
-    owner_id = await _seed(session_factory)
-
-    async def resolver(_factory):
-        return await _get_user(session_factory, owner_id)
-
-    client = TestClient(_make_app(session_factory, resolver))
-    resp = client.get("/api/v1/settings/ai-providers/options")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["ai_native_enabled"] is True
-    keys = {p["key"]: p for p in body["providers"]}
-    assert keys["native"]["availability"] == "not_yet_available"
-
-
-async def test_create_credential_with_native_provider_rejected(session_factory):
+    monkeypatch.setattr(app_settings, "ai_native_enabled", gate)
     owner_id = await _seed(session_factory)
 
     async def resolver(_factory):
@@ -186,31 +166,9 @@ async def test_create_credential_with_native_provider_rejected(session_factory):
     resp = client.post(
         "/api/v1/settings/ai-providers",
         json={
-            "provider": "native",
+            "provider": provider,
             "api_key": "placeholder-but-this-must-still-refuse",
+            "base_url": "https://llm.example.com",
         },
     )
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "native_not_available"
-
-
-async def test_create_credential_with_native_rejected_even_when_gate_on(
-    session_factory, monkeypatch
-):
-    """Architect-locked: PR1 backend isn't ready even when gate flips on."""
-    monkeypatch.setattr(app_settings, "ai_native_enabled", True)
-    owner_id = await _seed(session_factory)
-
-    async def resolver(_factory):
-        return await _get_user(session_factory, owner_id)
-
-    client = TestClient(_make_app(session_factory, resolver))
-    resp = client.post(
-        "/api/v1/settings/ai-providers",
-        json={
-            "provider": "native",
-            "api_key": "placeholder",
-        },
-    )
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "native_not_available"
+    assert resp.status_code == 422

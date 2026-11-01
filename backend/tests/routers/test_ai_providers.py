@@ -403,12 +403,24 @@ async def test_a3_validate_cooldown_is_5s_per_credential(session_factory, monkey
     assert second.json()["detail"]["code"] == "validate_rate_limited"
 
 
-async def test_ollama_no_key_creates_credential_with_null_encrypted_api_key(
-    session_factory,
-):
-    """POST Ollama credential without api_key must return 201 and store
-    encrypted_api_key as NULL (spec line 37: LAN-only homelab mode)."""
-    from sqlalchemy import select
+# ---------------------------------------------------------------------------
+# TBD-584: bring-your-own local models (ollama) and the native stub are gone.
+# Create refuses them; a stored row that still names one stays inert.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"provider": "ollama", "base_url": "http://ollama.internal:11434"},
+        {"provider": "ollama", "api_key": "sk-abcd", "base_url": "https://ollama.example.com"},
+        {"provider": "native", "api_key": "sk-abcd"},
+        {"provider": "openai", "api_key": "sk-abcd", "bearer_token": "tok-abcd"},
+    ],
+    ids=["ollama-no-key", "ollama-key", "native", "bearer-token"],
+)
+async def test_create_refuses_retired_providers_with_422(session_factory, body):
+    from sqlalchemy import func, select
     from app.models.org_ai_credential import OrgAICredential
 
     ids = await _seed(session_factory)
@@ -416,30 +428,118 @@ async def test_ollama_no_key_creates_credential_with_null_encrypted_api_key(
     async def resolver(_factory):
         return await _get_user(session_factory, ids["owner_a"])
 
-    app = _make_app(session_factory, resolver)
-    client = TestClient(app)
-
-    with _patch_adapter(_ok_validate(["llama3"])):
-        resp = client.post(
-            "/api/v1/settings/ai-providers",
-            json={
-                "provider": "ollama",
-                "base_url": "http://ollama.internal:11434",
-            },
-        )
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["provider"] == "ollama"
-    assert "encrypted_api_key" not in body
-
-    # Confirm the DB row has encrypted_api_key IS NULL.
-    cred_id = body["id"]
+    client = TestClient(_make_app(session_factory, resolver))
+    validate = _ok_validate(["llama3"])
+    with _patch_adapter(validate):
+        resp = client.post("/api/v1/settings/ai-providers", json=body)
+    assert resp.status_code == 422, resp.text
+    validate.assert_not_called()
     async with session_factory() as db:
-        result = await db.execute(
-            select(OrgAICredential).where(OrgAICredential.id == cred_id)
+        assert await db.scalar(select(func.count()).select_from(OrgAICredential)) == 0
+
+
+async def _insert_retired(factory, org_id: int, provider: str = "ollama") -> int:
+    """A row as an earlier release stored it: raw SQL, because the ORM
+    refuses a provider outside the registry on write."""
+    from sqlalchemy import text
+
+    async with factory() as db:
+        await db.execute(
+            text(
+                "INSERT INTO org_ai_credentials "
+                "(org_id, provider, base_url, encrypted_bearer_token, label, "
+                "discovered_capabilities, discovered_models) "
+                "VALUES (:org, :provider, 'http://10.0.0.5:11434', 'ciphertext', "
+                "'lan', '[\"chat\"]', '[\"llama3\"]')"
+            ),
+            {"org": org_id, "provider": provider},
         )
-        row = result.scalar_one()
-    assert row.encrypted_api_key is None
+        cred_id = (await db.execute(text("SELECT max(id) FROM org_ai_credentials"))).scalar()
+        await db.commit()
+    return cred_id
+
+
+@pytest.mark.parametrize("provider", ["ollama", "native"])
+async def test_retired_provider_row_is_listed_flagged_and_deletable(
+    session_factory, provider
+):
+    from sqlalchemy import func, select
+    from app.models.org_ai_routing import OrgAIDefaultRouting
+
+    ids = await _seed(session_factory)
+    retired = await _insert_retired(session_factory, ids["org_a"], provider)
+    async with session_factory() as db:
+        db.add(OrgAIDefaultRouting(org_id=ids["org_a"], credential_id=retired, model="llama3"))
+        await db.commit()
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with _patch_adapter(_ok_validate()):
+        created = client.post(
+            "/api/v1/settings/ai-providers",
+            json={"provider": "openai", "api_key": "sk-test-abcd"},
+        ).json()
+    assert created["provider"] == "openai"
+    assert created["provider_supported"] is True
+
+    listed = client.get("/api/v1/settings/ai-providers?sort_by=provider")
+    assert listed.status_code == 200, listed.text
+    by_id = {i["id"]: i for i in listed.json()["items"]}
+    assert by_id[retired]["provider"] == provider
+    assert by_id[retired]["provider_supported"] is False
+    assert "encrypted_bearer_token" not in by_id[retired]
+
+    one = client.get(f"/api/v1/settings/ai-providers/{retired}")
+    assert one.status_code == 200
+    assert one.json()["provider_supported"] is False
+
+    routing = client.get("/api/v1/settings/ai-providers/routing")
+    assert routing.status_code == 200
+    assert routing.json()["default"]["credential_id"] == retired
+
+    assert client.patch(
+        f"/api/v1/settings/ai-providers/{retired}", json={"label": "old"}
+    ).json()["label"] == "old"
+
+    assert client.delete(f"/api/v1/settings/ai-providers/{retired}").status_code == 204
+    async with session_factory() as db:
+        # The routing row pointing at it cascades with it.
+        assert await db.scalar(select(func.count()).select_from(OrgAIDefaultRouting)) == 0
+    assert client.get(f"/api/v1/settings/ai-providers/{retired}").status_code == 404
+
+
+async def test_retired_provider_row_never_reaches_an_adapter(session_factory):
+    ids = await _seed(session_factory)
+    retired = await _insert_retired(session_factory, ids["org_a"])
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    validate = _ok_validate(["llama3"])
+    with _patch_adapter(validate):
+        for resp in (
+            client.post(f"/api/v1/settings/ai-providers/{retired}/validate"),
+            client.post(
+                f"/api/v1/settings/ai-providers/{retired}/rotate",
+                json={"api_key": "sk-new-abcd"},
+            ),
+        ):
+            assert resp.status_code == 409, resp.text
+            assert resp.json()["detail"]["code"] == "ai_provider_not_supported"
+    validate.assert_not_called()
+
+    models = client.get(f"/api/v1/settings/ai-providers/{retired}/models")
+    assert models.status_code == 200
+    assert models.json()["models"] == []
+    put = client.put(
+        "/api/v1/settings/ai-providers/routing/default",
+        json={"credential_id": retired, "model": "llama3"},
+    )
+    assert put.status_code == 400
+    assert put.json()["detail"]["code"] == "model_not_listed"
 
 
 async def test_list_unknown_sort_is_400(session_factory):

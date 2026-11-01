@@ -233,19 +233,6 @@ def test_create_refuses_a_client_supplied_flag():
         )
 
 
-# DB-02: base_url is plaintext, so Ollama refuses userinfo too (its proxy
-# secret goes in the encrypted bearer_token).
-@pytest.mark.parametrize("allow_private", [False, True])
-@pytest.mark.parametrize(
-    "base_url",
-    ["https://u:p@nas.example.com:11434", "https://u@nas.example.com", "http://:p@10.0.0.5:11434"],
-)
-def test_ollama_refuses_userinfo(monkeypatch, allow_private, base_url):
-    monkeypatch.setattr(app_settings, "ai_provider_allow_private_networks", allow_private)
-    with pytest.raises(ValidationError, match="username or password"):
-        OrgAICredentialCreate(provider=AiProvider.OLLAMA, base_url=base_url)
-
-
 def test_stored_userinfo_is_masked_in_responses():
     """Rows saved before DB-02 keep their URL; the listing masks the secret."""
     from datetime import datetime
@@ -254,8 +241,8 @@ def test_stored_userinfo_is_masked_in_responses():
 
     now = datetime(2026, 1, 1)
     common = dict(
-        id=1, org_id=1, provider=AiProvider.OLLAMA, last_four=None, key_fingerprint=None,
-        label=None, created_at=now, updated_at=now,
+        id=1, org_id=1, provider="ollama", provider_supported=False, last_four=None,
+        key_fingerprint=None, label=None, created_at=now, updated_at=now,
     )
     masked = OrgAICredentialResponse(base_url="https://u:s3cr3t@nas.example.com:11434/x", **common)
     assert masked.model_dump(mode="json")["base_url"] == "https://***@nas.example.com:11434/x"
@@ -263,14 +250,6 @@ def test_stored_userinfo_is_masked_in_responses():
     plain = OrgAICredentialResponse(base_url="https://nas.example.com:11434", **common)
     assert plain.model_dump(mode="json")["base_url"] == "https://nas.example.com:11434"
     assert OrgAICredentialResponse(base_url=None, **common).model_dump()["base_url"] is None
-
-
-def test_ollama_bearer_token_is_the_proxy_auth_path(monkeypatch):
-    monkeypatch.setattr(app_settings, "ai_provider_allow_private_networks", False)
-    body = OrgAICredentialCreate(
-        provider=AiProvider.OLLAMA, base_url="https://nas.example.com:11434", bearer_token="t-1234"
-    )
-    assert body.bearer_token == "t-1234"
 
 
 # ---------- G-G5: Gemini fixture ------------------------------------
@@ -385,7 +364,6 @@ async def test_legacy_row_rotate_and_validate_keep_the_v1_root(
                 db,
                 credential=row,
                 new_api_key="sk-rotated-9999",
-                new_bearer_token=None,
                 session_factory=session_factory,
                 **_ACTOR_KW,
             )

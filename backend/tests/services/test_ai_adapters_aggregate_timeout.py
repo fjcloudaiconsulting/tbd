@@ -1,4 +1,4 @@
-"""Aggregate-timeout fence for the 19 non-stream AI adapter methods
+"""Aggregate-timeout fence for the 14 non-stream AI adapter methods
 (TBD-329, follows the TBD-328 ``captcha.py`` precedent).
 
 ``httpx.AsyncClient(timeout=...)`` applies the bound PER PHASE (connect,
@@ -23,12 +23,10 @@ import httpx
 import pytest
 
 from app.services.ai_providers import anthropic as anthropic_mod
-from app.services.ai_providers import ollama as ollama_mod
 from app.services.ai_providers import openai as openai_mod
 from app.services.ai_providers import openai_compatible as openai_compatible_mod
 from app.services.ai_providers.anthropic import AnthropicAdapter
 from app.services.ai_providers.base import AIProviderError, ValidateResult
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import OpenAICompatibleAdapter
 
@@ -151,45 +149,6 @@ def _anthropic_function_call_ok(_request):
                 }
             ],
             "usage": {"input_tokens": 1, "output_tokens": 1},
-        },
-    )
-
-
-def _ollama_tags_ok(_request):
-    return httpx.Response(200, json={"models": [{"name": "llama3:8b"}]})
-
-
-def _ollama_chat_ok(_request):
-    return httpx.Response(
-        200,
-        json={
-            "model": "llama3:8b",
-            "message": {"content": "hi"},
-            "prompt_eval_count": 1,
-            "eval_count": 1,
-        },
-    )
-
-
-def _ollama_embed_ok(_request):
-    return httpx.Response(
-        200, json={"model": "nomic-embed-text", "embedding": [0.1, 0.2]}
-    )
-
-
-def _ollama_function_call_ok(_request):
-    return httpx.Response(
-        200,
-        json={
-            "model": "llama3.1:8b",
-            "message": {
-                "content": "",
-                "tool_calls": [
-                    {"function": {"name": "set_category", "arguments": {"slug": "food"}}}
-                ],
-            },
-            "prompt_eval_count": 1,
-            "eval_count": 1,
         },
     )
 
@@ -673,163 +632,3 @@ async def test_openai_compatible_function_call_control(monkeypatch):
         monkeypatch, openai_compatible_mod, "CHAT_TIMEOUT_S", _openai_compat_chat_ok, call
     )
     assert result.content is not None
-
-
-# ---------- Ollama (5 sites) -------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ollama_validate_aggregate_timeout(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        return await adapter.validate()
-
-    result = await _run_timed(
-        monkeypatch, ollama_mod, "VALIDATE_TIMEOUT_S", _ollama_tags_ok, call
-    )
-    assert result.ok is False
-    assert result.error == "Network error: TimeoutError"
-
-
-@pytest.mark.asyncio
-async def test_ollama_validate_control(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        return await adapter.validate()
-
-    result = await _run_control(
-        monkeypatch, ollama_mod, "VALIDATE_TIMEOUT_S", _ollama_tags_ok, call
-    )
-    assert result.ok is True
-
-
-@pytest.mark.asyncio
-async def test_ollama_chat_aggregate_timeout(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        await adapter.chat(model="llama3:8b", messages=[{"role": "user", "content": "hi"}])
-
-    with pytest.raises(AIProviderError) as exc_info:
-        await _run_timed(monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_chat_ok, call)
-    assert exc_info.value.code == "network_TimeoutError"
-
-
-@pytest.mark.asyncio
-async def test_ollama_chat_control(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        return await adapter.chat(
-            model="llama3:8b", messages=[{"role": "user", "content": "hi"}]
-        )
-
-    result = await _run_control(monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_chat_ok, call)
-    assert result.content == "hi"
-
-
-@pytest.mark.asyncio
-async def test_ollama_embed_aggregate_timeout(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        await adapter.embed(texts=["a"], model="nomic-embed-text")
-
-    with pytest.raises(AIProviderError) as exc_info:
-        await _run_timed(monkeypatch, ollama_mod, "EMBED_TIMEOUT_S", _ollama_embed_ok, call)
-    assert exc_info.value.code == "network_TimeoutError"
-
-
-@pytest.mark.asyncio
-async def test_ollama_embed_control(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        return await adapter.embed(texts=["a"], model="nomic-embed-text")
-
-    result = await _run_control(monkeypatch, ollama_mod, "EMBED_TIMEOUT_S", _ollama_embed_ok, call)
-    assert result.vectors
-
-
-@pytest.mark.asyncio
-async def test_ollama_chat_structured_aggregate_timeout(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        await adapter.chat_structured(
-            model="llama3:8b",
-            messages=[{"role": "user", "content": "hi"}],
-            schema=SCHEMA,
-        )
-
-    with pytest.raises(AIProviderError) as exc_info:
-        await _run_timed(monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_chat_ok, call)
-    assert exc_info.value.code == "network_TimeoutError"
-
-
-@pytest.mark.asyncio
-async def test_ollama_chat_structured_control(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        return await adapter.chat_structured(
-            model="llama3:8b",
-            messages=[{"role": "user", "content": "hi"}],
-            schema=SCHEMA,
-        )
-
-    result = await _run_control(monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_chat_ok, call)
-    assert result.content
-
-
-@pytest.mark.asyncio
-async def test_ollama_function_call_aggregate_timeout(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        await adapter.function_call(
-            model="llama3.1:8b",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=TOOLS_OPENAI,
-        )
-
-    with pytest.raises(AIProviderError) as exc_info:
-        await _run_timed(
-            monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_function_call_ok, call
-        )
-    assert exc_info.value.code == "network_TimeoutError"
-
-
-@pytest.mark.asyncio
-async def test_ollama_function_call_control(monkeypatch):
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-
-    async def call():
-        return await adapter.function_call(
-            model="llama3.1:8b",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=TOOLS_OPENAI,
-        )
-
-    result = await _run_control(
-        monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_function_call_ok, call
-    )
-    assert result.tool_calls
-
-
-@pytest.mark.asyncio
-async def test_ollama_embed_deadline_spans_the_whole_batch(monkeypatch):
-    """ollama embeds one text per POST, so the bound must be ONE deadline
-    across the batch. Three texts at 0.4s each fit a 0.5s per-request
-    bound, so a per-request deadline SUCCEEDS (no error raised), while a
-    0.5s batch deadline trips on the second text."""
-    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-    monkeypatch.setattr(ollama_mod, "EMBED_TIMEOUT_S", 0.5)
-    _install_transport(monkeypatch, await _slow_handler(0.4, _ollama_embed_ok))
-    start = time.monotonic()
-    with pytest.raises(AIProviderError) as exc_info:
-        await adapter.embed(texts=["a", "b", "c"], model="nomic-embed-text")
-    assert exc_info.value.code == "network_TimeoutError"
-    assert time.monotonic() - start < DEADLINE

@@ -1,6 +1,6 @@
 """BE-09: every AI adapter reads provider responses under a byte cap.
 
-An org admin chooses the ``base_url`` of ollama / openai_compatible
+An org admin chooses the ``base_url`` of openai_compatible
 credentials, so a provider can answer with a huge or highly compressed
 body. Every adapter request asks for ``Accept-Encoding: identity``,
 refuses any other ``Content-Encoding``, stops reading once the body
@@ -18,7 +18,6 @@ import pytest
 from app.services.ai_providers import capped_http
 from app.services.ai_providers.anthropic import AnthropicAdapter
 from app.services.ai_providers.base import AIProviderError, ValidateResult
-from app.services.ai_providers.ollama import OllamaAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import OpenAICompatibleAdapter
 
@@ -42,7 +41,6 @@ def _adapters():
     return {
         "openai": OpenAIAdapter(api_key="sk-test"),
         "anthropic": AnthropicAdapter(api_key="sk-test"),
-        "ollama": OllamaAdapter(base_url="https://ollama.example", api_key="x"),
         "compat": OpenAICompatibleAdapter(
             api_key="sk-test", base_url="https://llm.example/v1", base_url_is_api_root=True
         ),
@@ -54,8 +52,6 @@ NON_STREAM = [
     ("openai", "chat_structured"), ("openai", "function_call"),
     ("anthropic", "validate"), ("anthropic", "chat"),
     ("anthropic", "chat_structured"), ("anthropic", "function_call"),
-    ("ollama", "validate"), ("ollama", "chat"), ("ollama", "embed"),
-    ("ollama", "chat_structured"), ("ollama", "function_call"),
     ("compat", "validate"), ("compat", "chat"), ("compat", "embed"),
     ("compat", "chat_structured"), ("compat", "function_call"),
 ]
@@ -65,7 +61,6 @@ STREAM_BODIES = {
     "openai": 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
     "compat": 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
     "anthropic": 'data: {"type":"content_block_delta","delta":{"text":"Hi"}}\n\n',
-    "ollama": '{"message":{"content":"Hi"}}\n{"done":true,"eval_count":1}\n',
 }
 
 
@@ -78,8 +73,7 @@ async def _call(adapter, method: str):
         return await adapter.embed(texts=["a"], model="m")
     if method == "chat_structured":
         return await adapter.chat_structured(model="m", messages=MSGS, schema=SCHEMA)
-    # ``llama3.1`` passes ollama's function-calling allowlist.
-    return await adapter.function_call(model="llama3.1", messages=MSGS, tools=TOOLS)
+    return await adapter.function_call(model="m", messages=MSGS, tools=TOOLS)
 
 
 async def _outcome(adapter, method: str) -> str:
@@ -216,7 +210,7 @@ async def test_small_error_body_still_yields_the_reason(monkeypatch):
     assert ei.value.provider_reason == "invalid_request_error"
 
 
-@pytest.mark.parametrize("name", ["ollama", "compat"])
+@pytest.mark.parametrize("name", ["compat"])
 async def test_deeply_nested_json_is_invalid_json_not_a_crash(monkeypatch, name):
     _install(monkeypatch, lambda _r: httpx.Response(200, content=b"[" * 200_000))
     with pytest.raises(AIProviderError) as ei:

@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "October 5, 2026";
-const LAST_UPDATED = "October 23, 2026";
+const LAST_UPDATED = "October 25, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -218,9 +218,9 @@ export default function PrivacyPolicyPage() {
             <ul>
               <li>
                 With your organization&rsquo;s own key, the provider is the one
-                it chose: OpenAI, Anthropic, an OpenAI-compatible service such
-                as OpenRouter, or an Ollama server your organization runs. Your
-                organization&rsquo;s agreement with that provider applies.
+                it chose: OpenAI, Anthropic, or an OpenAI-compatible service
+                such as OpenRouter. Your organization&rsquo;s agreement with
+                that provider applies.
               </li>
               <li>
                 Platform AI, where we supply the AI provider, is not offered

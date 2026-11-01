@@ -99,6 +99,13 @@ describe("privacy policy recipients and retention", () => {
     expect(container.querySelector("#ai-providers h2")?.textContent).toBe("4. AI features");
   });
 
+  it("section 4 names the own-key providers and no longer offers Ollama (TBD-584)", () => {
+    const t = text();
+    const s4 = t.slice(t.indexOf("4. AI features"), t.indexOf("5. How long"));
+    expect(s4).toMatch(/OpenAI, Anthropic, or an OpenAI-compatible service\s+such as OpenRouter/);
+    expect(t).not.toMatch(/ollama/i);
+  });
+
   it("does not promise nothing is sent when no AI provider is configured", () => {
     expect(text()).not.toMatch(/do not send it anywhere/);
   });
