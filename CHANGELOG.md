@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.305.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.304.0...v0.305.0) (2026-11-01)
+
+
+### Features
+
+* **ai:** browser-only confirm for sensitive agent actions and the money, create, delete and transfer tools (TBD-664) ([#1048](https://github.com/fjcloudaiconsulting/tbd/issues/1048)) ([baaa760](https://github.com/fjcloudaiconsulting/tbd/commit/baaa760a6199149cb1edf702713b489e2f0c81e8))
+* **ai:** remove bring-your-own local model (Ollama) support (TBD-584) ([#1035](https://github.com/fjcloudaiconsulting/tbd/issues/1035)) ([0082f45](https://github.com/fjcloudaiconsulting/tbd/commit/0082f45aeb74a932ddcac93f01325843bd7b4752))
+
+
+### Bug Fixes
+
+* **ai:** key the AI-key fingerprint with an HMAC (TBD-719) ([#1043](https://github.com/fjcloudaiconsulting/tbd/issues/1043)) ([78e82e4](https://github.com/fjcloudaiconsulting/tbd/commit/78e82e4b7ca31fdd986efaaf5f0a6a3df3db3d2a))
+* **ai:** map hostile provider bodies to typed errors on every adapter path (TBD-607) ([#1042](https://github.com/fjcloudaiconsulting/tbd/issues/1042)) ([f79250e](https://github.com/fjcloudaiconsulting/tbd/commit/f79250ebc2938b9a59e6300552cf52f89a6f33d9))
+* **deps:** update npm non-major ([#1022](https://github.com/fjcloudaiconsulting/tbd/issues/1022)) ([37ecd63](https://github.com/fjcloudaiconsulting/tbd/commit/37ecd63e294bd629f9fe48fd6aefcb6048b7a9fa))
+* **import:** count shared merchant-dictionary votes server-side, one per org (TBD-692) ([#1041](https://github.com/fjcloudaiconsulting/tbd/issues/1041)) ([70209de](https://github.com/fjcloudaiconsulting/tbd/commit/70209de35327af20a744f552c532c487f5065fe6))
+
 ## [0.304.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.303.1...v0.304.0) (2026-11-01)
 
 
