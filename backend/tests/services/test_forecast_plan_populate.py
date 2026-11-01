@@ -3,10 +3,12 @@ refresh_from_sources — pins:
 
 1. Recurring INCOME templates feed populate symmetrically with EXPENSE.
 2. Historical query is SETTLED-only and excludes the current period.
-3. Current-period query counts SETTLED + PENDING and acts as one extra
-   month slot in the rolling average.
+3. Current-period query counts SETTLED + PENDING. Since TBD-764 it is B'
+   in ``R + max(H', B')``, no longer one extra slot of the average.
 4. refresh_from_sources drops auto-generated items (recurring|history)
    and preserves user-edited (manual) items, then re-runs populate.
+5. TBD-764: every group runs one computation, R + max(H', B'), so mixed
+   template + variable groups and manual pending rows are planned.
 """
 from __future__ import annotations
 
@@ -181,8 +183,8 @@ def _tx(*, org_id, account_id, category_id, amount, date, settled_date,
 
 @pytest.mark.asyncio
 async def test_current_period_pending_counts_history_pending_excluded(session_factory):
-    """Pending in the current period adds a slot to the average; pending
-    in history months is ignored."""
+    """Pending in the current period counts (as B'); pending in history
+    months is ignored."""
     seed = await _seed(session_factory)
 
     async with session_factory() as db:
@@ -225,15 +227,17 @@ async def test_current_period_pending_counts_history_pending_excluded(session_fa
             db, org_id=seed["org_id"], period_start=seed["may_start"],
         )
 
-    # Two history months ($100, $200) + current period ($300, pending) = 3 slots
-    # Average = (100 + 200 + 300) / 3 = 200.00
+    # H' = two settled history months ($100, $200) -> 150.00; the Apr pending
+    # $9999 stays out. B' = current period ($300, pending).
+    # TBD-764: planned = max(H', B') = 300.00. It was (100 + 200 + 300) / 3 =
+    # 200.00 while the current period was one slot of the average.
     items = [
         i for i in resp.items
         if i.category_id == seed["groceries_id"] and i.type == "expense"
     ]
     assert len(items) == 1
     assert items[0].source == "history"
-    assert items[0].planned_amount == Decimal("200.00")
+    assert items[0].planned_amount == Decimal("300.00")
 
 
 @pytest.mark.asyncio
@@ -617,3 +621,311 @@ async def test_history_buckets_by_effective_settled_date(session_factory):
     assert len(items) == 1
     assert items[0].source == "history"
     assert items[0].planned_amount == Decimal("300.00")
+
+
+# ── TBD-764: one per-group computation, planned = R + max(H', B') ───────────
+#
+# R  = materialised occurrences (recurring_id IS NOT NULL) by effective date,
+#      plus the projection of each active template's occurrences that have no
+#      row yet.
+# B' = settled + pending rows with recurring_id IS NULL in the period.
+# H' = monthly average of settled history rows with recurring_id IS NULL,
+#      0 unless at least two history months carry some.
+
+
+async def _category(factory, seed, name: str, *, parent_id=None,
+                    type_=CategoryType.EXPENSE) -> int:
+    async with factory() as db:
+        cat = Category(
+            org_id=seed["org_id"], name=name, slug=name.lower(),
+            type=type_, parent_id=parent_id,
+        )
+        db.add(cat)
+        await db.commit()
+        return cat.id
+
+
+async def _template(factory, seed, category_id: int, amount, next_due_date,
+                    description: str = "bill") -> int:
+    async with factory() as db:
+        r = RecurringTransaction(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=category_id, description=description,
+            amount=Decimal(str(amount)), type="expense",
+            frequency=Frequency.MONTHLY, next_due_date=next_due_date,
+            auto_settle=False, is_active=True,
+        )
+        db.add(r)
+        await db.commit()
+        return r.id
+
+
+def _row(seed, category_id: int, amount, date, *, settled_date=None,
+         status=TransactionStatus.PENDING, recurring_id=None,
+         reconciliation_state=None) -> Transaction:
+    tx = _tx(
+        org_id=seed["org_id"], account_id=seed["account_id"],
+        category_id=category_id, amount=amount, date=date,
+        settled_date=settled_date, status=status,
+        type_=TransactionType.EXPENSE,
+    )
+    tx.recurring_id = recurring_id
+    if reconciliation_state is not None:
+        tx.reconciliation_state = reconciliation_state
+    return tx
+
+
+def _expense_items(resp, category_id: int):
+    return [
+        i for i in resp.items
+        if i.category_id == category_id and i.type == "expense"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mixed_group_plans_rent_plus_variable_before_and_after_generation(
+    session_factory,
+):
+    """A Housing group with a 1500 rent template AND ~200/month of variable
+    settled spend plans ~1700 both before and after the May rent occurrence
+    is generated.
+
+    Before this fix the template branch claimed the group and the history
+    pass skipped it (1500, the variable spend lost); after generation the
+    template's frontier left the window, the history pass took over and
+    averaged the rent rows with the pending occurrence as one slot (1650).
+    """
+    seed = await _seed(session_factory)
+    housing = await _category(session_factory, seed, "Housing")
+    rent_id = await _template(
+        session_factory, seed, housing, 1500, datetime.date(2026, 5, 1), "Rent",
+    )
+
+    async with session_factory() as db:
+        for month, variable in ((2, 180), (3, 200), (4, 220)):
+            day = datetime.date(2026, month, 1)
+            # The generated rent rows of past months: R covers rent now, so
+            # these must stay out of H'.
+            db.add(_row(seed, housing, 1500, day, settled_date=day,
+                        status=TransactionStatus.SETTLED, recurring_id=rent_id))
+            mid = datetime.date(2026, month, 15)
+            db.add(_row(seed, housing, variable, mid, settled_date=mid,
+                        status=TransactionStatus.SETTLED))
+        await db.commit()
+
+    async with session_factory() as db:
+        before = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [item] = _expense_items(before, housing)
+    assert item.planned_amount == Decimal("1700.00")
+    assert item.source == "recurring"
+
+    from app.services import recurring_service
+    async with session_factory() as db:
+        result = await recurring_service.generate_due_transactions(
+            db, seed["org_id"], today=datetime.date(2026, 5, 2),
+        )
+    assert result["generated"] == 1
+    async with session_factory() as db:
+        tpl = await db.get(RecurringTransaction, rent_id)
+        # The template drops out of the period's template select now.
+        assert tpl.next_due_date > seed["may_end"]
+
+    async with session_factory() as db:
+        after = await forecast_plan_service.refresh_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [item] = _expense_items(after, housing)
+    assert item.planned_amount == Decimal("1700.00")
+    assert item.source == "recurring"
+
+
+@pytest.mark.asyncio
+async def test_one_off_manual_pending_bill_is_planned_in_full(session_factory):
+    """A hand-keyed 1200 pending bill in a category whose history runs
+    100/month plans 1200, not the 375 it got as one slot of a four-slot
+    average."""
+    seed = await _seed(session_factory)
+    gid = seed["groceries_id"]
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            d = datetime.date(2026, month, 10)
+            db.add(_row(seed, gid, 100, d, settled_date=d,
+                        status=TransactionStatus.SETTLED))
+        db.add(_row(seed, gid, 1200, datetime.date(2026, 5, 20)))
+        await db.commit()
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [item] = _expense_items(resp, gid)
+    assert item.planned_amount == Decimal("1200.00")
+    assert item.source == "history"
+
+
+@pytest.mark.asyncio
+async def test_manual_pending_in_a_template_category_adds_to_the_template(
+    session_factory,
+):
+    """A manual pending row next to a template is added on top of it
+    (R + B'), not dropped because the template claimed the group."""
+    seed = await _seed(session_factory)
+    utilities = await _category(session_factory, seed, "Utilities")
+    await _template(
+        session_factory, seed, utilities, 80, datetime.date(2026, 5, 15), "Power",
+    )
+    async with session_factory() as db:
+        db.add(_row(seed, utilities, 50, datetime.date(2026, 5, 9)))
+        await db.commit()
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [item] = _expense_items(resp, utilities)
+    assert item.planned_amount == Decimal("130.00")
+    assert item.source == "recurring"
+
+
+@pytest.mark.asyncio
+async def test_skipped_occurrence_counts_zero_and_is_not_reprojected(
+    session_factory,
+):
+    """A skipped occurrence is a row (generation's existence probe finds it)
+    that is out of every reportable aggregate: it adds nothing to R as a
+    row, and its date must not be projected again either.
+
+    The template's frontier is left ON the skipped date so the projection
+    would reach it without the probe. The 30 manual pending row keeps the
+    group alive and pins the source: no R, so HISTORY.
+    """
+    seed = await _seed(session_factory)
+    gym = await _category(session_factory, seed, "Gym")
+    rid = await _template(
+        session_factory, seed, gym, 100, datetime.date(2026, 5, 10), "Gym",
+    )
+    async with session_factory() as db:
+        db.add(_row(seed, gym, 100, datetime.date(2026, 5, 10),
+                    recurring_id=rid, reconciliation_state="skipped"))
+        db.add(_row(seed, gym, 30, datetime.date(2026, 5, 12)))
+        await db.commit()
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [item] = _expense_items(resp, gym)
+    assert item.planned_amount == Decimal("30.00")
+    assert item.source == "history"
+
+
+@pytest.mark.asyncio
+async def test_materialised_occurrence_is_not_counted_twice_with_its_projection(
+    session_factory,
+):
+    """A row for (recurring_id, date) and the template's projection of the
+    same occurrence are one obligation: R counts it once."""
+    seed = await _seed(session_factory)
+    phone = await _category(session_factory, seed, "Phone")
+    rid = await _template(
+        session_factory, seed, phone, 100, datetime.date(2026, 5, 5), "Phone",
+    )
+    async with session_factory() as db:
+        d = datetime.date(2026, 5, 5)
+        db.add(_row(seed, phone, 100, d, settled_date=d,
+                    status=TransactionStatus.SETTLED, recurring_id=rid))
+        await db.commit()
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [item] = _expense_items(resp, phone)
+    assert item.planned_amount == Decimal("100.00")
+    assert item.source == "recurring"
+
+
+@pytest.mark.asyncio
+async def test_pending_occurrence_settling_next_period_counts_next_period_only(
+    session_factory,
+):
+    """An occurrence dated May 28 whose expected settlement is June 2 counts
+    in June (cash basis, by effective date) and not in May. In May the
+    existence probe also stops its date being projected again.
+
+    June then holds two obligations: that row, and June's own occurrence
+    projected from the template (frontier June 28).
+    """
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        db.add(BillingPeriod(
+            org_id=seed["org_id"], start_date=datetime.date(2026, 6, 1),
+            end_date=datetime.date(2026, 6, 30),
+        ))
+        await db.commit()
+    card = await _category(session_factory, seed, "Card")
+    rid = await _template(
+        session_factory, seed, card, 100, datetime.date(2026, 6, 28), "Card",
+    )
+    async with session_factory() as db:
+        db.add(_row(seed, card, 100, datetime.date(2026, 5, 28),
+                    settled_date=datetime.date(2026, 6, 2), recurring_id=rid))
+        await db.commit()
+
+    async with session_factory() as db:
+        may = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    assert _expense_items(may, card) == []
+
+    async with session_factory() as db:
+        june = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=datetime.date(2026, 6, 1),
+        )
+    [item] = _expense_items(june, card)
+    assert item.planned_amount == Decimal("200.00")
+    assert item.source == "recurring"
+
+
+@pytest.mark.asyncio
+async def test_subcategory_mode_runs_the_same_computation_per_sub(session_factory):
+    """Subcategory mode groups by the row's own sub: the Rent sub gets its
+    template plus its manual pending row, the Utilities sub its history
+    average, and the Housing master gets no item of its own."""
+    from app.models.settings import OrgSetting
+    from app.services.settings_service import FORECAST_INPUT_GRANULARITY_KEY
+
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        db.add(OrgSetting(
+            org_id=seed["org_id"], key=FORECAST_INPUT_GRANULARITY_KEY,
+            value="subcategory",
+        ))
+        await db.commit()
+    housing = await _category(session_factory, seed, "Housing")
+    rent = await _category(session_factory, seed, "Rent", parent_id=housing)
+    utilities = await _category(session_factory, seed, "Utilities", parent_id=housing)
+    await _template(
+        session_factory, seed, rent, 1500, datetime.date(2026, 5, 1), "Rent",
+    )
+    async with session_factory() as db:
+        db.add(_row(seed, rent, 60, datetime.date(2026, 5, 3)))
+        for month, amount in ((3, 90), (4, 110)):
+            d = datetime.date(2026, month, 20)
+            db.add(_row(seed, utilities, amount, d, settled_date=d,
+                        status=TransactionStatus.SETTLED))
+        await db.commit()
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [rent_item] = _expense_items(resp, rent)
+    assert rent_item.planned_amount == Decimal("1560.00")
+    assert rent_item.source == "recurring"
+    [util_item] = _expense_items(resp, utilities)
+    assert util_item.planned_amount == Decimal("100.00")
+    assert util_item.source == "history"
+    assert _expense_items(resp, housing) == []

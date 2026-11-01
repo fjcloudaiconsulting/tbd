@@ -278,6 +278,10 @@ async def _build_response(
     # spec §3.2, which also records why `:512`'s loop-termination guard must
     # not be rewired.
     #
+    # TBD-764 note: the current period is no longer an averaging slot (it is
+    # B' in `R + max(H', B')`), but the reason stands: widened, B' and R would
+    # each hold months of spend and still be planned as one period.
+    #
     # `today` is injectable (D6) because the window floors at the wall clock.
     # All eleven `_build_response` call sites pass it through from their own
     # entry point; none of them is a loop, so this fires once per request.
@@ -405,7 +409,8 @@ async def populate_from_sources(
     *, today: datetime.date | None = None,
     pre_existing_sub_pairs: frozenset[tuple[int, str]] | None = None,
 ) -> ForecastPlanResponse:
-    """Auto-populate plan items from recurring templates and 3-month history averages.
+    """Auto-populate plan items from recurring obligations, the period's own
+    rows and 3-month history averages: per group, R + max(H', B') (TBD-764).
 
     Only adds items for categories not already in the plan.
 
@@ -426,13 +431,15 @@ async def populate_from_sources(
     p_end = period.end_date or (p_start + relativedelta(months=1) - datetime.timedelta(days=1))
 
     # TBD-325 PR 2: resolved ONCE for this entry point and threaded into ALL
-    # THREE aggregates below (history, recurring templates, current period)
-    # AND into ``_build_response`` at the bottom, so the suggestion and the
-    # actuals it is rendered against are in the same money.
+    # FOUR sources below (history, recurring templates, current period, and
+    # the period's generated rows -- TBD-764, which share the current-period
+    # select and its clause) AND into ``_build_response`` at the bottom, so
+    # the suggestion and the actuals it is rendered against are in the same
+    # money.
     #
-    # ⚠ "three", not "two". An earlier cut said two and scoped two; the
+    # ⚠ "four", not "two". An earlier cut said two and scoped two; the
     # recurring source was the one it missed, and a persisted cross-currency
-    # ``planned_amount`` is the result. If you add a fourth source, scope it.
+    # ``planned_amount`` is the result. If you add a fifth source, scope it.
     currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
     currency_clause = org_currency_filter(org_id, currency_scope)
 
@@ -521,8 +528,34 @@ async def populate_from_sources(
         else:
             claimed_sub.add(key)
 
-    # ── From active recurring templates (with date filter) ──
-    # Aggregate by master category before inserting
+    # ── TBD-764: ONE computation per group ──
+    #
+    #     planned = R + max(H', B')
+    #
+    #   R  = the group's recurring obligations in the period: its materialised
+    #        occurrences (rows with ``recurring_id`` set, any status, by
+    #        effective date) plus each active template's occurrences that have
+    #        no row yet.
+    #   B' = settled + pending rows WITHOUT ``recurring_id`` in the period.
+    #   H' = monthly average of SETTLED history rows without ``recurring_id``
+    #        over the three months before the period.
+    #
+    # Every row is split on ``recurring_id``, so a template's money lives in R
+    # and nowhere else, and a group holding rent AND variable spend plans both.
+    # This replaced a template branch that claimed the whole group and made the
+    # history pass skip it: a mixed group lost its variable spend and its
+    # manual pending rows, and once generation pushed the template's frontier
+    # past ``p_end`` the group fell through to the history pass, which averaged
+    # its own rent occurrence in as one month slot.
+    #
+    # Known and NOT solved here, exactly as in ``forecast_service``: a
+    # hand-keyed pending row duplicating a template bill counts in B' AND in R,
+    # and so does an unmatched bank row sitting next to a pending occurrence.
+
+    def type_str(raw) -> str:
+        return raw.value if hasattr(raw, "value") else str(raw)
+
+    # ── R, first half: occurrences of active templates with no row yet ──
     rec_result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
@@ -531,15 +564,15 @@ async def populate_from_sources(
             # TBD-325 PR 2. ⚠ THE THIRD SOURCE, and the one that made this a
             # HALF-FIX until it was caught in review.
             #
-            # The history (above) and current-period (below) aggregates were
-            # scoped while this one was not, so ``planned_amount`` was written
-            # as a CROSS-CURRENCY total and PERSISTED to
-            # ``forecast_plan_items``. It then became
-            # ``total_planned_expense`` -- the DENOMINATOR of OnTrackTile's
-            # verdict and of the budget bars -- against a numerator that IS
-            # scoped. Measured: an EUR org with a USD 3000 recurring planned
-            # 3025.00 against 100.00 of scoped actuals, a 2925 phantom
-            # underspend that survives the scope because it is stored.
+            # The history and current-period aggregates (below) were scoped
+            # while this one was not, so ``planned_amount`` was written as a
+            # CROSS-CURRENCY total and PERSISTED to ``forecast_plan_items``.
+            # It then became ``total_planned_expense`` -- the DENOMINATOR of
+            # OnTrackTile's verdict and of the budget bars -- against a
+            # numerator that IS scoped. Measured: an EUR org with a USD 3000
+            # recurring planned 3025.00 against 100.00 of scoped actuals, a
+            # 2925 phantom underspend that survives the scope because it is
+            # stored.
             #
             # Scoping a numerator and not its denominator is worse than
             # scoping neither.
@@ -554,10 +587,34 @@ async def populate_from_sources(
             ),
         )
     )
-    recurring_totals: dict[tuple[int, str], Decimal] = {}
-    for r in rec_result.scalars().all():
-        grp_id = group_key(r.category_id)
-        key = (grp_id, r.type)
+    recurring_items = list(rec_result.scalars().all())
+
+    # Anti-double-count probe, copied VERBATIM from
+    # ``forecast_service.compute_forecast`` (there it is inline, not a helper,
+    # and this change does not reach into that module). Keep the two
+    # identical: the predicate is generation's own create-condition negated
+    # -- (org_id, recurring_id, date), NO status, NO reportability, NO
+    # effective-date term -- so it asks only "does a row for this occurrence
+    # exist?". A skipped occurrence is such a row: the probe drops its date
+    # from the projection, and the reportable filter on the rows below drops
+    # the row, so it counts 0 in both halves. A row dated in this period but
+    # expected to settle in the next one is also found here, and counts in R
+    # next period by its effective date. The date bounds are a narrowing only.
+    materialised: set[tuple[int, datetime.date]] = set()
+    if recurring_items:
+        rows = await db.execute(
+            select(Transaction.recurring_id, Transaction.date).where(
+                Transaction.org_id == org_id,
+                Transaction.recurring_id.in_([r.id for r in recurring_items]),
+                Transaction.date >= p_start,
+                Transaction.date <= p_end,
+            )
+        )
+        materialised = {(rid, d) for rid, d in rows.all()}
+
+    r_totals: dict[tuple[int, str], Decimal] = {}
+    for r in recurring_items:
+        key = (group_key(r.category_id), type_str(r.type))
         if key in existing_keys:
             continue
 
@@ -568,55 +625,67 @@ async def populate_from_sources(
         # budget, and it would have been missed. It is now the shared walk, so
         # this plan source spends instalments exactly as the forecast and
         # generation do.
-        occs = occurrences_in_window(
+        for d in occurrences_in_window(
             r.next_due_date, r.frequency, p_start, p_end,
             budget=remaining_occurrences(r),
-        )
-        total = r.amount * len(occs)
-
-        if total > 0:
-            recurring_totals[key] = recurring_totals.get(key, Decimal("0")) + total
-
-    for key, total in recurring_totals.items():
-        if key in existing_keys:
-            continue
-        grp_id, r_type = key
-        # Master mode only: skip groups that would double-plan a leftover sub.
-        if would_conflict(grp_id, r_type):
-            continue
-        item = ForecastPlanItem(
-            plan_id=plan.id,
-            org_id=org_id,
-            category_id=grp_id,
-            type=ForecastItemType(r_type),
-            planned_amount=total,
-            source=ItemSource.RECURRING,
-        )
-        db.add(item)
-        existing_keys.add(key)
-        claim(grp_id, r_type)
-
-    # ── From 3-month historical monthly averages + current-period activity ──
-    # Two scopes:
-    #   - History (3 months prior to current period): SETTLED only. Pending
-    #     transactions from months ago shouldn't drive averages — if they
-    #     never settled, treating them as real history would inflate the
-    #     suggestion.
-    #   - Current period: SETTLED OR PENDING. The user's already-imported
-    #     bills for the period being planned are real expectations and
-    #     should feed the suggestion immediately, not after they settle.
-    # Each contributing month counts as one slot in the average; current
-    # period acts as one additional month.
-    #
-    # Month bucketing happens in Python (not SQL date_format) so the
-    # query stays portable between MySQL and SQLite (test fixtures run
-    # in-memory SQLite).
-    three_months_ago = p_start - relativedelta(months=3)
+        ):
+            if (r.id, d) in materialised:
+                continue
+            r_totals[key] = r_totals.get(key, Decimal("0")) + r.amount
 
     # Cash-basis: select + filter by the effective settled date so a row
     # dated in month X but settled in month Y buckets (and windows) by Y,
     # consistent with the list/reports/forecast.
     eff_date = effective_period_date_expr()
+
+    # ── R, second half, and B': the period's rows, split on recurring_id ──
+    # SETTLED OR PENDING: the user's already-imported bills for the period
+    # being planned are real expectations and feed the suggestion right away,
+    # not after they settle. Generated rows go to R whatever the template's
+    # state now (paused, ended or deleted-and-kept), plain rows to B'.
+    generated = Transaction.recurring_id.is_not(None)
+    current_q = (
+        select(
+            Transaction.category_id,
+            Transaction.type,
+            generated.label("generated"),
+            func.coalesce(func.sum(Transaction.amount), 0).label("total"),
+        )
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.status.in_(
+                [TransactionStatus.SETTLED, TransactionStatus.PENDING]
+            ),
+            eff_date >= p_start,
+            eff_date <= p_end,
+            Transaction.type.in_(["income", "expense"]),
+            reportable_transaction_filter(),
+            # One clause for BOTH the current-period source and the
+            # generated-rows source (TBD-764): they are this one select.
+            currency_clause,
+        )
+        .group_by(Transaction.category_id, Transaction.type, generated)
+    )
+    current_result = await db.execute(current_q)
+    b_totals: dict[tuple[int, str], Decimal] = {}
+    for cat_id, tx_type_raw, is_generated, total in current_result.all():
+        key = (group_key(cat_id), type_str(tx_type_raw))
+        amt = Decimal(str(total))
+        if amt <= 0:
+            continue
+        bucket = r_totals if is_generated else b_totals
+        bucket[key] = bucket.get(key, Decimal("0")) + amt
+
+    # ── H': 3-month history average ──
+    # SETTLED only. Pending transactions from months ago shouldn't drive
+    # averages — if they never settled, treating them as real history would
+    # inflate the suggestion. Generated rows belong to R, never to H': a
+    # template's past occurrences averaged in here would plan it twice.
+    #
+    # Month bucketing happens in Python (not SQL date_format) so the
+    # query stays portable between MySQL and SQLite (test fixtures run
+    # in-memory SQLite).
+    three_months_ago = p_start - relativedelta(months=3)
     hist_q = (
         select(
             Transaction.category_id,
@@ -627,6 +696,7 @@ async def populate_from_sources(
         .where(
             Transaction.org_id == org_id,
             Transaction.status == TransactionStatus.SETTLED,
+            Transaction.recurring_id.is_(None),
             eff_date >= three_months_ago,
             eff_date < p_start,
             Transaction.type.in_(["income", "expense"]),
@@ -639,83 +709,46 @@ async def populate_from_sources(
     )
     hist_result = await db.execute(hist_q)
 
-    # Group by the granularity key (master in master mode, sub in sub mode),
-    # then compute monthly averages.
+    # Group by the granularity key (master in master mode, sub in sub mode).
     # Structure: {(group_id, type): {month: total}}
-    master_monthly: dict[tuple[int, str], dict[str, Decimal]] = {}
+    hist_monthly: dict[tuple[int, str], dict[str, Decimal]] = {}
     for cat_id, tx_type_raw, eff_dt, amount in hist_result.all():
-        tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
-        grp_id = group_key(cat_id)
-        key = (grp_id, tx_type)
+        key = (group_key(cat_id), type_str(tx_type_raw))
         # Bucket by the effective settled date selected above.
         month = f"{eff_dt.year:04d}-{eff_dt.month:02d}"
-        if key not in master_monthly:
-            master_monthly[key] = {}
-        master_monthly[key][month] = master_monthly[key].get(month, Decimal("0")) + Decimal(str(amount))
+        months = hist_monthly.setdefault(key, {})
+        months[month] = months.get(month, Decimal("0")) + Decimal(str(amount))
 
-    # Current-period scope: SETTLED OR PENDING. Treated as one additional
-    # month slot in the rolling average so already-imported bills for the
-    # period being planned surface in the suggestion right away.
-    current_q = (
-        select(
-            Transaction.category_id,
-            Transaction.type,
-            func.coalesce(func.sum(Transaction.amount), 0).label("total"),
-        )
-        .where(
-            Transaction.org_id == org_id,
-            Transaction.status.in_(
-                [TransactionStatus.SETTLED, TransactionStatus.PENDING]
-            ),
-            eff_date >= p_start,
-            eff_date <= p_end,
-            Transaction.type.in_(["income", "expense"]),
-            reportable_transaction_filter(),
-            # Same clause as the history query above: the current period is one
-            # more slot in the SAME average, so scoping one and not the other
-            # would average across currencies through the back door.
-            currency_clause,
-        )
-        .group_by(Transaction.category_id, Transaction.type)
-    )
-    current_result = await db.execute(current_q)
-    current_period_label = "__current__"
-    for cat_id, tx_type_raw, total in current_result.all():
-        tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
-        grp_id = group_key(cat_id)
-        key = (grp_id, tx_type)
-        amt = Decimal(str(total))
-        if amt <= 0:
-            continue
-        if key not in master_monthly:
-            master_monthly[key] = {}
-        master_monthly[key][current_period_label] = master_monthly[key].get(
-            current_period_label, Decimal("0")
-        ) + amt
-
-    for key, months in master_monthly.items():
+    # ── One item per group ──
+    # Insertion order only keeps the run deterministic; the guards below do
+    # not depend on it (``would_conflict`` reads the seeded snapshots, and in
+    # master mode every candidate is a master).
+    candidates = dict.fromkeys([*r_totals, *b_totals, *hist_monthly])
+    for key in candidates:
         if key in existing_keys:
             continue
-        # Current-period activity is authoritative: even if there is no
-        # historical settled signal in this category, an already-imported
-        # transaction in the period being planned should drive a suggestion.
-        # Pure-history signals still need 2+ months to avoid one-off noise.
-        has_current = current_period_label in months
-        if not has_current and len(months) < 2:
-            continue
         grp_id, tx_type = key
-        # Master mode only: skip groups that would double-plan a leftover sub.
+        # Skip groups that would double-plan a leftover sub (or master).
         if would_conflict(grp_id, tx_type):
             continue
-        avg_amount = sum(months.values()) / len(months)
+        r_total = r_totals.get(key, Decimal("0"))
+        # Pure-history signals need 2+ months to avoid one-off noise; the
+        # current period's own rows (B') need no such gate.
+        months = hist_monthly.get(key, {})
+        h_avg = Decimal("0")
+        if len(months) >= 2:
+            h_avg = Decimal(str(round(float(sum(months.values()) / len(months)), 2)))
+        planned = r_total + max(h_avg, b_totals.get(key, Decimal("0")))
+        if planned <= 0:
+            continue
 
         item = ForecastPlanItem(
             plan_id=plan.id,
             org_id=org_id,
             category_id=grp_id,
             type=ForecastItemType(tx_type),
-            planned_amount=Decimal(str(round(float(avg_amount), 2))),
-            source=ItemSource.HISTORY,
+            planned_amount=planned,
+            source=ItemSource.RECURRING if r_total > 0 else ItemSource.HISTORY,
         )
         db.add(item)
         existing_keys.add(key)
