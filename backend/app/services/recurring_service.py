@@ -275,14 +275,18 @@ async def update_recurring(
     if today is None:
         today = datetime.date.today()
 
-    # TBD-756: an amount change moves the pending occurrences still at the OLD
-    # amount, so that old amount must be read under the lock.
+    # TBD-756/TBD-760: an amount, name, category or account change moves the
+    # pending occurrences still at the OLD value, so that old value must be
+    # read under the lock.
     q = (
         select(RecurringTransaction)
         .options(*_load_opts())
         .where(RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id)
     )
-    if body.amount is not None:
+    if (
+        body.amount is not None or body.description is not None
+        or body.category_id is not None or body.account_id is not None
+    ):
         q = q.with_for_update().execution_options(populate_existing=True)
     r = (await db.execute(q)).scalar_one_or_none()
     if r is None:
@@ -294,6 +298,9 @@ async def update_recurring(
     had_remaining = has_remaining_occurrences(r)
     old_amount = r.amount
     old_type = TransactionType(r.type)
+    old_description = r.description
+    old_category_id = r.category_id
+    old_account_id = r.account_id
 
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
@@ -383,14 +390,30 @@ async def update_recurring(
     if body.next_due_date is not None or body.frequency is not None:
         await validate_frontier(db, org_id, r.next_due_date, today=today)
 
-    # TBD-756: the pending occurrences still at the old amount follow the new
-    # one; a row the user changed keeps its value. A ``next_due_date`` edit
-    # moves no materialised row: the frontier is the next UN-materialised
-    # occurrence, and callers move it by whole periods to skip or re-anchor.
-    if r.amount != old_amount:
+    # TBD-756/TBD-760: the pending occurrences still at the old amount, name,
+    # category or account follow the new one; a row whose value differs keeps
+    # it. Compared with the old values, not key presence: a re-send of the same
+    # value moves nothing. A ``next_due_date`` edit moves no materialised row:
+    # the frontier is the next UN-materialised occurrence, and callers move it
+    # by whole periods to skip or re-anchor. The helper's template writes are
+    # no-ops here (the template already holds the new values).
+    # Category only while the type is unchanged: a type change is out of scope
+    # here (rows keep their type), and a category validated for the NEW type
+    # must not land on old-type rows.
+    amount_changed = r.amount != old_amount
+    desc_changed = r.description != old_description
+    cat_changed = r.category_id != old_category_id and TransactionType(r.type) == old_type
+    acct_changed = r.account_id != old_account_id
+    if amount_changed or desc_changed or cat_changed or acct_changed:
         await _propagate_fields_to_series(
-            db, org_id, r.id, description=None, category_id=None, tx_type=old_type,
-            amount=r.amount, amount_was=old_amount,
+            db, org_id, r.id, tx_type=old_type,
+            description=r.description if desc_changed else None,
+            description_was=old_description,
+            category_id=r.category_id if cat_changed else None,
+            category_was=old_category_id,
+            account_id=r.account_id if acct_changed else None,
+            account_was=old_account_id,
+            amount=r.amount if amount_changed else None, amount_was=old_amount,
         )
 
     await db.commit()
