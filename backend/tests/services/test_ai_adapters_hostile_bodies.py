@@ -220,6 +220,8 @@ VALIDATE_CASES = {
     "null-payload": b"null",
     "data-int": b'{"data": 5}',
     "data-string": b'{"data": "abc"}',
+    "id-int": b'{"data": [{"id": 5}]}',
+    "id-null": b'{"data": [{"id": null}]}',
 }
 
 

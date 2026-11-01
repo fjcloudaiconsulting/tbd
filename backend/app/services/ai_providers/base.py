@@ -303,7 +303,10 @@ def model_ids(payload: object) -> list:
     data = payload.get("data") or []
     if not isinstance(data, list):
         raise TypeError("data is not a list")
-    return [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+    ids = [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+    if not all(isinstance(i, str) for i in ids):
+        raise TypeError("model id is not a string")
+    return ids
 
 
 UNEXPECTED_MODELS_RESPONSE = "Provider returned an unexpected response"
