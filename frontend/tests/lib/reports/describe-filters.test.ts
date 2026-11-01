@@ -120,6 +120,45 @@ describe("describeWidgetFilters", () => {
     expect(date?.overridden).toBe(true);
   });
 
+  // TBD-759: the label reads the persisted token, so a canvas saved as
+  // "This month" in October still says "This month" in November.
+  it("labels a calendar token from its preset after the month rolls over", () => {
+    const november = new Date(2026, 10, 2);
+    const chips = describeWidgetFilters(
+      bar({}),
+      { date_range: { preset: "this_month" } },
+      NO_LOOKUPS,
+      november,
+    );
+    expect(chips.find((c) => c.key === "date")?.label).toBe("This month");
+  });
+
+  it.each([
+    ["last_month", "Last month"],
+    ["ytd", "YTD"],
+    ["last_12_months", "Last 12 months"],
+  ] as const)("labels a %s token as %s", (preset, label) => {
+    const chips = describeWidgetFilters(
+      bar({}),
+      { date_range: { preset } },
+      NO_LOOKUPS,
+      NOW,
+    );
+    expect(chips.find((c) => c.key === "date")?.label).toBe(label);
+  });
+
+  it("marks a widget token overridden when it differs from the canvas token", () => {
+    const chips = describeWidgetFilters(
+      bar({ date_range: { preset: "last_12_months" } }),
+      { date_range: { preset: "this_month" } },
+      NO_LOOKUPS,
+      NOW,
+    );
+    const date = chips.find((c) => c.key === "date");
+    expect(date?.label).toBe("Last 12 months");
+    expect(date?.overridden).toBe(true);
+  });
+
   it("emits a 'Next cycle' date chip for a canvas next_cycle token", () => {
     const chips = describeWidgetFilters(
       bar({}),

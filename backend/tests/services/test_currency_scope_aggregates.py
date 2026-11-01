@@ -1325,7 +1325,7 @@ async def test_f11_populate_scopes_all_three_sources(db, with_history):
     fence covering two of the three is exactly the hole that shipped, which is
     why each source is asserted through its own probe category:
 
-        ``food``   RECURRING select   25.00  vs naive  3025.00
+        ``food``   RECURRING select  165.00  vs naive 12165.00
         ``rent``   history select    200.00  vs naive  7200.00
         ``travel`` current select      60.00  vs naive  6060.00
 
@@ -1335,10 +1335,12 @@ async def test_f11_populate_scopes_all_three_sources(db, with_history):
     stored number is the one that becomes ``total_planned_expense``, the
     denominator of OnTrackTile's verdict.
 
-    ⚠ ``food`` carries history and in-period money too, and gets a RECURRING
-    item anyway: the recurring loop runs first and claims ``(food, expense)``
-    in ``existing_keys``. That is load-bearing, not incidental — it is what
-    isolates the recurring select from the other two.
+    ⚠ ``food`` carries history and in-period money too. Since TBD-764 the
+    group plans ``R + max(H', B')`` = 25 + max(120, 100 + 40) = 165, so the
+    recurring select is no longer isolated on ``food``; it is still killed
+    there: unscoped, R alone is 3025 and ``food`` lands at 3165. ``rent`` and
+    ``travel`` still isolate the history and current selects, and F11b fences
+    the fourth source (generated rows).
 
     ⚠ ``source`` is asserted alongside each amount. Without it, an
     implementation that dropped a source entirely (and let another window
@@ -1358,10 +1360,10 @@ async def test_f11_populate_scopes_all_three_sources(db, with_history):
 
     food = by_cat[with_history["food"].id]
     assert food.source is ItemSource.RECURRING
-    assert food.planned_amount == EUR_RECURRING, (
-        f"the RECURRING source persisted {food.planned_amount}; the naive "
-        f"cross-currency total is {EUR_RECURRING + USD_RECURRING}. This is the "
-        f"defect that shipped."
+    assert food.planned_amount == EUR_RECURRING + EUR_EXECUTED + EUR_PENDING, (
+        f"food persisted {food.planned_amount}; with the RECURRING select "
+        f"unscoped it is {USD_RECURRING + EUR_RECURRING + EUR_EXECUTED + EUR_PENDING}."
+        f" That is the defect that shipped."
     )
 
     rent = by_cat[with_history["rent"].id]
@@ -1376,6 +1378,63 @@ async def test_f11_populate_scopes_all_three_sources(db, with_history):
     assert travel.planned_amount == EUR_TRAVEL_NOW, (
         f"the CURRENT-PERIOD source persisted {travel.planned_amount}; the "
         f"naive cross-currency total is {EUR_TRAVEL_NOW + USD_TRAVEL_NOW}"
+    )
+
+
+async def test_f11b_populate_scopes_the_generated_rows_source(db, with_history):
+    """F11b (TBD-764). Kills the predicate removed from populate's FOURTH source.
+
+    Populate counts materialised occurrences (``recurring_id IS NOT NULL``)
+    into R by effective date. Each template here has its June occurrence
+    generated and its frontier advanced to July, so the projection adds
+    nothing and the rows are the only money on ``utilities``:
+
+        ``utilities``  generated rows   25.00  vs naive  3025.00
+
+    Asserted on the persisted row, for the same reason as F11.
+    """
+    org_id = with_history["org"].id
+    utilities = Category(
+        org_id=org_id, name="Utilities", slug="utilities",
+        type=CategoryType.EXPENSE,
+    )
+    db.add(utilities)
+    await db.flush()
+    for acct, amount in (
+        (with_history["eur"], EUR_RECURRING), (with_history["usd"], USD_RECURRING),
+    ):
+        tpl = RecurringTransaction(
+            org_id=org_id, account_id=acct.id, category_id=utilities.id,
+            description="Power", amount=amount, type="expense",
+            frequency=Frequency.MONTHLY,
+            next_due_date=datetime.date(2026, 7, 20), is_active=True,
+        )
+        db.add(tpl)
+        await db.flush()
+        db.add(Transaction(
+            org_id=org_id, account_id=acct.id, category_id=utilities.id,
+            description="Power", amount=amount, recurring_id=tpl.id,
+            type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+            date=datetime.date(2026, 6, 20),
+        ))
+    await db.commit()
+
+    await forecast_plan_service.populate_from_sources(
+        db, org_id, P_START, today=TODAY
+    )
+
+    row = (
+        await db.execute(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.org_id == org_id,
+                ForecastPlanItem.category_id == utilities.id,
+            )
+        )
+    ).scalar_one()
+    assert row.source is ItemSource.RECURRING
+    assert row.planned_amount == EUR_RECURRING, (
+        f"the generated-rows source persisted {row.planned_amount}; the naive "
+        f"cross-currency total is {EUR_RECURRING + USD_RECURRING}"
     )
 
 
@@ -1527,7 +1586,8 @@ async def test_g2_the_five_new_sites_are_unchanged_for_a_single_currency_org(
     ).scalars().all()
     food = next(r for r in rows if r.category_id == single_currency["food"].id)
     assert food.source is ItemSource.RECURRING
-    assert food.planned_amount == EUR_RECURRING
+    # TBD-764: R (the template) + B' (June's settled + pending; no history).
+    assert food.planned_amount == EUR_RECURRING + EUR_EXECUTED + EUR_PENDING
 
 
 # ── F14 — a legacy LOWERCASE currency must not exclude itself ──────────────

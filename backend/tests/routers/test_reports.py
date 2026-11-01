@@ -392,6 +392,29 @@ async def test_relative_filter_rejects_unknown_token(session_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["this_month", "last_month", "ytd", "last_12_months"])
+async def test_relative_filter_rejects_calendar_preset_tokens(session_factory, token):
+    # TBD-759: calendar presets persist as tokens in canvas_filters_json, but
+    # the frontend resolves them to ``between`` itself. They are NOT relative
+    # query tokens: admitting one here would reach the resolver's exhaustive
+    # guard in ``_resolve_relative_date_filters`` and surface as a 500.
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/reports/query",
+            json={
+                "dataset": "transactions",
+                "measure": {"agg": "sum", "field": "amount"},
+                "filters": [
+                    {"field": "date", "op": "relative", "value": token}
+                ],
+            },
+        )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
 async def test_unknown_dataset_rejected(session_factory):
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))

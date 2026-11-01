@@ -210,27 +210,6 @@ class Settings(BaseSettings):
     # Throttle for the per-user last_active_at stamp: only re-stamp when the
     # stored value is older than this many seconds (≤1 write/user/window).
     last_active_stamp_throttle_seconds: int = 3600
-    # Usernames excluded from the public founder count (smoke/seed accounts).
-    # CSV, mirrors the cors-origins parsing pattern.
-    #
-    # ⚠⚠ NO DEFAULT VALUE, DELIBERATELY (TBD-371). This list names the
-    # production post-deploy smoke account, so no value is committed.
-    # Supply it from the environment.
-    #
-    # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint
-    # guards with ``if excluded:`` (routers/public_stats.py), so an empty list
-    # simply stops excluding and inflates an advertised public number by one.
-    #
-    # ⚠⚠ That is NOT guarded by refusing to boot, deliberately. The blast
-    # radius of this value being unset is one wrong integer on a marketing
-    # counter; the blast radius of a boot refusal is the whole application
-    # down. ``api_token_hmac_key`` earns its prod-required validator because
-    # losing it breaks PAT authentication -- a security primitive. This does
-    # not, and treating the two the same trades an outage for a cosmetic
-    # defect. ``public_stats`` logs ``public.founder_count.no_exclusions``
-    # at ERROR instead, which is greppable and alertable without taking
-    # production down.
-    founder_count_exclude_usernames: str = ""
 
     # Billing
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
@@ -638,14 +617,6 @@ class Settings(BaseSettings):
         self,
     ) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
         return _parse_forwarded_allow_ips(self.forwarded_allow_ips)
-
-    @property
-    def founder_count_exclude_list(self) -> list[str]:
-        return [
-            u.strip()
-            for u in self.founder_count_exclude_usernames.split(",")
-            if u.strip()
-        ]
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

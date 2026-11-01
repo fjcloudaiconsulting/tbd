@@ -14,6 +14,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatLocalDate, maskMoneyText, toEditAmount, todayISO } from "@/lib/format";
 import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import { demotionNotice } from "@/lib/demotion";
+import { SeriesScopeChoice, type SeriesScope } from "@/components/transactions/SeriesScopeChoice";
 import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar, warning as warningCls } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts } from "@/lib/hooks/use-accounts";
@@ -34,7 +35,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
 import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
-import BatchEditModal from "@/components/transactions/BatchEditModal";
+import BatchEditModal, { type BatchEditPayload } from "@/components/transactions/BatchEditModal";
 import TagChipInput from "@/components/transactions/TagChipInput";
 import SuggestCategoryButton from "@/components/transactions/SuggestCategoryButton";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
@@ -378,6 +379,10 @@ function TransactionsPageContent() {
   // it renders in the warning family, and it is its own state so it never
   // overwrites the demotion sentence in `notice` set by the same delete.
   const [bulkDeleteResult, setBulkDeleteResult] = useState("");
+  // TBD-763: rows a batch edit DID update but where a requested field was not
+  // applied (a recurring occurrence's date, a transfer's status...). Not a
+  // failure, so it is not in `error`; it is announced in the live region.
+  const [batchEditNotes, setBatchEditNotes] = useState("");
   // Armed ONLY by the page clamp below. A delete that empties the last page
   // shrinks `total`, the clamp moves `page` back, and that page change reloads
   // the list: without this, that reload clears the banners the delete just
@@ -566,6 +571,24 @@ function TransactionsPageContent() {
   // the visible list when possible, otherwise fetched on demand. Used to
   // filter the Account select and to render the mirror-amount notice.
   const [editPartner, setEditPartner] = useState<Transaction | null>(null);
+  // TBD-756. Where a new amount or date lands. Asked only on a stored PENDING
+  // occurrence whose amount or date actually changed, and never alongside a
+  // type change or on a row whose type left its series': the server refuses
+  // "future" for all of those. Rendered inside the recurring block, so the
+  // first two terms repeat that block's gate: Save must never wait on a choice
+  // the form does not show.
+  const [editSeriesScope, setEditSeriesScope] = useState<SeriesScope | null>(null);
+  const editingTx = transactions.find((t) => t.id === editingId) ?? null;
+  const editAsksSeriesScope =
+    editingTx !== null &&
+    editPartner === null &&
+    canPromoteToRecurring(editingTx) &&
+    editingTx.recurring_id !== null &&
+    editingTx.status === "pending" &&
+    editType === editingTx.type &&
+    (!editingSeries || editingSeries.type === editingTx.type) &&
+    // Amounts are Decimal strings on the wire: compare as numbers.
+    (Number(editAmount) !== Number(editingTx.amount) || editDate !== editingTx.date);
 
   // TBD-535: filter changes fire overlapping loads. Only the newest may write
   // the list, or a slow earlier response overwrites the rows for the current
@@ -586,6 +609,7 @@ function TransactionsPageContent() {
     } else {
       setNotice("");
       setBulkDeleteResult("");
+      setBatchEditNotes("");
     }
     // collapse_transfers=true (TBD-268): the server folds each MUTUALLY-linked
     // transfer pair to one row BEFORE applying the limit, so a page of
@@ -854,6 +878,7 @@ function TransactionsPageContent() {
     setError("");
     setNotice("");
     setBulkDeleteResult("");
+    setBatchEditNotes("");
     try {
       // TBD-294: the endpoint returns a body now. Deleting a row that another
       // row was matched against marks that other row rejected, irreversibly
@@ -874,6 +899,7 @@ function TransactionsPageContent() {
     setError("");
     setNotice("");
     setBulkDeleteResult("");
+    setBatchEditNotes("");
     setBulkDeleting(true);
     try {
       const body = { ids: Array.from(selectedIds) };
@@ -897,19 +923,19 @@ function TransactionsPageContent() {
     }
   }
 
-  async function handleBatchEdit(payload: {
-    category_id?: number; status?: "settled" | "pending"; account_id?: number; tags?: string[];
-  }) {
+  async function handleBatchEdit(payload: BatchEditPayload) {
     setShowBatchEdit(false);
     setError("");
     setNotice("");
     setBulkDeleteResult("");
+    setBatchEditNotes("");
     setBatchEditing(true);
     try {
       const res = await apiFetch<{
         requested_count: number;
         updated_count: number;
         skipped: { id: number; reason: string }[];
+        notes?: { id: number; note: string }[];
       }>("/api/v1/transactions/bulk-update", {
         method: "POST",
         body: JSON.stringify({ ids: Array.from(selectedIds), ...payload }),
@@ -917,11 +943,24 @@ function TransactionsPageContent() {
       clearSelection();
       await loadTransactions(page);
       if (res.skipped.length > 0) {
+        // TBD-763: an identical reason on many rows is said once, as the
+        // notes below are; the count says how many rows were skipped.
+        const reasons = Array.from(new Set(res.skipped.map((s) => s.reason)));
         setError(
-          `Updated ${res.updated_count} of ${res.requested_count}. ${res.skipped.length} skipped: ${res.skipped
+          `Updated ${res.updated_count} of ${res.requested_count}. ${res.skipped.length} skipped: ${reasons
             .slice(0, 3)
-            .map((s) => s.reason)
-            .join("; ")}${res.skipped.length > 3 ? "…" : ""}`,
+            .join("; ")}${reasons.length > 3 ? "…" : ""}`,
+        );
+      }
+      const notes = res.notes ?? [];
+      if (notes.length > 0) {
+        // The same note on many rows (every recurring row of a batch) is said
+        // once; the count says how many rows it covers.
+        const distinct = Array.from(new Set(notes.map((n) => n.note)));
+        setBatchEditNotes(
+          `Updated ${res.updated_count} of ${res.requested_count}. ${notes.length} kept a field unchanged: ${distinct
+            .slice(0, 3)
+            .join("; ")}${distinct.length > 3 ? "…" : ""}`,
         );
       }
     } catch (err) {
@@ -985,6 +1024,7 @@ function TransactionsPageContent() {
     setEditRecFrequency("monthly");
     setEditRecNextDue(defaultNextDueISO());
     setEditRecOccurrenceCount("");
+    setEditSeriesScope(null);
     // Hydrate partner for linked rows so the Account select can filter
     // currency-compatible options and the mirror-amount notice can render.
     //
@@ -1015,6 +1055,7 @@ function TransactionsPageContent() {
     setError("");
     setNotice("");
     setBulkDeleteResult("");
+    setBatchEditNotes("");
     setSkipping(true);
     try {
       await apiFetch(`/api/v1/transactions/${tx.id}/skip`, { method: "POST" });
@@ -1054,6 +1095,7 @@ function TransactionsPageContent() {
     setError("");
     setNotice("");
     setBulkDeleteResult("");
+    setBatchEditNotes("");
     // Capture the row pre-save so we can decide whether the promote step
     // applies (transfer legs and already-recurring rows are excluded).
     // TBD-268: "transfer leg" is `linked_account_name != null`, matching the
@@ -1104,6 +1146,12 @@ function TransactionsPageContent() {
         return;
       }
     }
+    if (editAsksSeriesScope && editSeriesScope === null) {
+      setError(
+        "Choose whether the new amount or date applies to this occurrence only or to future occurrences too",
+      );
+      return;
+    }
     try {
       const isLinked = editPartner !== null;
       const body: Record<string, unknown> = {
@@ -1123,6 +1171,9 @@ function TransactionsPageContent() {
       // server's authoritative value.
       if (editStatus === "pending") {
         body.settled_date = editSettledDate || null;
+      }
+      if (editAsksSeriesScope) {
+        body.series_scope = editSeriesScope;
       }
       await apiFetch(`/api/v1/transactions/${editingId}`, {
         method: "PUT",
@@ -1206,6 +1257,7 @@ function TransactionsPageContent() {
     setError("");
     setNotice("");
     setBulkDeleteResult("");
+    setBatchEditNotes("");
     try {
       await apiFetch(`/api/v1/transactions/${tx.id}`, {
         method: "PUT",
@@ -1457,6 +1509,15 @@ function TransactionsPageContent() {
         {bulkDeleteResult && (
           <div className={`mb-6 ${warningCls}`} data-testid="transactions-bulk-delete-result">
             {bulkDeleteResult}
+          </div>
+        )}
+
+        {batchEditNotes && (
+          <div
+            className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
+            data-testid="transactions-batch-edit-notes"
+          >
+            {batchEditNotes}
           </div>
         )}
 
@@ -1990,6 +2051,13 @@ function TransactionsPageContent() {
                                     Editing the name, category, or account also updates this
                                     recurring series and its upcoming occurrences.
                                   </p>
+                                  {editAsksSeriesScope && (
+                                    <SeriesScopeChoice
+                                      idSuffix={String(tx.id)}
+                                      value={editSeriesScope}
+                                      onChange={setEditSeriesScope}
+                                    />
+                                  )}
                                   {/* TBD-277. The control for the SERIES lives on
                                       another page, and nothing here said so: a
                                       user who wants the subscription to stop
@@ -2579,6 +2647,13 @@ function TransactionsPageContent() {
                                       Editing the name, category, or account also updates this
                                       recurring series and its upcoming occurrences.
                                     </p>
+                                    {editAsksSeriesScope && (
+                                      <SeriesScopeChoice
+                                        idSuffix={`mobile-${tx.id}`}
+                                        value={editSeriesScope}
+                                        onChange={setEditSeriesScope}
+                                      />
+                                    )}
                                     {/* TBD-277 -- MOBILE twin of the series
                                         pointer in the desktop row above. Same
                                         copy, same tokens, same gate. */}
