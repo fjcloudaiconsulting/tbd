@@ -8,7 +8,7 @@ import dataclasses
 import datetime
 
 import logging
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -254,7 +254,8 @@ async def update_recurring(
     On a plain update that does not flip ``is_active`` False->True, the
     supplied date is always kept verbatim.
 
-    ``occurrence_count`` (TBD-275) is editable and may be edited DOWNWARD below
+    ``occurrence_count`` (TBD-275) is editable, an explicit null making the
+    series open-ended again (TBD-762), and may be edited DOWNWARD below
     what the series has already delivered. That is honoured, not rejected:
     ``recurring_filters.remaining_occurrences`` goes negative,
     ``active_series_filter`` drops the template, and the series simply stops.
@@ -277,16 +278,17 @@ async def update_recurring(
 
     # TBD-756/TBD-760: an amount, name, category or account change moves the
     # pending occurrences still at the OLD value, so that old value must be
-    # read under the lock.
+    # read under the lock. TBD-762 widens it to any request carrying more than
+    # ``is_active``: the next-due guard below reads the series' rows against
+    # the template's frequency and frontier, and generation (which locks the
+    # template too) must not move either in between. Resume alone stays a
+    # plain read, as it always was. Lock order stays template -> rows.
     q = (
         select(RecurringTransaction)
         .options(*_load_opts())
         .where(RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id)
     )
-    if (
-        body.amount is not None or body.description is not None
-        or body.category_id is not None or body.account_id is not None
-    ):
+    if body.model_fields_set - {"is_active"}:
         q = q.with_for_update().execution_options(populate_existing=True)
     r = (await db.execute(q)).scalar_one_or_none()
     if r is None:
@@ -301,6 +303,7 @@ async def update_recurring(
     old_description = r.description
     old_category_id = r.category_id
     old_account_id = r.account_id
+    old_next_due = r.next_due_date
 
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
@@ -317,7 +320,11 @@ async def update_recurring(
         r.auto_settle = body.auto_settle
     if body.is_active is not None:
         r.is_active = body.is_active
-    if body.occurrence_count is not None:
+    # TBD-762: an explicit null is "never ends", so this reads key presence,
+    # not the value; an omitted key still leaves the count alone. Written here,
+    # with the other fields, so ``unexhausted`` below sees it: a finished series
+    # made open-ended resumes, and must take the re-anchor like any other.
+    if "occurrence_count" in body.model_fields_set:
         r.occurrence_count = body.occurrence_count
 
     # Validate the post-update (type, category) pair when either changes.
@@ -363,10 +370,11 @@ async def update_recurring(
 
     # TBD-283: the frontier lower bound, on the POST-WRITE state.
     #
-    # ⚠ GATED, not unconditional. The only PUT the frontend ever issues is
-    # ``{"is_active": true}`` (Resume). Re-checking the stored frontier on every
-    # update would 400 Resume for exactly the long-paused templates users
-    # resume, in a UI that offers no field to fix it with.
+    # ⚠ GATED, not unconditional. Resume sends ``{"is_active": true}`` alone,
+    # and the Edit series dialog (TBD-762) sends only the fields the user
+    # changed. Re-checking the stored frontier on every update would 400 Resume
+    # for exactly the long-paused templates users resume, and refuse a rename
+    # over a date nobody touched.
     #
     # ⚠ The ``frequency`` clause is not decoration. Flipping a stale yearly
     # template to weekly multiplies its implied occurrences without a
@@ -389,6 +397,12 @@ async def update_recurring(
     # up compliant.
     if body.next_due_date is not None or body.frequency is not None:
         await validate_frontier(db, org_id, r.next_due_date, today=today)
+
+    # TBD-762: a next due date the user moved must clear the series' own rows.
+    # Gated on the user's edit: the re-anchor only walks a frozen frontier
+    # forward, and Resume alone must behave as it always has.
+    if body.next_due_date is not None and r.next_due_date != old_next_due:
+        await _check_frontier_clears_series(db, org_id, r, old_next_due=old_next_due)
 
     # TBD-756/TBD-760: the pending occurrences still at the old amount, name,
     # category or account follow the new one; a row whose value differs keeps
@@ -422,6 +436,43 @@ async def update_recurring(
         select(RecurringTransaction).options(*_load_opts()).where(RecurringTransaction.id == r.id)
     )
     return result.scalar_one()
+
+
+async def _check_frontier_clears_series(
+    db: AsyncSession, org_id: int, r: RecurringTransaction,
+    *, old_next_due: datetime.date,
+) -> None:
+    """Refuse a moved ``next_due_date`` that lands where the series already has
+    an occurrence (TBD-762). Writes nothing.
+
+    Rent on the 1st, the Nov 1 row exists, next due Dec 1. Moving the frontier
+    to Nov 3 makes generation write a second November rent: its ``exists``
+    probe and the forecasts' materialised probe key on ``(recurring_id, date)``
+    and cannot see Nov 1. So the new frontier must be strictly after every row
+    of the series, and either a whole period (on the post-edit frequency) after
+    the latest one, or no earlier than the frontier it replaces: a LATER move
+    adds no occurrence to any period, whatever a hand-moved row looks like.
+
+    Every row counts, whatever its status or ``reconciliation_state``: a
+    skipped occurrence was still that period's occurrence, and generation's
+    probe does not read the state either.
+    """
+    latest = await db.scalar(
+        select(func.max(Transaction.date)).where(
+            Transaction.org_id == org_id, Transaction.recurring_id == r.id,
+        )
+    )
+    if latest is None:
+        return
+    new = r.next_due_date
+    floor = advance_date(latest, r.frequency)
+    if new > latest and (new >= floor or new >= old_next_due):
+        return
+    raise ConflictError(
+        f"The series has a transaction on {latest.isoformat()}, so its next due "
+        f"date cannot be {new.isoformat()}. Choose {floor.isoformat()} or later, "
+        f"or move or delete that transaction first."
+    )
 
 
 # Runaway guard only, not policy: ~23 years of weekly occurrences. A frontier
