@@ -647,13 +647,14 @@ async def _category(factory, seed, name: str, *, parent_id=None,
 
 async def _template(factory, seed, category_id: int, amount, next_due_date,
                     description: str = "bill", *, type_: str = "expense",
-                    is_active: bool = True) -> int:
+                    is_active: bool = True,
+                    frequency: Frequency = Frequency.MONTHLY) -> int:
     async with factory() as db:
         r = RecurringTransaction(
             org_id=seed["org_id"], account_id=seed["account_id"],
             category_id=category_id, description=description,
             amount=Decimal(str(amount)), type=type_,
-            frequency=Frequency.MONTHLY, next_due_date=next_due_date,
+            frequency=frequency, next_due_date=next_due_date,
             auto_settle=False, is_active=is_active,
         )
         db.add(r)
@@ -1331,3 +1332,67 @@ async def test_month_end_bill_settling_next_month_matches_on_its_due_month(
 
     [item] = _expense_items(await _populate(session_factory, seed), phone)
     assert item.planned_amount == Decimal("100.00")
+
+
+
+# ── TBD-764 third review: a template not due this period still matches ──────
+
+
+@pytest.mark.parametrize(
+    ("frequency", "next_due"),
+    [
+        (Frequency.QUARTERLY, datetime.date(2026, 6, 15)),
+        (Frequency.YEARLY, datetime.date(2027, 3, 15)),
+    ],
+)
+@pytest.mark.asyncio
+async def test_template_with_no_slot_this_period_still_matches_its_history(
+    session_factory, frequency, next_due,
+):
+    """Bills = Electricity 80 every month + Insurance 600 in March. The
+    insurance template (quarterly or yearly) has no slot in May at all, so
+    it is simply not due: it still matches March's 600, and May plans the
+    electricity 80, not (80 + 680 + 80) / 3 = 280."""
+    seed = await _seed(session_factory)
+    bills = await _category(session_factory, seed, "Bills")
+    power = await _category(session_factory, seed, "Electricity", parent_id=bills)
+    cover = await _category(session_factory, seed, "Insurance", parent_id=bills)
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, power, 80, datetime.date(2026, month, 5)))
+        db.add(_settled(seed, cover, 600, datetime.date(2026, 3, 15)))
+        await db.commit()
+    await _template(
+        session_factory, seed, cover, 600, next_due, "Insurance",
+        frequency=frequency,
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), bills)
+    assert item.planned_amount == Decimal("80.00")
+    assert item.source == "history"
+
+
+@pytest.mark.asyncio
+async def test_rejected_occurrence_this_period_does_not_hold_the_slot(
+    session_factory,
+):
+    """May's generated rent row was REJECTED (its amount reverted): unlike a
+    skipped one it is not the template handling May, so the slot is open,
+    the template does not match, and May plans the 1500 history average."""
+    seed = await _seed(session_factory)
+    rent = await _category(session_factory, seed, "Rent")
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, rent, 1500, datetime.date(2026, month, 1)))
+        await db.commit()
+    rid = await _template(
+        session_factory, seed, rent, 1500, datetime.date(2026, 6, 1), "Rent",
+    )
+    async with session_factory() as db:
+        db.add(_row(seed, rent, 1500, datetime.date(2026, 5, 1),
+                    recurring_id=rid, reconciliation_state="rejected"))
+        await db.commit()
+
+    [item] = _expense_items(await _populate(session_factory, seed), rent)
+    assert item.planned_amount == Decimal("1500.00")
+    assert item.source == "history"

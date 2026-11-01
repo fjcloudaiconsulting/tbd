@@ -9,7 +9,7 @@ import datetime
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,7 @@ from app.services.settings_service import (
 )
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    non_reverted_transaction_filter,
     org_currency_filter,
     reportable_transaction_filter,
 )
@@ -407,6 +408,11 @@ async def get_plan_for_period(
 # ── populate: history already covered by a template (TBD-764) ──────────────
 
 _TEMPLATE_MATCH_TOLERANCE = Decimal("0.10")
+# Bound on the backward slot walk below, for a frontier set far ahead of the
+# period (a weekly template starting years out). Local on purpose: the shared
+# ``date_utils.MAX_OCCURRENCE_ITERATIONS`` is generation's cap and is being
+# retired from that module (TBD-338).
+_MAX_SLOT_WALK_STEPS = 600
 
 
 def _template_occurrences_in_month(
@@ -418,6 +424,11 @@ def _template_occurrences_in_month(
     template's own ``next_due_date`` (weekday, 14-day phase, quarter month,
     anniversary month) and never projects anything. A past month has no
     frontier to walk from, which is why ``occurrences_in_window`` is not used.
+
+    Known limit: the anchor is the CURRENT frontier. After a "this and
+    future" date move (TBD-756) -- a weekly template moved to another
+    weekday, say -- a past month's cap can be off by one, because that
+    month's rows were due on the old grid.
     """
     anchor = r.next_due_date
     first = datetime.date(year, month, 1)
@@ -435,6 +446,41 @@ def _template_occurrences_in_month(
     if freq == Frequency.YEARLY:
         return 1 if months_apart % 12 == 0 else 0
     return 1
+
+
+def _has_open_slot_before_frontier(
+    r: RecurringTransaction,
+    p_start: datetime.date, p_end: datetime.date,
+    held: set[tuple[int, datetime.date]],
+) -> bool:
+    """True if ``r``'s grid has a slot in ``[p_start, p_end]`` BEFORE its
+    ``next_due_date`` that no row in ``held`` (``(recurring_id, date)``)
+    holds -- the template starts after a slot the user pays by hand.
+
+    Walked BACK from the frontier in whole frequency steps, each from the
+    frontier itself (``next_due - k months``, not iterated), until it falls
+    before ``p_start``. Slots at or after the frontier are the projection's.
+    Capped at ``_MAX_SLOT_WALK_STEPS``; past the cap the template is treated
+    as having no open slot (it matches).
+    """
+    anchor = r.next_due_date
+    freq = r.frequency
+    for k in range(1, _MAX_SLOT_WALK_STEPS + 1):
+        if freq == Frequency.WEEKLY:
+            d = anchor - datetime.timedelta(weeks=k)
+        elif freq == Frequency.BIWEEKLY:
+            d = anchor - datetime.timedelta(weeks=2 * k)
+        elif freq == Frequency.QUARTERLY:
+            d = anchor - relativedelta(months=3 * k)
+        elif freq == Frequency.YEARLY:
+            d = anchor - relativedelta(years=k)
+        else:
+            d = anchor - relativedelta(months=k)
+        if d < p_start:
+            return False
+        if d <= p_end and (r.id, d) not in held:
+            return True
+    return False
 
 
 def _drop_template_matches(
@@ -638,13 +684,18 @@ async def populate_from_sources(
     # one of the group's templates is matched out of H': see
     # ``_drop_template_matches``. What is left (variable spend) stays.
     #
-    # Only a template that HAS an occurrence in this period matches: one it
-    # projects (an occurrence with no row yet) or one it already generated (a
-    # row dated or settling in the period, in ANY state -- a skipped
-    # occurrence still means "this bill is handled by the template, and the
-    # user skipped it"). A template created now to start NEXT period ("I pay
-    # this month by hand") contributes nothing here and must not erase the
-    # history that is this period's only signal.
+    # A template is kept OUT of the match only when its grid has a slot in
+    # this period BEFORE its frontier that no row holds: the template was set
+    # up to start later and the user pays this one by hand ("rent template
+    # from Dec 1, November paid by hand"), so the history is this period's
+    # only signal (``_has_open_slot_before_frontier``). A template simply not
+    # due this period (quarterly insurance due next month) still matches; so
+    # does one whose slot holds a SKIPPED row. Asymmetry, by design: "starts
+    # next period" plans the history average, "skipped this period" plans 0
+    # -- skip means "not this period", and a hand payment of it would reach
+    # B' as its own row anyway. A REJECTED row or a reconcile duplicate does
+    # not hold its slot (its amount was reverted; the template did not
+    # handle it).
     #
     # Known and NOT solved here, exactly as in ``forecast_service``:
     #   - a hand-keyed pending row duplicating a template bill counts in B'
@@ -724,8 +775,6 @@ async def populate_from_sources(
         materialised = {(rid, d) for rid, d in rows.all()}
 
     r_totals: dict[tuple[int, str], Decimal] = {}
-    # Templates with an occurrence in this period; see the history match.
-    in_period_templates: set[int] = set()
     for r in recurring_items:
         key = (group_key(r.category_id), type_str(r.type))
         if key in existing_keys:
@@ -745,7 +794,6 @@ async def populate_from_sources(
             if (r.id, d) in materialised:
                 continue
             r_totals[key] = r_totals.get(key, Decimal("0")) + r.amount
-            in_period_templates.add(r.id)
 
     # Cash-basis: select + filter by the effective settled date so a row
     # dated in month X but settled in month Y buckets (and windows) by Y,
@@ -839,8 +887,8 @@ async def populate_from_sources(
 
     # The history match (see the comment at the top of this computation).
     # Two small selects, both keyed on the org's active templates only:
-    #   - which templates already have a row in THIS period, in any state
-    #     (projected ones were collected above);
+    #   - the rows that hold the templates' slots in THIS period (dated in
+    #     it; skipped counts, rejected and reconcile duplicates do not);
     #   - how many SETTLED, reportable rows each template generated per due
     #     month over the history rows' date span: those occurrences were paid
     #     through the template, so its cap is spent. A generated row left
@@ -850,19 +898,21 @@ async def populate_from_sources(
     generated_counts: dict[tuple[int, tuple[int, int]], int] = {}
     template_ids = [r.id for r in active_templates]
     if template_ids and hist_rows:
-        in_period = await db.execute(
-            select(Transaction.recurring_id).distinct().where(
+        held_rows = await db.execute(
+            select(Transaction.recurring_id, Transaction.date).where(
                 Transaction.org_id == org_id,
                 Transaction.recurring_id.in_(template_ids),
+                Transaction.date >= p_start,
+                Transaction.date <= p_end,
                 or_(
-                    and_(Transaction.date >= p_start, Transaction.date <= p_end),
-                    and_(eff_date >= p_start, eff_date <= p_end),
+                    Transaction.reconciliation_state == "skipped",
+                    non_reverted_transaction_filter(),
                 ),
             )
         )
-        in_period_templates.update(rid for (rid,) in in_period.all())
+        held = {(rid, d) for rid, d in held_rows.all()}
         for r in active_templates:
-            if r.id in in_period_templates:
+            if not _has_open_slot_before_frontier(r, p_start, p_end, held):
                 key = (group_key(r.category_id), type_str(r.type))
                 templates_by_group.setdefault(key, []).append(r)
 
