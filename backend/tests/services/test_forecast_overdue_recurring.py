@@ -582,9 +582,10 @@ async def test_f16_probe_suppresses_already_materialised_occurrences(db_session)
     reached that state directly until TBD-762: a user who rewound the schedule
     of a template that already generated re-created exactly this shape (the
     same shape ``test_recurring_generate_fill_period.test_dedup_guard_...``
-    uses). ``update_recurring`` now refuses that rewind, so the fixture writes
-    the frontier directly and the probe stays as defence in depth for
-    frontiers stored before the guard.
+    uses). ``update_recurring`` now refuses a MOVED frontier that does not
+    clear the series' rows (a locking read of them), so the fixture writes the
+    frontier directly. The probe stays as defence in depth for frontiers stored
+    before the guard and for any writer that does not go through it.
 
     ⚠ Before TBD-762 the rewind was FLOORED, not free (TBD-283):
     ``validate_frontier`` 400s a rewind earlier than the org's current cycle
@@ -636,9 +637,8 @@ async def test_f16_probe_suppresses_already_materialised_occurrences(db_session)
     assert [r.date for r in rows] == [p_start, interior, window_end]
 
     # Rewind every frontier. Written directly: since TBD-762 the update path
-    # refuses this very rewind (a next due date on or inside the period of an
-    # existing row), so the probe is defence in depth for frontiers written
-    # before that guard. ``test_recurring_edit_series`` fences the refusal.
+    # refuses this very rewind (a moved next due date must clear the series'
+    # rows). ``test_recurring_edit_series`` fences the refusal.
     for t, (due, _amount) in zip(templates, placements):
         t.next_due_date = due
     await db_session.commit()

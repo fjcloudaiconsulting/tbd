@@ -754,8 +754,9 @@ async def test_x1_rewind_onto_generated_date_double_spends_elapsed(db_session):
     Monthly, 12 instalments, frontier on ``p_start``. Generate (1 row, elapsed
     1), rewind ``next_due_date`` back onto ``p_start``, generate again. The
     rewind is written directly: since TBD-762 ``update_recurring`` refuses a
-    next due date on or inside the period of an existing row, so this shape is
-    reachable only from frontiers stored before that guard.
+    MOVED next due date that does not clear the series' rows (a locking read of
+    them). The shape stays reachable from frontiers stored before that guard and
+    from any writer that does not go through it, so the probe stays.
     The ``exists`` branch finds the row and ``_advance_frontier`` spends a
     second instalment for the same key. Flips to XPASS -> FAIL when TBD-509
     lands, which is the prompt to delete this marker.

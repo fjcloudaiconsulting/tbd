@@ -246,6 +246,9 @@ describe("recurring page: edit series (TBD-762)", () => {
     expect(text).toContain("Paid occurrences never change.");
     expect(text).toContain("occurrences already created keep their dates");
     expect(text).toContain("stop this series and create a new one");
+    // The lead line must not contradict the note: pending rows follow too.
+    expect(text).toContain('Changes apply to "Rent" and its pending occurrences.');
+    expect(text).not.toContain("from its next occurrence on");
   });
 
   it("E3: Save waits for a change, then PUTs exactly the changed field", async () => {
@@ -359,6 +362,9 @@ describe("recurring page: edit series (TBD-762)", () => {
     const dialog = await open("Rent");
     fireEvent.click(field(dialog, "After"));
     expect(save(dialog)).toBeDisabled();
+    // Blank is not silent: Save is disabled AND says why.
+    expect(within(dialog).getByText("Enter a number.")).toBeInTheDocument();
+    expect(field(dialog, "Number of occurrences")).toHaveAttribute("aria-invalid", "true");
     fireEvent.change(field(dialog, "Number of occurrences"), { target: { value: "abc" } });
     expect(within(dialog).getByText("Enter a whole number from 1 to 1200.")).toBeInTheDocument();
     expect(save(dialog)).toBeDisabled();

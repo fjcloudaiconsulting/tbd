@@ -74,9 +74,11 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
       : "Enter an amount above 0.";
   const countValue = /^\d+$/.test(count.trim()) ? Number(count.trim()) : NaN;
   const countValid = countValue >= 1 && countValue <= MAX_OCCURRENCES;
-  const countError = !endsNever && count.trim() !== "" && !countValid
-    ? `Enter a whole number from 1 to ${MAX_OCCURRENCES}.`
-    : null;
+  const countError = endsNever || countValid
+    ? null
+    : count.trim() === ""
+      ? "Enter a number."
+      : `Enter a whole number from 1 to ${MAX_OCCURRENCES}.`;
   const valid =
     nameError === null && amountError === null && categoryId !== "" && nextDue !== "" &&
     (endsNever || countValid);
@@ -138,7 +140,7 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
     <ConfirmModal
       open
       title="Edit Series"
-      message={`Changes apply to "${item.description}" from its next occurrence on.`}
+      message={`Changes apply to "${item.description}" and its pending occurrences.`}
       confirmLabel="Save changes"
       submitting={submitting}
       confirmDisabled={!valid || !changed}

@@ -263,6 +263,78 @@ async def test_another_series_rows_do_not_count(db_session):
     assert updated.next_due_date == date(Y, 11, 3)
 
 
+async def test_the_message_names_the_earliest_date_that_would_be_accepted_after_a_frequency_change(db_session):
+    """Weekly -> monthly, last row Nov 2, next due Nov 9. A month after Nov 2 is
+    Dec 2, but Nov 9 (the current frontier) is already accepted: name Nov 9."""
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed, frequency=Frequency.WEEKLY, next_due_date=date(Y, 11, 9))
+    await _add_row(db_session, seed, rid, dt=date(Y, 11, 2))
+
+    with pytest.raises(ConflictError) as exc:
+        await _update(
+            db_session, seed, rid,
+            {"frequency": "monthly", "next_due_date": date(Y, 11, 5).isoformat()},
+        )
+
+    assert f"Choose {Y}-11-09 or later" in exc.value.detail
+    await db_session.rollback()
+    ok = await _update(
+        db_session, seed, rid,
+        {"frequency": "monthly", "next_due_date": date(Y, 11, 9).isoformat()},
+    )
+    assert ok.next_due_date == date(Y, 11, 9)
+
+
+async def test_the_message_names_the_frontier_after_a_hand_moved_row(db_session):
+    """Row moved by hand to Nov 20, frontier Dec 1: Dec 1 is the earliest
+    accepted date, not Dec 20."""
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)
+    await _add_row(db_session, seed, rid, dt=date(Y, 11, 20))
+
+    with pytest.raises(ConflictError) as exc:
+        await _update(db_session, seed, rid, {"next_due_date": date(Y, 11, 25).isoformat()})
+
+    assert f"Choose {Y}-12-01 or later" in exc.value.detail
+
+
+async def test_a_longer_period_from_the_same_frontier_is_accepted(db_session):
+    """Monthly with Nov 1 materialised, next due Dec 1, changed to yearly: the
+    user means "yearly from Dec 1". The frontier did not move, so the guard does
+    not run, even though Nov 1 and Dec 1 now share a yearly period."""
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)
+    await _add_row(db_session, seed, rid, dt=date(Y, 11, 1))
+
+    updated = await _update(db_session, seed, rid, {"frequency": "yearly"})
+
+    assert updated.frequency == Frequency.YEARLY
+    assert updated.next_due_date == date(Y, 12, 1)
+
+
+async def test_the_guard_reads_the_series_rows_with_a_locking_read(db_session):
+    """The rows read must not come from the request's snapshot: generation may
+    have committed a row while this request waited on the template lock.
+    SQLite drops the clause from the SQL; the statement object still carries
+    it, which proves the code path, not the lock."""
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)
+    await _add_row(db_session, seed, rid, dt=date(Y, 11, 1))
+    seen: list = []
+
+    @event.listens_for(db_session.sync_session, "do_orm_execute")
+    def _rec(state):
+        if state.is_select and any(
+            d.get("entity") is Transaction for d in state.statement.column_descriptions
+        ):
+            seen.append(state.statement._for_update_arg)
+
+    await _update(db_session, seed, rid, {"next_due_date": date(Y, 12, 3).isoformat()})
+
+    assert seen, "the guard read no series rows"
+    assert all(arg is not None and arg.read for arg in seen), seen
+
+
 # ── occurrence_count: explicit null = never ends ─────────────────────────────
 
 async def test_explicit_null_occurrence_count_makes_the_series_open_ended(db_session):

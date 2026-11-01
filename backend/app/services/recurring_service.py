@@ -8,7 +8,7 @@ import dataclasses
 import datetime
 
 import logging
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -279,10 +279,13 @@ async def update_recurring(
     # TBD-756/TBD-760: an amount, name, category or account change moves the
     # pending occurrences still at the OLD value, so that old value must be
     # read under the lock. TBD-762 widens it to any request carrying more than
-    # ``is_active``: the next-due guard below reads the series' rows against
-    # the template's frequency and frontier, and generation (which locks the
-    # template too) must not move either in between. Resume alone stays a
-    # plain read, as it always was. Lock order stays template -> rows.
+    # ``is_active``: generation locks the template too, so it cannot move the
+    # frontier or add a row between this read and the commit. The template lock
+    # alone does NOT make the next-due guard's row read current: on MySQL
+    # REPEATABLE READ a plain SELECT reads the snapshot taken by this request's
+    # first statement, from before it waited here, so the guard's read is a
+    # locking read of its own. Resume alone stays a plain read, as it always
+    # was. Lock order stays template -> rows.
     q = (
         select(RecurringTransaction)
         .options(*_load_opts())
@@ -450,17 +453,33 @@ async def _check_frontier_clears_series(
     probe and the forecasts' materialised probe key on ``(recurring_id, date)``
     and cannot see Nov 1. So the new frontier must be strictly after every row
     of the series, and either a whole period (on the post-edit frequency) after
-    the latest one, or no earlier than the frontier it replaces: a LATER move
-    adds no occurrence to any period, whatever a hand-moved row looks like.
+    the latest one, or no earlier than the frontier it replaces: a later move
+    adds no occurrence to a period that did not already have one coming.
+
+    Runs only when the frontier MOVES. A frequency change that keeps it, e.g.
+    monthly -> yearly with Nov 1 materialised and Dec 1 next, is accepted
+    although Nov 1 and Dec 1 then share a yearly period: the user means "yearly
+    from Dec 1", which is exactly what generation does.
 
     Every row counts, whatever its status or ``reconciliation_state``: a
     skipped occurrence was still that period's occurrence, and generation's
     probe does not read the state either.
+
+    ⚠ A LOCKING read (shared), not a plain one. On MySQL REPEATABLE READ a plain
+    SELECT reads the snapshot fixed by the request's first statement (the
+    current-user lookup), from BEFORE this request waited on the template lock.
+    A generation run holding that lock can insert Nov 1 and move the frontier to
+    Dec 1; the waiting PUT then sees frontier Dec 1 but a snapshot without
+    Nov 1, and accepts Nov 3. A locking read sees the latest committed rows.
+    Lock order stays template -> rows. sqlite ignores the clause; the test
+    asserts it on the statement.
     """
     latest = await db.scalar(
-        select(func.max(Transaction.date)).where(
-            Transaction.org_id == org_id, Transaction.recurring_id == r.id,
-        )
+        select(Transaction.date)
+        .where(Transaction.org_id == org_id, Transaction.recurring_id == r.id)
+        .order_by(Transaction.date.desc())
+        .limit(1)
+        .with_for_update(read=True)
     )
     if latest is None:
         return
@@ -468,9 +487,11 @@ async def _check_frontier_clears_series(
     floor = advance_date(latest, r.frequency)
     if new > latest and (new >= floor or new >= old_next_due):
         return
+    # Exactly the earliest date the rule above accepts.
+    earliest = max(latest + datetime.timedelta(days=1), min(floor, old_next_due))
     raise ConflictError(
         f"The series has a transaction on {latest.isoformat()}, so its next due "
-        f"date cannot be {new.isoformat()}. Choose {floor.isoformat()} or later, "
+        f"date cannot be {new.isoformat()}. Choose {earliest.isoformat()} or later, "
         f"or move or delete that transaction first."
     )
 
