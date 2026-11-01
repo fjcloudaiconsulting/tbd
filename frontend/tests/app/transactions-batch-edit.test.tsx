@@ -289,4 +289,26 @@ describe("TransactionsPage - batch edit wiring", () => {
     expect(screen.getByTestId("transactions-live-region").getAttribute("role")).toBe("status");
     expect(banner.className).not.toMatch(/danger/);
   });
+  it("says an identical skip reason once, like the notes", async () => {
+    const txs = [
+      makeTx({ id: 95, description: "One" }),
+      makeTx({ id: 96, description: "Two" }),
+    ];
+    const reason = "date not applied: settled on 2026-05-01; set the settlement date too";
+    setupApiFetch(txs, {
+      requested_count: 2,
+      updated_count: 0,
+      skipped: [{ id: 95, reason }, { id: 96, reason }],
+      notes: [],
+    });
+    renderWithSWR(<TransactionsPage />);
+
+    const dialog = await selectAllAndOpenModal();
+    fireEvent.change(within(dialog).getByLabelText(/^set date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /apply/i }));
+
+    expect(await screen.findByText(`Updated 0 of 2. 2 skipped: ${reason}`)).toBeTruthy();
+  });
 });

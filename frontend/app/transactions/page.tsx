@@ -943,11 +943,13 @@ function TransactionsPageContent() {
       clearSelection();
       await loadTransactions(page);
       if (res.skipped.length > 0) {
+        // TBD-763: an identical reason on many rows is said once, as the
+        // notes below are; the count says how many rows were skipped.
+        const reasons = Array.from(new Set(res.skipped.map((s) => s.reason)));
         setError(
-          `Updated ${res.updated_count} of ${res.requested_count}. ${res.skipped.length} skipped: ${res.skipped
+          `Updated ${res.updated_count} of ${res.requested_count}. ${res.skipped.length} skipped: ${reasons
             .slice(0, 3)
-            .map((s) => s.reason)
-            .join("; ")}${res.skipped.length > 3 ? "…" : ""}`,
+            .join("; ")}${reasons.length > 3 ? "…" : ""}`,
         );
       }
       const notes = res.notes ?? [];
