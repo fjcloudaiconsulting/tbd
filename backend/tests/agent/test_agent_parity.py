@@ -34,7 +34,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 74
+MAX_GAPS = 75
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -48,6 +48,10 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/transactions/{transaction_id}/convert-to-transfer"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/promote-to-recurring"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/skip"): "TBD-664",
+    # The edit tools cover every field but `series_scope` (TBD-756). "future"
+    # also rewrites the series template and its later pending occurrences,
+    # which neither preview discloses, so it stays off the agent until one does.
+    ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("PUT", "/api/v1/transactions/{transaction_id}/tags"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/unpair"): "TBD-664",
     # TBD-665
