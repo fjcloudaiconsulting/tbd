@@ -3,6 +3,7 @@
 import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 
 import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
+import RecurrenceFields from "@/components/transactions/RecurrenceFields";
 import TagChipInput from "@/components/transactions/TagChipInput";
 import CategorySelect from "@/components/ui/CategorySelect";
 import HelpTooltip from "@/components/help/HelpTooltip";
@@ -555,73 +556,15 @@ export default function TransactionForm({
           Repeats
         </label>
         {repeat && (
-          <>
-            <div className="flex items-center gap-1">
-              <label htmlFor="fab-tx-freq" className="sr-only">
-                Frequency
-              </label>
-              <select
-                id="fab-tx-freq"
-                value={frequency}
-                onChange={(e) => setFrequency(e.target.value)}
-                className={input}
-              >
-                <option value="weekly">Weekly</option>
-                <option value="biweekly">Every 2 weeks</option>
-                <option value="monthly">Monthly</option>
-                <option value="quarterly">Quarterly</option>
-                <option value="yearly">Yearly</option>
-              </select>
-              <HelpTooltip k="tx.frequency" />
-            </div>
-            {/* TBD-275. Account-agnostic by construction: this block renders
-                for every account type, so "available on checking and credit
-                card accounts" is satisfied without a type branch — and adding
-                one would hide instalment plans on the savings/cash accounts
-                people also put them on. Blank is the common case, so the
-                placeholder carries the meaning rather than a helper line
-                (quiet-by-default, docs/product/PRODUCT.md). */}
-            <div className="flex items-center gap-1">
-              <label htmlFor="fab-tx-occurrences" className="sr-only">
-                Number of payments
-              </label>
-              <input
-                id="fab-tx-occurrences"
-                // ⚠ type="text", NOT type="number". A number input silently
-                // COERCES unparseable text to the empty string, so "abc" would
-                // read as blank and quietly turn a 4-payment plan into an
-                // open-ended one with no feedback at all. It also moves
-                // rejection into the browser's native constraint bubble, which
-                // means two half-overlapping enforcement points instead of the
-                // one guard in submit() that every other field here uses.
-                type="text"
-                inputMode="numeric"
-                placeholder="Payments (optional)"
-                aria-describedby="fab-tx-occurrences-hint"
-                value={occurrenceCount}
-                onChange={(e) => setOccurrenceCount(e.target.value)}
-                className={`!w-44 ${input}`}
-              />
-              <HelpTooltip k="tx.occurrence-count" />
-            </div>
-            <p
-              id="fab-tx-occurrences-hint"
-              className="w-full text-[10px] text-text-muted"
-            >
-              Leave blank to repeat indefinitely. Counting this one, so a
-              4-payment plan stops after three more.
-            </p>
-            <label className="flex items-center gap-2 text-xs text-text-muted">
-              <input
-                type="checkbox"
-                checked={autoSettle}
-                onChange={(e) => setAutoSettle(e.target.checked)}
-                className="rounded border-border"
-              />
-              Auto-settle
-              <HelpTooltip k="tx.auto-settle" />
-            </label>
-          </>
+          <RecurrenceFields
+            idPrefix="fab-tx"
+            frequency={frequency}
+            onFrequencyChange={setFrequency}
+            occurrenceCount={occurrenceCount}
+            onOccurrenceCountChange={setOccurrenceCount}
+            autoSettle={autoSettle}
+            onAutoSettleChange={setAutoSettle}
+          />
         )}
       </div>
 

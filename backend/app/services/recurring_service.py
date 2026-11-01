@@ -254,7 +254,8 @@ async def update_recurring(
     On a plain update that does not flip ``is_active`` False->True, the
     supplied date is always kept verbatim.
 
-    ``occurrence_count`` (TBD-275) is editable and may be edited DOWNWARD below
+    ``occurrence_count`` (TBD-275) is editable, an explicit null making the
+    series open-ended again (TBD-762), and may be edited DOWNWARD below
     what the series has already delivered. That is honoured, not rejected:
     ``recurring_filters.remaining_occurrences`` goes negative,
     ``active_series_filter`` drops the template, and the series simply stops.
@@ -277,16 +278,20 @@ async def update_recurring(
 
     # TBD-756/TBD-760: an amount, name, category or account change moves the
     # pending occurrences still at the OLD value, so that old value must be
-    # read under the lock.
+    # read under the lock. TBD-762 widens it to any request carrying more than
+    # ``is_active``: generation locks the template too, so it cannot move the
+    # frontier or add a row between this read and the commit. The template lock
+    # alone does NOT make the next-due guard's row read current: on MySQL
+    # REPEATABLE READ a plain SELECT reads the snapshot taken by this request's
+    # first statement, from before it waited here, so the guard's read is a
+    # locking read of its own. Resume alone stays a plain read, as it always
+    # was. Lock order stays template -> rows.
     q = (
         select(RecurringTransaction)
         .options(*_load_opts())
         .where(RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id)
     )
-    if (
-        body.amount is not None or body.description is not None
-        or body.category_id is not None or body.account_id is not None
-    ):
+    if body.model_fields_set - {"is_active"}:
         q = q.with_for_update().execution_options(populate_existing=True)
     r = (await db.execute(q)).scalar_one_or_none()
     if r is None:
@@ -301,6 +306,7 @@ async def update_recurring(
     old_description = r.description
     old_category_id = r.category_id
     old_account_id = r.account_id
+    old_next_due = r.next_due_date
 
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
@@ -317,7 +323,11 @@ async def update_recurring(
         r.auto_settle = body.auto_settle
     if body.is_active is not None:
         r.is_active = body.is_active
-    if body.occurrence_count is not None:
+    # TBD-762: an explicit null is "never ends", so this reads key presence,
+    # not the value; an omitted key still leaves the count alone. Written here,
+    # with the other fields, so ``unexhausted`` below sees it: a finished series
+    # made open-ended resumes, and must take the re-anchor like any other.
+    if "occurrence_count" in body.model_fields_set:
         r.occurrence_count = body.occurrence_count
 
     # Validate the post-update (type, category) pair when either changes.
@@ -363,10 +373,11 @@ async def update_recurring(
 
     # TBD-283: the frontier lower bound, on the POST-WRITE state.
     #
-    # ⚠ GATED, not unconditional. The only PUT the frontend ever issues is
-    # ``{"is_active": true}`` (Resume). Re-checking the stored frontier on every
-    # update would 400 Resume for exactly the long-paused templates users
-    # resume, in a UI that offers no field to fix it with.
+    # ⚠ GATED, not unconditional. Resume sends ``{"is_active": true}`` alone,
+    # and the Edit series dialog (TBD-762) sends only the fields the user
+    # changed. Re-checking the stored frontier on every update would 400 Resume
+    # for exactly the long-paused templates users resume, and refuse a rename
+    # over a date nobody touched.
     #
     # ⚠ The ``frequency`` clause is not decoration. Flipping a stale yearly
     # template to weekly multiplies its implied occurrences without a
@@ -389,6 +400,12 @@ async def update_recurring(
     # up compliant.
     if body.next_due_date is not None or body.frequency is not None:
         await validate_frontier(db, org_id, r.next_due_date, today=today)
+
+    # TBD-762: a next due date the user moved must clear the series' own rows.
+    # Gated on the user's edit: the re-anchor only walks a frozen frontier
+    # forward, and Resume alone must behave as it always has.
+    if body.next_due_date is not None and r.next_due_date != old_next_due:
+        await _check_frontier_clears_series(db, org_id, r, old_next_due=old_next_due)
 
     # TBD-756/TBD-760: the pending occurrences still at the old amount, name,
     # category or account follow the new one; a row whose value differs keeps
@@ -422,6 +439,61 @@ async def update_recurring(
         select(RecurringTransaction).options(*_load_opts()).where(RecurringTransaction.id == r.id)
     )
     return result.scalar_one()
+
+
+async def _check_frontier_clears_series(
+    db: AsyncSession, org_id: int, r: RecurringTransaction,
+    *, old_next_due: datetime.date,
+) -> None:
+    """Refuse a moved ``next_due_date`` that lands where the series already has
+    an occurrence (TBD-762). Writes nothing.
+
+    Rent on the 1st, the Nov 1 row exists, next due Dec 1. Moving the frontier
+    to Nov 3 makes generation write a second November rent: its ``exists``
+    probe and the forecasts' materialised probe key on ``(recurring_id, date)``
+    and cannot see Nov 1. So the new frontier must be strictly after every row
+    of the series, and either a whole period (on the post-edit frequency) after
+    the latest one, or no earlier than the frontier it replaces: a later move
+    adds no occurrence to a period that did not already have one coming.
+
+    Runs only when the frontier MOVES. A frequency change that keeps it, e.g.
+    monthly -> yearly with Nov 1 materialised and Dec 1 next, is accepted
+    although Nov 1 and Dec 1 then share a yearly period: the user means "yearly
+    from Dec 1", which is exactly what generation does.
+
+    Every row counts, whatever its status or ``reconciliation_state``: a
+    skipped occurrence was still that period's occurrence, and generation's
+    probe does not read the state either.
+
+    ⚠ A LOCKING read (shared), not a plain one. On MySQL REPEATABLE READ a plain
+    SELECT reads the snapshot fixed by the request's first statement (the
+    current-user lookup), from BEFORE this request waited on the template lock.
+    A generation run holding that lock can insert Nov 1 and move the frontier to
+    Dec 1; the waiting PUT then sees frontier Dec 1 but a snapshot without
+    Nov 1, and accepts Nov 3. A locking read sees the latest committed rows.
+    Lock order stays template -> rows. sqlite ignores the clause; the test
+    asserts it on the statement.
+    """
+    latest = await db.scalar(
+        select(Transaction.date)
+        .where(Transaction.org_id == org_id, Transaction.recurring_id == r.id)
+        .order_by(Transaction.date.desc())
+        .limit(1)
+        .with_for_update(read=True)
+    )
+    if latest is None:
+        return
+    new = r.next_due_date
+    floor = advance_date(latest, r.frequency)
+    if new > latest and (new >= floor or new >= old_next_due):
+        return
+    # Exactly the earliest date the rule above accepts.
+    earliest = max(latest + datetime.timedelta(days=1), min(floor, old_next_due))
+    raise ConflictError(
+        f"The series has a transaction on {latest.isoformat()}, so its next due "
+        f"date cannot be {new.isoformat()}. Choose {earliest.isoformat()} or later, "
+        f"or move or delete that transaction first."
+    )
 
 
 # Runaway guard only, not policy: ~23 years of weekly occurrences. A frontier

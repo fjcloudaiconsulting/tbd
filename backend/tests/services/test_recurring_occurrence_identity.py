@@ -752,8 +752,11 @@ async def test_x1_rewind_onto_generated_date_double_spends_elapsed(db_session):
     """GUARD (strict xfail). One occurrence, one row, one instalment spent.
 
     Monthly, 12 instalments, frontier on ``p_start``. Generate (1 row, elapsed
-    1), rewind ``next_due_date`` back onto ``p_start`` through the real update
-    path (legal: ``validate_frontier`` floors at ``p_start``), generate again.
+    1), rewind ``next_due_date`` back onto ``p_start``, generate again. The
+    rewind is written directly: since TBD-762 ``update_recurring`` refuses a
+    MOVED next due date that does not clear the series' rows (a locking read of
+    them). The shape stays reachable from frontiers stored before that guard and
+    from any writer that does not go through it, so the probe stays.
     The ``exists`` branch finds the row and ``_advance_frontier`` spends a
     second instalment for the same key. Flips to XPASS -> FAIL when TBD-509
     lands, which is the prompt to delete this marker.
@@ -774,10 +777,9 @@ async def test_x1_rewind_onto_generated_date_double_spends_elapsed(db_session):
     if (await _reload(db_session, t.id)).occurrences_elapsed != 1:
         pytest.fail("precondition: first run must spend exactly one instalment")
 
-    await recurring_service.update_recurring(
-        db_session, seed["org_id"], t.id,
-        RecurringUpdate(next_due_date=p_start), today=today,
-    )
+    rewound = await _reload(db_session, t.id)
+    rewound.next_due_date = p_start
+    await db_session.commit()
     if (await _reload(db_session, t.id)).next_due_date != p_start:
         pytest.fail("precondition: the rewind must land on p_start")
     await recurring_service.generate_due_transactions(

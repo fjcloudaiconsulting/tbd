@@ -13,6 +13,7 @@ import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { SeriesScopeChoice, type SeriesScope } from "@/components/transactions/SeriesScopeChoice";
+import EditSeriesDialog from "@/components/recurring/EditSeriesDialog";
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 
 import { demotionNotice } from "@/lib/demotion";
@@ -193,6 +194,8 @@ interface RecurringTableProps {
   // TBD-272/273. Passed to the Active table only.
   onSkipNext?: (item: RecurringTransaction) => void;
   onEditNext?: (item: RecurringTransaction) => void;
+  // TBD-762. Both tables: a paused or finished series is editable too.
+  onEditSeries: (item: RecurringTransaction) => void;
   onDelete: (id: number) => void;
   testId: string;
   targetId: number | null;
@@ -210,6 +213,7 @@ function RecurringTable({
   onResume,
   onSkipNext,
   onEditNext,
+  onEditSeries,
   onDelete,
   testId,
   targetId,
@@ -388,6 +392,13 @@ function RecurringTable({
                 </td>
                 <td className="px-3 py-3">
                   <span className="flex flex-wrap justify-end gap-x-2 gap-y-1">
+                    <button
+                      onClick={() => onEditSeries(r)}
+                      aria-label={`Edit series: ${r.description}`}
+                      className="min-h-[44px] md:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent"
+                    >
+                      Edit series
+                    </button>
                     {/* TBD-272/273. Only for a series that can still deliver an
                         occurrence; the server's 409 decides everything else. */}
                     {onEditNext && onSkipNext && seriesRunning(r) && (
@@ -491,6 +502,13 @@ function RecurringTable({
             )}
             <div className="text-xs text-text-muted">{FREQ_LABELS[r.frequency] ?? r.frequency}</div>
             <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+              <button
+                onClick={() => onEditSeries(r)}
+                aria-label={`Edit series: ${r.description}`}
+                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+              >
+                Edit series
+              </button>
               {onEditNext && onSkipNext && seriesRunning(r) && (
                 <>
                   <button
@@ -586,6 +604,8 @@ function RecurringPage() {
   const [editNext, setEditNext] = useState<
     { item: RecurringTransaction; amount: string; scope: SeriesScope | null } | null
   >(null);
+  // TBD-762.
+  const [editSeries, setEditSeries] = useState<RecurringTransaction | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const money = useMoney();
   const amountsHidden = useBalancesHidden();
@@ -909,6 +929,7 @@ function RecurringPage() {
             onStop={handleStop}
             onSkipNext={setConfirmSkip}
             onEditNext={(item) => setEditNext({ item, amount: String(item.amount), scope: null })}
+            onEditSeries={setEditSeries}
             onDelete={handleDelete}
             testId="recurring-active-table"
             targetId={targetId}
@@ -924,6 +945,7 @@ function RecurringPage() {
               paused
               emptyLabel="No paused recurring transactions."
               onResume={handleResume}
+              onEditSeries={setEditSeries}
               onDelete={handleDelete}
               testId="recurring-paused-table"
               targetId={targetId}
@@ -1003,6 +1025,19 @@ function RecurringPage() {
           </div>
         )}
       </ConfirmModal>
+      {editSeries && (
+        <EditSeriesDialog
+          key={editSeries.id}
+          item={editSeries}
+          onCancel={() => setEditSeries(null)}
+          onSaved={(updated) => {
+            setEditSeries(null);
+            setError("");
+            setSuccessMsg(`Saved "${updated.description}".`);
+            reload().catch(() => {});
+          }}
+        />
+      )}
       <ConfirmModal
         open={confirmDeleteId !== null}
         title="Delete Recurring Template"
