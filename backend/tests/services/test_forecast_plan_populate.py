@@ -646,14 +646,15 @@ async def _category(factory, seed, name: str, *, parent_id=None,
 
 
 async def _template(factory, seed, category_id: int, amount, next_due_date,
-                    description: str = "bill") -> int:
+                    description: str = "bill", *, type_: str = "expense",
+                    is_active: bool = True) -> int:
     async with factory() as db:
         r = RecurringTransaction(
             org_id=seed["org_id"], account_id=seed["account_id"],
             category_id=category_id, description=description,
-            amount=Decimal(str(amount)), type="expense",
+            amount=Decimal(str(amount)), type=type_,
             frequency=Frequency.MONTHLY, next_due_date=next_due_date,
-            auto_settle=False, is_active=True,
+            auto_settle=False, is_active=is_active,
         )
         db.add(r)
         await db.commit()
@@ -662,12 +663,12 @@ async def _template(factory, seed, category_id: int, amount, next_due_date,
 
 def _row(seed, category_id: int, amount, date, *, settled_date=None,
          status=TransactionStatus.PENDING, recurring_id=None,
-         reconciliation_state=None) -> Transaction:
+         reconciliation_state=None,
+         type_=TransactionType.EXPENSE) -> Transaction:
     tx = _tx(
         org_id=seed["org_id"], account_id=seed["account_id"],
         category_id=category_id, amount=amount, date=date,
-        settled_date=settled_date, status=status,
-        type_=TransactionType.EXPENSE,
+        settled_date=settled_date, status=status, type_=type_,
     )
     tx.recurring_id = recurring_id
     if reconciliation_state is not None:
@@ -855,8 +856,12 @@ async def test_pending_occurrence_settling_next_period_counts_next_period_only(
     in June (cash basis, by effective date) and not in May. In May the
     existence probe also stops its date being projected again.
 
+    The frontier is left ON the row's date (May 28), so in May the probe is
+    what decides: a probe windowed on the effective date would miss the row
+    (it settles June 2) and project May 28 again.
+
     June then holds two obligations: that row, and June's own occurrence
-    projected from the template (frontier June 28).
+    (June 28) projected from the same frontier.
     """
     seed = await _seed(session_factory)
     async with session_factory() as db:
@@ -867,7 +872,7 @@ async def test_pending_occurrence_settling_next_period_counts_next_period_only(
         await db.commit()
     card = await _category(session_factory, seed, "Card")
     rid = await _template(
-        session_factory, seed, card, 100, datetime.date(2026, 6, 28), "Card",
+        session_factory, seed, card, 100, datetime.date(2026, 5, 28), "Card",
     )
     async with session_factory() as db:
         db.add(_row(seed, card, 100, datetime.date(2026, 5, 28),
@@ -929,3 +934,274 @@ async def test_subcategory_mode_runs_the_same_computation_per_sub(session_factor
     assert util_item.planned_amount == Decimal("100.00")
     assert util_item.source == "history"
     assert _expense_items(resp, housing) == []
+
+
+# ── TBD-764 review: history paid BEFORE the template existed ────────────────
+#
+# Onboarding order is import first, set up templates second, so the history
+# of a bill is usually plain rows (recurring_id NULL), and promoting one row
+# leaves the older ones NULL too. H' must not count those again next to R.
+
+
+def _settled(seed, category_id: int, amount, date, **kw) -> Transaction:
+    return _row(seed, category_id, amount, date, settled_date=date,
+                status=TransactionStatus.SETTLED, **kw)
+
+
+async def _populate(factory, seed, period_start=None):
+    async with factory() as db:
+        return await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"],
+            period_start=period_start or seed["may_start"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_imported_history_then_template_is_not_planned_twice(
+    session_factory,
+):
+    """Rent imported as plain settled rows Feb-Apr, then a 1500 template due
+    May 1: May plans 1500, before AND after the May occurrence is generated
+    (after generation the template's frontier is past the period, and it must
+    still match its history)."""
+    seed = await _seed(session_factory)
+    rent = await _category(session_factory, seed, "Rent")
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, rent, 1500, datetime.date(2026, month, 1)))
+        await db.commit()
+    rid = await _template(
+        session_factory, seed, rent, 1500, datetime.date(2026, 5, 1), "Rent",
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), rent)
+    assert item.planned_amount == Decimal("1500.00")
+    assert item.source == "recurring"
+
+    from app.services import recurring_service
+    async with session_factory() as db:
+        await recurring_service.generate_due_transactions(
+            db, seed["org_id"], today=datetime.date(2026, 5, 2),
+        )
+        assert (await db.get(RecurringTransaction, rid)).next_due_date > seed["may_end"]
+    async with session_factory() as db:
+        resp = await forecast_plan_service.refresh_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+    [item] = _expense_items(resp, rent)
+    assert item.planned_amount == Decimal("1500.00")
+
+
+@pytest.mark.asyncio
+async def test_promote_to_recurring_leaves_older_rows_out_of_history(
+    session_factory,
+):
+    """Promoting April's rent row links that row only; February and March
+    stay NULL and must still be matched out of H'."""
+    from app.schemas.transaction import PromoteToRecurringRequest
+    from app.services import transaction_service
+
+    seed = await _seed(session_factory)
+    rent = await _category(session_factory, seed, "Rent")
+    async with session_factory() as db:
+        for month in (2, 3):
+            db.add(_settled(seed, rent, 1500, datetime.date(2026, month, 1)))
+        april = _settled(seed, rent, 1500, datetime.date(2026, 4, 1))
+        db.add(april)
+        await db.commit()
+        april_id = april.id
+    async with session_factory() as db:
+        await transaction_service.promote_to_recurring(
+            db, seed["org_id"], april_id,
+            PromoteToRecurringRequest(
+                frequency="monthly", next_due_date=datetime.date(2026, 5, 1),
+            ),
+            today=datetime.date(2026, 5, 2),
+        )
+
+    [item] = _expense_items(await _populate(session_factory, seed), rent)
+    assert item.planned_amount == Decimal("1500.00")
+    assert item.source == "recurring"
+
+
+@pytest.mark.asyncio
+async def test_variable_rows_in_a_template_category_still_count(session_factory):
+    """Only rows that look like the template are matched out. A utilities
+    row in the same category and account, nowhere near the rent amount,
+    stays in H'."""
+    seed = await _seed(session_factory)
+    housing = await _category(session_factory, seed, "Housing")
+    async with session_factory() as db:
+        for month, utility in ((2, 180), (3, 200), (4, 220)):
+            db.add(_settled(seed, housing, 1500, datetime.date(2026, month, 1)))
+            db.add(_settled(seed, housing, utility, datetime.date(2026, month, 15)))
+        await db.commit()
+    await _template(
+        session_factory, seed, housing, 1500, datetime.date(2026, 5, 1), "Rent",
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), housing)
+    assert item.planned_amount == Decimal("1700.00")
+    assert item.source == "recurring"
+
+
+@pytest.mark.parametrize(
+    ("feb", "mar", "expected"),
+    [
+        # Exactly -10% and +10%: matched, H' empty, the template alone.
+        ("900.00", "1100.00", "1000.00"),
+        # One cent outside on each side: unmatched, H' = 1000.00 on top.
+        ("899.99", "1100.01", "2000.00"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_template_match_tolerance_is_ten_percent_inclusive(
+    session_factory, feb, mar, expected,
+):
+    seed = await _seed(session_factory)
+    loan = await _category(session_factory, seed, "Loan")
+    async with session_factory() as db:
+        db.add(_settled(seed, loan, feb, datetime.date(2026, 2, 3)))
+        db.add(_settled(seed, loan, mar, datetime.date(2026, 3, 3)))
+        await db.commit()
+    await _template(
+        session_factory, seed, loan, 1000, datetime.date(2026, 5, 3), "Loan",
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), loan)
+    assert item.planned_amount == Decimal(expected)
+
+
+@pytest.mark.asyncio
+async def test_template_matches_at_most_its_occurrences_closest_first(
+    session_factory,
+):
+    """A monthly template matches ONE row per history month, the closest in
+    amount: the 1000 rows go, the 950 rows (also within 10%) stay in H'."""
+    seed = await _seed(session_factory)
+    loan = await _category(session_factory, seed, "Loan")
+    async with session_factory() as db:
+        for month in (2, 3):
+            db.add(_settled(seed, loan, 950, datetime.date(2026, month, 2)))
+            db.add(_settled(seed, loan, 1000, datetime.date(2026, month, 3)))
+        await db.commit()
+    await _template(
+        session_factory, seed, loan, 1000, datetime.date(2026, 5, 3), "Loan",
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), loan)
+    assert item.planned_amount == Decimal("1950.00")
+
+
+@pytest.mark.asyncio
+async def test_imported_salary_history_then_income_template(session_factory):
+    """Income runs the same rule: imported 3000 salary rows plus a 3000
+    salary template plan 3000, not 6000."""
+    seed = await _seed(session_factory)
+    salary = seed["salary_id"]
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, salary, 3000, datetime.date(2026, month, 25),
+                            type_=TransactionType.INCOME))
+        await db.commit()
+    await _template(
+        session_factory, seed, salary, 3000, datetime.date(2026, 5, 25),
+        "Salary", type_="income",
+    )
+
+    resp = await _populate(session_factory, seed)
+    [item] = [i for i in resp.items if i.category_id == salary and i.type == "income"]
+    assert item.planned_amount == Decimal("3000.00")
+    assert item.source == "recurring"
+
+
+@pytest.mark.asyncio
+async def test_unmatched_bank_rows_in_history_are_matched_out(session_factory):
+    """Past months where the bank row was never matched to the generated
+    occurrence hold BOTH: a pending generated row (out of H' as generated and
+    as pending) and a plain settled bank row, which the template match now
+    keeps out of H' too. May (occurrence generated, no bank row yet) = 1500."""
+    seed = await _seed(session_factory)
+    rent = await _category(session_factory, seed, "Rent")
+    rid = await _template(
+        session_factory, seed, rent, 1500, datetime.date(2026, 6, 1), "Rent",
+    )
+    async with session_factory() as db:
+        for month in (2, 3, 4, 5):
+            day = datetime.date(2026, month, 1)
+            db.add(_row(seed, rent, 1500, day, recurring_id=rid))
+            if month != 5:
+                db.add(_settled(seed, rent, 1500, datetime.date(2026, month, 2)))
+        await db.commit()
+
+    [item] = _expense_items(await _populate(session_factory, seed), rent)
+    assert item.planned_amount == Decimal("1500.00")
+
+
+@pytest.mark.asyncio
+async def test_known_gap_unmatched_bank_row_next_to_this_periods_occurrence(
+    session_factory,
+):
+    """KNOWN GAP, pinned (not desired): in the period being planned, a plain
+    settled bank row next to the generated pending occurrence it should have
+    been matched to counts in B' AND in R, so the group plans 3000. Same as
+    ``forecast_service`` today; reconciling the pair is what fixes it."""
+    seed = await _seed(session_factory)
+    rent = await _category(session_factory, seed, "Rent")
+    rid = await _template(
+        session_factory, seed, rent, 1500, datetime.date(2026, 6, 1), "Rent",
+    )
+    async with session_factory() as db:
+        db.add(_row(seed, rent, 1500, datetime.date(2026, 5, 1), recurring_id=rid))
+        db.add(_settled(seed, rent, 1500, datetime.date(2026, 5, 2)))
+        await db.commit()
+
+    [item] = _expense_items(await _populate(session_factory, seed), rent)
+    assert item.planned_amount == Decimal("3000.00")
+
+
+@pytest.mark.asyncio
+async def test_paused_template_with_its_own_history_plans_nothing(
+    session_factory,
+):
+    """Paused = intentionally not planned. Its generated history keeps
+    recurring_id, so it stays out of H', and a paused template projects
+    nothing, so no item. (Stopping or deleting the template NULLs
+    recurring_id, and the history counts again.)"""
+    seed = await _seed(session_factory)
+    gym = await _category(session_factory, seed, "Gym")
+    rid = await _template(
+        session_factory, seed, gym, 40, datetime.date(2026, 5, 10), "Gym",
+        is_active=False,
+    )
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, gym, 40, datetime.date(2026, month, 10),
+                            recurring_id=rid))
+        await db.commit()
+
+    assert _expense_items(await _populate(session_factory, seed), gym) == []
+
+
+@pytest.mark.parametrize(
+    ("frequency", "year", "month", "expected"),
+    [
+        (Frequency.MONTHLY, 2026, 2, 1),
+        (Frequency.WEEKLY, 2026, 2, 4),     # Mondays: 2, 9, 16, 23
+        (Frequency.WEEKLY, 2026, 3, 5),     # Mondays: 2, 9, 16, 23, 30
+        (Frequency.BIWEEKLY, 2026, 3, 2),   # Mar 9, Mar 23 (phase of May 4)
+        (Frequency.QUARTERLY, 2026, 2, 1),  # Feb, May, Aug, Nov
+        (Frequency.QUARTERLY, 2026, 3, 0),
+        (Frequency.YEARLY, 2025, 5, 1),
+        (Frequency.YEARLY, 2026, 4, 0),
+    ],
+)
+def test_template_occurrences_in_month_caps_the_match(frequency, year, month, expected):
+    """The per-month cap is aligned on the template's frontier (Mon 4 May
+    2026): weekday, 14-day phase, quarter month, anniversary month."""
+    from types import SimpleNamespace
+
+    tpl = SimpleNamespace(next_due_date=datetime.date(2026, 5, 4), frequency=frequency)
+    assert forecast_plan_service._template_occurrences_in_month(
+        tpl, year, month
+    ) == expected
