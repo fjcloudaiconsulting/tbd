@@ -10,6 +10,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { SeriesScopeChoice, type SeriesScope } from "@/components/transactions/SeriesScopeChoice";
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 
 import { demotionNotice } from "@/lib/demotion";
@@ -520,7 +521,9 @@ function RecurringPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   // TBD-272/273.
   const [confirmSkip, setConfirmSkip] = useState<RecurringTransaction | null>(null);
-  const [editNext, setEditNext] = useState<{ item: RecurringTransaction; amount: string } | null>(null);
+  const [editNext, setEditNext] = useState<
+    { item: RecurringTransaction; amount: string; scope: SeriesScope | null } | null
+  >(null);
   const [submitting, setSubmitting] = useState(false);
   const money = useMoney();
   const signed = (r: RecurringTransaction, value: number | string) =>
@@ -618,7 +621,9 @@ function RecurringPage() {
 
   // TBD-273. Write the occurrence, then edit its amount. Never retry the
   // materialise: it moved the frontier, so a retry would 409 or take the NEXT one.
-  async function doEditNext(item: RecurringTransaction, amount: string) {
+  // TBD-756: `scope` "future" also moves the series' amount (the only way to
+  // change it from this page); the user picks it explicitly in the dialog.
+  async function doEditNext(item: RecurringTransaction, amount: string, scope: SeriesScope) {
     setError(""); setSuccessMsg("");
     setSubmitting(true);
     let created: { id: number } | null = null;
@@ -629,9 +634,11 @@ function RecurringPage() {
       });
       await apiFetch(`/api/v1/transactions/${created.id}`, {
         method: "PUT",
-        body: JSON.stringify({ amount }),
+        body: JSON.stringify({ amount, series_scope: scope }),
       });
-      setSuccessMsg(`"${item.description}" on ${item.next_due_date} is now ${signed(item, amount)}. Later occurrences stay at ${signed(item, item.amount)}.`);
+      setSuccessMsg(scope === "future"
+        ? `"${item.description}" is now ${signed(item, amount)} from ${item.next_due_date} on.`
+        : `"${item.description}" on ${item.next_due_date} is now ${signed(item, amount)}. Later occurrences stay at ${signed(item, item.amount)}.`);
     } catch (err) {
       const msg = extractErrorMessage(err);
       setError(created
@@ -731,7 +738,7 @@ function RecurringPage() {
             emptyLabel="No active recurring transactions."
             onStop={handleStop}
             onSkipNext={setConfirmSkip}
-            onEditNext={(item) => setEditNext({ item, amount: String(item.amount) })}
+            onEditNext={(item) => setEditNext({ item, amount: String(item.amount), scope: null })}
             onDelete={handleDelete}
             testId="recurring-active-table"
             targetId={targetId}
@@ -779,14 +786,14 @@ function RecurringPage() {
         open={editNext !== null}
         title="Edit Next Amount"
         message={editNext
-          ? `Change the amount of "${editNext.item.description}" on ${editNext.item.next_due_date} only. The series stays at ${signed(editNext.item, editNext.item.amount)}.`
+          ? `Change the amount of "${editNext.item.description}" on ${editNext.item.next_due_date}. The series is at ${signed(editNext.item, editNext.item.amount)}.`
           : ""}
         confirmLabel="Save amount"
         submitting={submitting}
-        confirmDisabled={!editNextValid || editNextUnchanged}
+        confirmDisabled={!editNextValid || editNextUnchanged || editNext?.scope == null}
         onConfirm={() => {
-          if (editNext && editNextValid && !editNextUnchanged) {
-            doEditNext(editNext.item, editNext.amount);
+          if (editNext && editNextValid && !editNextUnchanged && editNext.scope !== null) {
+            doEditNext(editNext.item, editNext.amount, editNext.scope);
           }
         }}
         onCancel={() => setEditNext(null)}
@@ -814,6 +821,12 @@ function RecurringPage() {
                 {editNextError}
               </p>
             )}
+            <SeriesScopeChoice
+              idSuffix="edit-next"
+              legend="Apply the new amount to"
+              value={editNext.scope}
+              onChange={(scope) => setEditNext({ ...editNext, scope })}
+            />
           </div>
         )}
       </ConfirmModal>

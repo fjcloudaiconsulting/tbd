@@ -61,7 +61,7 @@ from app.models.category import CategoryType
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.recurring import RecurringUpdate
-from app.schemas.transaction import PromoteToRecurringRequest
+from app.schemas.transaction import PromoteToRecurringRequest, TransactionUpdate
 from app.services import forecast_service, recurring_service, transaction_service
 from app.services.account_balance_forecast_service import (
     compute_account_balance_forecast,
@@ -448,6 +448,60 @@ async def test_f2b_frontier_moved_forward_skips_keys_for_good(db_session):
     assert created
     assert not created & skipped
     assert not (await _projected(db_session, seed, today, owners)) & skipped
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F2e — fence. A "this and future" date edit re-keys rows AND frontier together.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f2e_future_date_edit_rekeys_rows_and_frontier_together(db_session):
+    """FENCE (TBD-756). Weekly, generated through P1, then the first pending
+    row moved two days later with ``series_scope="future"``. Every pending row
+    after it and the frontier move onto the grid walked from the new date.
+
+    Wrong implementations killed:
+      * moving the rows but not the frontier -- the projection starts on the
+        old grid, five days before a moved row's key, and P2 is off-grid;
+      * moving the frontier but not the rows -- generation's probe misses the
+        unmoved rows' new keys and re-creates them (``_row_keys`` refuses
+        duplicates).
+    """
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    t = await _add(db_session, _template(seed, next_due_date=p_start))
+    owners = {seed["account_a"]: t.id}
+    await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=today
+    )
+    rows_before = await _row_keys(db_session, seed["org_id"])
+    assert len(rows_before) >= 2
+    first = await db_session.scalar(
+        select(Transaction.id).where(
+            Transaction.recurring_id == t.id, Transaction.date == p_start,
+        )
+    )
+    old_frontier = (await _reload(db_session, t.id)).next_due_date
+
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], first,
+        TransactionUpdate(date=p_start + 2 * DAY, series_scope="future"),
+    )
+
+    rows = await _row_keys(db_session, seed["org_id"])
+    assert rows == {(tid, d + 2 * DAY) for tid, d in rows_before}
+    new_frontier = (await _reload(db_session, t.id)).next_due_date
+    assert new_frontier == old_frontier + 2 * DAY
+
+    await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=today
+    )
+    assert await _row_keys(db_session, seed["org_id"]) == rows
+    projected = await _projected(db_session, seed, today, owners)
+    assert projected
+    assert not rows & projected
+    assert min(d for _, d in projected) == new_frontier
+    assert all((d - new_frontier).days % 7 == 0 for _, d in projected)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

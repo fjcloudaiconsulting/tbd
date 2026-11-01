@@ -35,6 +35,7 @@ from app.schemas.transaction import (
     TransferCreate,
 )
 from app.services.category_rules_service import learn_from_choice
+from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.transaction_filters import (
@@ -430,6 +431,170 @@ async def create_transaction(
     return result.scalar_one()
 
 
+async def _series_sync_targets(
+    db: AsyncSession,
+    org_id: int,
+    recurring_id: int,
+    tx_type: TransactionType,
+    *,
+    exclude_id: int | None = None,
+    after: datetime.date | None = None,
+) -> list[Transaction]:
+    """The PENDING siblings an amount or date sync may rewrite (TBD-756), locked.
+
+    Skipped: rows of another type (their amount means something else), transfer
+    legs (a bulk write cannot mirror the partner), skipped/rejected rows, and
+    rows a bank row was reconcile-matched against (an inbound referrer: their
+    amount and date are now the bank's business). ``after`` keeps only rows
+    dated after it ("this and future"); ``exclude_id`` is the edited row.
+
+    Selected first and written by id, not by one UPDATE with the referrer
+    EXISTS inline: MySQL refuses a subquery on the UPDATE's own table (1093).
+
+    ⚠ Lock order: both callers hold the template when they get here, so this
+    takes template -> pending rows, while ``_settle_due_auto`` takes due
+    pending rows -> template. That is the TBD-512 edge the account block below
+    describes, now also reached by ``update_recurring`` (amount) and by two
+    concurrent "this and future" edits of different siblings. InnoDB resolves
+    it by aborting one side (1213); nothing here retries.
+    """
+    referrer = aliased(Transaction)
+    q = select(Transaction).where(
+        Transaction.recurring_id == recurring_id,
+        Transaction.org_id == org_id,
+        Transaction.status == TransactionStatus.PENDING,
+        Transaction.type == tx_type,
+        Transaction.linked_transaction_id.is_(None),
+        Transaction.reconciliation_state.not_in(REVERTED_RECONCILIATION_STATES),
+        ~exists().where(
+            referrer.org_id == org_id, referrer.linked_transaction_id == Transaction.id
+        ),
+    )
+    if exclude_id is not None:
+        q = q.where(Transaction.id != exclude_id)
+    if after is not None:
+        q = q.where(Transaction.date > after)
+    rows = await db.execute(q.order_by(Transaction.date, Transaction.id).with_for_update())
+    return list(rows.scalars().all())
+
+
+@dataclass(frozen=True)
+class SeriesDateMove:
+    """A validated "this and future" date move (TBD-756). ``moves`` maps a
+    sibling id to its new (date, settled_date); ``next_due_date`` is the new
+    frontier."""
+
+    moves: dict[int, tuple[datetime.date, datetime.date | None]]
+    next_due_date: datetime.date
+
+
+async def _plan_series_date_move(
+    db: AsyncSession,
+    org_id: int,
+    template: RecurringTransaction,
+    *,
+    row_id: int,
+    old_date: datetime.date,
+    new_date: datetime.date,
+    tx_type: TransactionType,
+) -> SeriesDateMove:
+    """Re-walk the series grid from the edited row's new date. Writes nothing.
+
+    A sibling k steps after ``old_date`` on the template's grid lands k steps
+    after ``new_date``; the frontier likewise. Never a day count: Jan 3 -> Jan
+    31 is +28 days, which would turn Feb 3 into Mar 3 and empty February. The
+    grid is ``advance_date`` iterated, exactly as generation walks it, so the
+    new frontier is where generation itself would have arrived.
+
+    Refuses (nothing written yet, so nothing to undo):
+    - a move of one period or more, which re-orders occurrences;
+    - a new date before the current billing cycle (user writes never land in a
+      closed period, as in ``materialise_next``);
+    - a frontier that is not on this row's grid (the schedule was moved apart
+      from the row, so there is no honest mapping);
+    - a moved row landing on the date of a series row that stays put: occurrence
+      identity is ``(recurring_id, date)`` with no unique constraint behind it;
+    - a new frontier on or before any row of the series. Generation's and the
+      forecasts' materialised probes key on ``(recurring_id, date)``, so a row
+      at or after the frontier would be counted twice.
+    Siblings off the old grid are left where they are, as the amount sync
+    leaves a deliberately changed amount.
+    """
+    # Local import: recurring_service imports this module at load.
+    from app.services.recurring_service import frontier_lower_bound
+
+    freq = template.frequency
+    if not (new_date < advance_date(old_date, freq) and old_date < advance_date(new_date, freq)):
+        raise ValidationError(
+            f"To apply a new date to future occurrences, move it by less than one "
+            f"{freq.value} period, or change only this occurrence."
+        )
+    p_start = await frontier_lower_bound(db, org_id)
+    if new_date < p_start:
+        raise ValidationError(
+            f"A date applied to future occurrences cannot be earlier than "
+            f"{p_start.isoformat()}, the start of the current billing cycle."
+        )
+
+    old_grid: list[datetime.date] = []
+    d = advance_date(old_date, freq)
+    while d < template.next_due_date:
+        old_grid.append(d)
+        d = advance_date(d, freq)
+    if d != template.next_due_date:
+        raise ValidationError(
+            f"This occurrence is not on its series' schedule (the next one is due "
+            f"{template.next_due_date.isoformat()}), so the new date cannot be applied "
+            f"to future occurrences. Change only this occurrence."
+        )
+    new_grid: list[datetime.date] = []
+    d = new_date
+    for _ in old_grid:
+        d = advance_date(d, freq)
+        new_grid.append(d)
+    new_frontier = advance_date(d, freq)
+
+    slot = {old: new for old, new in zip(old_grid, new_grid)}
+    targets = await _series_sync_targets(
+        db, org_id, template.id, tx_type, exclude_id=row_id, after=old_date,
+    )
+    # A pending row's settled_date is its EXPECTED settlement: it keeps its
+    # offset from the row's own date, so the period it buckets into moves too.
+    moves = {
+        t.id: (
+            slot[t.date],
+            t.settled_date + (slot[t.date] - t.date) if t.settled_date is not None else None,
+        )
+        for t in targets
+        if t.date in slot
+    }
+
+    staying_q = select(Transaction.date).where(
+        Transaction.org_id == org_id,
+        Transaction.recurring_id == template.id,
+        Transaction.id != row_id,
+    )
+    if moves:
+        staying_q = staying_q.where(Transaction.id.not_in(list(moves)))
+    staying_dates = set((await db.execute(staying_q)).scalars().all())
+    landing = [new_date, *(new for new, _ in moves.values())]
+    for when in sorted(landing):
+        if when in staying_dates:
+            raise ConflictError(
+                f"The series already has a transaction on {when.isoformat()}, so the "
+                f"new date cannot be applied to future occurrences. Change only this "
+                f"occurrence, or move that transaction first."
+            )
+    latest = max([*staying_dates, *landing])
+    if latest >= new_frontier:
+        raise ConflictError(
+            f"The series has a transaction on {latest.isoformat()}, on or after where "
+            f"its next occurrence would move ({new_frontier.isoformat()}). Change only "
+            f"this occurrence."
+        )
+    return SeriesDateMove(moves=moves, next_due_date=new_frontier)
+
+
 async def _propagate_fields_to_series(
     db: AsyncSession,
     org_id: int,
@@ -439,6 +604,11 @@ async def _propagate_fields_to_series(
     category_id: int | None,
     tx_type: TransactionType,
     account_id: int | None = None,
+    amount: Decimal | None = None,
+    amount_was: Decimal | None = None,
+    amount_after: datetime.date | None = None,
+    exclude_id: int | None = None,
+    date_move: SeriesDateMove | None = None,
 ) -> None:
     """Sync name/category/account from an edited recurring-linked transaction to its
     template and PENDING sibling instances. Pass only the fields that actually
@@ -467,6 +637,16 @@ async def _propagate_fields_to_series(
     breaks the transfer-category rule. A pending recurring row never carries a
     one-way reconcile link (those live on the imported row), so the clause
     skips only transfer legs. Description still reaches legs: harmless.
+
+    `amount` and `date_move` (TBD-756) reach the template and only the siblings
+    ``_series_sync_targets`` picks. `amount` reaches a sibling only while it
+    still holds `amount_was` (the template's amount, read under the template
+    lock), so a deliberately changed row keeps its value; `amount_after` and
+    `exclude_id` narrow it to "this and future" for an occurrence edit. The
+    template call (``update_recurring``) passes neither and reaches every
+    pending occurrence. `date_move` comes from ``_plan_series_date_move``,
+    which has already refused every unsafe shape; a moved row's expected
+    settlement date keeps its offset from the row's own date.
 
     SETTLED instances are never modified (historical fact). Concurrency: two
     edits to different siblings race last-writer-wins on the template, which is
@@ -547,6 +727,39 @@ async def _propagate_fields_to_series(
             )
             .values(account_id=account_id)
         )
+    if amount is not None or date_move is not None:
+        # Template first, pending rows second: the same order as account above.
+        template_values: dict = {}
+        if amount is not None:
+            template_values["amount"] = amount
+        if date_move is not None:
+            template_values["next_due_date"] = date_move.next_due_date
+        await db.execute(
+            update(RecurringTransaction)
+            .where(
+                RecurringTransaction.id == recurring_id,
+                RecurringTransaction.org_id == org_id,
+            )
+            .values(**template_values)
+        )
+    if amount is not None:
+        targets = await _series_sync_targets(
+            db, org_id, recurring_id, tx_type, exclude_id=exclude_id, after=amount_after,
+        )
+        ids = [t.id for t in targets if t.amount == amount_was]
+        if ids:
+            await db.execute(
+                update(Transaction)
+                .where(Transaction.id.in_(ids), Transaction.org_id == org_id)
+                .values(amount=amount)
+            )
+    if date_move is not None:
+        for tx_id, (new_date, new_settled_date) in date_move.moves.items():
+            await db.execute(
+                update(Transaction)
+                .where(Transaction.id == tx_id, Transaction.org_id == org_id)
+                .values(date=new_date, settled_date=new_settled_date)
+            )
 
 
 async def update_transaction(
@@ -700,6 +913,60 @@ async def update_transaction(
     old_status = tx.status
     old_category_id = tx.category_id
     old_description = tx.description
+    old_date = tx.date
+    old_settled_date = tx.settled_date
+
+    # TBD-756: "this and future". Every refusal lands here, before any write.
+    # The template is locked so the "still at the template amount" guard reads
+    # a value no concurrent template edit can move under it.
+    series_template: RecurringTransaction | None = None
+    series_date_move: SeriesDateMove | None = None
+    if body.series_scope == "future":
+        if tx.recurring_id is None:
+            raise ValidationError(
+                "Only a recurring transaction can apply a change to its future occurrences"
+            )
+        if old_status != TransactionStatus.PENDING:
+            raise ValidationError(
+                "Only a pending occurrence can apply a change to its future occurrences"
+            )
+        if tx.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+            raise ValidationError(
+                f"A {tx.reconciliation_state} occurrence cannot apply a change to its "
+                "future occurrences"
+            )
+        # The RAW column, as ``promote_to_recurring`` and the edit form's gate
+        # use it: a transfer leg's amount mirrors its partner and its date move
+        # would strand the partner, and the sibling sync skips linked rows for
+        # the same reasons.
+        if tx.linked_transaction_id is not None:
+            raise ValidationError(
+                "A linked transaction cannot apply a change to its future occurrences"
+            )
+        if body.type is not None and TransactionType(body.type) != old_type:
+            raise ValidationError(
+                "A type change applies to this occurrence only; send it without "
+                "applying to future occurrences"
+            )
+        series_template = (await db.execute(
+            select(RecurringTransaction)
+            .where(
+                RecurringTransaction.id == tx.recurring_id,
+                RecurringTransaction.org_id == org_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalar_one()
+        if series_template.type != old_type.value:
+            raise ValidationError(
+                "This occurrence's type differs from its series, so its changes "
+                "cannot apply to future occurrences"
+            )
+        if body.date is not None and body.date != old_date:
+            series_date_move = await _plan_series_date_move(
+                db, org_id, series_template, row_id=tx.id, old_date=old_date,
+                new_date=body.date, tx_type=old_type,
+            )
 
     new_account_id = body.account_id if body.account_id is not None else old_account_id
     new_status = TransactionStatus(body.status) if body.status is not None else old_status
@@ -822,6 +1089,17 @@ async def update_transaction(
                 # clear the historical actual so it doesn't leak as an
                 # "expected" date for the now-pending row.
                 tx.settled_date = None
+        # TBD-756: on a "this and future" move, a still-pending row's expected
+        # settlement keeps its offset, exactly as each moved sibling's does.
+        # Only when the request left it as it was (the form re-sends it); a
+        # newly chosen date wins.
+        if (
+            series_date_move is not None
+            and tx.status == TransactionStatus.PENDING
+            and old_settled_date is not None
+            and body.settled_date in (None, old_settled_date)
+        ):
+            tx.settled_date = old_settled_date + (tx.date - old_date)
 
         # Validate date ordering after the partial update is applied. Use
         # the resolved date+settled_date pair so a request that touches
@@ -880,11 +1158,18 @@ async def update_transaction(
     # changed (a re-save with the same value must not propagate).
     # Settled siblings keep their snapshot values. See spec
     # specs/recurring-transaction-field-sync.md.
+    # TBD-756: amount and date join only on "this and future". Compared with
+    # the old values, not ``amount_was_changed``: the edit form always sends
+    # both keys, so presence means nothing.
     if tx.recurring_id is not None:
         desc_changed = body.description is not None and tx.description != old_description
         cat_changed = body.category_id is not None and tx.category_id != old_category_id
         acct_changed = body.account_id is not None and tx.account_id != old_account_id
-        if desc_changed or cat_changed or acct_changed:
+        series_amount_changed = series_template is not None and tx.amount != old_amount
+        if (
+            desc_changed or cat_changed or acct_changed
+            or series_amount_changed or series_date_move is not None
+        ):
             await _propagate_fields_to_series(
                 db,
                 org_id,
@@ -893,6 +1178,11 @@ async def update_transaction(
                 category_id=tx.category_id if cat_changed else None,
                 tx_type=tx.type,
                 account_id=tx.account_id if acct_changed else None,
+                amount=tx.amount if series_amount_changed else None,
+                amount_was=series_template.amount if series_template is not None else None,
+                amount_after=old_date,
+                exclude_id=tx.id,
+                date_move=series_date_move,
             )
 
     await db.commit()

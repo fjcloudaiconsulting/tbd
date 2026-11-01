@@ -65,6 +65,11 @@ class TransactionUpdate(BaseModel):
     status: Optional[Literal["settled", "pending"]] = None
     settled_date: Optional[datetime.date] = None
     date: Optional[datetime.date] = None
+    # TBD-756: where an amount or date change on a recurring occurrence lands.
+    # None or "this": the edited row only (the pre-756 behaviour, kept for every
+    # client that does not ask). "future": also the template and the PENDING
+    # siblings dated after the row. Name, category and account sync regardless.
+    series_scope: Optional[Literal["this", "future"]] = None
 
     @field_validator("description")
     @classmethod
