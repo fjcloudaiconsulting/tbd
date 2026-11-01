@@ -2139,25 +2139,51 @@ async def bulk_update_transactions(
     status: str | None = None,
     account_id: int | None = None,
     tags: list[str] | None = None,
+    date: datetime.date | None = None,
+    settled_date: datetime.date | None = None,
     actor_user_id: int,
-) -> tuple[int, list[tuple[int, str]]]:
+) -> tuple[int, list[tuple[int, str]], list[tuple[int, str]]]:
     """Apply an optional set of field updates to many transactions.
 
     Per-row partial success: a row that successfully applies at least one field
     counts as updated; a row that can apply nothing is returned in ``skipped``
     with a human reason. Transfer legs only accept ``category_id`` (which
     cascades to the partner via update_transaction); ``status``/``account_id``/
-    ``tags`` are skipped for them. Reuses update_transaction for all balance,
-    transfer-guard, and partner-cascade logic (it commits per row, so this is
-    naturally partial-success).
+    ``tags``/``date``/``settled_date`` are skipped for them. Reuses
+    update_transaction for all balance, transfer-guard, and partner-cascade
+    logic (it commits per row, so this is naturally partial-success).
 
-    Returns (updated_count, skipped) where skipped is a list of (id, reason).
+    TBD-763: ``date`` and ``settled_date`` SET a date (no shift) and travel in
+    the SAME ``TransactionUpdate`` as category/status/account, so a row stays
+    all-or-nothing: if that update fails (e.g. settled_date before date) the
+    row is skipped with the reason and none of those fields land on it.
+
+    - ``date`` is not applied to recurring occurrences (several rows of one
+      series on one date alias the ``(recurring_id, date)`` identity) nor to
+      transfer legs (the partner is not mirrored). A PENDING row keeps its
+      expected-settlement gap, the rule the TBD-756 series move uses. A SETTLED
+      row whose new date would pass its settled_date keeps its date unless the
+      batch sets settled_date too: it is never auto-shifted, that would move
+      its cash period silently.
+    - ``settled_date`` applies only to rows that are SETTLED, or are being
+      settled in this batch (they settle on that date instead of today). On a
+      row that stays pending it is only an expectation the auto-settle sweep
+      overwrites, so it is not applied. On a row that keeps its date (the
+      skips above) a settled_date before that date is dropped with a note,
+      so the row's other fields still land.
+    - A row settled in this batch onto a date after today without a
+      settled_date is skipped with that reason (settling stamps today).
+
+    Returns (updated_count, skipped, notes): skipped is a list of (id, reason)
+    for rows where nothing applied; notes is a list of (id, note) for rows
+    that were updated but left a requested field unapplied.
     """
     from app.services.tag_service import set_transaction_tags
 
     requested = list(dict.fromkeys(ids))
     updated = 0
     skipped: list[tuple[int, str]] = []
+    notes: list[tuple[int, str]] = []
 
     def _reason(exc: Exception) -> str:
         return getattr(exc, "detail", None) or str(exc)
@@ -2218,6 +2244,80 @@ async def bulk_update_transactions(
                 row_notes.append("account not applied to transfers")
             else:
                 update_kwargs["account_id"] = account_id
+        # TBD-763: the row's status once this update lands. Transfer legs
+        # never take ``status`` (above), so theirs stays what it is.
+        settles = (
+            TransactionStatus(update_kwargs["status"])
+            if "status" in update_kwargs
+            else row.status
+        ) == TransactionStatus.SETTLED
+        takes_settled_date = (
+            settled_date is not None and not is_transfer and settles
+        )
+        # The date is decided FIRST: whether this row keeps its date decides
+        # whether the batch's settled_date can still land on it.
+        if date is not None:
+            if is_transfer:
+                row_notes.append("date not applied to transfers")
+            elif row.recurring_id is not None:
+                row_notes.append("date not applied to recurring occurrences")
+            elif (
+                not takes_settled_date
+                and settles
+                and row.status == TransactionStatus.SETTLED
+                and row.settled_date is not None
+                and date > row.settled_date
+            ):
+                row_notes.append(
+                    f"date not applied: settled on {row.settled_date.isoformat()}; "
+                    "set the settlement date too"
+                )
+            else:
+                update_kwargs["date"] = date
+        if settled_date is not None:
+            if is_transfer:
+                row_notes.append("settlement date not applied to transfers")
+            elif not settles:
+                row_notes.append(
+                    "settlement date not applied: set status to settled to apply"
+                )
+            elif (
+                date is not None
+                and "date" not in update_kwargs
+                and settled_date < row.date
+            ):
+                # Chosen for the new date, but this row keeps its old one: it
+                # would fail the ordering check and take the rest of the row
+                # down with it. Drop it so category/status/... still land.
+                row_notes.append(
+                    "settlement date not applied: before the unchanged date "
+                    f"{row.date.isoformat()}"
+                )
+            else:
+                update_kwargs["settled_date"] = settled_date
+        if "date" in update_kwargs and "settled_date" not in update_kwargs:
+            if settles and row.status != TransactionStatus.SETTLED:
+                # Being settled here stamps today (update_transaction); a new
+                # date after today would fail the ordering check with a reason
+                # naming neither field the user touched. Skip with this one.
+                if date > datetime.date.today():
+                    skipped.append((tx_id, "; ".join([
+                        "date is after today's settlement; set the settlement "
+                        "date too",
+                        *row_notes,
+                    ])))
+                    continue
+            elif (
+                not settles
+                and row.status == TransactionStatus.PENDING
+                and row.settled_date is not None
+            ):
+                # A row that stays pending keeps its expected-settlement gap
+                # (the TBD-756 series rule); without it a date moved past the
+                # expectation fails the ordering check and the row is skipped.
+                update_kwargs["settled_date"] = row.settled_date + (
+                    date - row.date
+                )
         if update_kwargs:
             try:
                 await update_transaction(
@@ -2234,7 +2334,8 @@ async def bulk_update_transactions(
                 # transaction) rather than aborting the whole batch — parity
                 # with the tags branch below.
                 await db.rollback()
-                skipped.append((tx_id, _reason(exc)))
+                # Keep what the row would not have taken anyway in the reason.
+                skipped.append((tx_id, "; ".join([_reason(exc), *row_notes])))
                 continue
 
         # 2) tags MERGE (regular rows only)
@@ -2267,14 +2368,20 @@ async def bulk_update_transactions(
                     if applied:
                         row_notes.append(f"tags not applied ({_reason(exc)})")
                     else:
-                        skipped.append((tx_id, f"Tags: {_reason(exc)}"))
+                        skipped.append(
+                            (tx_id, "; ".join([f"Tags: {_reason(exc)}", *row_notes]))
+                        )
                         continue
 
         if applied:
             updated += 1
+            # TBD-763: a field this row did not take is reported, not dropped.
+            if row_notes:
+                notes.append((tx_id, "; ".join(row_notes)))
         else:
-            # Nothing applied — only happens for a transfer leg whose only
-            # requested fields were status/account/tags.
+            # Nothing applied — every requested field was one this row does
+            # not take (a transfer leg's status/account/tags/dates, a
+            # recurring occurrence's date, a pending row's settled_date...).
             reason = (
                 "; ".join(row_notes)
                 if row_notes
@@ -2282,7 +2389,7 @@ async def bulk_update_transactions(
             )
             skipped.append((tx_id, reason))
 
-    return updated, skipped
+    return updated, skipped, notes
 
 
 async def _link_pair(

@@ -23,6 +23,7 @@ from app.schemas.import_batch import (
 from app.schemas.transaction import (
     BulkDeleteRequest,
     BulkDeleteResponse,
+    BulkUpdateNote,
     BulkUpdateRequest,
     BulkUpdateResponse,
     BulkUpdateSkip,
@@ -669,16 +670,24 @@ async def bulk_update_transactions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Apply optional field updates (category/status/account/tags) to many
-    transactions. Partial success: ``updated_count`` counts every row that
-    applied at least one field; ``skipped[]`` lists only rows where NO field
-    could be applied (not found, manual adjustment, or a transfer leg whose
-    sole requested fields were status/account/tags), each with a reason. A row
-    that applies some fields but not others (e.g. category applies but the tag
-    merge fails) still counts as updated and is NOT in skipped[]. Transfers
-    accept category only.
+    """Apply optional field updates (category/status/account/tags/date/
+    settled_date) to many transactions. Partial success: ``updated_count``
+    counts every row that applied at least one field; ``skipped[]`` lists only
+    rows where NO field could be applied (not found, manual adjustment, a
+    failed update, or a row that takes none of the requested fields), each with
+    a reason. A row that applies some fields but not others (e.g. category
+    applies but the tag merge fails, or the date is not applied to a recurring
+    occurrence) still counts as updated, is NOT in skipped[], and is listed in
+    ``notes[]`` with what it did not take. Transfers accept category only.
+
+    Category, status, account, date and settled_date are applied to a row
+    together: if that update fails (e.g. a settled_date before the row's date)
+    none of them land and the row is skipped with the reason (TBD-763).
+    ``date`` and ``settled_date`` set a date, they do not shift one; ``date``
+    is not applied to recurring occurrences or transfer legs, and
+    ``settled_date`` only to rows that are, or are being, settled.
     """
-    updated_count, skipped = await svc.bulk_update_transactions(
+    updated_count, skipped, notes = await svc.bulk_update_transactions(
         db,
         current_user.org_id,
         body.ids,
@@ -686,10 +695,13 @@ async def bulk_update_transactions(
         status=body.status,
         account_id=body.account_id,
         tags=body.tags,
+        date=body.date,
+        settled_date=body.settled_date,
         actor_user_id=current_user.id,
     )
     return BulkUpdateResponse(
         requested_count=len(dict.fromkeys(body.ids)),
         updated_count=updated_count,
         skipped=[BulkUpdateSkip(id=i, reason=r) for i, r in skipped],
+        notes=[BulkUpdateNote(id=i, note=n) for i, n in notes],
     )

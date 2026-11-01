@@ -1276,7 +1276,7 @@ async def test_bulk_edit_applies_status_to_a_matched_row(db_session):
     )
     before = (await _account(db_session, seed["acct_a_id"])).balance
 
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [dup.id], status="pending", actor_user_id=1,
     )
 
@@ -1305,7 +1305,7 @@ async def test_bulk_edit_still_refuses_status_on_a_real_transfer_leg(db_session)
         db_session, seed["org_id"], expense_tx_id=expense.id, income_tx_id=income.id,
     )
 
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [expense.id], status="pending", actor_user_id=1,
     )
 

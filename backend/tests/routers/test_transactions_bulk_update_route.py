@@ -5,7 +5,8 @@ is covered in tests/services/test_transaction_service_bulk_update.py. These
 tests focus on the HTTP contract:
   - schema validation (extra=forbid, ids bounds, at-least-one-field),
   - happy-path response shape + requested_count dedup,
-  - skipped[] surfacing with a reason.
+  - skipped[] surfacing with a reason,
+  - TBD-763: date / settled_date accepted, notes[] surfacing.
 """
 from __future__ import annotations
 
@@ -191,6 +192,7 @@ def test_bulk_update_happy_path_response_shape(client):
         "requested_count": 2,
         "updated_count": 2,
         "skipped": [],
+        "notes": [],
     }
 
 
@@ -220,3 +222,65 @@ def test_bulk_update_reports_skipped_with_reason(client):
     assert len(body["skipped"]) == 1
     assert body["skipped"][0]["id"] == missing
     assert isinstance(body["skipped"][0]["reason"], str) and body["skipped"][0]["reason"]
+
+
+# -- TBD-763: date / settled_date ---------------------------------------------
+
+
+def test_bulk_update_accepts_a_date_only_request(client):
+    seed = client.seed
+    r = client.post(
+        "/api/v1/transactions/bulk-update",
+        json={"ids": seed["tx_ids"], "date": "2026-04-20"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {
+        "requested_count": 2, "updated_count": 2, "skipped": [], "notes": [],
+    }
+
+
+def test_bulk_update_accepts_a_settled_date_only_request(client):
+    seed = client.seed
+    r = client.post(
+        "/api/v1/transactions/bulk-update",
+        json={"ids": seed["tx_ids"], "settled_date": "2026-05-03"},
+    )
+    assert r.status_code == 200
+    assert r.json()["updated_count"] == 2
+
+
+def test_bulk_update_rejects_an_unknown_field_next_to_the_dates(client):
+    seed = client.seed
+    r = client.post(
+        "/api/v1/transactions/bulk-update",
+        json={"ids": seed["tx_ids"], "date": "2026-04-20", "date_shift_days": 3},
+    )
+    assert r.status_code == 422
+
+
+def test_bulk_update_rejects_a_malformed_date(client):
+    seed = client.seed
+    r = client.post(
+        "/api/v1/transactions/bulk-update",
+        json={"ids": seed["tx_ids"], "date": "not-a-date"},
+    )
+    assert r.status_code == 422
+
+
+def test_bulk_update_reports_notes_for_fields_not_applied(client):
+    """A settled row whose new date would pass its settlement keeps its date;
+    the category still lands, so the row is updated and the date is a note."""
+    seed = client.seed
+    r = client.post(
+        "/api/v1/transactions/bulk-update",
+        json={
+            "ids": seed["tx_ids"], "date": "2026-05-10",
+            "category_id": seed["dining_id"],
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated_count"] == 2
+    assert body["skipped"] == []
+    note = "date not applied: settled on 2026-05-01; set the settlement date too"
+    assert body["notes"] == [{"id": i, "note": note} for i in seed["tx_ids"]]

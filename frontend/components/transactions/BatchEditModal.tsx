@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import CategorySelect from "@/components/ui/CategorySelect";
 import TagChipInput from "@/components/transactions/TagChipInput";
-import { btnPrimary, btnSecondary, input, label } from "@/lib/styles";
+import { btnPrimary, btnSecondary, input, label, warning } from "@/lib/styles";
 import type { Account, Category } from "@/lib/types";
 
 export interface BatchEditPayload {
@@ -11,6 +11,9 @@ export interface BatchEditPayload {
   status?: "settled" | "pending";
   account_id?: number;
   tags?: string[];
+  /** TBD-763: ISO dates (YYYY-MM-DD). Both SET a date; neither shifts one. */
+  date?: string;
+  settled_date?: string;
 }
 
 interface Props {
@@ -39,6 +42,8 @@ export default function BatchEditModal({
   const [status, setStatus] = useState<"" | "settled" | "pending">("");
   const [accountId, setAccountId] = useState<number | "">("");
   const [tags, setTags] = useState<string[]>([]);
+  const [date, setDate] = useState("");
+  const [settledDate, setSettledDate] = useState("");
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -53,6 +58,8 @@ export default function BatchEditModal({
       setStatus("");
       setAccountId("");
       setTags([]);
+      setDate("");
+      setSettledDate("");
     }
   }, [open]);
 
@@ -109,15 +116,25 @@ export default function BatchEditModal({
   if (!open) return null;
 
   const hasChange =
-    categoryId !== "" || status !== "" || accountId !== "" || tags.length > 0;
+    categoryId !== "" ||
+    status !== "" ||
+    accountId !== "" ||
+    tags.length > 0 ||
+    date !== "" ||
+    settledDate !== "";
+  // YYYY-MM-DD compares correctly as a string. Every row taking both would
+  // fail the server's ordering check, so it is caught before the request.
+  const datesOutOfOrder = date !== "" && settledDate !== "" && settledDate < date;
 
   function handleApply() {
-    if (!hasChange || submitting) return;
+    if (!hasChange || datesOutOfOrder || submitting) return;
     const payload: BatchEditPayload = {};
     if (categoryId !== "") payload.category_id = categoryId;
     if (status !== "") payload.status = status;
     if (accountId !== "") payload.account_id = accountId;
     if (tags.length > 0) payload.tags = tags;
+    if (date !== "") payload.date = date;
+    if (settledDate !== "") payload.settled_date = settledDate;
     onSubmit(payload);
   }
 
@@ -204,6 +221,67 @@ export default function BatchEditModal({
           </div>
 
           <div>
+            <label htmlFor="batch-edit-date" className={label}>
+              Set date
+            </label>
+            <input
+              id="batch-edit-date"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              aria-describedby="batch-edit-date-hint"
+              className={input}
+            />
+            <p id="batch-edit-date-hint" className="mt-1 text-xs text-text-muted">
+              Not applied to recurring occurrences or transfers. A pending
+              transaction keeps its gap to the expected settlement.
+            </p>
+            {/* CSV dedupe matches (date, amount, description): a moved
+                imported row no longer matches its line in the file. */}
+            {date !== "" && (
+              <p className={`mt-2 ${warning}`}>
+                Re-importing the same file may duplicate imported transactions
+                you move to a new date.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label htmlFor="batch-edit-settled-date" className={label}>
+              Set settlement date
+            </label>
+            <input
+              id="batch-edit-settled-date"
+              type="date"
+              value={settledDate}
+              onChange={(e) => setSettledDate(e.target.value)}
+              aria-describedby={
+                datesOutOfOrder
+                  ? "batch-edit-settled-date-error batch-edit-settled-date-hint"
+                  : "batch-edit-settled-date-hint"
+              }
+              aria-invalid={datesOutOfOrder || undefined}
+              className={input}
+            />
+            {datesOutOfOrder && (
+              <p
+                id="batch-edit-settled-date-error"
+                role="alert"
+                className="mt-1 text-xs text-danger"
+              >
+                Settlement date must be on or after the date
+              </p>
+            )}
+            <p
+              id="batch-edit-settled-date-hint"
+              className="mt-1 text-xs text-text-muted"
+            >
+              Applied only to settled transactions, or ones you set to settled
+              above (they settle on this date). Not applied to transfers.
+            </p>
+          </div>
+
+          <div>
             <label htmlFor="batch-edit-tags" className={label}>
               Add tags
             </label>
@@ -232,7 +310,7 @@ export default function BatchEditModal({
           <button
             type="button"
             onClick={handleApply}
-            disabled={!hasChange || submitting}
+            disabled={!hasChange || datesOutOfOrder || submitting}
             className={`${btnPrimary} w-full sm:w-auto`}
           >
             {submitting ? "Applying…" : "Apply"}

@@ -187,7 +187,7 @@ async def test_bulk_update_sets_category_on_regular_rows(db_session):
     seed = await _seed(db_session)
     a = await _make_expense(db_session, seed, category_id=seed["expense_only_id"])
     b = await _make_expense(db_session, seed, category_id=seed["expense_only_id"])
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [a, b],
         category_id=seed["other_expense_id"], actor_user_id=seed["user_id"],
     )
@@ -201,7 +201,7 @@ async def test_bulk_update_transfer_category_cascades_and_skips_other_fields(db_
     account requested in the same call are skipped (not applied to the transfer)."""
     seed = await _seed(db_session)
     exp_id, inc_id = await _make_transfer(db_session, seed)  # both on transfer_cat
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [exp_id],
         category_id=seed["other_both_id"], status="pending",
         account_id=seed["acct3_id"], actor_user_id=seed["user_id"],
@@ -212,6 +212,10 @@ async def test_bulk_update_transfer_category_cascades_and_skips_other_fields(db_
     assert (await db_session.get(Transaction, inc_id)).category_id == seed["other_both_id"]
     # status/account NOT changed on the transfer leg
     assert (await db_session.get(Transaction, exp_id)).status == TransactionStatus.SETTLED
+    # TBD-763: the dropped fields are reported, no longer silent.
+    assert _notes == [
+        (exp_id, "status not applied to transfers; account not applied to transfers"),
+    ]
 
 
 async def test_bulk_update_transfer_nonboth_category_skips_row(db_session):
@@ -219,7 +223,7 @@ async def test_bulk_update_transfer_nonboth_category_skips_row(db_session):
     is skipped with a reason (no other field requested)."""
     seed = await _seed(db_session)
     exp_id, _ = await _make_transfer(db_session, seed)
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [exp_id],
         category_id=seed["expense_only_id"], actor_user_id=seed["user_id"],
     )
@@ -232,7 +236,7 @@ async def test_bulk_update_transfer_only_account_requested_is_skipped(db_session
     row reported as skipped."""
     seed = await _seed(db_session)
     exp_id, _ = await _make_transfer(db_session, seed)
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [exp_id],
         account_id=seed["acct3_id"], actor_user_id=seed["user_id"],
     )
@@ -245,7 +249,7 @@ async def test_bulk_update_status_and_account_on_regular_row(db_session):
     handled there)."""
     seed = await _seed(db_session)
     a = await _make_expense(db_session, seed, category_id=seed["expense_only_id"])
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [a],
         status="pending", account_id=seed["acct3_id"], actor_user_id=seed["user_id"],
     )
@@ -264,7 +268,7 @@ async def test_bulk_update_merges_tags_on_regular_row(db_session):
         tag_names=["existing"], created_by_user_id=seed["user_id"],
     )
     await db_session.commit()
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [a], tags=["added"], actor_user_id=seed["user_id"],
     )
     assert updated == 1 and skipped == []
@@ -279,7 +283,7 @@ async def test_bulk_update_transfer_tags_skipped(db_session):
     """Tags are not applied to transfer legs."""
     seed = await _seed(db_session)
     exp_id, _ = await _make_transfer(db_session, seed)
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [exp_id],
         category_id=seed["other_both_id"], tags=["x"], actor_user_id=seed["user_id"],
     )
@@ -295,7 +299,7 @@ async def test_bulk_update_skips_manual_adjustment_and_missing(db_session):
     seed = await _seed(db_session)
     a = await _make_expense(db_session, seed, category_id=seed["expense_only_id"])
     adj = await _make_manual_adjustment(db_session, seed)
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [a, adj, 999999],
         category_id=seed["other_expense_id"], actor_user_id=seed["user_id"],
     )
@@ -307,7 +311,7 @@ async def test_bulk_update_skips_manual_adjustment_and_missing(db_session):
 async def test_bulk_update_dedupes_ids(db_session):
     seed = await _seed(db_session)
     a = await _make_expense(db_session, seed, category_id=seed["expense_only_id"])
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [a, a],
         category_id=seed["other_expense_id"], actor_user_id=seed["user_id"],
     )
@@ -323,7 +327,7 @@ async def test_bulk_update_ignores_cross_org_ids(db_session):
     db_session.add(other_org)
     await db_session.commit()
 
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, other_org.id, [a],
         category_id=seed["other_expense_id"], actor_user_id=seed["user_id"],
     )
@@ -348,7 +352,7 @@ async def test_bulk_update_counts_row_updated_when_fields_apply_but_tags_fail(db
     )
     await db_session.commit()
 
-    updated, skipped = await transaction_service.bulk_update_transactions(
+    updated, skipped, _notes = await transaction_service.bulk_update_transactions(
         db_session, seed["org_id"], [a],
         category_id=seed["other_expense_id"], tags=["overflow"],
         actor_user_id=seed["user_id"],
