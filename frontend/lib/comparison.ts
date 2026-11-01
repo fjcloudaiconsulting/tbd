@@ -148,7 +148,7 @@ export const comparisonMatrix: Record<Dimension, Record<Competitor, Cell>> = {
     monarch: { supported: "no", value: "US-based" },
   },
   privacyFirstAi: {
-    tbd: { supported: "yes", value: "Your own key or local Ollama, with spend caps" },
+    tbd: { supported: "yes", value: "Your own provider key, with spend caps" },
     spreadsheets: { supported: "no", value: "None built in" },
     ynab: { supported: "no", value: "No AI features" },
     pocketsmith: { supported: "no", value: "Opt-in AI beta, no bring-your-own or local" },

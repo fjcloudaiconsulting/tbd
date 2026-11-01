@@ -9,16 +9,15 @@ DNS names still pass at save time — this layer is literal-IP
 fast-feedback defense-in-depth. The enforcement point is the
 connect-time guard (``services.ai_providers.egress_guard``), which
 resolves DNS names, validates every record, and pins the connection
-(see tests/services/test_ai_provider_egress_guard.py). The Ollama
-LAN/loopback exemption is gated on the
-``AI_PROVIDER_ALLOW_PRIVATE_NETWORKS`` setting (default OFF).
+(see tests/services/test_ai_provider_egress_guard.py). No provider has a
+LAN/loopback exemption: the only one, for ``ollama``, left with it in
+TBD-584.
 """
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from app.config import settings
 from app.models.org_ai_credential import AiProvider
 from app.schemas.org_ai_credential import OrgAICredentialCreate
 
@@ -79,10 +78,11 @@ def test_base_url_rejects_non_http_schemes(bad_scheme_url: str) -> None:
         # Public DNS — happy path.
         "https://api.example.com/v1",
         "http://example.com",
-        # Private DNS names — operator responsibility (homelab / VPC).
-        "http://ollama.internal:11434",
-        "http://ollama-svc.local",
-        "https://internal-ollama.example.com:8000",
+        # Private DNS names pass here; the connect-time guard refuses
+        # them when they resolve to a non-public address.
+        "http://llm.internal:11434",
+        "http://llm-svc.local",
+        "https://internal-llm.example.com:8000",
     ],
 )
 def test_base_url_allows_public_and_private_dns(allowed_url: str) -> None:
@@ -94,7 +94,7 @@ def test_base_url_allows_public_and_private_dns(allowed_url: str) -> None:
     )
 
 
-def test_base_url_required_for_ollama_and_compatible() -> None:
+def test_base_url_required_for_compatible() -> None:
     with pytest.raises(ValidationError):
         OrgAICredentialCreate(
             provider=AiProvider.OPENAI_COMPATIBLE,
@@ -103,137 +103,76 @@ def test_base_url_required_for_ollama_and_compatible() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Ollama no-key (LAN-only homelab mode) — spec line 37 + ~L219
-# ---------------------------------------------------------------------------
-
-
-def test_ollama_credential_accepts_missing_api_key() -> None:
-    """Ollama POST without api_key must validate successfully."""
-    cred = OrgAICredentialCreate(
-        provider=AiProvider.OLLAMA,
-        base_url="http://ollama.internal:11434",
-    )
-    assert cred.api_key is None
-
-
-def test_ollama_credential_accepts_null_api_key() -> None:
-    """Ollama POST with api_key=None must validate successfully."""
-    cred = OrgAICredentialCreate(
-        provider=AiProvider.OLLAMA,
-        api_key=None,
-        base_url="http://ollama.internal:11434",
-    )
-    assert cred.api_key is None
-
-
-def test_non_ollama_credential_still_rejects_missing_api_key() -> None:
-    """Non-Ollama providers require api_key; omitting it must raise."""
-    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC, AiProvider.OPENAI_COMPATIBLE):
-        with pytest.raises(ValidationError):
-            OrgAICredentialCreate(
-                provider=provider,
-                **({"base_url": "https://localhost:11434/v1"} if provider == AiProvider.OPENAI_COMPATIBLE else {}),
-            )
-
-
-def test_non_ollama_credential_still_rejects_short_api_key() -> None:
-    """Non-Ollama providers reject api_key shorter than API_KEY_MIN_LENGTH."""
-    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC, AiProvider.OPENAI_COMPATIBLE):
-        with pytest.raises(ValidationError):
-            OrgAICredentialCreate(
-                provider=provider,
-                api_key="abc",
-                **({"base_url": "https://localhost:11434/v1"} if provider == AiProvider.OPENAI_COMPATIBLE else {}),
-            )
-
-
-# --- 2026-05-29 Ollama LAN/loopback policy, re-gated 2026-07-07 behind
-# --- AI_PROVIDER_ALLOW_PRIVATE_NETWORKS (default OFF).
-
-_OLLAMA_LAN_URLS = [
-    "http://192.168.1.163:11434/",   # RFC1918 192.168/16
-    "http://10.0.0.5:11434/",        # RFC1918 10/8
-    "http://172.16.5.5:11434/",      # RFC1918 172.16/12
-    "http://127.0.0.1:11434/",       # loopback IPv4
-    "http://[::1]:11434/",           # loopback IPv6
-    "http://[::ffff:192.168.1.1]/",  # IPv4-mapped IPv6 LAN
-]
-
-
-@pytest.mark.parametrize("base_url", _OLLAMA_LAN_URLS)
-def test_ollama_accepts_lan_and_loopback_ip_with_flag_on(
-    base_url: str, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", True
-    )
-    cred = OrgAICredentialCreate(
-        provider=AiProvider.OLLAMA,
-        base_url=base_url,
-    )
-    assert cred.base_url == base_url
-
-
-@pytest.mark.parametrize("base_url", _OLLAMA_LAN_URLS)
-def test_ollama_rejects_lan_and_loopback_ip_by_default(
-    base_url: str, monkeypatch
-) -> None:
-    """Flag OFF (the default everywhere): Ollama gets the same full
-    denylist as every other provider."""
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", False
-    )
+@pytest.mark.parametrize("provider", list(AiProvider))
+def test_every_provider_rejects_missing_api_key(provider) -> None:
+    """No provider takes a keyless credential since the ollama LAN-only
+    mode left (TBD-584)."""
     with pytest.raises(ValidationError):
         OrgAICredentialCreate(
-            provider=AiProvider.OLLAMA,
-            base_url=base_url,
+            provider=provider,
+            **({"base_url": "https://llm.example.com/v1"} if provider == AiProvider.OPENAI_COMPATIBLE else {}),
+        )
+
+
+@pytest.mark.parametrize("provider", list(AiProvider))
+def test_every_provider_rejects_short_api_key(provider) -> None:
+    with pytest.raises(ValidationError):
+        OrgAICredentialCreate(
+            provider=provider,
+            api_key="abc",
+            **({"base_url": "https://llm.example.com/v1"} if provider == AiProvider.OPENAI_COMPATIBLE else {}),
+        )
+
+
+@pytest.mark.parametrize("provider", ["ollama", "native"])
+def test_removed_provider_is_refused(provider) -> None:
+    with pytest.raises(ValidationError):
+        OrgAICredentialCreate(
+            provider=provider,
+            api_key="sk-test-key-1234",
+            base_url="https://llm.example.com/",
+        )
+
+
+def test_bearer_token_is_no_longer_accepted() -> None:
+    """``bearer_token`` served only the ollama reverse-proxy mode."""
+    with pytest.raises(ValidationError):
+        OrgAICredentialCreate(
+            provider=AiProvider.OPENAI_COMPATIBLE,
+            api_key="sk-test-key-1234",
+            base_url="https://llm.example.com/",
+            bearer_token="tok-1234",
         )
 
 
 @pytest.mark.parametrize(
     "base_url",
     [
-        "http://169.254.169.254/",                   # AWS/GCP/DO IMDS
-        "http://[fd00:ec2::254]/",                   # AWS IPv6 IMDS
-        "http://[::ffff:169.254.169.254]/",          # mapped IPv6 metadata
-        "http://169.254.1.1/",                       # link-local non-metadata
-        "http://224.0.0.1/",                         # multicast
+        "http://192.168.1.163:11434/",   # RFC1918 192.168/16
+        "http://10.0.0.5:11434/",        # RFC1918 10/8
+        "http://172.16.5.5:11434/",      # RFC1918 172.16/12
+        "http://127.0.0.1:11434/",       # loopback IPv4
+        "http://[::1]:11434/",           # loopback IPv6
+        "http://[::ffff:192.168.1.1]/",  # IPv4-mapped IPv6 LAN
+        "http://169.254.169.254/",       # AWS/GCP/DO IMDS
+        "http://[fd00:ec2::254]/",       # AWS IPv6 IMDS
+        "http://224.0.0.1/",             # multicast
     ],
 )
-def test_ollama_still_rejects_metadata_and_unsafe(
-    base_url: str, monkeypatch
-) -> None:
-    """Blocked even with the private-networks escape hatch enabled."""
-    monkeypatch.setattr(
-        settings, "ai_provider_allow_private_networks", True
-    )
-    with pytest.raises(ValidationError):
-        OrgAICredentialCreate(
-            provider=AiProvider.OLLAMA,
-            base_url=base_url,
-        )
-
-
-def test_openai_compatible_still_rejects_lan_ip() -> None:
-    """Strict SSRF block unchanged for non-Ollama providers."""
+def test_openai_compatible_rejects_local_endpoints(base_url: str) -> None:
+    """A local model server cannot come back through openai_compatible."""
     with pytest.raises(ValidationError):
         OrgAICredentialCreate(
             provider=AiProvider.OPENAI_COMPATIBLE,
             api_key="sk-test-key-1234",
-            base_url="http://192.168.1.163/",
+            base_url=base_url,
         )
 
 
-def test_public_ip_still_accepted_for_any_provider() -> None:
-    cred_ollama = OrgAICredentialCreate(
-        provider=AiProvider.OLLAMA,
-        base_url="https://ollama.example.com/",
-    )
-    cred_openai = OrgAICredentialCreate(
+def test_public_ip_still_accepted() -> None:
+    cred = OrgAICredentialCreate(
         provider=AiProvider.OPENAI_COMPATIBLE,
         api_key="sk-test-key-1234",
         base_url="https://api.example.com/",
     )
-    assert cred_ollama.base_url.endswith(".example.com/")
-    assert cred_openai.base_url.endswith(".example.com/")
+    assert cred.base_url.endswith(".example.com/")

@@ -39,7 +39,6 @@ import anyio
 import logging
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -47,7 +46,6 @@ from app import state_db
 from app.agent import registry
 from app.agent.registry import ToolError
 from app.config import settings
-from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.user import User
 from app.services import ai_dispatch, ai_scrub, feature_service, usage_service
 from app.services.ai_feature_map import FEATURE_CAPABILITY
@@ -229,15 +227,6 @@ async def preflight(
             messages=opening(messages) + [{"role": "user", "content": json.dumps(tools)}],
             max_tokens=None,
         )
-        # Ollama returns tool calls without ids and does not translate a
-        # multi-round transcript, so it can never run this loop.
-        provider = await db.scalar(
-            select(OrgAICredential.provider).where(OrgAICredential.id == prepared.credential_pk_id)
-        )
-        if provider == AiProvider.OLLAMA:
-            raise ai_dispatch.AICapabilityNotSupported(
-                capability=FEATURE_CAPABILITY[FEATURE_KEY], feature_key=FEATURE_KEY
-            )
         await usage_service.admit(db, org_id, "assistant.turns")  # LAST: refusals never count
     except (ai_dispatch.AIDispatchError, NativeNotAvailable) as exc:
         await release_lock(org_id, nonce)

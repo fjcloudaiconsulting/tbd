@@ -643,6 +643,50 @@ async def test_call_llm_structured_schema_failure_triggers_retry(
     assert result.response.retries_used == 1
 
 
+# ---------- Retired provider (TBD-584) ---------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["ollama", "native"])
+async def test_routing_to_a_retired_provider_is_never_dispatched(
+    db: AsyncSession, org, admin_user, default_routing, provider
+):
+    """A row an earlier release stored with ``ollama`` (or ``native``)
+    stays in place but is never dispatched: 412 with its own code, no
+    adapter built, no key decrypted, no ledger row. It is a
+    ``NoRoutingConfigured`` so every feature's fallback still applies."""
+    from sqlalchemy import text
+    from app.services.ai_dispatch import NoRoutingConfigured, RoutedProviderNotSupported
+
+    org_id = org.id
+    await db.execute(
+        text("UPDATE org_ai_credentials SET provider = :p"), {"p": provider}
+    )
+    await db.commit()
+    db.expire_all()  # reload the credential as the stored row
+
+    with patch("app.services.ai_dispatch.get_adapter") as get_adapter, patch(
+        "app.services.ai_dispatch.decrypt"
+    ) as decrypt:
+        with pytest.raises(RoutedProviderNotSupported) as exc_info:
+            await call_llm(
+                db,
+                org_id=org_id,
+                feature_key="chat",
+                request_payload={"messages": [{"role": "user", "content": "x"}]},
+            )
+    get_adapter.assert_not_called()
+    decrypt.assert_not_called()
+    assert isinstance(exc_info.value, NoRoutingConfigured)
+    http = http_for_dispatch_error(exc_info.value)
+    assert http.status_code == 412
+    assert http.detail == {"code": "ai_provider_not_supported"}
+    rows = (
+        await db.execute(select(AIUsageLedger).where(AIUsageLedger.org_id == org_id))
+    ).scalars().all()
+    assert rows == []
+
+
 # ---------- Routing capability check ---------------------------------
 
 
