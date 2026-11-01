@@ -1205,3 +1205,129 @@ def test_template_occurrences_in_month_caps_the_match(frequency, year, month, ex
     assert forecast_plan_service._template_occurrences_in_month(
         tpl, year, month
     ) == expected
+
+
+# ── TBD-764 second review: which templates match, and how many rows ─────────
+
+
+@pytest.mark.asyncio
+async def test_template_starting_next_period_leaves_this_periods_history(
+    session_factory,
+):
+    """A rent template created to start NEXT period (June 1) contributes
+    nothing to May, so it must not match May's history out: November-style
+    'this month I pay by hand' still plans the 1500 average."""
+    seed = await _seed(session_factory)
+    rent = await _category(session_factory, seed, "Rent")
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, rent, 1500, datetime.date(2026, month, 1)))
+        await db.commit()
+    await _template(
+        session_factory, seed, rent, 1500, datetime.date(2026, 6, 1), "Rent",
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), rent)
+    assert item.planned_amount == Decimal("1500.00")
+    assert item.source == "history"
+
+
+@pytest.mark.asyncio
+async def test_template_whose_occurrence_was_skipped_this_period_still_matches(
+    session_factory,
+):
+    """The template's May occurrence exists but was skipped (frontier now in
+    June). The template HAS an occurrence this period, so its imported
+    history stays matched out: a skipped bill plans 0, not its average."""
+    seed = await _seed(session_factory)
+    rent = await _category(session_factory, seed, "Rent")
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, rent, 1500, datetime.date(2026, month, 1)))
+        await db.commit()
+    rid = await _template(
+        session_factory, seed, rent, 1500, datetime.date(2026, 6, 1), "Rent",
+    )
+    async with session_factory() as db:
+        db.add(_row(seed, rent, 1500, datetime.date(2026, 5, 1),
+                    recurring_id=rid, reconciliation_state="skipped"))
+        await db.commit()
+
+    assert _expense_items(await _populate(session_factory, seed), rent) == []
+
+
+@pytest.mark.asyncio
+async def test_generated_history_rows_use_up_the_templates_monthly_cap(
+    session_factory,
+):
+    """The gym template already has its own generated 50 row each month, so
+    it has no occurrence left to claim a plain 48 row: 50 + 48 = 98."""
+    seed = await _seed(session_factory)
+    gym = await _category(session_factory, seed, "Gym")
+    rid = await _template(
+        session_factory, seed, gym, 50, datetime.date(2026, 5, 10), "Gym",
+    )
+    async with session_factory() as db:
+        for month in (2, 3, 4):
+            db.add(_settled(seed, gym, 50, datetime.date(2026, month, 10),
+                            recurring_id=rid))
+            db.add(_settled(seed, gym, 48, datetime.date(2026, month, 20)))
+        await db.commit()
+
+    [item] = _expense_items(await _populate(session_factory, seed), gym)
+    assert item.planned_amount == Decimal("98.00")
+
+
+@pytest.mark.parametrize(
+    ("history", "expected"),
+    [
+        # Residue 200 + 0 + 100 over three months: 80 + 100 = 180 (not 230).
+        ({2: (80, 200), 3: (80,), 4: (80, 100)}, "180.00"),
+        # Residue in ONE month only: Mar still counts, 80 + 200 / 2 = 180.
+        ({2: (80, 200), 3: (80,)}, "180.00"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_months_fully_matched_out_still_count_in_the_average(
+    session_factory, history, expected,
+):
+    seed = await _seed(session_factory)
+    power = await _category(session_factory, seed, "Electricity")
+    async with session_factory() as db:
+        for month, amounts in history.items():
+            for day, amount in enumerate(amounts, start=5):
+                db.add(_settled(seed, power, amount, datetime.date(2026, month, day)))
+        await db.commit()
+    await _template(
+        session_factory, seed, power, 80, datetime.date(2026, 5, 5), "Power",
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), power)
+    assert item.planned_amount == Decimal(expected)
+
+
+@pytest.mark.asyncio
+async def test_month_end_bill_settling_next_month_matches_on_its_due_month(
+    session_factory,
+):
+    """A month-end bill: Feb 28 settles Mar 2, Mar 31 and Apr 30 settle the
+    same day. By effective date March holds two rows against a cap of one;
+    matched on the due date each month holds one, so all three are the
+    template's and H' is 0 over its two months: 100, not 150."""
+    seed = await _seed(session_factory)
+    phone = await _category(session_factory, seed, "Phone")
+    async with session_factory() as db:
+        for due, settled in (
+            (datetime.date(2026, 2, 28), datetime.date(2026, 3, 2)),
+            (datetime.date(2026, 3, 31), datetime.date(2026, 3, 31)),
+            (datetime.date(2026, 4, 30), datetime.date(2026, 4, 30)),
+        ):
+            db.add(_row(seed, phone, 100, due, settled_date=settled,
+                        status=TransactionStatus.SETTLED))
+        await db.commit()
+    await _template(
+        session_factory, seed, phone, 100, datetime.date(2026, 5, 31), "Phone",
+    )
+
+    [item] = _expense_items(await _populate(session_factory, seed), phone)
+    assert item.planned_amount == Decimal("100.00")
