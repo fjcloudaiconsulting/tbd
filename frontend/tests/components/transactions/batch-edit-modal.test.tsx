@@ -228,4 +228,29 @@ describe("BatchEditModal", () => {
     rerender(<BatchEditModal open {...props} />);
     expect((screen.getByLabelText(/^set date$/i) as HTMLInputElement).value).toBe("");
   });
+  it("blocks Apply while the settlement date is before the date", () => {
+    const { onSubmit } = renderModal();
+    fireEvent.change(screen.getByLabelText(/^set date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    fireEvent.change(screen.getByLabelText(/^set settlement date$/i), {
+      target: { value: "2026-05-09" },
+    });
+    const apply = screen.getByRole("button", { name: /apply/i }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    expect(
+      screen.getByText("Settlement date must be on or after the date"),
+    ).toBeTruthy();
+    fireEvent.click(apply);
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    // Same day is fine.
+    fireEvent.change(screen.getByLabelText(/^set settlement date$/i), {
+      target: { value: "2026-05-10" },
+    });
+    expect(apply.disabled).toBe(false);
+    expect(
+      screen.queryByText("Settlement date must be on or after the date"),
+    ).toBeNull();
+  });
 });

@@ -102,13 +102,17 @@ async def _seed(db: AsyncSession) -> dict:
     internal = Category(
         org_id=org.id, name="Internal", slug="internal", type=CategoryType.BOTH,
     )
-    db.add_all([transfer_cat, groceries, dining, internal])
+    salary = Category(
+        org_id=org.id, name="Salary", slug="salary", type=CategoryType.INCOME,
+    )
+    db.add_all([transfer_cat, groceries, dining, internal, salary])
     await db.commit()
     return {
         "org_id": org.id, "user_id": user.id,
         "src_id": src.id, "dst_id": dst.id, "third_id": third.id,
         "transfer_cat_id": transfer_cat.id, "groceries_id": groceries.id,
         "dining_id": dining.id, "internal_id": internal.id,
+        "salary_id": salary.id,
     }
 
 
@@ -153,7 +157,7 @@ async def _transfer(db: AsyncSession, seed: dict) -> tuple[int, int]:
     return exp.id, inc.id
 
 
-async def _recurring_row(db: AsyncSession, seed: dict) -> int:
+async def _recurring_row(db: AsyncSession, seed: dict, *, settled: bool = False, **extra) -> int:
     r = RecurringTransaction(
         org_id=seed["org_id"], account_id=seed["src_id"],
         category_id=seed["groceries_id"], description="rent",
@@ -163,7 +167,9 @@ async def _recurring_row(db: AsyncSession, seed: dict) -> int:
     )
     db.add(r)
     await db.commit()
-    return await _pending(db, seed, recurring_id=r.id)
+    if settled:
+        return await _settled(db, seed, recurring_id=r.id, **extra)
+    return await _pending(db, seed, recurring_id=r.id, **extra)
 
 
 async def _get(db: AsyncSession, tx_id: int) -> Transaction:
@@ -241,7 +247,7 @@ async def test_transfer_leg_skips_both_dates_with_notes_and_category_still_appli
     assert updated == 1 and skipped == []
     assert notes == [(
         exp_id,
-        "settlement date not applied to transfers; date not applied to transfers",
+        "date not applied to transfers; settlement date not applied to transfers",
     )]
     for leg in (exp_id, inc_id):
         row = await _get(db_session, leg)
@@ -450,3 +456,153 @@ async def test_balance_moves_only_by_the_account_change_with_settled_date(db_ses
     # The 10 expense leaves Src (reverted) and lands on Third (applied) once.
     assert await _balance(db_session, seed["src_id"]) == src_before + Decimal("10")
     assert await _balance(db_session, seed["third_id"]) == third_before - Decimal("10")
+
+
+# -- review follow-ups ---------------------------------------------------------
+
+RECURRING_NOTE = "date not applied to recurring occurrences"
+EARLIER_NOTE = "settlement date not applied: before the unchanged date 2026-05-01"
+
+
+async def test_recurring_settled_row_keeps_its_date_and_drops_an_earlier_settled_date(db_session):
+    """The date is skipped by policy, so a settled_date chosen for the NEW
+    date lands before the unchanged one: it is dropped with a note instead of
+    failing the row and losing the category."""
+    seed = await _seed(db_session)
+    rec = await _recurring_row(db_session, seed, settled=True)
+
+    updated, skipped, notes = await _bulk(
+        db_session, seed, [rec], category_id=seed["dining_id"],
+        date=date(2026, 4, 20), settled_date=date(2026, 4, 20),
+    )
+
+    assert (updated, skipped) == (1, [])
+    assert notes == [(rec, f"{RECURRING_NOTE}; {EARLIER_NOTE}")]
+    row = await _get(db_session, rec)
+    assert row.category_id == seed["dining_id"]
+    assert (row.date, row.settled_date) == (date(2026, 5, 1), date(2026, 5, 1))
+
+
+async def test_recurring_pending_row_settled_in_the_batch_with_both_dates(db_session):
+    seed = await _seed(db_session)
+    rec = await _recurring_row(db_session, seed)
+    before = await _balance(db_session, seed["src_id"])
+
+    updated, skipped, notes = await _bulk(
+        db_session, seed, [rec], category_id=seed["dining_id"], status="settled",
+        date=date(2026, 4, 20), settled_date=date(2026, 4, 20),
+    )
+
+    assert (updated, skipped) == (1, [])
+    assert notes == [(rec, f"{RECURRING_NOTE}; {EARLIER_NOTE}")]
+    row = await _get(db_session, rec)
+    assert row.status == TransactionStatus.SETTLED
+    assert row.category_id == seed["dining_id"]
+    assert row.date == date(2026, 5, 1)
+    assert row.settled_date == date.today()  # the settle stamp, not 04-20
+    assert await _balance(db_session, seed["src_id"]) == before - Decimal("10")
+
+
+async def test_settling_a_pending_row_onto_a_future_date_says_why(db_session):
+    """Settling stamps today; a new date after today would fail the ordering
+    check with a reason that names neither field the user touched."""
+    seed = await _seed(db_session)
+    tx = await _pending(db_session, seed)
+
+    updated, skipped, notes = await _bulk(
+        db_session, seed, [tx], status="settled", date=date(2099, 1, 1),
+        category_id=seed["dining_id"],
+    )
+
+    assert (updated, notes) == (0, [])
+    assert skipped == [
+        (tx, "date is after today's settlement; set the settlement date too"),
+    ]
+    row = await _get(db_session, tx)
+    assert row.status == TransactionStatus.PENDING
+    assert row.category_id == seed["groceries_id"]
+    assert row.date == date(2026, 5, 1)
+
+
+async def test_settled_row_set_to_pending_with_a_date(db_session):
+    seed = await _seed(db_session)
+    tx = await _settled(db_session, seed)
+    before = await _balance(db_session, seed["src_id"])
+
+    updated, skipped, notes = await _bulk(
+        db_session, seed, [tx], status="pending", date=date(2026, 5, 10),
+    )
+
+    assert (updated, skipped, notes) == (1, [], [])
+    row = await _get(db_session, tx)
+    assert row.status == TransactionStatus.PENDING
+    assert row.date == date(2026, 5, 10)
+    assert row.settled_date is None
+    # Unsettling reverts the 10 expense out of the balance.
+    assert await _balance(db_session, seed["src_id"]) == before + Decimal("10")
+
+
+async def test_reconcile_matched_one_way_row_takes_a_date_without_moving_money(db_session):
+    seed = await _seed(db_session)
+    canonical = await _settled(db_session, seed)
+    dup = await _settled(
+        db_session, seed, linked_transaction_id=canonical,
+        reconciliation_state="matched",
+    )
+    before = await _balance(db_session, seed["src_id"])
+
+    updated, skipped, notes = await _bulk(db_session, seed, [dup], date=date(2026, 4, 20))
+
+    assert (updated, skipped, notes) == (1, [], [])
+    assert (await _get(db_session, dup)).date == date(2026, 4, 20)
+    assert (await _get(db_session, canonical)).date == date(2026, 5, 1)
+    assert await _balance(db_session, seed["src_id"]) == before
+
+
+async def test_reverted_recurring_row_takes_only_a_settled_date(db_session):
+    seed = await _seed(db_session)
+    rec = await _recurring_row(
+        db_session, seed, settled=True, reconciliation_state="skipped",
+    )
+    before = await _balance(db_session, seed["src_id"])
+
+    updated, skipped, notes = await _bulk(
+        db_session, seed, [rec], settled_date=date(2026, 5, 6),
+    )
+
+    assert (updated, skipped, notes) == (1, [], [])
+    assert (await _get(db_session, rec)).settled_date == date(2026, 5, 6)
+    assert await _balance(db_session, seed["src_id"]) == before
+
+
+async def test_settled_row_past_settlement_note_with_status_settled(db_session):
+    seed = await _seed(db_session)
+    tx = await _settled(db_session, seed)
+
+    updated, skipped, notes = await _bulk(
+        db_session, seed, [tx], status="settled", date=date(2026, 5, 10),
+    )
+
+    assert (updated, skipped) == (1, [])
+    assert notes == [
+        (tx, "date not applied: settled on 2026-05-01; set the settlement date too"),
+    ]
+    row = await _get(db_session, tx)
+    assert row.status == TransactionStatus.SETTLED
+    assert (row.date, row.settled_date) == (date(2026, 5, 1), date(2026, 5, 1))
+
+
+async def test_a_failed_row_keeps_its_notes_in_the_skip_reason(db_session):
+    seed = await _seed(db_session)
+    rec = await _recurring_row(db_session, seed)
+
+    updated, skipped, notes = await _bulk(
+        db_session, seed, [rec], date=date(2026, 5, 10),
+        category_id=seed["salary_id"],  # income-only on an expense row
+    )
+
+    assert (updated, notes) == (0, [])
+    assert len(skipped) == 1 and skipped[0][0] == rec
+    reason = skipped[0][1]
+    assert reason.endswith(f"; {RECURRING_NOTE}")
+    assert len(reason) > len(f"; {RECURRING_NOTE}")

@@ -122,9 +122,12 @@ export default function BatchEditModal({
     tags.length > 0 ||
     date !== "" ||
     settledDate !== "";
+  // YYYY-MM-DD compares correctly as a string. Every row taking both would
+  // fail the server's ordering check, so it is caught before the request.
+  const datesOutOfOrder = date !== "" && settledDate !== "" && settledDate < date;
 
   function handleApply() {
-    if (!hasChange || submitting) return;
+    if (!hasChange || datesOutOfOrder || submitting) return;
     const payload: BatchEditPayload = {};
     if (categoryId !== "") payload.category_id = categoryId;
     if (status !== "") payload.status = status;
@@ -252,9 +255,23 @@ export default function BatchEditModal({
               type="date"
               value={settledDate}
               onChange={(e) => setSettledDate(e.target.value)}
-              aria-describedby="batch-edit-settled-date-hint"
+              aria-describedby={
+                datesOutOfOrder
+                  ? "batch-edit-settled-date-error batch-edit-settled-date-hint"
+                  : "batch-edit-settled-date-hint"
+              }
+              aria-invalid={datesOutOfOrder || undefined}
               className={input}
             />
+            {datesOutOfOrder && (
+              <p
+                id="batch-edit-settled-date-error"
+                role="alert"
+                className="mt-1 text-xs text-danger"
+              >
+                Settlement date must be on or after the date
+              </p>
+            )}
             <p
               id="batch-edit-settled-date-hint"
               className="mt-1 text-xs text-text-muted"
@@ -293,7 +310,7 @@ export default function BatchEditModal({
           <button
             type="button"
             onClick={handleApply}
-            disabled={!hasChange || submitting}
+            disabled={!hasChange || datesOutOfOrder || submitting}
             className={`${btnPrimary} w-full sm:w-auto`}
           >
             {submitting ? "Applying…" : "Apply"}

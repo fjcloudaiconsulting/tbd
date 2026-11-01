@@ -2124,7 +2124,11 @@ async def bulk_update_transactions(
     - ``settled_date`` applies only to rows that are SETTLED, or are being
       settled in this batch (they settle on that date instead of today). On a
       row that stays pending it is only an expectation the auto-settle sweep
-      overwrites, so it is not applied.
+      overwrites, so it is not applied. On a row that keeps its date (the
+      skips above) a settled_date before that date is dropped with a note,
+      so the row's other fields still land.
+    - A row settled in this batch onto a date after today without a
+      settled_date is skipped with that reason (settling stamps today).
 
     Returns (updated_count, skipped, notes): skipped is a list of (id, reason)
     for rows where nothing applied; notes is a list of (id, note) for rows
@@ -2203,22 +2207,18 @@ async def bulk_update_transactions(
             if "status" in update_kwargs
             else row.status
         ) == TransactionStatus.SETTLED
-        if settled_date is not None:
-            if is_transfer:
-                row_notes.append("settlement date not applied to transfers")
-            elif not settles:
-                row_notes.append(
-                    "settlement date not applied: set status to settled to apply"
-                )
-            else:
-                update_kwargs["settled_date"] = settled_date
+        takes_settled_date = (
+            settled_date is not None and not is_transfer and settles
+        )
+        # The date is decided FIRST: whether this row keeps its date decides
+        # whether the batch's settled_date can still land on it.
         if date is not None:
             if is_transfer:
                 row_notes.append("date not applied to transfers")
             elif row.recurring_id is not None:
                 row_notes.append("date not applied to recurring occurrences")
             elif (
-                "settled_date" not in update_kwargs
+                not takes_settled_date
                 and settles
                 and row.status == TransactionStatus.SETTLED
                 and row.settled_date is not None
@@ -2230,18 +2230,50 @@ async def bulk_update_transactions(
                 )
             else:
                 update_kwargs["date"] = date
+        if settled_date is not None:
+            if is_transfer:
+                row_notes.append("settlement date not applied to transfers")
+            elif not settles:
+                row_notes.append(
+                    "settlement date not applied: set status to settled to apply"
+                )
+            elif (
+                date is not None
+                and "date" not in update_kwargs
+                and settled_date < row.date
+            ):
+                # Chosen for the new date, but this row keeps its old one: it
+                # would fail the ordering check and take the rest of the row
+                # down with it. Drop it so category/status/... still land.
+                row_notes.append(
+                    "settlement date not applied: before the unchanged date "
+                    f"{row.date.isoformat()}"
+                )
+            else:
+                update_kwargs["settled_date"] = settled_date
+        if "date" in update_kwargs and "settled_date" not in update_kwargs:
+            if settles and row.status != TransactionStatus.SETTLED:
+                # Being settled here stamps today (update_transaction); a new
+                # date after today would fail the ordering check with a reason
+                # naming neither field the user touched. Skip with this one.
+                if date > datetime.date.today():
+                    skipped.append((tx_id, "; ".join([
+                        "date is after today's settlement; set the settlement "
+                        "date too",
+                        *row_notes,
+                    ])))
+                    continue
+            elif (
+                not settles
+                and row.status == TransactionStatus.PENDING
+                and row.settled_date is not None
+            ):
                 # A row that stays pending keeps its expected-settlement gap
                 # (the TBD-756 series rule); without it a date moved past the
                 # expectation fails the ordering check and the row is skipped.
-                if (
-                    "settled_date" not in update_kwargs
-                    and not settles
-                    and row.status == TransactionStatus.PENDING
-                    and row.settled_date is not None
-                ):
-                    update_kwargs["settled_date"] = row.settled_date + (
-                        date - row.date
-                    )
+                update_kwargs["settled_date"] = row.settled_date + (
+                    date - row.date
+                )
         if update_kwargs:
             try:
                 await update_transaction(
@@ -2258,7 +2290,8 @@ async def bulk_update_transactions(
                 # transaction) rather than aborting the whole batch — parity
                 # with the tags branch below.
                 await db.rollback()
-                skipped.append((tx_id, _reason(exc)))
+                # Keep what the row would not have taken anyway in the reason.
+                skipped.append((tx_id, "; ".join([_reason(exc), *row_notes])))
                 continue
 
         # 2) tags MERGE (regular rows only)
@@ -2291,7 +2324,9 @@ async def bulk_update_transactions(
                     if applied:
                         row_notes.append(f"tags not applied ({_reason(exc)})")
                     else:
-                        skipped.append((tx_id, f"Tags: {_reason(exc)}"))
+                        skipped.append(
+                            (tx_id, "; ".join([f"Tags: {_reason(exc)}", *row_notes]))
+                        )
                         continue
 
         if applied:
