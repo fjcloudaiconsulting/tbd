@@ -273,6 +273,57 @@ def test_tb6_a_templated_preview_needs_an_entity_with_those_columns():
         _tool(preview=None, fields=("note",))  # budgets has no ``note`` column
 
 
+async def _nothing(ctx, row, args):
+    return []
+
+
+def _crud_router() -> APIRouter:
+    r = APIRouter(prefix="/api/v1/widgets")
+
+    async def _create(body: _Body, current_user: User = Depends(get_current_user),
+                      db: AsyncSession = Depends(get_db)):
+        return {}
+
+    async def _delete(widget_id: int, current_user: User = Depends(get_current_user),
+                      db: AsyncSession = Depends(get_db)):
+        return {}
+
+    r.post("")(_create)
+    r.delete("/{widget_id}")(_delete)
+    return r
+
+
+def test_tb6_a_delete_carries_a_cascade_disclosure_covering_every_foreign_key():
+    """FENCE (TBD-664 B). Wrong implementations: a delete tool whose preview
+    names its own row only, while the FK cascades (a tag row, a SET NULL
+    link) go unlisted; a new FK onto the table that no disclosure covers."""
+    from app.agent.route_tool import CascadeDisclosure
+    from app.models.transaction import Transaction
+
+    kw = dict(name="widget_delete", risk="sensitive", router=_crud_router(), method="DELETE",
+              path="/api/v1/widgets/{widget_id}", fields=(), product_area=None, min_role=Role.MEMBER,
+              description="t", entity=Transaction, describe=("amount",))
+    with pytest.raises(ToolRegistrationError, match="FK-cascade"):
+        route_tool(**kw)
+    link, tags = "transactions.linked_transaction_id", "transaction_tags.transaction_id"
+    with pytest.raises(ToolRegistrationError, match=tags):
+        route_tool(**kw, cascade=CascadeDisclosure(covers=frozenset({link}), disclose=_nothing))
+    with pytest.raises(ToolRegistrationError, match="describe"):
+        route_tool(**{**kw, "describe": ()}, cascade=CascadeDisclosure(frozenset({link, tags}), _nothing))
+    route_tool(**kw, cascade=CascadeDisclosure(covers=frozenset({link, tags}), disclose=_nothing))
+
+
+def test_tb6_a_create_template_names_body_columns_of_its_entity():
+    """FENCE (TBD-664 B). Wrong implementation: a templated create listing a
+    field the insert does not store (``note`` is no budgets column)."""
+    kw = dict(name="widget_create", risk="sensitive", router=_crud_router(), method="POST",
+              path="/api/v1/widgets", product_area=None, min_role=Role.MEMBER, description="t",
+              entity=Budget)
+    with pytest.raises(ToolRegistrationError, match="body column"):
+        route_tool(**kw, fields=("amount", "note"))
+    route_tool(**kw, fields=("amount",))
+
+
 def test_tb6_tiers_are_enforced_by_register():
     """FENCE T-B6. A read tool on a body route, or a write tool on a GET,
     is refused by ``register`` (the factory does not bypass it)."""

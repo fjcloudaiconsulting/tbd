@@ -11,7 +11,9 @@ visible) around EVERY preview call and around execute, and checks, both ways:
 3. Change -> diff: every named Change happened, with the named before/after
    (or, for ``*_delta`` counters, the named nonzero movement);
 4. inserts: one-to-one with insert groups, every named column equals the row,
-   every unnamed column is exempt or the column default;
+   every unnamed column is exempt or the column default; a ``"new:k"`` value
+   in a foreign-key column is the row inserted as group ``new:k`` (TBD-664 B:
+   the two legs of a transfer name each other);
 5. deletes: one-to-one with delete groups, named befores equal the row;
 6. identity and value normalisation (a ``{"untrusted": s}`` value is ``s``);
 7. pinned exemption lists (bookkeeping, insert identity);
@@ -22,6 +24,8 @@ wrong implementation it kills.
 """
 from __future__ import annotations
 
+import collections
+import dataclasses
 import datetime
 import enum
 import json
@@ -38,7 +42,10 @@ from app.models import Account
 from app.models.agent_pending_action import AgentPendingAction
 from app.models.base import Base
 from app.models.budget import Budget
+from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
+from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
+from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role
 from app.services.category_rules_service import normalize_description
@@ -59,6 +66,8 @@ BOOKKEEPING = {
     ("category_rules", "match_count"),
     ("category_rules", "raw_description_seen"),
     ("category_rules", "source"),
+    # The clock stamp of an auto-close; the close itself is named as ``status``.
+    ("import_batches", "closed_at"),
 }
 BOOKKEEPING_TABLES = {"audit_events"}
 # Insert identity beyond the PK and org_id: columns a natural-key group id names.
@@ -265,6 +274,8 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str) -> Non
             insert_groups.append((table, id_, pk, cs))
 
     # 4. inserts: one-to-one, named values equal the row, the rest default
+    matched: dict[str, tuple] = {}  # insert group id -> (table, pk)
+    refs: list[tuple] = []  # (table, pk, column, group id it names)
     for table, id_, pk, cs in insert_groups:
         tobj = TABLES[table]
         natural = not (isinstance(id_, str) and id_.startswith("new:"))
@@ -273,10 +284,12 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str) -> Non
             assert c["before"] is None, f"rule 4: insert group {id_!r} names a before"
             named[c["field"]] = c["after"]
         assert set(named) <= set(tobj.c.keys()), f"rule 3: {table} has no column in {sorted(named)}"
+        linked = {f: v for f, v in named.items()
+                  if isinstance(v, str) and v.startswith("new:") and tobj.c[f].foreign_keys}
 
         def problems(row):
             out = [f"{f}: row {_norm(tobj.c[f], row[f])!r}, preview {v!r}"
-                   for f, v in named.items() if _norm(tobj.c[f], row[f]) != v]
+                   for f, v in named.items() if f not in linked and _norm(tobj.c[f], row[f]) != v]
             out += [f"{col.name}: unnamed, row {_norm(col, row[col.name])!r}, default {_default(col)!r}"
                     for col in tobj.c
                     if col.name not in named and not _insert_exempt(tobj, col, natural)
@@ -289,9 +302,15 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str) -> Non
             probs = problems(post[table][cand])
             if not probs:
                 ins_rows[table].discard(cand)
+                matched[json.dumps(id_)] = (table, cand)
+                refs += [(table, cand, f, v) for f, v in linked.items()]
                 break
         else:
             raise AssertionError(f"rule 4: insert group {table} {id_!r} matches no row: {probs}")
+    for table, pk, f, ref in refs:
+        assert json.dumps(ref) in matched, f"rule 4: {table}.{f} names {ref!r}, which is no insert group"
+        _, target = matched[json.dumps(ref)]
+        assert (post[table][pk][f],) == target, f"rule 4: {table}.{f} names {ref!r} but links elsewhere"
 
     # 2. completeness: nothing changed that no Change names
     for table in ins_rows:
@@ -398,6 +417,138 @@ async def _transfer_leg(f, a):
     await _make_pair(f, a)
 
 
+# ── the sensitive tools (TBD-664 PR B) ────────────────────────────────────
+
+async def _ids(f, *objs) -> list[int]:
+    async with f() as db:
+        db.add_all(objs)
+        await db.commit()
+        return [o.id for o in objs]
+
+
+async def _savings(f, a):
+    """A second EUR account and the org's Transfer category."""
+    async with f() as db:
+        type_id = (await db.get(Account, a["acct"])).account_type_id
+    a["savings"], a["transfer_cat"] = await _ids(
+        f,
+        Account(org_id=a["org"], name="Savings", account_type_id=type_id, balance=Decimal("50.00"),
+                currency="EUR", is_default=False),
+        Category(org_id=a["org"], name="Transfer", slug="transfer", type=CategoryType.BOTH),
+    )
+
+
+async def _skipped_import(f, a):
+    async with f() as db:
+        await db.execute(update(Transaction).where(Transaction.id == a["tx"]).values(
+            reconciliation_state="skipped"))
+        await db.commit()
+
+
+async def _tagged(f, a):
+    t1, t2 = await _ids(f, *(Tag(org_id=a["org"], name=n, name_normalized=n) for n in ("trip", "work")))
+    await _add(f, TransactionTag(transaction_id=a["tx"], tag_id=t1),
+               TransactionTag(transaction_id=a["tx"], tag_id=t2))
+
+
+def _batch(a, **counts):
+    return ImportBatch(
+        org_id=a["org"], account_id=a["acct"], source_format=ImportSourceFormat.CSV,
+        file_name="bank.csv", created_by_user_id=a["member"], status=ImportBatchStatus.OPEN,
+        **counts,
+    )
+
+
+def _import_row(a, batch_id, state, **kw):
+    return _tx_row(a, description="BANK LINE", import_batch_id=batch_id, is_imported=True,
+                   reconciliation_state=state, **kw)
+
+
+async def _matched_import_rows(f, a):
+    """Three import rows point at ``tx``: a reopened match (pending review), an
+    accepted match, and a rejected one. Deleting ``tx`` demotes the first two,
+    unlinks all three, and closes the batch (its last pending row leaves)."""
+    [bid] = await _ids(f, _batch(a, row_count=3, accepted_count=1, pending_count=1))
+    await _add(f, *(_import_row(a, bid, s, linked_transaction_id=a["tx"])
+                    for s in ("pending_review", "accepted", "rejected")))
+
+
+async def _drifted_batch(f, a):
+    """``tx`` and another row are pending review in a batch whose counter says 1:
+    the delete's auto-close recount finds the other and repairs nothing away."""
+    [bid] = await _ids(f, _batch(a, row_count=2, accepted_count=0, pending_count=1))
+    await _add(f, _import_row(a, bid, "pending_review"))
+    async with f() as db:
+        await db.execute(update(Transaction).where(Transaction.id == a["tx"]).values(
+            import_batch_id=bid, reconciliation_state="pending_review"))
+        await db.commit()
+
+
+def _seq(*setups):
+    async def run(f, a):
+        for s in setups:
+            await s(f, a)
+    return run
+
+
+async def _income_category(f, a):
+    [a["salary"]] = await _ids(f, Category(org_id=a["org"], name="Salary", type=CategoryType.INCOME))
+
+
+def _resolve(a, fields):
+    """``"@key"`` is the fixture id ``a[key]`` (set by the scenario's setup)."""
+    return {k: a[v[1:]] if isinstance(v, str) and v.startswith("@") else v for k, v in fields.items()}
+
+
+def _money(**fields):
+    def build(a):
+        return "transactions_update_money", {"transaction_id": a["tx"], **_resolve(a, fields)}
+    return build
+
+
+def _create(**over):
+    def build(a):
+        return "transactions_create", {
+            "account_id": a["acct"], "category_id": a["c2"], "description": "  Coffee Bar  ",
+            "amount": "4.50", "type": "expense", "date": P_START.isoformat(), **_resolve(a, over),
+        }
+    return build
+
+
+def _delete(a):
+    return "transactions_delete", {"transaction_id": a["tx"]}
+
+
+def _transfer(**over):
+    def build(a):
+        return "transactions_transfer", {
+            "from_account_id": a["acct"], "to_account_id": a["savings"], "amount": "30.00",
+            "date": P_START.isoformat(), **over,
+        }
+    return build
+
+
+SENSITIVE_SCENARIOS = [
+    ("money-amount-of-a-settled-row", _money(amount="25.00"), _none, False),
+    ("money-settled-to-pending", _money(status="pending"), _none, False),
+    ("money-pending-to-settled-with-a-new-amount", _money(status="settled", amount="12.00"), _pending, False),
+    ("money-account-move", _money(account_id="@savings"), _savings, False),
+    ("money-on-a-skipped-import-row-moves-no-money", _money(amount="30.00"), _skipped_import, False),
+    ("create-settled-learns-a-new-rule", _create(), _none, False),
+    ("create-pending-onto-an-existing-rule",
+     _create(description="SPOTIFY PREMIUM", status="pending",
+             settled_date=(P_START + datetime.timedelta(days=4)).isoformat()), _rule_to_c1, False),
+    ("create-income", _create(type="income", category_id="@salary"), _income_category, False),
+    ("delete-a-settled-row", _delete, _none, False),
+    ("delete-a-tagged-pending-row", _delete, _seq(_pending, _tagged), False),
+    ("delete-one-transfer-leg", _delete, _transfer_leg, False),
+    ("delete-a-canonical-with-matched-import-rows", _delete, _matched_import_rows, False),
+    ("delete-a-row-of-a-drifted-batch", _delete, _drifted_batch, False),
+    ("transfer-settled", _transfer(), _savings, False),
+    ("transfer-pending-with-a-description", _transfer(status="pending", description="Rent pot"), _savings, False),
+]
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -411,8 +562,9 @@ SCENARIOS = [
     ("tx-update-dates-of-a-settled-row", _tx_dates, _none, False),
     ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
+    *SENSITIVE_SCENARIOS,
 ]
-COVERED = {build({"b1": 0, "tx": 0, "c2": 0})[0] for _, build, _, _ in SCENARIOS}
+COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
 
 @pytest.mark.parametrize("sid,build,setup,auto", SCENARIOS, ids=[s[0] for s in SCENARIOS])
@@ -670,6 +822,42 @@ def preview_writes_on_the_confirm_re_preview_only(a):
     async def ex(ctx, args):
         await _b(ctx, a["b1"], amount=Decimal("120.00"))
     return _b1(a), ex, {"preview_hook": hook}
+
+
+def _pair_changes(a):
+    """Two inserted legs that name each other (the transfer shape)."""
+    out = []
+    for gid, other, tx_type in (("new:1", "new:2", "expense"), ("new:2", "new:1", "income")):
+        out += [dataclasses.replace(c, id=gid, after=tx_type if c.field == "type" else c.after)
+                for c in _tx_changes(a)]
+        out.append(Change("transactions", gid, "linked_transaction_id", None, other))
+    return out
+
+
+def _pair_execute(a, *, self_linked: bool):
+    async def ex(ctx, args):
+        r1, r2 = _tx_row(a), _tx_row(a, type=TransactionType.INCOME)
+        ctx.db.add_all([r1, r2])
+        await ctx.db.flush()
+        r1.linked_transaction_id = r1.id if self_linked else r2.id
+        r2.linked_transaction_id = r1.id
+    return ex
+
+
+@_mutant("rule 4: transactions.linked_transaction_id names 'new:2' but links elsewhere")
+def linked_insert_points_elsewhere(a):
+    """Wrong implementation: legs disclosed as naming each other, one written
+    linked to itself (a link value is a new row's id, so only the insert
+    matching can check it)."""
+    return _pair_changes(a), _pair_execute(a, self_linked=True), {"risk": "sensitive"}
+
+
+async def test_ta10_green_for_two_inserts_that_name_each_other(factory, w, windows, mutant):
+    """GUARD for ``linked_insert_points_elsewhere``: the right links are green."""
+    a = w["A"]
+    name = mutant("m_pair_ok", lambda args: _pair_changes(a), _pair_execute(a, self_linked=False),
+                  risk="sensitive")
+    await _run(factory, windows, w, name)
 
 
 @pytest.mark.parametrize("build,rule", MUTANTS)

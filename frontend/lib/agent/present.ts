@@ -30,6 +30,10 @@ const TOOL_LABELS: Record<string, string> = {
   transactions_set_category: "Recategorize a transaction",
   transactions_get: "Read a transaction",
   transactions_update: "Edit a transaction",
+  transactions_update_money: "Change a transaction's amount or status",
+  transactions_create: "Add a transaction",
+  transactions_delete: "Delete a transaction",
+  transactions_transfer: "Move money between accounts",
 };
 
 export function toolLabel(name: string): string {
@@ -48,11 +52,45 @@ const FIELD_LABELS: Record<string, string> = {
   "transactions.description": "Description",
   "transactions.date": "Date",
   "transactions.settled_date": "Settlement date",
+  "transactions.amount": "Amount",
+  "transactions.account_id": "Account",
+  "transactions.type": "Type",
+  "transactions.status": "Status",
+  "transactions.linked_transaction_id": "Linked to",
+  "transactions.reconciliation_state": "Import review",
+  "transaction_tags.tag_id": "Tag",
   "category_rules.category_id": "Categorization rule",
+  "accounts.balance_delta": "Balance",
+  "import_batches.row_count_delta": "Import rows",
+  "import_batches.accepted_count_delta": "Accepted import rows",
+  "import_batches.pending_count_delta": "Import rows to review",
+  "import_batches.status": "Import",
 };
 
 export function changeLabel(c: ActionChange): string {
   return FIELD_LABELS[`${c.entity}.${c.field}`] ?? `${c.entity} ${c.field}`;
+}
+
+// A row a staged write inserts is named "new:<n>" until it exists.
+export function isNew(id: unknown): boolean {
+  return text(id).startsWith("new:");
+}
+
+const ROW_NOUN: Record<string, string> = {
+  transactions: "Transaction", accounts: "Account", import_batches: "Import",
+};
+
+// Which row a change is on, for a preview that touches several rows of one
+// kind (the two legs of a transfer, the accounts whose balances move).
+export function rowLabel(c: ActionChange): string {
+  if (c.entity === "transaction_tags" && Array.isArray(c.id)) return `Transaction #${text(c.id[0])}`;
+  const noun = ROW_NOUN[c.entity] ?? c.entity;
+  return isNew(c.id) ? `New ${noun.toLowerCase()} ${text(c.id).slice(4)}` : `${noun} #${text(c.id)}`;
+}
+
+// A counter or a balance is named by how much it moves, never by its value.
+export function isDelta(c: ActionChange): boolean {
+  return c.field.endsWith("_delta");
 }
 
 type Ctx = Record<string, unknown>;
@@ -65,7 +103,15 @@ export function changeValue(
 ): string {
   const v: Wire = c[side];
   if (v === null || v === undefined) return c.entity === "category_rules" ? "No rule" : "None";
+  if (isDelta(c)) {
+    const n = Number(text(v));
+    const amount = c.currency ? formatMoney(String(Math.abs(n)), c.currency) : String(Math.abs(n));
+    return `${n < 0 ? "−" : "+"}${amount}`;
+  }
   if (c.currency) return formatMoney(text(v), c.currency);
+  if (c.field === "linked_transaction_id") return isNew(v) ? "the other new transaction" : `transaction #${text(v)}`;
+  if (c.field === "account_id") return `account #${text(v)}`;
+  if (c.field === "tag_id") return `tag #${text(v)}`;
   if (c.field === "category_id") {
     const named = (k: "from" | "to") =>
       primary && primary.field === "category_id" && primary[k === "from" ? "before" : "after"] === v
@@ -78,7 +124,7 @@ export function changeValue(
 }
 
 export function drillDown(c: ActionChange | undefined): { href: string; label: string } | null {
-  if (!c) return null;
+  if (!c || isNew(c.id)) return null; // a row the change would create does not exist yet
   if (c.entity === "transactions") {
     return { href: `/transactions?transaction_id=${encodeURIComponent(text(c.id))}`, label: "Open the transaction" };
   }

@@ -119,7 +119,11 @@ class _DecideArgs(BaseModel):
 
 
 _DECIDE = {
-    "confirm_action": "Execute an action previously staged by a write tool, exactly as previewed.",
+    "confirm_action": (
+        "Execute an action previously staged by a write tool, exactly as previewed. A sensitive "
+        "action (money, a new or deleted transaction) is refused here with "
+        "requires_browser_confirmation: the user confirms it in the app."
+    ),
     "cancel_action": "Discard an action previously staged by a write tool.",
 }
 

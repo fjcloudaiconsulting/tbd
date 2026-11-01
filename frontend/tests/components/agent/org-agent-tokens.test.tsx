@@ -86,6 +86,7 @@ beforeEach(() => {
       return json(200, { ok: true, id: 5 });
     }
     if (key === "GET /api/v1/agent/actions?status=done&limit=20") return list([]);
+    if (key === "GET /api/v1/agent/actions?status=pending&limit=20") return list([]);
     if (key === "GET /api/v1/agent/tokens/org") {
       if (orgStatus !== 200) return json(orgStatus, { detail: orgStatus === 403 ? "Forbidden" : "Boom" });
       return list(orgItems.length ? [...orgItems, { ...own(), owner_user_id: 1, owner_email: "d@x.io" }] : []);

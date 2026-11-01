@@ -11,7 +11,7 @@ import { AlertTriangle, ArrowRight, Check } from "lucide-react";
 
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 import {
-  actionHeadline, changeLabel, changeValue, drillDown, text, utcDate,
+  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel, text, utcDate,
 } from "@/lib/agent/present";
 import type { ActionChange, DriftRow, StagedAction } from "@/lib/agent/types";
 import { maskMoneyText } from "@/lib/format";
@@ -58,7 +58,25 @@ const OUTCOME: Record<Outcome, { label: string; cls: string }> = {
 };
 
 function subject(tool: string, ctx: Record<string, unknown>): string {
-  return text(tool === "transactions_set_category" ? ctx.description : ctx.category_name);
+  return text(tool.startsWith("transactions_") ? ctx.description : ctx.category_name);
+}
+
+const rowKey = (c: { entity: string; id: unknown }) => `${c.entity}:${JSON.stringify(c.id)}`;
+
+// How each change row reads: a counter or balance by its movement, a new row
+// by its value, and a deleted row as deleted. Deletion is what the server
+// states in `context.deleted`, never inferred from fields going to null (an
+// edit can clear several fields).
+function shapes(changes: ActionChange[], ctx: Record<string, unknown>) {
+  const stated = Array.isArray(ctx.deleted) ? (ctx.deleted as { entity: string; id: unknown }[]) : [];
+  const deleted = new Set(stated.map(rowKey));
+  // Name the row only when the preview touches several rows of one kind.
+  const kinds = new Map<string, number>();
+  for (const k of new Set(changes.map(rowKey))) kinds.set(k.split(":")[0], (kinds.get(k.split(":")[0]) ?? 0) + 1);
+  return {
+    deleted: (c: ActionChange) => deleted.has(rowKey(c)),
+    named: (c: ActionChange) => (kinds.get(c.entity) ?? 0) > 1,
+  };
 }
 
 function timeOf(iso: string): string {
@@ -147,6 +165,7 @@ export default function PreviewCard({
 
   const ctx = action.context ?? {};
   const primary = action.changes[0];
+  const shape = shapes(action.changes, ctx);
   const about = subject(tool, ctx);
   const link = drillDown(primary);
   const headingId = `preview-${action.action_id}`;
@@ -182,12 +201,23 @@ export default function PreviewCard({
             key={`${c.entity}-${text(c.id)}-${c.field}-${i}`}
             className="grid gap-1 px-5 py-2.5 sm:grid-cols-[11rem_1fr] sm:gap-4"
           >
-            <dt className="text-xs text-text-secondary sm:pt-0.5">{changeLabel(c)}</dt>
+            <dt className="text-xs text-text-secondary sm:pt-0.5">
+              {shape.named(c) && <span className="block text-text-muted">{rowLabel(c)}</span>}
+              {changeLabel(c)}
+            </dt>
             <dd className="flex flex-wrap items-center gap-x-2 text-sm tabular-nums [overflow-wrap:anywhere]">
-              <bdi className="text-text-secondary">{changeValue(c, "before", primary, ctx)}</bdi>
-              <ArrowRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.75} />
-              <span className="sr-only">to</span>
-              <bdi className="font-medium text-text-primary">{changeValue(c, "after", primary, ctx)}</bdi>
+              {isDelta(c) || (isNew(c.id) && c.before === null) ? (
+                <bdi className="font-medium text-text-primary">{changeValue(c, "after", primary, ctx)}</bdi>
+              ) : (
+                <>
+                  <bdi className="text-text-secondary">{changeValue(c, "before", primary, ctx)}</bdi>
+                  <ArrowRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.75} />
+                  <span className="sr-only">to</span>
+                  <bdi className="font-medium text-text-primary">
+                    {shape.deleted(c) ? "Deleted" : changeValue(c, "after", primary, ctx)}
+                  </bdi>
+                </>
+              )}
             </dd>
           </div>
         ))}

@@ -263,6 +263,7 @@ async def _revoke(
     if row is None or row.revoked_at is not None:
         raise _not_found()
     row.revoked_at = svc._naive_utc_now()
+    await svc.cancel_staged_actions(db, [row.id])  # TBD-664: its staged actions die with it
     await db.commit()
     await _audit(session_factory, request, actor, "agent_token.revoked", "success", {
         "api_token_id": row.id, "name": row.name, "scope": row.scope,
