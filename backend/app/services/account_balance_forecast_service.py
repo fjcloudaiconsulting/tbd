@@ -226,9 +226,11 @@ async def compute_account_balance_forecast(
         # cannot drift. Same-currency only — ``account.currency`` keys the
         # bucket, so nothing here ever sums unlike currencies. (Before TBD-198
         # this was `balance + pending_delta`, which held only because CC/loan
-        # synthesis CONSERVES within a currency; a recurring occurrence does
-        # not conserve — it has no counterpart leg — so the sum has to be
-        # carried rather than re-derived.)
+        # synthesis CONSERVES within a currency; an income or expense
+        # recurring occurrence does not conserve — it has no counterpart leg —
+        # so the sum has to be carried rather than re-derived. A recurring
+        # TRANSFER (TBD-600) does conserve within a currency: its two legs
+        # cancel in this bucket.)
         bucket["expected"] += expected
 
     totals_payload = [

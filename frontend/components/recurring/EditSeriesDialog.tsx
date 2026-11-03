@@ -23,6 +23,9 @@ import type { RecurringTransaction } from "@/lib/types";
  * The type is not editable: income <-> expense would leave every existing row
  * on the old type and the category on the wrong side. Stop and recreate.
  *
+ * A transfer series (TBD-600) also has a destination account, shown only for
+ * that type; its category is a transfer one (type "both").
+ *
  * Mount it with `key={item.id}`: the form state is seeded from `item` once.
  */
 
@@ -44,6 +47,8 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
   const [amount, setAmount] = useState(String(item.amount));
   const [categoryId, setCategoryId] = useState<number | "">(item.category_id);
   const [accountId, setAccountId] = useState<number>(item.account_id);
+  const isTransfer = item.type === "transfer";
+  const [toAccountId, setToAccountId] = useState<number | null>(item.to_account_id ?? null);
   const [frequency, setFrequency] = useState<string>(item.frequency);
   const [nextDue, setNextDue] = useState(item.next_due_date);
   const [autoSettle, setAutoSettle] = useState(item.auto_settle);
@@ -79,9 +84,10 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
     : count.trim() === ""
       ? "Enter a number."
       : `Enter a whole number from 1 to ${MAX_OCCURRENCES}.`;
+  const sameAccounts = isTransfer && toAccountId === accountId;
   const valid =
     nameError === null && amountError === null && categoryId !== "" && nextDue !== "" &&
-    (endsNever || countValid);
+    (endsNever || countValid) && !sameAccounts;
 
   // Only what differs from the row. Amounts are Decimal strings on the wire
   // ("1200.00"): compare as numbers, send what the user typed.
@@ -90,6 +96,9 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
   if (amountError === null && Number(amount) !== Number(item.amount)) changes.amount = amount;
   if (categoryId !== "" && categoryId !== item.category_id) changes.category_id = categoryId;
   if (accountId !== item.account_id) changes.account_id = accountId;
+  if (isTransfer && toAccountId !== null && toAccountId !== item.to_account_id) {
+    changes.to_account_id = toAccountId;
+  }
   if (frequency !== item.frequency) changes.frequency = frequency;
   if (nextDue !== "" && nextDue !== item.next_due_date) changes.next_due_date = nextDue;
   if (autoSettle !== item.auto_settle) changes.auto_settle = autoSettle;
@@ -118,6 +127,7 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
     : null;
   // Inactive accounts are not offered, except the one the series is on.
   const accountOptions = accountList.filter((a) => a.is_active || a.id === item.account_id);
+  const toAccountOptions = accountList.filter((a) => a.is_active || a.id === item.to_account_id);
 
   async function save() {
     if (!valid || !changed || submitting) return;
@@ -192,7 +202,8 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
             categories={categories ?? []}
             value={categoryId}
             onChange={setCategoryId}
-            filterType={item.type}
+            filterType={item.type === "transfer" ? undefined : item.type}
+            typeFilter={item.type === "transfer" ? "BOTH" : undefined}
             className={inputCls}
             onCategoryCreated={(c) =>
               mutateCategories((current) => [...(current ?? []), c], { revalidate: false })
@@ -200,7 +211,9 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
           />
         </div>
         <div>
-          <label htmlFor="edit-series-account" className={labelCls}>Account</label>
+          <label htmlFor="edit-series-account" className={labelCls}>
+            {isTransfer ? "From account" : "Account"}
+          </label>
           <select
             id="edit-series-account"
             value={accountId}
@@ -217,6 +230,31 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
             <p id="edit-series-currency" className="mt-1 text-xs text-warning">{currencyWarning}</p>
           )}
         </div>
+        {isTransfer && (
+          <div>
+            <label htmlFor="edit-series-to-account" className={labelCls}>To account</label>
+            <select
+              id="edit-series-to-account"
+              value={toAccountId ?? ""}
+              onChange={(e) => setToAccountId(Number(e.target.value))}
+              aria-invalid={sameAccounts ? true : undefined}
+              aria-describedby={sameAccounts ? "edit-series-to-account-error" : undefined}
+              className={inputCls}
+            >
+              {toAccountOptions.length === 0 && item.to_account_id != null && (
+                <option value={item.to_account_id}>{item.to_account_name}</option>
+              )}
+              {toAccountOptions.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            {sameAccounts && (
+              <p id="edit-series-to-account-error" className="mt-1 text-xs text-danger">
+                Choose an account other than the source.
+              </p>
+            )}
+          </div>
+        )}
         <div>
           {/* TBD-301: no `min`. The server's floor is the org's cycle start,
               not today, so a today-floored picker greys out legal dates. */}

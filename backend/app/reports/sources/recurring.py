@@ -26,7 +26,7 @@ import enum as _enum
 import time
 from typing import Any
 
-from sqlalchemy import case, distinct, func, literal_column, select
+from sqlalchemy import case, distinct, func, literal_column, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
@@ -119,7 +119,7 @@ def _measure_expr(measure):
     raise ValueError(f"unsupported aggregation {agg!r}")
 
 
-def _apply_filter(stmt, f):
+def _apply_filter(stmt, f, leg_account=None):
     """Compile one of this source's OWN filters into a WHERE clause.
 
     Each branch is op-explicit and raises on an op the source does not
@@ -131,14 +131,21 @@ def _apply_filter(stmt, f):
     ``date``) still falls through to a bare ``return stmt`` — that is the
     Phase-5 shared-canvas drop contract, kept distinct from an op
     mismatch on an OWNED field.
+
+    ``leg_account`` (TBD-600) is the per-leg account column when the query
+    groups by account; without it a transfer matches on either account.
     """
     field, op, value = f.field, f.op, f.value
     if field is FilterField.ACCOUNT_ID:
-        if op is FilterOp.IN:
-            return stmt.where(RecurringTransaction.account_id.in_(value))
-        if op is FilterOp.EQ:
-            return stmt.where(RecurringTransaction.account_id == value)
-        raise ValueError(f"recurring: unsupported op {op.value!r} for account_id")
+        ids = value if op is FilterOp.IN else [value]
+        if op not in (FilterOp.IN, FilterOp.EQ):
+            raise ValueError(f"recurring: unsupported op {op.value!r} for account_id")
+        if leg_account is not None:
+            return stmt.where(leg_account.in_(ids))
+        return stmt.where(or_(
+            RecurringTransaction.account_id.in_(ids),
+            RecurringTransaction.to_account_id.in_(ids),
+        ))
     if field is FilterField.CATEGORY_ID:
         if op is FilterOp.IN:
             return stmt.where(RecurringTransaction.category_id.in_(value))
@@ -196,27 +203,10 @@ class RecurringSource:
         return list(_FILTERS)
 
     def validate(self, query: ReportsQuery) -> None:
+        # TBD-600: ``RecurringTransaction.type`` now includes ``transfer``, so
+        # the shared txn_type coercion (income / expense / transfer) is exactly
+        # this source's domain and needs no extra guard here.
         validate_against_catalog(self, query)
-        # RecurringTransaction.type is Enum(income, expense) — recurring has
-        # NO transfer. The shared txn_type scalar coercion accepts transfer
-        # (correct for transactions), so a transfer filter passes schema +
-        # catalog here and would compile to type=='transfer' (silent empty
-        # result on MySQL). Reject it authoritatively for this source only.
-        # ⚠ An earlier version of this comment said "transactions legitimately
-        # allows transfer". That was FALSE: ``TransactionType.TRANSFER`` has no
-        # write sites at all, so the value never matched a row on EITHER source.
-        # TBD-471 PR 2 retires it from the transactions UI (PR 1 is backend
-        # only, so the dead checkbox is still live until then); this guard stays as
-        # defence in depth, and the AST keeps ACCEPTING the value so a persisted
-        # widget carrying it returns empty rather than 422.
-        for f in query.filters:
-            if f.field is FilterField.TXN_TYPE:
-                values = f.value if isinstance(f.value, (list, tuple)) else [f.value]
-                if any(v not in ("income", "expense") for v in values):
-                    raise ValueError(
-                        "recurring: txn_type 'transfer' is not valid for "
-                        "recurring templates"
-                    )
 
     async def build_rows(
         self, db: AsyncSession, org_id: int, query: ReportsQuery
@@ -228,17 +218,42 @@ class RecurringSource:
 
         measure_expr = _measure_expr(query.measure)
 
+        # TBD-600: a transfer template is neither income nor expense, so it is
+        # left out of every total unless ``txn_type`` asks for transfers. Asked
+        # for and grouped by account, it counts on BOTH its accounts, through
+        # one row per leg; otherwise it is one template on its source account.
+        include_transfers = any(
+            f.field is FilterField.TXN_TYPE
+            and "transfer" in (f.value if isinstance(f.value, (list, tuple)) else [f.value])
+            for f in query.filters
+        )
+        leg_account = None
+        stmt = select(*[expr for _, expr in dim_exprs], measure_expr).select_from(
+            RecurringTransaction
+        )
+        if include_transfers and Dimension.ACCOUNT in query.dimensions:
+            legs = union_all(
+                select(RecurringTransaction.id.label("rid"),
+                       RecurringTransaction.account_id.label("aid")),
+                select(RecurringTransaction.id, RecurringTransaction.to_account_id)
+                .where(RecurringTransaction.type == "transfer"),
+            ).subquery()
+            leg_account = legs.c.aid
+            stmt = stmt.join(legs, legs.c.rid == RecurringTransaction.id).join(
+                Account, Account.id == legs.c.aid
+            )
+        else:
+            stmt = stmt.join(Account, Account.id == RecurringTransaction.account_id)
         stmt = (
-            select(*[expr for _, expr in dim_exprs], measure_expr)
-            .select_from(RecurringTransaction)
-            .join(Account, Account.id == RecurringTransaction.account_id)
-            .join(Category, Category.id == RecurringTransaction.category_id)
+            stmt.join(Category, Category.id == RecurringTransaction.category_id)
             .where(RecurringTransaction.org_id == org_id)  # org-scope on recurring ONLY
         )
+        if not include_transfers:
+            stmt = stmt.where(RecurringTransaction.type != "transfer")
 
         for f in query.filters:
             if f.field in _OWN_FILTER_FIELDS:
-                stmt = _apply_filter(stmt, f)
+                stmt = _apply_filter(stmt, f, leg_account)
             # else: stray shared-canvas field (date, …) — silently dropped
 
         if dim_exprs:

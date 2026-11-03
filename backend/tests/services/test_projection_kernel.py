@@ -25,7 +25,18 @@ from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
 from app.models.recurring import RecurringTransaction
 from app.models.transaction import TransactionStatus, TransactionType
-from app.services import cc_forecast_service, projection_kernel
+from sqlalchemy import select
+
+from app.models.scenario import Scenario, ScenarioType
+from app.schemas.recurring import RecurringCreate, RecurringUpdate
+from app.services import (
+    cc_forecast_service,
+    forecast_service,
+    projection_kernel,
+    recurring_service,
+    scenario_engine,
+)
+from app.services.exceptions import ValidationError
 from app.services.account_balance_forecast_service import (
     compute_account_balance_forecast,
 )
@@ -128,11 +139,21 @@ def _at(points, day):
     return dict(points)[day]
 
 
-async def test_differential_month_end_equals_dashboard_per_account_and_currency(db_session):
+@pytest.mark.parametrize("transfer", [False, True])
+async def test_differential_month_end_equals_dashboard_per_account_and_currency(
+    db_session, transfer
+):
     """DoD fence. With zero goals the kernel, run over a 4-month horizon,
     reads the dashboard's ``expected_month_end_balance`` at the period's
-    month-end, per account AND per currency."""
+    month-end, per account AND per currency.
+
+    TBD-600 (T7): also with a recurring transfer EUR A -> EUR B of 30 on the
+    25th, which moves both accounts and leaves the EUR total alone."""
     seed = await _seed(db_session)
+    shift = Decimal("30.00") if transfer else Decimal("0")
+    if transfer:
+        await _transfer_series(db_session, seed["org_id"], seed["eur_a"].id, seed["eur_b"].id,
+                               amount=shift, next_due_date=datetime.date(2026, 5, 25))
     fc = await compute_account_balance_forecast(
         db_session, seed["org_id"], period_start=P_START, today=TODAY,
     )
@@ -144,9 +165,9 @@ async def test_differential_month_end_equals_dashboard_per_account_and_currency(
     # Anti-vacuity: the generated pending rent row and the USD salary both
     # moved the number, so a kernel that dropped either would fail below.
     by_id = {a["account_id"]: a for a in fc["accounts"]}
-    assert by_id[seed["eur_a"].id]["expected_month_end_balance"] == "600.00"
+    assert by_id[seed["eur_a"].id]["expected_month_end_balance"] == str(Decimal("600.00") - shift)
     assert by_id[seed["usd"].id]["expected_month_end_balance"] == "9500.00"
-    assert by_id[seed["eur_b"].id]["expected_month_end_balance"] == "250.00"
+    assert by_id[seed["eur_b"].id]["expected_month_end_balance"] == str(Decimal("250.00") + shift)
 
     kernel_rows = {a.account.id: a for a in kb.accounts}
     assert set(kernel_rows) == set(by_id)
@@ -160,8 +181,10 @@ async def test_differential_month_end_equals_dashboard_per_account_and_currency(
         assert str(_at(kb.currencies[currency], P_END).quantize(Decimal("0.01"))) == expected
 
     # And the horizon really is longer: June's rent and salary land after May.
-    assert _at(kernel_rows[seed["eur_a"].id].points, datetime.date(2026, 6, 30)) == Decimal("200.00")
-    assert kernel_rows[seed["eur_a"].id].end_balance == Decimal("-600.00")
+    assert _at(kernel_rows[seed["eur_a"].id].points, datetime.date(2026, 6, 30)) == (
+        Decimal("200.00") - 2 * shift
+    )
+    assert kernel_rows[seed["eur_a"].id].end_balance == Decimal("-600.00") - 4 * shift
 
 
 async def test_currency_series_never_sums_across_currencies(db_session):
@@ -597,3 +620,240 @@ async def test_default_window_without_an_open_period_matches_the_dashboard(db_se
         datetime.date.fromisoformat(fc["period_end"]),
     )
     assert window == (datetime.date(2027, 2, 28), datetime.date(2027, 3, 27))
+
+
+# ── Recurring transfers (TBD-600) ───────────────────────────────────────────
+
+
+async def _transfer_series(db, org_id, source_id, dest_id, *, amount=Decimal("100.00"),
+                           next_due_date=datetime.date(2026, 5, 20), **overrides):
+    """A transfer template through the service, so it is validated as a user's."""
+    cat = await db.scalar(select(Category).where(
+        Category.org_id == org_id, Category.slug == "transfer"
+    ))
+    if cat is None:
+        cat = Category(org_id=org_id, name="Transfer", slug="transfer",
+                       type=CategoryType.BOTH, is_system=True)
+        db.add(cat)
+        await db.commit()
+    body = dict(account_id=source_id, to_account_id=dest_id, category_id=cat.id,
+                description="To savings", amount=amount, type="transfer",
+                frequency="monthly", next_due_date=next_due_date, auto_settle=False)
+    body.update(overrides)
+    r = await recurring_service.create_recurring(db, org_id, RecurringCreate(**body), today=TODAY)
+    return r.id
+
+
+async def _two_accounts(db) -> dict:
+    org = Organization(name="Xfer", billing_cycle_day=1)
+    db.add(org)
+    await db.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    card_t = AccountType(org_id=org.id, name="Card", slug="credit_card", is_system=True)
+    loan_t = AccountType(org_id=org.id, name="Loan", slug="loan", is_system=True)
+    db.add_all([at, card_t, loan_t])
+    await db.flush()
+    main = Account(org_id=org.id, name="Main", account_type_id=at.id,
+                   balance=Decimal("1000.00"), currency="EUR", is_default=True)
+    savings = Account(org_id=org.id, name="Savings", account_type_id=at.id,
+                      balance=Decimal("0.00"), currency="EUR", is_default=False)
+    card = Account(org_id=org.id, name="Card", account_type_id=card_t.id,
+                   balance=Decimal("0.00"), currency="EUR", is_default=False)
+    loan = Account(org_id=org.id, name="Loan", account_type_id=loan_t.id,
+                   balance=Decimal("0.00"), currency="EUR", is_default=False)
+    food = Category(org_id=org.id, name="Food", slug="food", type=CategoryType.EXPENSE)
+    db.add_all([main, savings, card, loan, food])
+    db.add(BillingPeriod(org_id=org.id, start_date=P_START, end_date=P_END))
+    await db.flush()
+    # Some real spending, so the forecast fence is not all zeros.
+    db.add(RecurringTransaction(
+        org_id=org.id, account_id=main.id, category_id=food.id, description="food",
+        amount=Decimal("40.00"), type="expense", frequency="monthly",
+        next_due_date=datetime.date(2026, 5, 15), auto_settle=False, is_active=True,
+    ))
+    await db.commit()
+    return {"org_id": org.id, "main": main.id, "savings": savings.id,
+            "card": card.id, "loan": loan.id}
+
+
+def _points_by_account(kb) -> dict[int, list]:
+    return {a.account.id: a.points for a in kb.accounts}
+
+
+async def test_transfer_conserves_and_moves_both_accounts(db_session):
+    """T1. Against the same books without the series, over 3 months: the EUR
+    series is identical at every point, and after the k-th occurrence the
+    source is k x amount lower and the destination k x amount higher."""
+    seed = await _two_accounts(db_session)
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"])
+    kw = dict(today=TODAY, horizon_end=datetime.date(2026, 7, 31), window_start=P_START)
+    with_ = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    without = await projection_kernel.baseline(
+        db_session, seed["org_id"], exclude_recurring_ids=[rid], **kw
+    )
+    assert with_.currencies["EUR"] == without.currencies["EUR"]
+    occurrences = [datetime.date(2026, m, 20) for m in (5, 6, 7)]
+    a, b = _points_by_account(with_), _points_by_account(without)
+    for account_id, sign in ((seed["main"], -1), (seed["savings"], 1)):
+        for (day, got), (_, base) in zip(a[account_id], b[account_id]):
+            k = sum(1 for o in occurrences if o <= day)
+            assert got - base == sign * k * Decimal("100.00"), (account_id, day)
+    assert a[seed["main"]][-1][1] - b[seed["main"]][-1][1] == Decimal("-300.00")
+
+
+async def test_transfer_points_survive_generation_and_auto_settle(db_session):
+    """T2. Per-account points are identical before generation, with the
+    pending pair generated, and with the pair auto-settled."""
+    seed = await _two_accounts(db_session)
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"],
+                           auto_settle=True)
+    kw = dict(today=TODAY, horizon_end=datetime.date(2026, 7, 31), window_start=P_START)
+
+    async def points():
+        return _points_by_account(await projection_kernel.baseline(db_session, seed["org_id"], **kw))
+
+    async def legs():
+        return (await db_session.execute(
+            select(Transaction).where(
+                Transaction.org_id == seed["org_id"],
+                Transaction.linked_transaction_id.is_not(None),
+            ).execution_options(populate_existing=True)
+        )).scalars().all()
+
+    before = await points()
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=TODAY)
+    assert [t.status for t in await legs()] == [TransactionStatus.PENDING] * 2
+    pending = await points()
+    await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=datetime.date(2026, 5, 20)
+    )
+    assert [t.status for t in await legs()] == [TransactionStatus.SETTLED] * 2
+    settled = await points()
+    for account_id in (seed["main"], seed["savings"]):
+        assert before[account_id] == pending[account_id] == settled[account_id]
+
+
+async def test_overdue_transfer_lands_on_walk_start_on_both_accounts(db_session):
+    """T3. An un-generated occurrence dated before today is booked on day 0
+    on both accounts, and each line keeps the occurrence date."""
+    seed = await _two_accounts(db_session)
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"],
+                           next_due_date=datetime.date(2026, 5, 5))
+    kb = await projection_kernel.baseline(
+        db_session, seed["org_id"], today=TODAY, horizon_end=P_END, window_start=P_START,
+    )
+    rows = {a.account.id: a for a in kb.accounts}
+    assert kb.walk_start == TODAY
+    assert _at(rows[seed["savings"]].points, TODAY) == Decimal("100.00")
+    # The food series is due May 15, after today, so day 0 holds the transfer alone.
+    assert _at(rows[seed["main"]].points, TODAY) == Decimal("900.00")
+    assert (datetime.date(2026, 5, 5), Decimal("-100.00")) in rows[seed["main"]].recurring_lines
+    assert rows[seed["savings"]].recurring_lines == [(datetime.date(2026, 5, 5), Decimal("100.00"))]
+
+
+async def test_occurrence_count_bounds_pairs_and_projections(db_session):
+    """T4. ``occurrence_count=3``: three projected occurrences per account,
+    and generation run month after month writes exactly three pairs."""
+    seed = await _two_accounts(db_session)
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"],
+                                 occurrence_count=3)
+    kb = await projection_kernel.baseline(
+        db_session, seed["org_id"], today=TODAY, horizon_end=datetime.date(2026, 10, 31),
+        window_start=P_START,
+    )
+    rows = {a.account.id: a for a in kb.accounts}
+    assert [d for d, _ in rows[seed["savings"]].recurring_lines] == [
+        datetime.date(2026, m, 20) for m in (5, 6, 7)
+    ]
+    for month in range(5, 11):
+        await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=datetime.date(2026, month, 10)
+        )
+    legs = (await db_session.execute(select(Transaction).where(
+        Transaction.recurring_id == rid
+    ))).scalars().all()
+    assert len(legs) == 6 and all(t.linked_transaction_id is not None for t in legs)
+
+
+async def test_org_forecast_ignores_the_transfer(db_session):
+    """T5. Income, expense and net of the org forecast are the same without
+    the series, with it un-generated, and with it generated."""
+    seed = await _two_accounts(db_session)
+    keys = ("forecast_income", "forecast_expense", "forecast_net")
+
+    async def numbers():
+        fc = await forecast_service.compute_forecast(db_session, seed["org_id"], today=TODAY)
+        return {k: fc[k] for k in keys}
+
+    without = await numbers()
+    assert Decimal(without["forecast_expense"]) == Decimal("40.00")  # anti-vacuity
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"])
+    assert await numbers() == without
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=TODAY)
+    assert await numbers() == without
+
+
+@pytest.mark.parametrize("side", ["card", "loan"])
+async def test_card_or_loan_on_either_side_is_refused(db_session, side):
+    """T6. Not yet supported: a card or a loan as source or destination, on
+    create and on update."""
+    seed = await _two_accounts(db_session)
+    org_id, main, savings, other = seed["org_id"], seed["main"], seed["savings"], seed[side]
+    for source, dest in ((other, savings), (main, other)):
+        with pytest.raises(ValidationError, match="credit card or loan"):
+            await _transfer_series(db_session, org_id, source, dest)
+        await db_session.rollback()
+    rid = await _transfer_series(db_session, org_id, main, savings)
+    for body in (RecurringUpdate(to_account_id=other), RecurringUpdate(account_id=other)):
+        with pytest.raises(ValidationError, match="credit card or loan"):
+            await recurring_service.update_recurring(db_session, org_id, rid, body, today=TODAY)
+        await db_session.rollback()
+
+
+async def test_scenario_org_total_is_unchanged_by_the_transfer(db_session):
+    """T8. The scenario engine's org total, month by month, is the same with
+    the transfer series as without it, while the destination grows."""
+    seed = await _two_accounts(db_session)
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"])
+    state = await scenario_engine.build_world_state(db_session, org_id=seed["org_id"], user_id=0)
+    without = scenario_engine.WorldState(
+        accounts=state.accounts, recurring=[r for r in state.recurring if r.id != rid],
+        history=state.history,
+    )
+    scenario = Scenario(
+        org_id=seed["org_id"], user_id=0, name="baseline", scenario_type=ScenarioType.CUSTOM,
+        params_json={"scenario_type": "custom", "label": "t", "events": []}, horizon_months=6,
+    )
+
+    def project(world):
+        result = scenario_engine.AnalyticEngine().simulate(
+            scenario_engine.SimulationRequest(scenario=scenario, state=world,
+                                              horizon_months=6, options={})
+        )
+        per_account = {
+            s["account_id"]: [Decimal(p["projected_balance"]) for p in s["points"]]
+            for s in result["per_account_series"]
+        }
+        months = len(next(iter(per_account.values())))
+        return [sum(v[i] for v in per_account.values()) for i in range(months)], per_account
+
+    with_total, with_accounts = project(state)
+    without_total, without_accounts = project(without)
+    assert with_total == without_total
+    assert with_accounts[seed["savings"]][-1] > without_accounts[seed["savings"]][-1]
+
+
+async def test_destination_archived_later_projects_the_source_leg_only(db_session):
+    """Documented behaviour: a destination archived after the series was set
+    up drops out of the projection, and the source leg still projects (per-
+    account truth). The series itself keeps running."""
+    seed = await _two_accounts(db_session)
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"])
+    (await db_session.get(Account, seed["savings"])).is_active = False
+    await db_session.commit()
+    kb = await projection_kernel.baseline(
+        db_session, seed["org_id"], today=TODAY, horizon_end=P_END, window_start=P_START,
+    )
+    rows = {a.account.id: a for a in kb.accounts}
+    assert seed["savings"] not in rows
+    assert (datetime.date(2026, 5, 20), Decimal("-100.00")) in rows[seed["main"]].recurring_lines
