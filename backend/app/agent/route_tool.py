@@ -9,11 +9,17 @@ the tool runs the code REST runs instead of a second adapter over a service.
   model, so its validators run (and normalise: the preview shows the stripped
   description the service stores). ``required`` makes a field mandatory; only
   a ``nullable`` field accepts null, because elsewhere the service reads null
-  as "leave alone" and a preview of the null would lie.
+  as "leave alone" and a preview of the null would lie. An omitted query field
+  is the route's default, so a query param with no plain default (required, or
+  a ``default_factory``) must be in ``required``.
 * ``execute`` (``run`` for a read) calls ``route.endpoint`` in-process, so the
   handler's inline guards run. Its parameters come from a CLOSED dependency
-  map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``; a
-  product-area gate must be the tool's ``product_area``; a role gate must not
+  map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``;
+  ``get_session_factory`` opens sessions on ``ctx.db``'s engine (the
+  handler's post-commit audit rows), ``get_client_ip`` is ``None`` (an
+  in-process call has no client; TBD-665) and ``get_caller_session`` is
+  ``ctx.db`` (the session holding the re-preview's row locks); a product-area gate must be the
+  tool's ``product_area`` or one of its ``extra_areas``; a role gate must not
   be stricter than ``min_role`` (``register`` re-checks both at invoke time).
   Anything else fails registration: an unknown dependency,
   ``require_interactive_session`` anywhere in the tree (browser-only), a raw
@@ -48,9 +54,11 @@ which the caller still calls.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import enum
 import inspect
+import json
 import types
 import typing
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -58,12 +66,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agent.registry import (
     ROLE_RANK,
@@ -79,8 +88,9 @@ from app.agent.registry import (
 from app.auth.org_permissions import require_org_admin, require_org_owner
 from app.auth.pat import require_interactive_session
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_caller_session, get_current_user, get_session_factory
 from app.models.user import Role
+from app.rate_limit import get_client_ip
 from app.services.exceptions import ConflictError, NotFoundError
 from app.services.feature_gate import Feature
 
@@ -122,13 +132,36 @@ def _none(ctx: ToolContext) -> None:
     return None
 
 
+def _session_factory(ctx: ToolContext) -> Any:
+    return async_sessionmaker(ctx.db.bind, expire_on_commit=False)
+
+
 # The closed dependency map: what the handler receives in-process, by callable.
+# An in-process call has no client address: the route's audit row records none.
+# ``get_caller_session`` is ``ctx.db``, whose transaction holds the preview's
+# row locks: a handler that locks on its own session writes on this one.
 _SUPPLIED: dict[Callable[..., Any], Callable[[ToolContext], Any]] = {
-    get_current_user: _user, get_db: _db,
+    get_current_user: _user, get_db: _db, get_session_factory: _session_factory,
+    get_client_ip: _none, get_caller_session: _db,
 }
 _ROLE_GATES: dict[Callable[..., Any], Role] = {
     require_org_admin: Role.ADMIN, require_org_owner: Role.OWNER,
 }
+
+
+@contextlib.contextmanager
+def refusals():
+    """A handler's or a route helper's 4xx ``HTTPException`` (and a service
+    ``ConflictError``) as a ``ToolError``; a 5xx stays opaque."""
+    try:
+        yield
+    except HTTPException as exc:
+        if 400 <= exc.status_code < 500:
+            detail = exc.detail if isinstance(exc.detail, str) else ""
+            raise ToolError(_HTTP_CODES.get(exc.status_code, "refused"), detail) from None
+        raise
+    except ConflictError as exc:
+        raise ToolError("conflict", exc.detail) from None
 
 
 def _find_route(router: APIRouter, method: str, path: str) -> APIRoute:
@@ -158,7 +191,7 @@ def _all_calls(dep: Any) -> Iterable[Any]:
 
 
 def _dependency_map(
-    name: str, dep: Any, product_area: Feature | None, min_role: Role,
+    name: str, dep: Any, areas: Sequence[Feature | None], min_role: Role,
 ) -> dict[str, Callable[[ToolContext], Any]]:
     """Handler parameter name -> how to supply it from the tool context."""
     for raw in _RAW_PARAMS:
@@ -175,7 +208,7 @@ def _dependency_map(
         if call in _SUPPLIED:
             supply = _SUPPLIED[call]
         elif feature is not None:
-            if feature != product_area:
+            if feature not in areas:
                 raise ToolRegistrationError(
                     f"{name}: the route's product area {feature.value} is not the tool's"
                 )
@@ -274,6 +307,8 @@ def route_tool(
     preview: Callable[..., Awaitable[Preview]] | None = None,
     describe: Sequence[str] = (),
     cascade: CascadeDisclosure | None = None,
+    extra_areas: Sequence[Feature] = (),
+    inverse: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> ToolSpec:
     """A ``ToolSpec`` for ``method path`` on ``router`` (see the module doc)."""
     route = _find_route(router, method, path)
@@ -285,7 +320,7 @@ def route_tool(
         raise ToolRegistrationError(f"{name}: the route takes more than one body")
     if not inspect.iscoroutinefunction(route.endpoint):
         raise ToolRegistrationError(f"{name}: the handler is not a coroutine function")
-    supplied = _dependency_map(name, dep, product_area, min_role)
+    supplied = _dependency_map(name, dep, (product_area, *extra_areas), min_role)
 
     body_param = dep.body_params[0] if dep.body_params else None
     body_model = body_param.field_info.annotation if body_param else None
@@ -300,6 +335,11 @@ def route_tool(
     missing += [k for k, q in query.items() if q.field_info.is_required() and k not in fields]
     if missing:
         raise ToolRegistrationError(f"{name}: the route requires {missing}, outside the allowlist")
+    # An omitted query field is handed to the handler as its route default, so
+    # one with no plain default must be sent: required by the tool too.
+    for alias, q in query.items():
+        if (q.field_info.is_required() or q.field_info.default_factory is not None) and alias not in required:
+            raise ToolRegistrationError(f"{name}: query param {alias!r} has no plain default; list it in required")
 
     defs: dict[str, Any] = {
         p.name: _arg(p.field_info, required=True, nullable=True) for p in dep.path_params
@@ -321,20 +361,17 @@ def route_tool(
         kwargs = {k: supply(ctx) for k, supply in supplied.items()}
         kwargs.update({p: getattr(a, p) for p in path_names})
         for alias, q in query.items():
-            kwargs[q.name] = getattr(a, alias) if alias in fields else q.field_info.default
+            # Omitted is the route's own default, not the args model's None.
+            sent = alias in fields and alias in a.model_fields_set
+            kwargs[q.name] = getattr(a, alias) if sent else q.field_info.default
         if body_param is not None:
             kwargs[body_param.name] = body_model.model_validate(
                 {k: getattr(a, k) for k in body_fields if k in a.model_fields_set}
             )
-        try:
+        with refusals():
             out = await route.endpoint(**kwargs)
-        except HTTPException as exc:
-            if 400 <= exc.status_code < 500:
-                detail = exc.detail if isinstance(exc.detail, str) else ""
-                raise ToolError(_HTTP_CODES.get(exc.status_code, "refused"), detail) from None
-            raise
-        except ConflictError as exc:
-            raise ToolError("conflict", exc.detail) from None
+        if isinstance(out, Response):  # returned directly, past the response model
+            return None if out.status_code == 204 else json.loads(out.body)
         if response is None:
             return jsonable_encoder(out)
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")
@@ -343,7 +380,7 @@ def route_tool(
         return ToolSpec(
             name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
             mirrors_route=(method, path), description=description, run=_call_handler,
-            route=route,
+            route=route, extra_areas=tuple(extra_areas),
         )
 
     if preview is None and method == "DELETE":
@@ -357,7 +394,7 @@ def route_tool(
     return ToolSpec(
         name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
         mirrors_route=(method, path), description=description, preview=preview,
-        execute=_call_handler, route=route,
+        execute=_call_handler, route=route, extra_areas=tuple(extra_areas), inverse=inverse,
     )
 
 

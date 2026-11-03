@@ -30,6 +30,7 @@ from app.agent.registry import (
     register,
 )
 from app.models.user import Role
+from app.schemas.account import BalanceAdjustmentRequest
 from app.services.feature_gate import Feature
 
 APP_DIR = pathlib.Path(registry.__file__).resolve().parents[1]
@@ -88,15 +89,48 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "budgets_update_amount", "transactions_set_category", "transactions_update",
         "transactions_update_money", "transactions_create", "transactions_delete",
         "transactions_transfer",
+        # TBD-667
+        "recurring_list", "recurring_create", "recurring_update", "recurring_update_money", "recurring_stop",
+        "recurring_delete", "recurring_skip_next", "recurring_materialise_next",
+        "recurring_generate", "billing_cycle_get", "billing_periods_list", "billing_cycle_update",
+        "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
+        # TBD-665
+        "accounts_get", "account_types_list", "cycle_payments_list",
+        "accounts_create", "accounts_update", "accounts_update_money", "accounts_delete",
+        "accounts_adjust_balance", "account_types_create", "account_types_update", "account_types_delete",
+        "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
+        # TBD-666
+        "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
+        "budgets_draft_next", "budgets_rebalance", "budgets_delete",
+        "categories_create", "categories_update", "categories_move", "categories_batch_move",
+        "categories_delete", "categories_restore_recommended",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
+        "recurring_update",
+        "accounts_update", "account_types_update",
+        "budgets_rebalance", "categories_update",
     }
     # TBD-664 B: everything that moves money, creates or deletes is sensitive
-    # (never auto, never confirmed over MCP).
+    # (never auto, never confirmed over MCP). TBD-667: so is every billing-period
+    # write (it moves the boundary every budget and report counts by).
+    # TBD-666: so is every budget and category create, seed, move and delete,
+    # and the draft (it adds billing periods); a rebalance and a category
+    # edit are writes with an inverse.
     assert {t.name for t in TOOLS if t.risk == "sensitive"} == {
         "transactions_update_money", "transactions_create", "transactions_delete",
         "transactions_transfer",
+        "recurring_create", "recurring_update_money", "recurring_stop", "recurring_delete",
+        "recurring_skip_next",
+        "recurring_materialise_next", "recurring_generate", "billing_cycle_update",
+        "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
+        "accounts_create", "accounts_update_money", "accounts_delete", "accounts_adjust_balance",
+        "account_types_create", "account_types_delete",
+        "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
+        "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
+        "budgets_draft_next", "budgets_delete",
+        "categories_create", "categories_move", "categories_batch_move", "categories_delete",
+        "categories_restore_recommended",
     }
 
 
@@ -178,6 +212,9 @@ _BENIGN = {
     ("app.database", "_session"),
     ("app.deps", "get_current_user"),
     ("app.deps", "get_session_factory"),
+    ("app.deps", "get_caller_session"),
+    ("app.rate_limit", "get_client_ip"),
+    ("app.rate_limit_overrides", "load_rate_limit_overrides"),
 }
 
 
@@ -224,7 +261,7 @@ def test_fr4_guards_are_a_superset_of_the_mirrored_route(tool):
     routes = _live_routes()
     assert tool.mirrors_route in routes, f"{tool.name} mirrors a route that does not exist"
     areas, role, plan_keys = _route_guards(routes[tool.mirrors_route])
-    assert areas <= ({tool.product_area} - {None}), (tool.name, areas)
+    assert areas <= ({tool.product_area, *tool.extra_areas} - {None}), (tool.name, areas)
     assert ROLE_RANK[tool.min_role] >= ROLE_RANK[role], (tool.name, role)
     # Every tool is gated on ai.agent by invoke; a route needing another plan
     # key is a guard the tool does not carry.
@@ -254,7 +291,54 @@ def _valid_base(tool) -> dict:
                 "type": "expense", "date": "2026-01-01"}
     if tool.name == "transactions_transfer":
         return {"from_account_id": 1, "to_account_id": 2, "amount": "1.00", "date": "2026-01-01"}
-    return {}
+    if tool.name == "recurring_create":
+        return {"account_id": 1, "category_id": 2, "description": "x", "amount": "1.00",
+                "type": "expense", "frequency": "monthly", "next_due_date": "2026-01-01"}
+    if tool.name in ("recurring_update", "recurring_update_money", "recurring_stop", "recurring_delete"):
+        return {"recurring_id": 1}
+    if tool.name in ("recurring_skip_next", "recurring_materialise_next"):
+        return {"recurring_id": 1, "occurrence_date": "2026-01-01"}
+    if tool.name == "billing_cycle_update":
+        return {"billing_cycle_day": 1}
+    if tool.name == "billing_period_create":
+        return {"start_date": "2026-01-01"}
+    if tool.name in ("accounts_get", "cycle_payments_list", "accounts_update", "accounts_update_money",
+                     "accounts_delete"):
+        return {"account_id": 1}
+    if tool.name == "accounts_create":
+        return {"name": "x", "account_type_id": 1, "opening_balance_date": "2026-01-01"}
+    if tool.name == "accounts_adjust_balance":
+        return {"account_id": 1, "target_balance": "1.00"}
+    if tool.name == "account_types_create":
+        return {"name": "x"}
+    if tool.name in ("account_types_update", "account_types_delete"):
+        return {"type_id": 1, **({"name": "x"} if tool.name == "account_types_update" else {})}
+    if tool.name.startswith("cycle_payments_"):
+        base = {"account_id": 1, "year": 2026, "month": 1}
+        return base if tool.name == "cycle_payments_delete" else {**base, "amount": "1.00"}
+    return {
+        "budgets_create": {"category_id": 1, "amount": "10.00"},
+        "budgets_copy_from_period": {"source_period_start": "2026-01-01"},
+        "budgets_draft_next": {"period_start": "2026-02-01"},
+        "budgets_rebalance": {"items": [{"budget_id": 1, "expected_amount": "1.00", "amount": "1.00"}]},
+        "budgets_delete": {"budget_id": 1},
+        "categories_create": {"name": "x"},
+        "categories_update": {"category_id": 1},
+        "categories_move": {"category_id": 1, "target_parent_id": 2},
+        "categories_batch_move": {"moves": [{"subcategory_id": 1, "target_parent_id": 2}]},
+        "categories_delete": {"category_id": 1},
+    }.get(tool.name, {})
+
+
+# Tools whose every argument the route accepts in any form, so no vector can
+# be rejected: the vacuity guard does not apply.
+_NOTHING_TO_REJECT = {"account_types_create"}  # a free-text name
+
+# Routes that parse their body by hand (so their gates answer before a 422):
+# the model they validate it with.
+_MANUAL_BODY = {
+    ("POST", "/api/v1/accounts/{account_id}/adjust-balance"): BalanceAdjustmentRequest,
+}
 
 
 def _route_params(route) -> dict[str, object]:
@@ -262,8 +346,9 @@ def _route_params(route) -> dict[str, object]:
     out: dict[str, object] = {}
     for f in route.dependant.query_params + route.dependant.path_params:
         out[f.alias] = f
-    for f in route.dependant.body_params:
-        model = f.field_info.annotation
+    models = [f.field_info.annotation for f in route.dependant.body_params]
+    models += [m for (verb, path), m in _MANUAL_BODY.items() if path == route.path and verb in route.methods]
+    for model in models:
         for n in getattr(model, "model_fields", {}):
             out[n] = model
     return out
@@ -312,7 +397,7 @@ def test_fr4_args_reject_everything_the_route_rejects(tool):
             checked += 1
             with pytest.raises(PydanticValidationError):
                 tool.args.model_validate({**base, name: [v] if is_list else v})
-    if shared:
+    if shared and tool.name not in _NOTHING_TO_REJECT:
         assert checked, f"{tool.name}: no vector was rejected by REST; the fence tested nothing"
 
 
@@ -430,6 +515,30 @@ def test_fr6_a_complete_write_tool_registers(scratch_tool):
         name="fixture_write", risk="write", run=None, preview=_noop, execute=_noop,
         mirrors_route=("PUT", "/api/v1/budgets/{budget_id}"),
     ))
+
+
+# ── TBD-788: domains ──────────────────────────────────────────────────────
+
+def test_every_change_tool_has_a_domain():
+    """FENCE (TBD-788). The in-app chat sends a write or sensitive tool only
+    once the model loads its domain. Wrong implementation: a change tool with
+    no domain, which no ``load_tools`` call could ever reach."""
+    assert [t.name for t in TOOLS if t.risk != "read" and not t.domain] == []
+    assert registry.domains() == [
+        "accounts", "budgets_and_categories", "recurring_and_billing", "transactions",
+    ]
+    assert registry.get_tool("billing_cycle_update").domain == "recurring_and_billing"
+    assert registry.get_tool("account_types_create").domain == "accounts"
+
+
+def test_a_change_tool_without_a_domain_is_refused(scratch_tool):
+    unmapped = ("PUT", "/api/v1/notifications/preferences")
+    with pytest.raises(ToolRegistrationError, match="needs a domain"):
+        register(_spec(name="fixture_write", risk="write", run=None, preview=_noop,
+                       execute=_noop, mirrors_route=unmapped))
+    assert registry.get_tool("fixture_write") is None
+    scratch_tool(_spec(name="fixture_write", risk="write", run=None, preview=_noop,
+                       execute=_noop, mirrors_route=unmapped, domain="accounts"))
 
 
 # ── F-A5 ──────────────────────────────────────────────────────────────────

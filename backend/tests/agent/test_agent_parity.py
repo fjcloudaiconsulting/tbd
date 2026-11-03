@@ -34,7 +34,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 75
+MAX_GAPS = 42
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -54,43 +54,8 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("PUT", "/api/v1/transactions/{transaction_id}/tags"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/unpair"): "TBD-664",
-    # TBD-665
-    ("POST", "/api/v1/account-types"): "TBD-665",
-    ("DELETE", "/api/v1/account-types/{type_id}"): "TBD-665",
-    ("PUT", "/api/v1/account-types/{type_id}"): "TBD-665",
-    ("POST", "/api/v1/accounts"): "TBD-665",
-    ("DELETE", "/api/v1/accounts/{account_id}"): "TBD-665",
-    ("PUT", "/api/v1/accounts/{account_id}"): "TBD-665",
-    ("POST", "/api/v1/accounts/{account_id}/adjust-balance"): "TBD-665",
-    ("DELETE", "/api/v1/accounts/{account_id}/cycle-payments/{year}/{month}"): "TBD-665",
-    ("POST", "/api/v1/accounts/{account_id}/cycle-payments/{year}/{month}"): "TBD-665",
-    ("PUT", "/api/v1/accounts/{account_id}/cycle-payments/{year}/{month}"): "TBD-665",
-    # TBD-666
-    ("POST", "/api/v1/budgets"): "TBD-666",
-    ("POST", "/api/v1/budgets/copy-from-period"): "TBD-666",
-    ("POST", "/api/v1/budgets/draft-next"): "TBD-666",
-    ("POST", "/api/v1/budgets/from-forecast"): "TBD-666",
-    ("POST", "/api/v1/budgets/rebalance"): "TBD-666",
-    ("DELETE", "/api/v1/budgets/{budget_id}"): "TBD-666",
-    ("POST", "/api/v1/categories"): "TBD-666",
-    ("POST", "/api/v1/categories/batch-move"): "TBD-666",
-    ("POST", "/api/v1/categories/restore-recommended"): "TBD-666",
-    ("DELETE", "/api/v1/categories/{category_id}"): "TBD-666",
-    ("PUT", "/api/v1/categories/{category_id}"): "TBD-666",
-    ("PATCH", "/api/v1/categories/{category_id}/move"): "TBD-666",
     # TBD-667
     ("PUT", "/api/v1/notifications/preferences"): "TBD-667",
-    ("POST", "/api/v1/recurring"): "TBD-667",
-    ("POST", "/api/v1/recurring/generate"): "TBD-667",
-    ("DELETE", "/api/v1/recurring/{recurring_id}"): "TBD-667",
-    ("PUT", "/api/v1/recurring/{recurring_id}"): "TBD-667",
-    ("POST", "/api/v1/recurring/{recurring_id}/materialise-next"): "TBD-667",
-    ("POST", "/api/v1/recurring/{recurring_id}/skip-next"): "TBD-667",
-    ("POST", "/api/v1/recurring/{recurring_id}/stop"): "TBD-667",
-    ("PUT", "/api/v1/settings/billing-cycle"): "TBD-667",
-    ("POST", "/api/v1/settings/billing-period"): "TBD-667",
-    ("POST", "/api/v1/settings/billing-period/close"): "TBD-667",
-    ("POST", "/api/v1/settings/billing-periods/ensure-future"): "TBD-667",
     # TBD-668
     ("POST", "/api/v1/forecast-plans/copy"): "TBD-668",
     ("POST", "/api/v1/forecast-plans/populate"): "TBD-668",
@@ -323,6 +288,30 @@ def _dependant_required_role(dep) -> Role:
     return need
 
 
+# A handler whose role check depends on the payload, mirrored by a tool whose
+# fields reach none of the guarded branches. The handler still runs in-process,
+# so its inline 403 would fire anyway. Pinned: an entry needs review.
+CONDITIONAL_ROLE_CHECKS: dict[str, str] = {
+    "accounts_update": (
+        "update_account is admin-only to move the opening balance over settled "
+        "activity or to drop cycle payments on a type change; the tool sets neither"
+    ),
+    "accounts_update_money": (
+        "the tool sets both guarded fields; its preview refuses a member both "
+        "admin-only branches, as the handler (run in-process at confirm) does"
+    ),
+}
+
+
+def test_conditional_role_checks_are_pinned():
+    assert set(CONDITIONAL_ROLE_CHECKS) == {"accounts_update", "accounts_update_money"}, (
+        "a new entry needs a reviewed reason"
+    )
+    spec = registry.get_tool("accounts_update")
+    assert not set(spec.args.model_fields) & {"opening_balance", "account_type_id"}
+    # The member refusals themselves: tests/agent/test_account_tools.py.
+
+
 def _route_required_role(route) -> Role:
     return max(_handler_required_role(route.endpoint), _dependant_required_role(route.dependant), key=ROLE_RANK.__getitem__)
 
@@ -330,7 +319,10 @@ def _route_required_role(route) -> Role:
 @pytest.mark.parametrize("tool", [t for t in registry.all_tools() if t.risk != "read"], ids=lambda t: t.name)
 def test_fr4_min_role_covers_handler_body_checks(tool):
     route = _live_mutating()[tool.mirrors_route]
-    need = _route_required_role(route)
+    if tool.name in CONDITIONAL_ROLE_CHECKS:
+        need = _dependant_required_role(route.dependant)
+    else:
+        need = _route_required_role(route)
     assert ROLE_RANK[tool.min_role] >= ROLE_RANK[need], (
         f"{tool.name} has min_role={tool.min_role.value} but its route enforces {need.value}: "
         "raise the tool's min_role"

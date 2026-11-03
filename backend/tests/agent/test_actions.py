@@ -33,6 +33,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
@@ -140,7 +141,8 @@ async def w(factory):
             db.add(tx)
             await db.flush()
             out[tag] = {"org": org.id, "member": member.id, "b1": b1.id, "b2": b2.id,
-                        "c1": master.id, "c2": master2.id, "acct": acct.id, "tx": tx.id}
+                        "c1": master.id, "c2": master2.id, "acct": acct.id, "tx": tx.id,
+                        "type": at.id}
         a = out["A"]
         admin = _user(a["org"], "adminA", Role.ADMIN)
         other = _user(a["org"], "otherA", Role.MEMBER)
@@ -857,7 +859,37 @@ _WRITE_CASES = {
     # A reportable row on the confirm path: the category rule upsert is disclosed.
     "transactions_set_category": lambda a: {"transaction_id": a["tx"], "category_id": a["c2"]},
     "transactions_update": lambda a: {"transaction_id": a["tx"], "description": "Renamed"},
+    "recurring_update": lambda a: {"recurring_id": a["rec"], "description": "Rent, flat 2"},
+    "accounts_update": lambda a: {"account_id": a["acct"], "name": "Renamed"},
+    "account_types_update": lambda a: {"type_id": a["type"], "name": "Renamed"},
+    # TBD-666: two primary rows (a revert swaps both back).
+    "budgets_rebalance": lambda a: {"items": [
+        {"budget_id": a["b1"], "expected_amount": "100.00", "amount": "80.00"},
+        {"budget_id": a["b2"], "expected_amount": "50.00", "amount": "70.00"},
+    ]},
+    "categories_update": lambda a: {"category_id": a["c1"], "name": "Groceries"},
 }
+
+
+async def _a_template(f, a):
+    async with f() as db:
+        r = RecurringTransaction(
+            org_id=a["org"], account_id=a["acct"], category_id=a["c1"], description="RENT",
+            amount=Decimal("500.00"), type="expense", frequency=Frequency.MONTHLY,
+            next_due_date=P_START + datetime.timedelta(days=60),
+        )
+        db.add(r)
+        await db.commit()
+        a["rec"] = r.id
+
+
+# Rows a case needs beyond the shared world ``w`` (TBD-667).
+_WRITE_SETUP = {"recurring_update": _a_template}
+
+
+async def write_setup(f, a, tool):
+    if tool in _WRITE_SETUP:
+        await _WRITE_SETUP[tool](f, a)
 
 # A derived row is disclosed by its natural key, not its surrogate id: the
 # rule's change id is the normalized token (so a description edit goes stale),
@@ -898,6 +930,7 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     """FENCE F-A3. Wrong implementation: a ``write`` tool with an undisclosed
     side write. Whole-database row diff, not review."""
     a = w["A"]
+    await write_setup(factory, a, tool)
     args = _WRITE_CASES[tool](a)
     out = await _invoke(factory, a["member"], tool, args)
     disclosed = {(c["entity"], _disclosed_key(a["org"], c)) for c in out["changes"]}
@@ -1078,3 +1111,20 @@ async def test_purge_never_raises_and_logs_only_the_error_class(monkeypatch, log
     lines = [ln for ln in log_lines() if ln["msg"] == "scheduler.agent_action_purge.failed"]
     assert len(lines) == 1 and lines[0]["error"] == "OperationalError"
     assert secret not in json.dumps(log_lines())
+
+
+def test_t786_a_summary_total_needs_one_stated_currency():
+    """FENCE (TBD-786 review). Wrong implementations: summing EUR and USD rows
+    into one number, or totalling rows that state no currency."""
+    def row(amount, currency, field="amount"):
+        return [{"entity": "transactions", "id": 1, "field": field, "before": None,
+                 "after": amount, "currency": currency}]
+
+    assert actions._totals([row("1.50", "EUR"), row("2.25", "EUR")]) == {
+        "amount": "3.75", "currency": "EUR"}
+    assert actions._totals([row("1.50", "EUR"), row("2.25", "USD")]) == {}
+    assert actions._totals([row("1.50", "EUR"), row("2.25", None)]) == {}
+    assert actions._totals([row("1.50", None)]) == {}
+    # two money fields in two currencies: only the first keeps its total
+    assert actions._totals([row("1.00", "EUR"), row("4.00", "USD", "planned_amount")]) == {
+        "amount": "1.00", "currency": "EUR"}

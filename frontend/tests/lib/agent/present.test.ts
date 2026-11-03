@@ -4,9 +4,11 @@
  * on when a preview touches several rows of one kind (a transfer's two legs).
  */
 import {
-  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel,
+  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel, summaryChange,
+  summaryLabel, summaryTotal, toolLabel,
 } from "@/lib/agent/present";
-import type { ActionChange } from "@/lib/agent/types";
+import type { ActionChange, ActionSummary } from "@/lib/agent/types";
+import { BALANCE_MASK, setBalancesHidden } from "@/lib/format";
 
 const c = (over: Partial<ActionChange>): ActionChange => ({
   entity: "transactions", id: 7, field: "amount", before: null, after: null, ...over,
@@ -45,10 +47,80 @@ describe("present (TBD-664)", () => {
     expect(changeValue(c({ field: "account_id", after: 3 }), "after", undefined, {})).toBe("account #3");
   });
 
+  it("TBD-788: loading a domain's tools reads like a lookup", () => {
+    expect(toolLabel("load_tools")).toBe("Got the tools for a change");
+  });
+
   it("the four tools have headlines", () => {
     expect(actionHeadline("transactions_update_money", "s", [])).toBe("Change a transaction's amount or status");
     expect(actionHeadline("transactions_create", "s", [])).toBe("Add a transaction");
     expect(actionHeadline("transactions_delete", "s", [])).toBe("Delete a transaction");
     expect(actionHeadline("transactions_transfer", "s", [])).toBe("Move money between accounts");
+  });
+
+  it("the recurring and billing-period tools read by their rows (TBD-667)", () => {
+    expect(actionHeadline("recurring_stop", "s", [])).toBe("Stop a recurring transaction");
+    expect(actionHeadline("billing_period_close", "s", [])).toBe("Close the billing period");
+    expect(actionHeadline("recurring_update_money", "s", [])).toBe("Change a recurring transaction's amount or schedule");
+    const left = c({ field: "recurring_id", before: 4, after: null });
+    expect(changeLabel(left)).toBe("Recurring series");
+    expect(changeValue(left, "before", undefined, {})).toBe("recurring transaction #4");
+    const frontier = c({ entity: "recurring_transactions", id: 4, field: "next_due_date" });
+    expect(changeLabel(frontier)).toBe("Next due date");
+    expect(changeLabel(c({ entity: "recurring_transactions", field: "to_account_id" }))).toBe("Destination account");
+    expect(rowLabel(frontier)).toBe("Recurring transaction #4");
+    expect(drillDown(frontier)?.href).toBe("/recurring");
+    expect(rowLabel(c({ entity: "billing_periods", id: "new:2", field: "start_date" }))).toBe("New billing period 2");
+  });
+
+  it("the account tools (TBD-665) have headlines and name their rows", () => {
+    expect(actionHeadline("accounts_adjust_balance", "s", [])).toBe("Adjust an account's balance");
+    expect(actionHeadline("cycle_payments_upsert", "s", [])).toBe("Set a card payment");
+    const pay = c({ entity: "cc_cycle_payments", id: "new:1", field: "amount", after: "80.00", currency: "EUR" });
+    expect(changeLabel(pay)).toBe("Card payment");
+    expect(rowLabel(pay)).toBe("New card payment 1");
+    expect(changeValue(pay, "after", undefined, {})).toBe("€80.00");
+    expect(changeLabel(c({ entity: "accounts", field: "is_default" }))).toBe("Default account");
+    expect(actionHeadline("accounts_update_money", "s", [])).toBe("Change an account's opening balance or type");
+    expect(changeLabel(c({ entity: "accounts", field: "principal_amount" }))).toBe("Loan principal");
+  });
+
+  it("TBD-666: budget and category rows read by their kind, a new master by its number", () => {
+    expect(actionHeadline("budgets_create", "s", [])).toBe("Create a budget");
+    expect(actionHeadline("categories_restore_recommended", "s", [])).toBe("Restore recommended categories");
+    expect(rowLabel(c({ entity: "budgets", id: "new:2" }))).toBe("New budget 2");
+    expect(rowLabel(c({ entity: "billing_periods", id: "new:1" }))).toBe("New billing period 1");
+    expect(changeLabel(c({ entity: "categories", field: "parent_id" }))).toBe("Master category");
+    expect(changeValue(c({ entity: "categories", field: "parent_id", after: "new:3" }), "after", undefined, {}))
+      .toBe("new category 3");
+    expect(changeValue(c({ entity: "categories", field: "parent_id", before: 4 }), "before", undefined, {}))
+      .toBe("category #4");
+  });
+
+  it("a summarised group reads by the stated count, its one change and its total (TBD-786)", () => {
+    const s = (over: Partial<ActionSummary>): ActionSummary => ({
+      entity: "transactions", change: "update", count: 412, sample: [], totals: {}, ...over,
+    });
+    const left = s({ field: "recurring_id", before: 4, after: null });
+    expect(summaryLabel(left)).toBe("412 transactions changed");
+    const one = summaryChange(left)!;
+    expect(changeLabel(one)).toBe("Recurring series");
+    expect(changeValue(one, "before", undefined, {})).toBe("recurring transaction #4");
+    expect(summaryLabel(s({ change: "delete", count: 40 }))).toBe("40 transactions deleted");
+    expect(summaryChange(s({ change: "delete" }))).toBeNull();
+    const added = s({ entity: "categories", change: "insert", count: 80 });
+    expect(summaryLabel(added)).toBe("80 categories added");
+    expect(summaryTotal(added)).toBe("");
+    expect(summaryTotal(s({ totals: { amount: "630.00", currency: "EUR" } }))).toBe("€630.00");
+    // no stated currency (mixed or missing): no total, never a bare unmasked number
+    expect(summaryTotal(s({ totals: { planned_amount: "12.00" } }))).toBe("");
+    setBalancesHidden(true);
+    try {
+      const masked = summaryTotal(s({ totals: { amount: "630.00", currency: "EUR" } }));
+      expect(masked).toContain(BALANCE_MASK);
+      expect(masked).not.toContain("630");
+    } finally {
+      setBalancesHidden(false);
+    }
   });
 });

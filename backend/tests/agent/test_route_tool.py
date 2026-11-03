@@ -11,7 +11,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,8 @@ from app.agent.route_tool import route_tool
 from app.auth.org_permissions import require_org_admin
 from app.auth.pat import require_interactive_session
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
+from app.rate_limit import get_client_ip
 from app.models.budget import Budget
 from app.models.user import Role, User
 from app.services.feature_gate import Feature
@@ -140,6 +141,31 @@ async def _hand_preview(ctx, args):
 
 # ── T-B2: the fields allowlist ────────────────────────────────────────────
 
+def _query_router(with_factory: bool):
+    r = APIRouter(prefix="/api/v1/widgets")
+
+    async def _required(widget_id: int, ids: list[int] = Query(),
+                        current_user: User = Depends(get_current_user)):
+        return {}
+
+    async def _factory(widget_id: int, ids: list[int] = Query(default_factory=list),
+                       current_user: User = Depends(get_current_user)):
+        return {}
+
+    r.post("/{widget_id}/approve")(_factory if with_factory else _required)
+    return r
+
+
+@pytest.mark.parametrize("with_factory", [False, True], ids=["required", "factory"])
+def test_tb2_a_query_param_without_a_plain_default_must_be_required(with_factory):
+    """FENCE T-B2 (TBD-667). Wrong implementation: an omitted query field with
+    no plain default reaching the handler as ``PydanticUndefined``."""
+    router = _query_router(with_factory)
+    with pytest.raises(ToolRegistrationError, match="no plain default"):
+        _tool(router, verb=True, fields=("ids",), entity=None)
+    assert _tool(router, verb=True, fields=("ids",), required=("ids",), entity=None)
+
+
 def test_tb2_args_are_the_path_params_plus_the_allowlist_only():
     """FENCE T-B2. Wrong implementation: the whole REST body exposed (the
     agent could set ``amount`` or ``note`` through a tool that allows only
@@ -213,6 +239,27 @@ def test_tb3_a_matching_gate_registers():
     """Control: the same gates register when the tool carries them."""
     _tool(router=_router(product=Feature.BUDGETS), product_area=Feature.BUDGETS)
     _tool(router=_router(Depends(require_org_admin)), min_role=Role.ADMIN)
+
+
+async def test_tb3_audit_dependencies_are_supplied_in_process():
+    """FENCE T-B3 (TBD-665). A handler that records post-commit audit rows
+    gets a session factory on the tool's own engine and no client IP. Wrong
+    implementations: the app-wide factory (another database in tests, and a
+    second pool beside ``ctx.db``'s in production), or a fabricated IP."""
+    seen = {}
+    r = APIRouter(prefix="/api/v1/widgets")
+
+    @r.put("/{widget_id}")
+    async def _h(widget_id: int, body: _Body, sf=Depends(get_session_factory),
+                 ip: str | None = Depends(get_client_ip)):
+        seen.update(bind=sf.kw["bind"], ip=ip)
+        return {}
+
+    spec = _tool(router=r)
+    engine = object()
+    ctx = SimpleNamespace(user=None, db=SimpleNamespace(bind=engine), org_id=1)
+    await spec.execute(ctx, spec.args.model_validate({"widget_id": 1}))
+    assert seen == {"bind": engine, "ip": None}
 
 
 # ── T-B4 / T-B5: execute runs the handler, 4xx becomes a ToolError ────────

@@ -846,6 +846,23 @@ jobs:
             exit 1
           fi
 
+      # TBD-665. The agent's account money edit locks the account in its
+      # confirm's re-preview and writes it through the handler's atomic path;
+      # the fence shows the write runs under that lock without waiting on it,
+      # which needs InnoDB row locks. A skip is red, as above.
+      - name: Run the account money edit fences against MySQL
+        working-directory: backend
+        env:
+          ACCOUNT_MONEY_MYSQL_URL: ${{ env.DATABASE_URL }}
+          ACCOUNT_MONEY_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/agent/test_account_money_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/account-money.log
+          if grep -q '^SKIPPED' /tmp/account-money.log; then
+            echo "an account money edit fence did not run"
+            exit 1
+          fi
+
       # TBD-586 (R12, R16, R18). The platform reserve/settle race fences need a
       # real InnoDB: two connections, row locks, rowcount semantics. They live in
       # tests/services/test_platform_reserve_mysql.py and are not run anywhere

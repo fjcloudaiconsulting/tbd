@@ -1770,7 +1770,8 @@ async def _settle_batch_counters_and_demote_orphans(
     ``apply_batch_settlement`` (the writes), so a preview can state what a
     delete will do. A delete path calls this function, or both halves on the
     same locked rows (only ``plan_transaction_delete`` /
-    ``apply_transaction_delete`` do, so a preview can render the plan).
+    ``apply_transaction_delete`` and ``recurring_service.plan_pending_removal``
+    do, so a preview can render the plan).
 
     Caller MUST have locked every row in ``locked_rows`` FOR UPDATE, in the
     same ascending-id query that locked the delete set. Mutates state in

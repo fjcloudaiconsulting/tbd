@@ -33,6 +33,7 @@ import json
 import secrets
 from dataclasses import asdict
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 import logging
@@ -61,6 +62,32 @@ MINUTE, HOUR, DAY = 60, 3600, 86_400
 
 # Live (pending, unexpired) rows: per user, per org.
 MAX_LIVE_USER, MAX_LIVE_ORG = 10, 50
+
+# TBD-786: the bulk row classes a preview over MAX_PREVIEW_BYTES may show as a
+# count, a sample and totals instead of every row: rows that move no money and
+# carry no per-row decision. ``(entity, kind, field)``: kind ``update`` is a row
+# changing only ``field``; ``delete`` and ``insert`` are whole rows. A deleted
+# transaction is summarised only while pending (a settled one moves a balance).
+# Everything else (balances, import counters and states, tags, budget deletes)
+# is always listed in full. ``test_agent_honesty`` pins this set.
+SUMMARY_CLASSES = frozenset({
+    ("transactions", "update", "category_id"),
+    ("recurring_transactions", "update", "category_id"),
+    ("forecast_plan_items", "update", "category_id"),
+    ("forecast_plan_items", "delete", None),
+    ("category_rules", "update", "category_id"),
+    ("category_rules", "delete", None),
+    ("transactions", "update", "recurring_id"),
+    ("transactions", "delete", None),
+    ("categories", "insert", None),
+    ("budgets", "insert", None),
+    ("billing_periods", "insert", None),
+    # TBD-667: a PENDING inserted transaction (generation's catch-up, a
+    # transfer's legs) moves no balance; a settled one stays listed in full.
+    ("transactions", "insert", None),
+})
+SUMMARY_SAMPLE = 5
+TOTAL_FIELDS = ("amount", "planned_amount")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -128,6 +155,98 @@ def _preview_dict(pv: Preview) -> dict[str, Any]:
     }))
 
 
+def _row_key(c: dict[str, Any]) -> tuple[str, str]:
+    return c["entity"], _canonical(c["id"])
+
+
+def _summary_class(rows: dict, key: tuple[str, str], deleted: set) -> tuple | None:
+    """The allowlisted group a row's changes fall in, or None."""
+    cs = rows[key]
+    entity, id_ = cs[0]["entity"], cs[0]["id"]
+    if isinstance(id_, str) and id_.startswith("new:"):
+        cls = (entity, "insert", None)
+        if entity == "transactions" and not any(
+            c["field"] == "status" and c["after"] == "pending" for c in cs
+        ):
+            return None
+    elif key in deleted:
+        cls = (entity, "delete", None)
+        if entity == "transactions" and not any(
+            c["field"] == "status" and c["before"] == "pending" for c in cs
+        ):
+            return None
+    elif len(cs) == 1:
+        cls = (entity, "update", cs[0]["field"])
+    else:
+        return None
+    if cls not in SUMMARY_CLASSES:
+        return None
+    return cls if cls[1] != "update" else (*cls, _canonical(cs[0]["before"]), _canonical(cs[0]["after"]))
+
+
+def _totals(rows: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Each money field's sum, with its currency. A field whose rows mix
+    currencies or state none has no total: that sum means nothing."""
+    out: dict[str, Any] = {}
+    for f in TOTAL_FIELDS:
+        vals = [c for cs in rows for c in cs if c["field"] == f]
+        currencies = {c.get("currency") for c in vals}
+        (cur,) = currencies if len(currencies) == 1 else (None,)
+        if cur is None or out.get("currency", cur) != cur:  # one currency for the summary
+            continue
+        total = sum(Decimal(str(c["after"] if c["after"] is not None else c["before"])) for c in vals)
+        out[f], out["currency"] = f"{total:.2f}", cur
+    return out
+
+
+def _summarised(preview: dict[str, Any], risk: str) -> dict[str, Any]:
+    """``preview`` with each allowlisted group of more than SUMMARY_SAMPLE rows
+    replaced by ``{entity, change, [field, before, after], count, sample,
+    totals}``. The primary row stays in full and, for a revertible ``write``,
+    so does every row of its table (a revert compares them)."""
+    rows: dict[tuple, list] = {}
+    for c in preview["changes"]:
+        rows.setdefault(_row_key(c), []).append(c)
+    stated = (preview["context"] or {}).get("deleted") or []
+    deleted = {(d["entity"], _canonical(d["id"])) for d in stated if isinstance(d, dict)}
+    primary = _row_key(preview["changes"][0]) if preview["changes"] else None
+    groups: dict[tuple, list] = {}
+    for key in rows:
+        if key == primary or (risk == "write" and key[0] == primary[0]):
+            continue
+        cls = _summary_class(rows, key, deleted)
+        if cls is not None:
+            groups.setdefault(cls, []).append(key)
+    summaries, hidden = [], set()
+    for cls, keys in groups.items():
+        if len(keys) <= SUMMARY_SAMPLE:
+            continue
+        sample = keys[:SUMMARY_SAMPLE]
+        # A sampled row naming another new row of its class (a transfer leg's
+        # partner) brings it along, so a sampled link never dangles.
+        named = {("transactions", _canonical(c["after"])) for k in sample for c in rows[k]
+                 if isinstance(c["after"], str) and c["after"].startswith("new:")}
+        sample += [k for k in keys if k in named and k not in sample]
+        hidden |= set(keys)
+        summaries.append({
+            "entity": cls[0], "change": cls[1],
+            **({"field": cls[2], "before": rows[keys[0]][0]["before"], "after": rows[keys[0]][0]["after"]}
+               if cls[1] == "update" else {}),
+            "count": len(keys),
+            "sample": [c for k in sample for c in rows[k]],
+            "totals": _totals([rows[k] for k in keys]),
+        })
+    if not summaries:
+        return preview
+    context = dict(preview["context"])
+    if stated:
+        context["deleted"] = [d for d in stated if (d["entity"], _canonical(d["id"])) not in hidden]
+    return {
+        **preview, "context": context, "summaries": summaries,
+        "changes": [c for c in preview["changes"] if _row_key(c) not in hidden],
+    }
+
+
 def _fingerprint(tool: str, args_json: dict[str, Any], preview: dict[str, Any]) -> str:
     changes = sorted(preview["changes"], key=_canonical)
     return _sha256(_canonical({"tool": tool, "args": args_json, "changes": changes}))
@@ -139,7 +258,12 @@ def _new_row(
 ) -> Action:
     if len(_canonical(args_json).encode()) > MAX_ARGS_BYTES:
         raise ToolError("payload_too_large", "arguments exceed the size limit")
+    # Over the cap, bulk rows are summarised; the fingerprint below still
+    # covers the FULL row set, so a confirm refuses drift inside a summary.
+    stored = preview
     if len(_canonical(preview).encode()) > MAX_PREVIEW_BYTES:
+        stored = _summarised(preview, spec.risk)
+    if len(_canonical(stored).encode()) > MAX_PREVIEW_BYTES:
         raise ToolError("payload_too_large", "preview exceeds the size limit")
     now = utcnow_naive()
     return Action(
@@ -147,7 +271,7 @@ def _new_row(
         channel=ActionChannel(ctx.channel), api_token_id=ctx.api_token_id, tool=spec.name,
         risk=ActionRisk(spec.risk), mode=mode, args_json=args_json,
         args_sha256=_sha256(_canonical(args_json)),
-        fingerprint=_fingerprint(spec.name, args_json, preview), preview_json=preview,
+        fingerprint=_fingerprint(spec.name, args_json, preview), preview_json=stored,
         status=ActionStatus.PENDING, created_at=now, expires_at=now + PENDING_TTL,
     )
 
@@ -157,6 +281,7 @@ def _staged(row: Action) -> dict[str, Any]:
     return {
         "action_id": row.id, "summary": p["summary"], "changes": p["changes"],
         "warnings": p["warnings"], "context": p["context"],
+        **({"summaries": p["summaries"]} if "summaries" in p else {}),
         "expires_at": row.expires_at.isoformat(), "requires_confirmation": True,
         # TBD-664: only the person, in the app, confirms a sensitive action.
         **({"requires_browser_confirmation": True} if row.risk == ActionRisk.SENSITIVE else {}),
@@ -204,7 +329,15 @@ def inverse_args(spec: ToolSpec, args_json: dict[str, Any], preview_json: dict[s
     """The args that restore a done write: the stored args with every field of
     the PRIMARY entity (``changes[0]``) put back to its ``before``. Derived
     changes (a learned rule) are not inverted; the revert's own preview
-    re-discloses them."""
+    re-discloses them. A preview whose ``context["not_revertible"]`` says why
+    it cannot be inverted is refused with that reason."""
+    # A tool whose preview says its inverse would not restore the derived rows
+    # (TBD-665: a default-account switch clears another account's default).
+    one_way = (preview_json.get("context") or {}).get("not_revertible")
+    if one_way:
+        raise ToolError("not_revertible", one_way, data={"reason": "one_way"})
+    if spec.inverse is not None:
+        return spec.inverse(args_json, preview_json)
     changes = preview_json["changes"]
     p = changes[0]
     restore = {
@@ -436,5 +569,6 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
     return {
         "action_id": action_id, "status": "done", "summary": preview_json["summary"],
         "changes": preview_json["changes"], "warnings": preview_json["warnings"],
+        **({"summaries": preview_json["summaries"]} if "summaries" in preview_json else {}),
         "result": result,
     }
