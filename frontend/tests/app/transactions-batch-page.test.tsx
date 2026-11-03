@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import BatchEntryPage from "@/app/transactions/batch/page";
 import { apiFetch } from "@/lib/api";
@@ -214,29 +214,196 @@ describe("Batch entry page", () => {
     expect((submit as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("submits filled rows and renders per-row outcomes (happy path)", async () => {
+  it("clears the submitted rows after a fully successful submit", async () => {
+    render(<BatchEntryPage />);
+    await screen.findByLabelText("Row 1 description");
+
+    await fillRow(1);
+    await fillRow(2);
+
+    vi.mocked(apiFetch).mockImplementationOnce(() =>
+      Promise.resolve({
+        imported_count: 2,
+        error_count: 0,
+        results: [
+          { row_number: 1, transaction_id: 42 },
+          { row_number: 2, transaction_id: 43 },
+        ],
+        errors: [],
+      }),
+    );
+
+    // The live region is mounted up front so the result text is announced.
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
+
+    const submit = screen.getByRole("button", { name: /Submit 2 rows$/ });
+    expect((submit as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(status.textContent).toMatch(/2 rows imported/);
+    });
+    expect(screen.getByRole("status")).toBe(status);
+    // Back to the initial empty grid, so Submit cannot re-post the rows.
+    expect(screen.getByText("0 of 5 rows filled")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Row 1 description") as HTMLInputElement).value,
+    ).toBe("");
+    expect(
+      (screen.getByRole("button", { name: /^Submit/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // Focus lands on row 1 instead of falling to <body>, and there is
+    // nothing left to clear.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText("Row 1 date"));
+    });
+    expect(
+      screen.queryByRole("button", { name: /Clear and start over/ }),
+    ).toBeNull();
+  });
+
+  it("keeps only the failed rows, with their errors, on partial success", async () => {
+    render(<BatchEntryPage />);
+    await screen.findByLabelText("Row 1 description");
+
+    await fillRow(1);
+    await fillRow(2);
+
+    vi.mocked(apiFetch).mockImplementationOnce(() =>
+      Promise.resolve({
+        imported_count: 1,
+        error_count: 1,
+        results: [{ row_number: 1, transaction_id: 42 }],
+        errors: [{ row_number: 2, error: "Account not found" }],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Submit 2 rows$/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("1 of 1 row filled")).toBeTruthy();
+    });
+    // The surviving row is the failed one ("Coffee 2"), now row 1.
+    expect(
+      (screen.getByLabelText("Row 1 description") as HTMLInputElement).value,
+    ).toBe("Coffee 2");
+    expect(
+      screen
+        .getAllByRole("alert")
+        .some((n) => n.textContent?.includes("Account not found")),
+    ).toBe(true);
+    expect(screen.getByRole("status").textContent).toMatch(
+      /1 row imported, 1 row failed/,
+    );
+  });
+
+  it("matches results by row when a blank row sits between filled rows", async () => {
+    render(<BatchEntryPage />);
+    await screen.findByLabelText("Row 1 description");
+
+    // Rows 1 and 3 filled, row 2 blank: they ship as row_number 1 and 2.
+    await fillRow(1);
+    await fillRow(3);
+
+    vi.mocked(apiFetch).mockImplementationOnce(() =>
+      Promise.resolve({
+        imported_count: 1,
+        error_count: 1,
+        results: [{ row_number: 1, transaction_id: 42 }],
+        errors: [{ row_number: 2, error: "Account not found" }],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Submit 2 rows$/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("1 of 1 row filled")).toBeTruthy();
+    });
+    expect(
+      (screen.getByLabelText("Row 1 description") as HTMLInputElement).value,
+    ).toBe("Coffee 3");
+    expect(
+      screen
+        .getAllByRole("alert")
+        .some((n) => n.textContent?.includes("Account not found")),
+    ).toBe(true);
+    expect(
+      screen.getByRole("button", { name: /Clear and start over/ }),
+    ).toBeTruthy();
+  });
+
+  it("disables the grid while the request is in flight", async () => {
     render(<BatchEntryPage />);
     await screen.findByLabelText("Row 1 description");
 
     await fillRow(1);
 
-    vi.mocked(apiFetch).mockImplementationOnce(() =>
-      Promise.resolve({
+    let resolveBatch: (v: unknown) => void = () => {};
+    vi.mocked(apiFetch).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveBatch = resolve;
+        }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Submit 1 row$/ }));
+
+    expect(screen.getByLabelText("Row 1 description")).toBeDisabled();
+    expect(screen.getByLabelText("Row 2 amount")).toBeDisabled();
+
+    await act(async () => {
+      resolveBatch({
+        imported_count: 0,
+        error_count: 1,
+        results: [],
+        errors: [{ row_number: 1, error: "Invalid amount" }],
+      });
+    });
+    expect(screen.getByLabelText("Row 1 description")).not.toBeDisabled();
+  });
+
+  it("posts once when Submit is clicked twice before React re-renders", async () => {
+    render(<BatchEntryPage />);
+    await screen.findByLabelText("Row 1 description");
+
+    await fillRow(1);
+
+    let resolveBatch: (v: unknown) => void = () => {};
+    vi.mocked(apiFetch).mockImplementation((path: string) => {
+      if (path === "/api/v1/transactions/batch") {
+        return new Promise((resolve) => {
+          resolveBatch = resolve;
+        });
+      }
+      if (path === "/api/v1/accounts") return Promise.resolve(ACCOUNTS);
+      if (path === "/api/v1/categories") return Promise.resolve(CATEGORIES);
+      return Promise.resolve([]);
+    });
+
+    const submit = screen.getByRole("button", { name: /Submit 1 row$/ });
+    // Both clicks land in one act, before the disabled state commits.
+    act(() => {
+      submit.click();
+      submit.click();
+    });
+
+    const batchCalls = () =>
+      vi
+        .mocked(apiFetch)
+        .mock.calls.filter(([p]) => p === "/api/v1/transactions/batch");
+    expect(batchCalls()).toHaveLength(1);
+
+    await act(async () => {
+      resolveBatch({
         imported_count: 1,
         error_count: 0,
         results: [{ row_number: 1, transaction_id: 42 }],
         errors: [],
-      }),
-    );
-
-    const submit = screen.getByRole("button", { name: /Submit 1 row$/ });
-    expect((submit as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(submit);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText("Row 1 imported")).toBeTruthy();
+      });
     });
-    expect(screen.getByRole("status").textContent).toMatch(/1 row imported/);
+    expect(batchCalls()).toHaveLength(1);
   });
 
   it("renders per-row error message on partial-success response", async () => {
