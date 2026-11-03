@@ -125,3 +125,20 @@ export function renderChartsWithReducedMotion() {
     vi.unstubAllGlobals();
   });
 }
+
+/**
+ * Drawn horizontal extent of a bar `<path>` (TBD-505). The stock `Rectangle`
+ * carries a `width` attribute; `BudgetSpentBarShape` only has `d` (M/H/V/Q
+ * commands), so its x coordinates are read from that. jsdom has no `getBBox`.
+ */
+export function barPathWidth(p: Element): number {
+  const w = p.getAttribute("width");
+  if (w != null) return Number(w);
+  const xs: number[] = [];
+  for (const [, cmd, args] of (p.getAttribute("d") ?? "").matchAll(/([MLHVQ])([^MLHVQZ]*)/gi)) {
+    const n = args.trim().split(/[\s,]+/).filter(Boolean).map(Number);
+    if (/H/i.test(cmd)) xs.push(...n);
+    else if (!/V/i.test(cmd)) xs.push(...n.filter((_, i) => i % 2 === 0));
+  }
+  return xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
+}
