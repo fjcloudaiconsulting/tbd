@@ -366,17 +366,15 @@ async def _delete_check(ctx: ToolContext, acct: Account, args) -> None:
             "conflict", f"Cannot delete account with balance {acct.balance}. Transfer the balance first.",
         )
     with refusals():
-        for model, noun in (
-            (Transaction, "transaction"), (ImportBatch, "import batch"),
-            (RecurringTransaction, "recurring transaction"),
-        ):
+        for model, noun in ((Transaction, "transaction"), (ImportBatch, "import batch")):
             await assert_no_dependents(
                 ctx.db, model, [model.account_id == acct.id, model.org_id == ctx.org_id], noun, "account",
             )
-        # TBD-600: a recurring transfer's destination (no ON DELETE either).
+        # As the route: a template on either side of a transfer (TBD-600).
         await assert_no_dependents(
             ctx.db, RecurringTransaction,
-            [RecurringTransaction.to_account_id == acct.id, RecurringTransaction.org_id == ctx.org_id],
+            [RecurringTransaction.org_id == ctx.org_id,
+             or_(RecurringTransaction.account_id == acct.id, RecurringTransaction.to_account_id == acct.id)],
             "recurring transaction", "account",
         )
 

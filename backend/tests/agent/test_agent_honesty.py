@@ -103,6 +103,7 @@ SUMMARY_CLASSES = {
     ("categories", "insert", None),
     ("budgets", "insert", None),
     ("billing_periods", "insert", None),
+    ("transactions", "insert", None),  # TBD-667: PENDING rows only (rule 9)
 }
 
 
@@ -393,6 +394,10 @@ def check_summary(s, pre, post, org_id, claimed, claimed_del, ins_rows, matched)
     if (table, s["change"]) == ("transactions", "delete"):
         assert all(_norm(tobj.c["status"], r["status"]) == "pending" for r in rows), (
             "rule 9: a summarised transaction delete removed a settled row"
+        )
+    if (table, s["change"]) == ("transactions", "insert"):
+        assert all(_norm(tobj.c["status"], r["status"]) == "pending" for r in rows), (
+            "rule 9: a summarised transaction insert wrote a settled row"
         )
     for f, total in s["totals"].items():
         if f != "currency":
@@ -770,7 +775,65 @@ async def _transfer_pending(f, a):
                                        balance=Decimal("0.00"), currency="EUR", is_default=False))
 
 
+async def _transfer_pairs(f, a):
+    """``_transfer_pending`` plus two more categories of type both, and a pair
+    edited by hand on one leg at a time: the expense leg recategorized, the
+    income leg renamed and set to 40.00."""
+    await _transfer_pending(f, a)
+    a["cat2"], a["cat3"] = await _ids(f, *(Category(org_id=a["org"], name=n, type=CategoryType.BOTH)
+                                           for n in ("Moves", "Pots")))
+    a["edited"] = await _pair(f, a, a["rec"], TODAY + 40 * DAY)
+    async with f() as db:
+        await db.execute(update(Transaction).where(Transaction.id == a["edited"][0]).values(category_id=a["cat3"]))
+        await db.execute(update(Transaction).where(Transaction.id == a["edited"][1]).values(
+            description="MINE", amount=Decimal("40.00")))
+        await db.commit()
+
+
+async def _expense_leg_on_pot(f, a):
+    """``_transfer_pending`` with the pair's expense leg moved to ``pot`` by hand."""
+    await _transfer_pending(f, a)
+    async with f() as db:
+        await db.execute(update(Transaction).where(Transaction.id == a["pair"][0]).values(account_id=a["pot"]))
+        await db.commit()
+
+
+async def _income_leg_on_pot(f, a):
+    await _transfer_pending(f, a)
+    async with f() as db:
+        await db.execute(update(Transaction).where(Transaction.id == a["pair"][1]).values(account_id=a["pot"]))
+        await db.commit()
+
+
+# What each pair-rule scenario must name on the legs: (pair key, leg, field) -> after.
+PAIR_EXPECTED = {
+    "recurring-update-money-moves-a-transfer-source-and-category": lambda a: {
+        (a["pair"][0], "account_id"): a["pot"], (a["pair"][0], "category_id"): a["cat2"],
+        (a["pair"][1], "category_id"): a["cat2"], (a["edited"][0], "account_id"): a["pot"],
+    },
+    "recurring-update-renames-a-transfer-and-spares-a-hand-edited-leg": lambda a: {
+        (a["pair"][0], "description"): "Rainy day", (a["pair"][1], "description"): "Rainy day",
+        (a["edited"][0], "description"): "Rainy day",
+    },
+    "recurring-update-money-amount-spares-a-hand-edited-pair": lambda a: {
+        (a["pair"][0], "amount"): "30.00", (a["pair"][1], "amount"): "30.00",
+    },
+    "recurring-update-money-destination-onto-the-hand-moved-expense-leg": lambda a: {},
+    "recurring-update-money-source-onto-the-hand-moved-income-leg": lambda a: {},
+}
+
+
 TRANSFER_SCENARIOS = [
+    ("recurring-update-money-moves-a-transfer-source-and-category",
+     _rec("recurring_update_money", account_id="@pot", category_id="@cat2"), _transfer_pairs, False),
+    ("recurring-update-renames-a-transfer-and-spares-a-hand-edited-leg",
+     _rec("recurring_update", description="Rainy day"), _transfer_pairs, False),
+    ("recurring-update-money-amount-spares-a-hand-edited-pair",
+     _rec("recurring_update_money", amount="30.00"), _transfer_pairs, False),
+    ("recurring-update-money-destination-onto-the-hand-moved-expense-leg",
+     _rec("recurring_update_money", to_account_id="@pot"), _expense_leg_on_pot, False),
+    ("recurring-update-money-source-onto-the-hand-moved-income-leg",
+     _rec("recurring_update_money", account_id="@pot"), _income_leg_on_pot, False),
     ("recurring-create-a-transfer", lambda a: ("recurring_create", {
         "account_id": a["acct"], "to_account_id": a["savings"], "category_id": a["transfer_cat"],
         "description": "Savings", "amount": "25.00", "type": "transfer", "frequency": "monthly",
@@ -1181,6 +1244,9 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
         assert legs and all(legs[other] == gid for gid, other in legs.items()), legs
         moves = [Decimal(c["after"]) for c in changes if c["field"] == "balance_delta"]
         assert sum(moves) == 0 and (len(moves) == 2 or sid.startswith("recurring-materialise"))
+    if sid in PAIR_EXPECTED:
+        legs = {(c["id"], c["field"]): _unwrap(c["after"]) for c in changes if c["entity"] == "transactions"}
+        assert legs == PAIR_EXPECTED[sid](a), legs
     if sid == "recurring-stop-keeps-a-half-settled-pair":
         gone = {c["id"] for c in changes if c["field"] == "type" and c["after"] is None}
         assert len(gone) == 2 and not gone & {a["kept_exp"], a["kept_inc"]}
@@ -1686,3 +1752,28 @@ async def test_t786_a_full_restore_on_an_empty_org(factory, w, windows):
     async with factory() as db:
         assert s["count"] + 1 == await db.scalar(select(func.count()).select_from(Category).where(
             Category.is_system.is_(True)))
+
+
+# ── TBD-667: a long transfer catch-up is summarised, never refused ────────
+
+async def test_t667_a_weekly_transfer_catching_up_a_year_previews(factory, w, windows):
+    """Before pending inserts could be summarised, its ~106 legs (1 KB each)
+    were refused as payload_too_large. Pending rows move no balance."""
+    a = w["A"]
+    await _transfer_series(factory, a, frequency=Frequency.WEEKLY, next_due_date=P_START - relativedelta(months=12))
+    await honest_run(factory, windows, a["member"], "recurring_generate", {}, a["org"])
+    pv = await _done_preview(factory)
+    s = _summary(pv, "transactions", "insert")
+    listed = {c["id"] for c in pv["changes"] if c["entity"] == "transactions"}  # the primary leg
+    assert s["count"] > 100 and (s["count"] + len(listed)) % 2 == 0
+    links = {c["id"]: c["after"] for c in [*pv["changes"], *s["sample"]] if c["field"] == "linked_transaction_id"}
+    assert links and all(links[other] == gid for gid, other in links.items())  # no dangling shown link
+    assert not any(c["field"] == "balance_delta" for c in pv["changes"])
+
+
+def test_t667_a_settled_insert_is_never_summarised():
+    """Wrong implementation: summarising inserted SETTLED rows, which move a balance."""
+    rows = [asdict(Change("transactions", f"new:{k}", f, None, v))
+            for k in range(1, 300) for f, v in (("status", "settled"), ("amount", "1.00"))]
+    pv = {"summary": "s", "changes": rows, "warnings": [], "context": {}}
+    assert actions._summarised(pv, "sensitive") is pv

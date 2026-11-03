@@ -4,13 +4,14 @@ from typing import Optional
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.deps import get_caller_session, get_current_user, get_session_factory
 from app.models.account import Account, AccountType
+from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip, limiter
@@ -871,6 +872,14 @@ async def delete_account(
         db, Transaction,
         [Transaction.account_id == account.id, Transaction.org_id == current_user.org_id],
         "transaction", "account",
+    )
+    # Neither recurring foreign key has ON DELETE: a template using the account,
+    # on either side of a transfer, would fail the delete in the database.
+    await assert_no_dependents(
+        db, RecurringTransaction,
+        [RecurringTransaction.org_id == current_user.org_id,
+         or_(RecurringTransaction.account_id == account.id, RecurringTransaction.to_account_id == account.id)],
+        "recurring transaction", "account",
     )
 
     await db.delete(account)

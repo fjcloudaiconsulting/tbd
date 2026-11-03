@@ -152,12 +152,13 @@ UPDATE_FIELDS = ("account_id", "to_account_id", "category_id", "description", "a
                  "frequency", "next_due_date", "auto_settle", "is_active", "occurrence_count")
 
 
-async def _pair_changes(ctx: ToolContext, r: RecurringTransaction, new: dict) -> list[Change]:
+async def _pair_changes(ctx: ToolContext, r: RecurringTransaction, new: dict) -> tuple[list[Change], int]:
     """What ``_sync_pending_transfer_pairs`` writes onto a transfer's pending
     pairs (TBD-600): its legs, read as it reads them, and its rules applied
     to a copy. A field follows only while it still holds the old template
     value; the source account onto the expense leg, the destination onto the
-    income leg, never onto the partner's account."""
+    income leg, never onto the partner's account. Returns the Changes and how
+    many pairs (occurrences) they touch."""
     referrer = aliased(Transaction)
     legs = (await ctx.db.scalars(
         select(Transaction).where(
@@ -174,10 +175,12 @@ async def _pair_changes(ctx: ToolContext, r: RecurringTransaction, new: dict) ->
     by_id = {t.id: t for t in legs}
     cur = await _currencies(ctx, _accounts(r) | _accounts(SimpleNamespace(**new)))
     out: list[Change] = []
+    pairs = 0
     for exp in legs:
         inc = by_id.get(exp.linked_transaction_id)
         if exp.type != TransactionType.EXPENSE or not is_reciprocal_pair(exp, inc):
             continue
+        before = len(out)
         after = {leg.id: {"amount": leg.amount, "category_id": leg.category_id,
                           "description": leg.description, "account_id": leg.account_id}
                  for leg in (exp, inc)}
@@ -204,7 +207,8 @@ async def _pair_changes(ctx: ToolContext, r: RecurringTransaction, new: dict) ->
                     out.append(Change("transactions", leg.id, f, {"untrusted": b}, {"untrusted": a}))
                 else:
                     out.append(Change("transactions", leg.id, f, b, a))
-    return out
+        pairs += len(out) > before
+    return out, pairs
 
 
 async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, changes: list[Change]) -> Preview:
@@ -270,13 +274,15 @@ async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, chang
                 if f == "description":
                     before, after = {"untrusted": before}, {"untrusted": after}
                 siblings.append(Change("transactions", t.id, f, before, after))
+    occurrences = len({c.id for c in siblings})
     if r.type == TRANSFER:  # its legs are linked, so the sync above skips them
-        siblings += await _pair_changes(ctx, r, new)
+        pair_changes, pairs = await _pair_changes(ctx, r, new)
+        siblings += pair_changes
+        occurrences += pairs
     siblings.sort(key=lambda c: c.id)
     warnings = []
     if siblings:
-        n = len({c.id for c in siblings})
-        warnings.append(f"Also updates {n} pending occurrence(s) that still had the old value.")
+        warnings.append(f"Also updates {occurrences} pending occurrence(s) that still had the old value.")
     if post.next_due_date != r.next_due_date and "next_due_date" not in sent:
         warnings.append("Resuming moves the next due date onto the current billing cycle.")
     return Preview(
@@ -301,7 +307,8 @@ register(route_tool(
     description=(
         "Rename a recurring template, change its category, or pause it (is_active false). A "
         "description or category change also applies to its pending occurrences that still "
-        "have the old value. Use recurring_update_money for the amount, account, type, "
+        "have the old value (both legs of a transfer's pending pairs); a transfer's category "
+        "must be of type both. Use recurring_update_money for the amount, account, type, "
         "auto-settle, schedule, count, or to resume. Returns a preview to confirm; nothing "
         "changes until it is confirmed."
     ),
@@ -317,7 +324,7 @@ register(route_tool(
     description=(
         "Change what a recurring template generates: its amount, account, a transfer's "
         "destination (to_account_id), type (income or expense, with a category valid for it; a "
-        "transfer cannot change type), auto_settle, frequency, next_due_date or occurrence_count "
+        "transfer cannot change type and its category must be of type both), auto_settle, frequency, next_due_date or occurrence_count "
         "(null: open-ended), or resume it (is_active true). An amount or account change also "
         "applies to its pending occurrences (a transfer's pending pairs) that still have the old "
         f"value; generation settles auto-settle occurrences into the balance. {CONFIRM}"

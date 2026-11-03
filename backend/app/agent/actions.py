@@ -82,6 +82,9 @@ SUMMARY_CLASSES = frozenset({
     ("categories", "insert", None),
     ("budgets", "insert", None),
     ("billing_periods", "insert", None),
+    # TBD-667: a PENDING inserted transaction (generation's catch-up, a
+    # transfer's legs) moves no balance; a settled one stays listed in full.
+    ("transactions", "insert", None),
 })
 SUMMARY_SAMPLE = 5
 TOTAL_FIELDS = ("amount", "planned_amount")
@@ -162,6 +165,10 @@ def _summary_class(rows: dict, key: tuple[str, str], deleted: set) -> tuple | No
     entity, id_ = cs[0]["entity"], cs[0]["id"]
     if isinstance(id_, str) and id_.startswith("new:"):
         cls = (entity, "insert", None)
+        if entity == "transactions" and not any(
+            c["field"] == "status" and c["after"] == "pending" for c in cs
+        ):
+            return None
     elif key in deleted:
         cls = (entity, "delete", None)
         if entity == "transactions" and not any(
@@ -215,6 +222,11 @@ def _summarised(preview: dict[str, Any], risk: str) -> dict[str, Any]:
         if len(keys) <= SUMMARY_SAMPLE:
             continue
         sample = keys[:SUMMARY_SAMPLE]
+        # A sampled row naming another new row of its class (a transfer leg's
+        # partner) brings it along, so a sampled link never dangles.
+        named = {("transactions", _canonical(c["after"])) for k in sample for c in rows[k]
+                 if isinstance(c["after"], str) and c["after"].startswith("new:")}
+        sample += [k for k in keys if k in named and k not in sample]
         hidden |= set(keys)
         summaries.append({
             "entity": cls[0], "change": cls[1],

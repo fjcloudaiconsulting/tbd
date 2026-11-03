@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
+import pytest
+
 from sqlalchemy import select
 
 from app.models import Account
@@ -22,9 +24,10 @@ from tests.agent.test_actions import (  # noqa: F401  (fixtures)
     AUTO, P_START, _confirm, _invoke, _refused, engine, factory, w,
 )
 from tests.agent.test_agent_honesty import (
-    TODAY, _cc, _occurrence, _savings, _series, _series_matched, _template, _transfer_half_settled,
-    _transfer_series,
+    TODAY, _cc, _ids, _occurrence, _savings, _series, _series_matched, _template, _transfer_due,
+    _transfer_half_settled, _transfer_pending, _transfer_series,
 )
+from tests.agent.test_agent_routes import _as, _reset_limiter, client  # noqa: F401
 from tests.agent.test_set_category import _add
 
 DAY = datetime.timedelta(days=1)
@@ -287,3 +290,46 @@ async def test_an_account_a_transfer_uses_cannot_become_a_card_or_be_deleted(fac
         await db.commit()
     err = await _refused(_invoke(factory, a["member"], "accounts_delete", {"account_id": a["savings"]}))
     assert err.code == "conflict" and "recurring transaction" in err.detail
+
+
+async def test_generate_counts_a_transfer_pair_as_one_occurrence(factory, w):
+    """Wrong implementation: counting legs, so one transfer reads as two."""
+    a = w["A"]
+    await _transfer_due(factory, a)
+    out, done = await _apply(factory, a["member"], "recurring_generate", {})
+    assert out["summary"].startswith("Write 1 recurring occurrence(s) due by ")
+    assert out["summary"].endswith(" and settle 1 due one(s)")
+    assert done["result"]["generated"] == 1
+
+
+async def test_the_update_warning_counts_a_transfer_pair_once(factory, w):
+    a = w["A"]
+    await _transfer_pending(factory, a)
+    out = await _invoke(factory, a["member"], "recurring_update_money", {"recurring_id": a["rec"], "amount": "30.00"})
+    assert sum(1 for c in out["changes"] if c["entity"] == "transactions") == 2
+    assert "Also updates 1 pending occurrence(s) that still had the old value." in out["warnings"]
+
+
+@pytest.mark.parametrize("side", ["source", "destination"])
+async def test_an_account_a_recurring_template_uses_is_not_deleted(factory, w, client, side):
+    """FENCE (TBD-600 review). Neither recurring foreign key has ON DELETE, so
+    the route used to fail in the database. REST answers 409 and the agent's
+    preview refuses with the same message."""
+    a = w["A"]
+    await _savings(factory, a)
+    async with factory() as db:
+        type_id = (await db.get(Account, a["acct"])).account_type_id
+    src, dst = await _ids(factory, *(Account(org_id=a["org"], name=n, account_type_id=type_id,
+                                              balance=Decimal("0.00"), currency="EUR", is_default=False)
+                                      for n in ("From", "To")))
+    await _add(factory, _template(a, type="transfer", account_id=src, to_account_id=dst,
+                                  category_id=a["transfer_cat"]))
+    target = src if side == "source" else dst
+    _as(factory, a["member"])
+    r = await client.delete(f"/api/v1/accounts/{target}")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "Cannot delete: 1 recurring transaction(s) use this account"
+    err = await _refused(_invoke(factory, a["member"], "accounts_delete", {"account_id": target}))
+    assert (err.code, err.detail) == ("conflict", r.json()["detail"])
+    async with factory() as db:
+        assert await db.get(Account, target) is not None
