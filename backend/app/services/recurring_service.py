@@ -12,6 +12,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.account import Account
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
@@ -25,6 +26,7 @@ from app.services.recurring_filters import (
 )
 from app.services.transaction_filters import non_reverted_transaction_filter
 from app.services.transaction_service import (
+    _link_pair,
     _load_opts as _tx_load_opts,
     _propagate_fields_to_series,
     _settle_batch_counters_and_demote_orphans,
@@ -74,7 +76,11 @@ class PendingRemovalResult:
 
 
 def _load_opts():
-    return [selectinload(RecurringTransaction.account), selectinload(RecurringTransaction.category)]
+    return [
+        selectinload(RecurringTransaction.account),
+        selectinload(RecurringTransaction.to_account),
+        selectinload(RecurringTransaction.category),
+    ]
 
 
 # ── Frontier lower bound (TBD-283) ────────────────────────────────────────────
@@ -156,6 +162,8 @@ def to_response(r: RecurringTransaction) -> RecurringResponse:
         description=r.description,
         amount=r.amount,
         type=r.type,
+        to_account_id=r.to_account_id,
+        to_account_name=r.to_account.name if r.to_account else "",
         frequency=r.frequency.value,
         next_due_date=r.next_due_date,
         auto_settle=r.auto_settle,
@@ -163,6 +171,35 @@ def to_response(r: RecurringTransaction) -> RecurringResponse:
         occurrence_count=r.occurrence_count,
         occurrences_elapsed=r.occurrences_elapsed,
     )
+
+
+async def _validate_transfer_accounts(
+    db: AsyncSession, org_id: int, r_type: str,
+    account_id: int, to_account_id: int | None,
+) -> None:
+    """TBD-600: ``to_account_id`` is required iff the series is a transfer, and
+    then names another account of the same org and currency.
+
+    Same currency because ``_link_pair`` refuses a cross-currency pair, and a
+    template it refuses would fail every generation run, not just this request.
+    """
+    if r_type != "transfer":
+        if to_account_id is not None:
+            raise ValidationError("Only a transfer has a destination account")
+        return
+    if to_account_id is None:
+        raise ValidationError("A transfer needs a destination account")
+    if to_account_id == account_id:
+        raise ValidationError("Source and destination accounts must be different")
+    currencies = dict((await db.execute(
+        select(Account.id, Account.currency).where(
+            Account.id.in_([account_id, to_account_id]), Account.org_id == org_id
+        )
+    )).all())
+    if len(currencies) != 2:
+        raise ValidationError("Invalid account")
+    if currencies[account_id] != currencies[to_account_id]:
+        raise ValidationError("Transfer accounts must have the same currency")
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -191,8 +228,13 @@ async def create_recurring(
     # directly from the template and would otherwise emit mismatched rows
     # at every cycle, bypassing the guard on _create_transaction_no_commit.
     await validate_account(db, body.account_id, org_id)
+    # A transfer validates as TransactionType.TRANSFER, which only a BOTH
+    # category passes: both legs share it, as on every transfer pair.
     await validate_category_for_type(
         db, body.category_id, org_id, TransactionType(body.type)
+    )
+    await _validate_transfer_accounts(
+        db, org_id, body.type, body.account_id, body.to_account_id
     )
     # TBD-283: one lower bound, enforced identically by all three write paths.
     await validate_frontier(db, org_id, body.next_due_date, today=today)
@@ -200,6 +242,7 @@ async def create_recurring(
     r = RecurringTransaction(
         org_id=org_id,
         account_id=body.account_id,
+        to_account_id=body.to_account_id,
         category_id=body.category_id,
         description=body.description,
         amount=body.amount,
@@ -311,6 +354,10 @@ async def update_recurring(
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
         r.account_id = body.account_id
+    if body.to_account_id is not None:
+        r.to_account_id = body.to_account_id
+    if body.account_id is not None or body.to_account_id is not None:
+        await _validate_transfer_accounts(db, org_id, r.type, r.account_id, r.to_account_id)
     if body.description is not None:
         r.description = body.description
     if body.amount is not None:
@@ -335,6 +382,12 @@ async def update_recurring(
     # one of the two fields must still be compatible with the unchanged
     # one. validate_category_for_type also re-checks org ownership when a
     # new category_id is supplied.
+    # TBD-600: a transfer's rows are linked pairs, and an income or expense
+    # series writes single rows; neither can become the other in place.
+    if body.type is not None and body.type != r.type and r.type == "transfer":
+        raise ValidationError(
+            "A recurring transfer cannot change type. Stop it and create a new series."
+        )
     if body.type is not None or body.category_id is not None:
         new_type = TransactionType(body.type) if body.type is not None else TransactionType(r.type)
         new_category_id = body.category_id if body.category_id is not None else r.category_id
@@ -840,32 +893,51 @@ async def _create_occurrence(
     passed. A skipped occurrence was never paid; an edit-next row exists so its
     amount can be changed BEFORE it settles, and ``_settle_due_auto`` settles it
     at the edited amount on the next run. ``skipped`` only sets the state.
+
+    A transfer series (TBD-600) writes ONE linked pair per occurrence, through
+    ``_link_pair`` as ``create_transfer`` does: an EXPENSE leg on
+    ``account_id`` and an INCOME leg on ``to_account_id``. Both legs carry
+    ``recurring_id``, so generation's ``exists`` probe, the forecasts'
+    materialised probe, ``_settle_due_auto`` and ``_remove_pending_transactions``
+    see the pair with no change of their own. Returns the expense leg.
     """
     tx_status = (
         TransactionStatus.SETTLED
         if (settle and r.auto_settle and due <= today)
         else TransactionStatus.PENDING
     )
+    if r.type == "transfer":
+        legs = [(r.account_id, TransactionType.EXPENSE), (r.to_account_id, TransactionType.INCOME)]
+    else:
+        legs = [(r.account_id, TransactionType(r.type))]
     async with db.begin_nested():
-        tx = Transaction(
-            org_id=org_id,
-            account_id=r.account_id,
-            category_id=r.category_id,
-            description=r.description,
-            amount=r.amount,
-            type=TransactionType(r.type),
-            status=tx_status,
-            date=due,
-            settled_date=due if tx_status == TransactionStatus.SETTLED else None,
-            recurring_id=r.id,
-        )
-        if skipped:
-            tx.reconciliation_state = "skipped"
-        db.add(tx)
+        rows = []
+        for account_id, leg_type in legs:
+            tx = Transaction(
+                org_id=org_id,
+                account_id=account_id,
+                category_id=r.category_id,
+                description=r.description,
+                amount=r.amount,
+                type=leg_type,
+                status=tx_status,
+                date=due,
+                settled_date=due if tx_status == TransactionStatus.SETTLED else None,
+                recurring_id=r.id,
+            )
+            if skipped:
+                tx.reconciliation_state = "skipped"
+            db.add(tx)
+            rows.append(tx)
+        if len(rows) == 2:
+            await db.flush()
+            await _link_pair(db, expense_tx=rows[0], income_tx=rows[1], recategorize=False)
         if tx_status == TransactionStatus.SETTLED:
-            acct = await get_account_for_update(db, r.account_id, org_id)
-            apply_balance(acct, r.amount, TransactionType(r.type))
-    return tx
+            # Sorted account order, as create_transfer locks its pair.
+            for tx in sorted(rows, key=lambda t: t.account_id):
+                acct = await get_account_for_update(db, tx.account_id, org_id)
+                apply_balance(acct, tx.amount, tx.type)
+    return rows[0]
 
 
 async def _load_transaction(db: AsyncSession, tx_id: int) -> Transaction:

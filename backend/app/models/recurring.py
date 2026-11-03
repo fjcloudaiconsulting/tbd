@@ -1,6 +1,7 @@
 import enum
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -36,13 +37,21 @@ class RecurringTransaction(Base):
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id"), nullable=False
     )
+    # TBD-600: the destination of a ``transfer`` series, NULL for income and
+    # expense. A transfer occurrence is a linked pair written through
+    # ``transaction_service._link_pair``: an EXPENSE leg on ``account_id`` and
+    # an INCOME leg here, both carrying ``recurring_id``. ``category_id`` is
+    # then the pair's shared category and must be CategoryType.BOTH.
+    to_account_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("accounts.id"), nullable=True
+    )
     category_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("categories.id"), nullable=False
     )
     description: Mapped[str] = mapped_column(String(255), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     type: Mapped[str] = mapped_column(
-        Enum("income", "expense", name="recurringtxtype"), nullable=False
+        Enum("income", "expense", "transfer", name="recurringtxtype"), nullable=False
     )
     frequency: Mapped[Frequency] = mapped_column(
         Enum(Frequency, values_callable=lambda x: [e.value for e in x]),
@@ -86,5 +95,6 @@ class RecurringTransaction(Base):
         DateTime, server_default=func.now(), nullable=False
     )
 
-    account: Mapped["Account"] = relationship()
+    account: Mapped["Account"] = relationship(foreign_keys=[account_id])
+    to_account: Mapped[Optional["Account"]] = relationship(foreign_keys=[to_account_id])
     category: Mapped["Category"] = relationship()

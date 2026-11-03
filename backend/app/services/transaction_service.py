@@ -728,11 +728,15 @@ async def _propagate_fields_to_series(
         # tracked as TBD-512. When the description changed too, the template
         # row is already locked earlier in this function, by the description
         # UPDATE above, so the edit holds it for longer than this block.
+        # TBD-600: never onto a transfer template. Its two accounts are edited
+        # on the template only; a leg moved by hand (either side) must not
+        # rewrite the source, which could even make it equal the destination.
         await db.execute(
             update(RecurringTransaction)
             .where(
                 RecurringTransaction.id == recurring_id,
                 RecurringTransaction.org_id == org_id,
+                RecurringTransaction.type != "transfer",
             )
             .values(account_id=account_id)
         )

@@ -418,22 +418,31 @@ async def compute_account_balance_forecast(
     # occurrence date is the honest answer to "what is this line?" (and matches
     # the CC/loan lines, which also carry their own resolved due date); the
     # floor is made visible instead by ``series_start`` on the response.
+    #
+    # TBD-600: a transfer series moves both sides, out of ``account_id`` and
+    # into ``to_account_id``, as the pair generation will write.
     recurring_lines_by_account: dict[int, list[dict]] = {}
     for r in recurring_items:
-        if r.account_id is None or r.account_id not in accounts_by_id:
-            continue  # template on an inactive/unknown account: no row to move
+        amount = Decimal(str(r.amount))
+        if r.type == "transfer":
+            legs = [(r.account_id, -amount), (r.to_account_id, amount)]
+        else:
+            legs = [(r.account_id, amount if r.type == "income" else -amount)]
+        # A leg on an inactive/unknown account has no row to move.
+        legs = [(aid, delta) for aid, delta in legs if aid in accounts_by_id]
+        if not legs:
+            continue
         for d in occurrences_in_window(
             r.next_due_date, r.frequency, p_start, window_end,
             budget=remaining_occurrences(r),
         ):
             if (r.id, d) in materialised:
                 continue
-            amount = Decimal(str(r.amount))
-            delta = amount if r.type == "income" else -amount
-            _add_day_delta(day_deltas, r.account_id, d, delta, walk_start)
-            recurring_lines_by_account.setdefault(r.account_id, []).append(
-                {"amount": _q(delta), "date": d.isoformat()}
-            )
+            for account_id, delta in legs:
+                _add_day_delta(day_deltas, account_id, d, delta, walk_start)
+                recurring_lines_by_account.setdefault(account_id, []).append(
+                    {"amount": _q(delta), "date": d.isoformat()}
+                )
 
     # ── Day-0 seed correction: future-dated SETTLED rows (TBD-198) ───────────
     # ⚠ ``accounts.balance`` is DATE-AGNOSTIC. It is written at transaction-

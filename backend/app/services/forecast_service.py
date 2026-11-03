@@ -196,6 +196,10 @@ async def compute_forecast(
             RecurringTransaction.org_id == org_id,
             active_series_filter(),
             RecurringTransaction.next_due_date <= window_end,
+            # TBD-600: a transfer series moves money between two accounts and
+            # is neither income nor expense; its generated pair is already
+            # outside every reportable bucket above.
+            RecurringTransaction.type != "transfer",
             # TBD-325 PR 2. ⚠ SCOPED ON THE SELECT, NEVER IN THE LOOP BELOW.
             # ``RecurringTransaction.account`` (models/recurring.py:89) is a
             # bare ``relationship()`` and these templates are loaded with no
