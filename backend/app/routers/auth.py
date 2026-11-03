@@ -2990,6 +2990,7 @@ async def resend_verification(
 async def resend_verification_public(
     request: Request,
     body: ResendVerificationPublicRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Unauthenticated resend used by the login screen when an unverified
@@ -3008,7 +3009,9 @@ async def resend_verification_public(
         return GENERIC_OK
 
     token = create_email_verification_token(user.id, user.email)
-    await send_verification_email(user.email, token)
+    # Queued, never awaited: an inline send would make the response time show
+    # which logins are unverified accounts (TBD-654).
+    background_tasks.add_task(send_verification_email, user.email, token)
     return GENERIC_OK
 
 
