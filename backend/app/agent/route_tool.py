@@ -16,8 +16,9 @@ the tool runs the code REST runs instead of a second adapter over a service.
   handler's inline guards run. Its parameters come from a CLOSED dependency
   map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``;
   ``get_session_factory`` opens sessions on ``ctx.db``'s engine (the
-  handler's post-commit audit rows) and ``get_client_ip`` is ``None`` (an
-  in-process call has no client; TBD-665); a product-area gate must be the
+  handler's post-commit audit rows), ``get_client_ip`` is ``None`` (an
+  in-process call has no client; TBD-665) and ``get_caller_session`` is
+  ``ctx.db`` (the session holding the re-preview's row locks); a product-area gate must be the
   tool's ``product_area`` or one of its ``extra_areas``; a role gate must not
   be stricter than ``min_role`` (``register`` re-checks both at invoke time).
   Anything else fails registration: an unknown dependency,
@@ -87,7 +88,7 @@ from app.agent.registry import (
 from app.auth.org_permissions import require_org_admin, require_org_owner
 from app.auth.pat import require_interactive_session
 from app.database import get_db
-from app.deps import get_current_user, get_session_factory
+from app.deps import get_caller_session, get_current_user, get_session_factory
 from app.models.user import Role
 from app.rate_limit import get_client_ip
 from app.services.exceptions import ConflictError, NotFoundError
@@ -137,9 +138,11 @@ def _session_factory(ctx: ToolContext) -> Any:
 
 # The closed dependency map: what the handler receives in-process, by callable.
 # An in-process call has no client address: the route's audit row records none.
+# ``get_caller_session`` is ``ctx.db``, whose transaction holds the preview's
+# row locks: a handler that locks on its own session writes on this one.
 _SUPPLIED: dict[Callable[..., Any], Callable[[ToolContext], Any]] = {
     get_current_user: _user, get_db: _db, get_session_factory: _session_factory,
-    get_client_ip: _none,
+    get_client_ip: _none, get_caller_session: _db,
 }
 _ROLE_GATES: dict[Callable[..., Any], Role] = {
     require_org_admin: Role.ADMIN, require_org_owner: Role.OWNER,

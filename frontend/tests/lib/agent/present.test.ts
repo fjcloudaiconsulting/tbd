@@ -74,6 +74,8 @@ describe("present (TBD-664)", () => {
     expect(rowLabel(pay)).toBe("New card payment 1");
     expect(changeValue(pay, "after", undefined, {})).toBe("€80.00");
     expect(changeLabel(c({ entity: "accounts", field: "is_default" }))).toBe("Default account");
+    expect(actionHeadline("accounts_update_money", "s", [])).toBe("Change an account's opening balance or type");
+    expect(changeLabel(c({ entity: "accounts", field: "principal_amount" }))).toBe("Loan principal");
   });
 
   it("TBD-666: budget and category rows read by their kind, a new master by its number", () => {

@@ -21,6 +21,15 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     """
     return async_session
 
+
+def get_caller_session() -> AsyncSession | None:
+    """A session that already holds the caller's row locks, for a handler
+    that otherwise opens its own locking transaction. REST has none; the
+    agent's confirm supplies the session its re-preview locked the row on, so
+    the write does not wait on that lock from a second connection (TBD-665).
+    """
+    return None
+
 bearer_scheme = HTTPBearer()
 bearer_optional = HTTPBearer(auto_error=False)
 

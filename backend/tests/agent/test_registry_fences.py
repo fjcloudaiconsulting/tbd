@@ -96,8 +96,8 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
         # TBD-665
         "accounts_get", "account_types_list", "cycle_payments_list",
-        "accounts_create", "accounts_update", "accounts_delete", "accounts_adjust_balance",
-        "account_types_create", "account_types_update", "account_types_delete",
+        "accounts_create", "accounts_update", "accounts_update_money", "accounts_delete",
+        "accounts_adjust_balance", "account_types_create", "account_types_update", "account_types_delete",
         "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
         # TBD-666
         "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
@@ -124,7 +124,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "recurring_skip_next",
         "recurring_materialise_next", "recurring_generate", "billing_cycle_update",
         "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
-        "accounts_create", "accounts_delete", "accounts_adjust_balance",
+        "accounts_create", "accounts_update_money", "accounts_delete", "accounts_adjust_balance",
         "account_types_create", "account_types_delete",
         "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
         "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
@@ -212,6 +212,7 @@ _BENIGN = {
     ("app.database", "_session"),
     ("app.deps", "get_current_user"),
     ("app.deps", "get_session_factory"),
+    ("app.deps", "get_caller_session"),
     ("app.rate_limit", "get_client_ip"),
     ("app.rate_limit_overrides", "load_rate_limit_overrides"),
 }
@@ -301,7 +302,8 @@ def _valid_base(tool) -> dict:
         return {"billing_cycle_day": 1}
     if tool.name == "billing_period_create":
         return {"start_date": "2026-01-01"}
-    if tool.name in ("accounts_get", "cycle_payments_list", "accounts_update", "accounts_delete"):
+    if tool.name in ("accounts_get", "cycle_payments_list", "accounts_update", "accounts_update_money",
+                     "accounts_delete"):
         return {"account_id": 1}
     if tool.name == "accounts_create":
         return {"name": "x", "account_type_id": 1, "opening_balance_date": "2026-01-01"}

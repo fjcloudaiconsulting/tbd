@@ -11,24 +11,25 @@ delete, a cycle payment and the balance adjustment are ``sensitive`` (never
 auto, confirmed only by the person in the app). Each preview names every row
 its confirm writes (fenced by ``tests/agent/test_agent_honesty.py``).
 
-``PUT /accounts/{id}`` is mirrored for its plain columns only, so it stays in
-the gaps ledger. The opening balance moves the balance, and the type, credit
-card and loan columns take the handler's atomic path, which locks the account
-on a second session while the confirm's re-preview holds that row lock on
-``ctx.db`` (it would wait on itself).
+``PUT /accounts/{id}`` is two tools: ``accounts_update`` (the plain columns,
+``write``) and ``accounts_update_money`` (the opening balance, which moves the
+balance, and the type, credit card and loan columns, ``sensitive``). The
+handler's atomic path for the latter locks the account; in-process it runs on
+``ctx.db`` (``get_caller_session``), whose re-preview already holds that lock.
 """
 from __future__ import annotations
 
 import datetime
 from decimal import Decimal
 
+from fastapi import HTTPException
 from pydantic import ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app import logs
 from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register
-from app.agent.route_tool import CascadeDisclosure, refusals, route_tool
+from app.agent.route_tool import CascadeDisclosure, _disclose, refusals, route_tool
 from app.models import Account, Category, Transaction
 from app.models.account import AccountType
 from app.models.cc_cycle_payment import CcCyclePayment
@@ -40,7 +41,14 @@ from app.routers import account_types as account_types_router
 from app.routers import accounts as accounts_router
 from app.routers import cc_cycle_payments as cycle_router
 from app.schemas.account import BalanceAdjustmentRequest, BalanceAdjustmentResponse
+from app.services.account_type_change_service import (
+    _reject_same_month_payment_before_close,
+    validate_close_day_cascade,
+    validate_payment_day_cascade,
+)
 from app.services.cc_cycle_payment_service import validate_cycle_payment
+from app.services.credit_card_service import validate_credit_card_fields
+from app.services.loan_service import validate_loan_fields
 from app.services.exceptions import NotFoundError
 from app.services.payment_source_service import validate_payment_source_account
 from app.services.transaction_service import (
@@ -191,6 +199,142 @@ register(route_tool(
     ),
     entity=Account, check=_update_check, present=_update_present,
     no_change="the account already has these values",
+))
+
+
+# ── accounts_update_money ─────────────────────────────────────────────────
+#
+# The rest of ``update_account``, previewed in the handler's order: a type,
+# card or loan field takes its atomic path (the account locked, the target
+# type in the org, the close and payment day cascade, the type's clears, the
+# cycle payments a non-card type deletes, the card and loan fields validated
+# as the resulting row); then the opening balance, which shifts the balance
+# by the same delta. A member is refused the handler's two admin-only
+# branches: dropping cycle payments, and moving the opening balance over
+# settled activity.
+
+_CARD = ("close_day", "payment_day", "payment_day_relative_month",
+         "credit_limit", "apr", "payment_strategy", "fixed_payment_amount")
+_LOAN = ("principal_amount", "interest_rate_apr", "term_months", "origination_date", "first_payment_date")
+_MONEY_COLS = ("account_type_id", "payment_source_account_id", *_CARD, *_LOAN, "opening_balance")
+_CURRENCY_COLS = frozenset({"credit_limit", "fixed_payment_amount", "principal_amount", "opening_balance"})
+
+
+async def _type_change(ctx: ToolContext, acct: Account, args, after: dict) -> list[CcCyclePayment]:
+    """``apply_type_change_in_session`` and the card and loan block of
+    ``_apply_non_type_fields``, applied to ``after``; the cycle payments it deletes."""
+    sent = args.model_fields_set
+    target_id = args.account_type_id if "account_type_id" in sent else acct.account_type_id
+    target = await ctx.db.scalar(
+        select(AccountType).where(AccountType.id == target_id, AccountType.org_id == ctx.org_id)
+    )
+    if target is None:
+        raise HTTPException(status_code=422, detail="Invalid account type")
+    slug = target.slug
+    validate_close_day_cascade(
+        source_slug=acct.account_type.slug if acct.account_type else None, target_slug=slug,
+        close_day_in_payload="close_day" in sent, close_day_value=args.close_day,
+    )
+    validate_payment_day_cascade(
+        target_slug=slug,
+        payment_day_in_payload="payment_day" in sent, payment_day_value=args.payment_day,
+        payment_day_relative_month_in_payload="payment_day_relative_month" in sent,
+        payment_day_relative_month_value=args.payment_day_relative_month,
+    )
+    days = ("close_day", "payment_day", "payment_day_relative_month")
+    if slug == "credit_card":
+        _reject_same_month_payment_before_close(
+            **{f: getattr(args, f) if f in sent else getattr(acct, f) for f in days}
+        )
+    after["account_type_id"] = target.id
+    cleared = set() if slug == "credit_card" else set(_CARD)
+    cleared |= set() if slug == "loan" else set(_LOAN)
+    cleared |= set() if slug in ("credit_card", "loan") else {"payment_source_account_id"}
+    after.update(dict.fromkeys(cleared))
+    payments = [] if slug == "credit_card" else list(await ctx.db.scalars(
+        select(CcCyclePayment).where(CcCyclePayment.account_id == acct.id).order_by(CcCyclePayment.id)
+    ))
+    if payments and not accounts_router._is_admin_user(ctx.user):
+        raise HTTPException(status_code=403, detail=(
+            "Only an owner or admin can change the type of a credit card account with recorded cycle payments"
+        ))
+    # The payload over the cascade, validated as the resulting row.
+    after.update({f: getattr(args, f) for f in (*_CARD, *_LOAN) if f in sent})
+    validate_credit_card_fields(
+        target_slug=slug, credit_limit=after["credit_limit"], apr=after["apr"],
+        payment_strategy=after["payment_strategy"], fixed_payment_amount=after["fixed_payment_amount"],
+    )
+    validate_loan_fields(target_slug=slug, **{f: after[f] for f in _LOAN})
+    return payments
+
+
+async def _money_preview(ctx: ToolContext, args) -> Preview:
+    acct = await ctx.db.scalar(
+        select(Account).options(selectinload(Account.account_type))
+        .where(Account.id == args.account_id, Account.org_id == ctx.org_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    if acct is None:
+        raise NotFoundError("Account")
+    before = {c: getattr(acct, c) for c in _MONEY_COLS}
+    after = dict(before)
+    payments: list[CcCyclePayment] = []
+    with refusals():
+        if args.model_fields_set - {"account_id", "opening_balance"}:  # the handler's atomic path
+            payments = await _type_change(ctx, acct, args, after)
+        if args.opening_balance is not None and args.opening_balance != acct.opening_balance:
+            admin = accounts_router._is_admin_user(ctx.user)
+            if not admin and await accounts_router._has_settled_transactions(ctx.db, acct.id, ctx.org_id):
+                raise HTTPException(status_code=403, detail=(
+                    "Only an owner or admin can change the opening balance of an account with settled transactions"
+                ))
+            after["opening_balance"] = args.opening_balance
+    cols = Account.__table__.c
+    changes = [
+        Change("accounts", acct.id, c, b, a, acct.currency if c in _CURRENCY_COLS else None)
+        for c in _MONEY_COLS
+        if (b := _disclose(cols[c], before[c])) != (a := _disclose(cols[c], after[c]))
+    ]
+    delta = after["opening_balance"] - before["opening_balance"]
+    if delta:
+        changes.append(Change("accounts", acct.id, "balance_delta", None, f"{delta:.2f}", acct.currency))
+    for p in payments:
+        changes += [
+            Change("cc_cycle_payments", p.id, f, v, None, acct.currency if f == "amount" else None)
+            for f, v in (("account_id", p.account_id), ("period_anchor_year", p.period_anchor_year),
+                         ("period_anchor_month", p.period_anchor_month), ("amount", f"{p.amount:.2f}"))
+        ]
+    if not changes:
+        raise ToolError("no_change", "the account already has these values")
+    context: dict = {"name": acct.name}
+    if payments:
+        context["deleted"] = [{"entity": "cc_cycle_payments", "id": p.id} for p in payments]
+    return Preview(
+        summary=f"Change the {', '.join(dict.fromkeys(c.field for c in changes if c.entity == 'accounts'))} "
+                f"of account {acct.id}",
+        changes=changes,
+        warnings=(["Moves money: the account balance changes by the opening balance difference."] if delta else [])
+        + ([f"Its {len(payments)} cycle payment(s) are deleted."] if payments else []),
+        context=context,
+    )
+
+
+register(route_tool(
+    name="accounts_update_money", risk="sensitive",
+    router=ACCOUNTS, method="PUT", path="/api/v1/accounts/{account_id}",
+    fields=("account_type_id", *_CARD, *_LOAN, "opening_balance"),
+    nullable=("payment_day", "payment_day_relative_month",
+              "credit_limit", "apr", "payment_strategy", "fixed_payment_amount"),
+    product_area=None, min_role=Role.MEMBER,
+    description=(
+        "Change an account's opening balance (its balance moves by the same amount), its type "
+        "(see account_types_list), or its credit card or loan settings. Leaving credit_card "
+        "clears the card settings and deletes its cycle payments (owner or admin when there "
+        "are any); leaving loan clears the loan settings. close_day is required when changing "
+        "to credit_card. A member cannot move the opening balance of an account with settled "
+        f"transactions. {CONFIRM}"
+    ),
+    preview=_money_preview,
 ))
 
 
