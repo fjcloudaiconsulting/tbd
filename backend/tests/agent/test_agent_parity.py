@@ -34,7 +34,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 43
+MAX_GAPS = 42
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -54,11 +54,6 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("PUT", "/api/v1/transactions/{transaction_id}/tags"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/unpair"): "TBD-664",
-    # TBD-665: ``accounts_update`` covers the plain columns. The opening
-    # balance (it moves the balance) and the type, credit card and loan columns
-    # (the handler's atomic path locks the account on a second session while
-    # the confirm's re-preview holds that lock) stay off the agent for now.
-    ("PUT", "/api/v1/accounts/{account_id}"): "TBD-665",
     # TBD-667
     ("PUT", "/api/v1/notifications/preferences"): "TBD-667",
     # TBD-668
@@ -301,13 +296,20 @@ CONDITIONAL_ROLE_CHECKS: dict[str, str] = {
         "update_account is admin-only to move the opening balance over settled "
         "activity or to drop cycle payments on a type change; the tool sets neither"
     ),
+    "accounts_update_money": (
+        "the tool sets both guarded fields; its preview refuses a member both "
+        "admin-only branches, as the handler (run in-process at confirm) does"
+    ),
 }
 
 
 def test_conditional_role_checks_are_pinned():
-    assert set(CONDITIONAL_ROLE_CHECKS) == {"accounts_update"}, "a new entry needs a reviewed reason"
+    assert set(CONDITIONAL_ROLE_CHECKS) == {"accounts_update", "accounts_update_money"}, (
+        "a new entry needs a reviewed reason"
+    )
     spec = registry.get_tool("accounts_update")
     assert not set(spec.args.model_fields) & {"opening_balance", "account_type_id"}
+    # The member refusals themselves: tests/agent/test_account_tools.py.
 
 
 def _route_required_role(route) -> Role:

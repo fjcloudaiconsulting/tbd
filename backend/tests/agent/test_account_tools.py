@@ -115,6 +115,20 @@ def selects():
     event.remove(Session, "do_orm_execute", grab)
 
 
+@pytest.fixture
+def selects_by_session():
+    """(session, SELECT as MySQL would run it) for every ORM SELECT."""
+    seen: list[tuple[Session, str]] = []
+
+    def grab(state):
+        if state.is_select:
+            seen.append((state.session, str(state.statement.compile(dialect=mysql.dialect()))))
+
+    event.listen(Session, "do_orm_execute", grab)
+    yield seen
+    event.remove(Session, "do_orm_execute", grab)
+
+
 async def test_adjust_preview_locks_the_account_it_computes_from(factory, w, selects):
     """FENCE. Wrong implementation: an unlocked read of the balance, so a
     concurrent write between the confirm's re-preview and the service's own
@@ -169,6 +183,84 @@ async def test_account_create_returns_the_route_response(factory, w):
     assert out["warnings"] == ["The account's balance starts at its opening balance."]
     done = await _confirm(factory, a["member"], out["action_id"])
     assert (done["result"]["name"], done["result"]["balance"]) == ({"untrusted": "Brokerage"}, "40.00")
+
+
+# ── accounts_update_money ─────────────────────────────────────────────────
+
+_AUTO = {"channel": "mcp", "scope": "agent:auto"}
+
+
+async def test_an_agent_cannot_apply_a_money_edit_only_the_person_confirms_it(factory, w):
+    """FENCE (TBD-664 tier). Wrong implementation: ``accounts_update_money``
+    declared ``write``, so an ``agent:auto`` token moves a balance unconfirmed."""
+    a = w["A"]
+    await _cc(factory, a)
+    kw = {**_AUTO, "api_token_id": a["t1"]}
+    out = await _invoke(factory, a["member"], "accounts_update_money",
+                        {"account_id": a["cc"], "opening_balance": "75.00"}, **kw)
+    assert out["requires_browser_confirmation"] is True
+    assert (await _refused(_confirm(factory, a["member"], out["action_id"], **kw))).code == (
+        "requires_browser_confirmation")
+    assert (await _get(factory, Account, a["cc"])).balance == Decimal("0.00")
+    await _confirm(factory, a["member"], out["action_id"])
+    acct = await _get(factory, Account, a["cc"])
+    assert (acct.opening_balance, acct.balance) == (Decimal("75.00"), Decimal("75.00"))
+
+
+@pytest.mark.parametrize("branch", ["opening-balance-over-settled-activity", "type-change-drops-cycle-payments"])
+async def test_a_member_is_refused_the_admin_only_branches_an_admin_is_not(factory, w, branch):
+    """FENCE (REST BE-14 parity). Wrong implementation: the preview skipping
+    the handler's two admin-only checks, so a member stages (and the person
+    confirms) a write REST refuses them."""
+    a = w["A"]
+    await _cc(factory, a)
+    if branch == "opening-balance-over-settled-activity":
+        args = {"account_id": a["acct"], "opening_balance": "50.00"}  # @acct has a settled transaction
+        detail = "change the opening balance of an account with settled transactions"
+    else:
+        await _cycle_paid(factory, a)
+        args = {"account_id": a["cc"], "account_type_id": a["type"]}
+        detail = "change the type of a credit card account with recorded cycle payments"
+    err = await _refused(_invoke(factory, a["member"], "accounts_update_money", args))
+    assert err.code == "forbidden" and detail in err.detail
+    out = await _invoke(factory, a["admin"], "accounts_update_money", args)
+    await _confirm(factory, a["admin"], out["action_id"])
+    if branch == "opening-balance-over-settled-activity":
+        assert (await _get(factory, Account, a["acct"])).balance == Decimal("1050.00")
+    else:
+        async with factory() as db:
+            assert (await db.scalars(select(CcCyclePayment).where(CcCyclePayment.account_id == a["cc"]))).all() == []
+
+
+async def test_money_edits_refuse_at_preview_what_the_route_refuses(factory, w):
+    a = w["A"]
+    await _cc(factory, a)
+    for args, code in (
+        ({"account_id": a["acct"], "account_type_id": a["cc_type"]}, "invalid_arguments"),  # no close_day
+        ({"account_id": a["acct"], "account_type_id": w["B"]["type"]}, "invalid_arguments"),  # another org's
+        ({"account_id": a["acct"], "credit_limit": "500.00"}, "invalid_arguments"),  # not a card
+        ({"account_id": a["cc"], "payment_strategy": "fixed_amount"}, "invalid_arguments"),  # no amount
+        ({"account_id": a["cc"], "close_day": 15}, "no_change"),
+        ({"account_id": w["B"]["acct"], "opening_balance": "1.00"}, "not_found"),
+    ):
+        assert (await _refused(_invoke(factory, a["member"], "accounts_update_money", args))).code == code, args
+
+
+async def test_the_atomic_write_runs_on_the_session_holding_the_preview_lock(factory, w, selects_by_session):
+    """FENCE (TBD-665). Wrong implementation: the handler's atomic path on a
+    session of its own, which on MySQL waits on the row lock the confirm's
+    re-preview holds (that wait is fenced on MySQL by
+    ``test_account_money_mysql.py``)."""
+    a = w["A"]
+    await _cc(factory, a)
+    out = await _invoke(factory, a["member"], "accounts_update_money",
+                        {"account_id": a["cc"], "account_type_id": a["type"]})
+    selects_by_session.clear()
+    await _confirm(factory, a["member"], out["action_id"])
+    lockers = [s for s, q in selects_by_session if "FROM accounts" in q and q.rstrip().endswith("FOR UPDATE")]
+    assert len(lockers) == 2, "the re-preview and the handler each lock the account"
+    assert lockers[0] is lockers[1]
+    assert (await _get(factory, Account, a["cc"])).account_type_id == a["type"]
 
 
 # ── accounts_adjust_balance ───────────────────────────────────────────────

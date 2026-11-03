@@ -864,6 +864,48 @@ async def _spare_type(f, a):
     [a["spare"]] = await _ids(f, AccountType(org_id=a["org"], name="Spare"))
 
 
+async def _card_paid_from_main(f, a):
+    """The card has a limit, an APR and a payment day, and is paid from @acct."""
+    async with f() as db:
+        await db.execute(update(Account).where(Account.id == a["cc"]).values(
+            credit_limit=Decimal("1000.00"), apr=Decimal("19.90"), payment_day=5,
+            payment_source_account_id=a["acct"]))
+        await db.commit()
+
+
+async def _member_is_admin(f, a):
+    """Only an owner or admin may drop a card's cycle payments with its type."""
+    async with f() as db:
+        await db.execute(update(User).where(User.id == a["member"]).values(role=Role.ADMIN))
+        await db.commit()
+
+
+async def _loan_type(f, a):
+    [a["loan_type"]] = await _ids(f, AccountType(org_id=a["org"], name="Loan", slug="loan"))
+
+
+_LOAN_FIELDS = {"principal_amount": "5000.00", "interest_rate_apr": "4.50", "term_months": 36,
+                "origination_date": "2026-01-15", "first_payment_date": "2026-02-15"}
+
+# accounts_update_money (TBD-665): one scenario per field group, and both
+# paths of the handler (an opening balance alone stays on the request session).
+MONEY_ACCOUNT_SCENARIOS = [
+    ("account-money-opening-balance-moves-the-balance",
+     _t("accounts_update_money", account_id="@cc", opening_balance="150.00"), _cc, False),
+    ("account-money-card-to-checking-clears-it-and-deletes-its-cycle-payments",
+     _t("accounts_update_money", account_id="@cc", account_type_id="@type"),
+     _seq(_cc, _card_paid_from_main, _cycle_paid, _member_is_admin), False),
+    ("account-money-checking-to-card-sets-its-close-day",
+     _t("accounts_update_money", account_id="@acct", account_type_id="@cc_type", close_day=10,
+        payment_day=3, credit_limit="500.00"), _cc, False),
+    ("account-money-card-fields-on-a-card",
+     _t("accounts_update_money", account_id="@cc", apr="21.50", payment_strategy="fixed_amount",
+        fixed_payment_amount="75.00", payment_day_relative_month=1), _cc, False),
+    ("account-money-card-to-loan-with-an-opening-balance",
+     _t("accounts_update_money", account_id="@cc", account_type_id="@loan_type", opening_balance="-300.00",
+        **_LOAN_FIELDS), _seq(_cc, _card_paid_from_main, _loan_type), False),
+]
+
 _CYCLE = {"account_id": "@cc", "year": CYCLE_YEAR, "month": 6}
 
 ACCOUNT_SCENARIOS = [
@@ -1011,6 +1053,7 @@ SCENARIOS = [
     *SENSITIVE_SCENARIOS,
     *RECURRING_SCENARIOS,
     *ACCOUNT_SCENARIOS,
+    *MONEY_ACCOUNT_SCENARIOS,
     *PLANNING_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
@@ -1058,6 +1101,17 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
             "categories", "transactions", "recurring_transactions", "forecast_plan_items",
             "category_rules", "budgets"}
         assert any(c["after"] is None for c in changes if c["entity"] == "forecast_plan_items")
+    if sid.startswith("account-money-"):
+        fields = {(c["entity"], c["field"]) for c in changes}
+        moved = ("accounts", "balance_delta") in fields
+        assert moved == sid.endswith(("moves-the-balance", "with-an-opening-balance")), fields
+    if sid == "account-money-card-to-checking-clears-it-and-deletes-its-cycle-payments":
+        assert {c["field"] for c in changes if c["entity"] == "accounts" and c["after"] is None} == {
+            "close_day", "payment_day", "credit_limit", "apr", "payment_source_account_id"}
+        assert any(c["entity"] == "cc_cycle_payments" for c in changes)
+    if sid == "account-money-card-to-loan-with-an-opening-balance":
+        assert named[("accounts", "balance_delta")] == "-300.00"
+        assert ("accounts", "payment_source_account_id") not in named  # a loan keeps it
     if sid == "category-restore-recommended":
         parents = [c["after"] for c in changes if c["field"] == "parent_id"]
         assert any(isinstance(p, str) for p in parents) and any(isinstance(p, int) for p in parents)

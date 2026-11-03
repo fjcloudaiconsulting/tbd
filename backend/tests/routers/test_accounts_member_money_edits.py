@@ -237,3 +237,69 @@ async def test_admin_can_change_type_and_delete_cycle_payments(session_factory, 
         })
     assert res.status_code == 200, res.text
     assert await _cycle_payments(session_factory, seed["card_id"]) == 0
+
+
+# ── TBD-665: REST keeps its own transaction for the atomic path ─────────────
+
+
+def _shape(sql: str) -> tuple[str, str, bool]:
+    """(verb, first table, FOR UPDATE) of one statement as MySQL runs it."""
+    words = sql.split()
+    table = words[words.index("FROM") + 1] if "FROM" in words else ""
+    return words[0], table, sql.rstrip().endswith("FOR UPDATE")
+
+
+@pytest.mark.asyncio
+async def test_rest_atomic_path_locks_and_writes_on_its_own_session(session_factory, seed):
+    """TBD-665 regression. The agent's confirm runs the atomic path on the
+    session that holds its lock (``get_caller_session``); over REST that
+    dependency is None and the path keeps its own transaction: the lock on a
+    session that is not the request session, the same statements in the same
+    order, and the type, cycle payment and opening balance audit rows."""
+    from sqlalchemy.dialects import mysql
+    from sqlalchemy.orm import Session
+
+    from app.models.audit_event import AuditEvent
+
+    seen: list[tuple[Session, tuple[str, str, bool]]] = []
+
+    def grab(state):
+        seen.append((state.session, _shape(str(state.statement.compile(dialect=mysql.dialect())))))
+
+    requests: list[Session] = []
+    client = _client(session_factory, seed["user_ids"][Role.ADMIN])
+    real_get_db = client.app.dependency_overrides[get_db]
+
+    async def recording_get_db():
+        async for session in real_get_db():
+            requests.append(session.sync_session)
+            yield session
+
+    client.app.dependency_overrides[get_db] = recording_get_db
+    event.listen(Session, "do_orm_execute", grab)
+    try:
+        with client:
+            res = client.put(f"/api/v1/accounts/{seed['card_id']}", json={
+                "account_type_id": seed["checking_type_id"], "opening_balance": "150.00",
+            })
+    finally:
+        event.remove(Session, "do_orm_execute", grab)
+    assert res.status_code == 200, res.text
+
+    [locker] = {s for s, (_, _, locked) in seen if locked}
+    assert locker not in requests
+    assert [shape for s, shape in seen if s is locker] == [
+        ("SELECT", "accounts", True),
+        ("SELECT", "account_types", False),  # the locked row's type (selectinload)
+        ("SELECT", "account_types", False),  # the target type, in the org
+        ("SELECT", "cc_cycle_payments", False),
+        ("DELETE", "cc_cycle_payments", False),
+    ]
+    acct = await _account(session_factory, seed["card_id"])
+    assert (acct.account_type_id, acct.close_day) == (seed["checking_type_id"], None)
+    assert (acct.opening_balance, acct.balance) == (Decimal("150.00"), Decimal("150.00"))
+    async with session_factory() as db:
+        events = (await db.scalars(select(AuditEvent.event_type).order_by(AuditEvent.id))).all()
+    assert events == [
+        "account.type_changed", "account.cycle_payment.deleted", "account.opening_balance.update",
+    ]
