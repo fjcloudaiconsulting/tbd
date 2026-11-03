@@ -6,7 +6,7 @@ owns the query, ``cc_forecast_service`` owns the arithmetic.
 
 ``statement_outstanding`` computes a card's owed-at-close amount using the
 EXACT same ledger reconstruction the Slice 3 forecast synthesis uses
-(``account_balance_forecast_service.compute_account_balance_forecast``'s
+(``projection_kernel.baseline``'s
 credit-card block), so the close-day alert (Task 9) can never drift from
 what the forecast bills for the same card and close date.
 """

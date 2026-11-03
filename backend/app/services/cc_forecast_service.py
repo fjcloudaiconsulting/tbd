@@ -1,7 +1,7 @@
 """Pure credit-card projected-payment math (Credit Card Model V1, Slice 3).
 
 DB-free. All arithmetic for the forecast synthesis lives here so it is
-unit-testable without a database; ``account_balance_forecast_service``
+unit-testable without a database; ``projection_kernel``
 supplies the batch-fetched inputs and applies the resulting deltas.
 
 Locked contract (``specs/2026-07-22-cc-model-v1-design.md`` § "Forecast

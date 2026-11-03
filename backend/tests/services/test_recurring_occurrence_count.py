@@ -68,9 +68,9 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.schemas.recurring import RecurringCreate, RecurringUpdate
 from app.schemas.transaction import PromoteToRecurringRequest
 from app.services import (
-    account_balance_forecast_service,
     forecast_plan_service,
     forecast_service,
+    projection_kernel,
     recurring_service,
     scenario_engine,
     transaction_service,
@@ -799,7 +799,8 @@ _GATED_MODULES = (
     # `select(RecurringTransaction…).where(…)` projection. Registering a new
     # site here is the deliberate edit this roster exists to force -- it is
     # hand-maintained, and an unregistered module is simply not looked at.
-    account_balance_forecast_service,
+    # TBD-599 moved that projection into the shared kernel.
+    projection_kernel,
 )
 
 # Functions that read ``RecurringTransaction`` WITHOUT the series filter, on
@@ -985,7 +986,7 @@ def test_fg_every_recurring_read_site_carries_the_series_filter():
         ("forecast_plan_service", "populate_from_sources"),
         ("scenario_engine", "build_world_state"),
         ("recurring_generation", "is_due"),
-        ("account_balance_forecast_service", "compute_account_balance_forecast"),
+        ("projection_kernel", "baseline"),
     }, filtered
     assert total_sites >= len(filtered)
 

@@ -2,7 +2,7 @@
 
 DB-free, mirroring ``cc_forecast_service``: all arithmetic for the loan
 forecast synthesis lives here so it is unit-testable without a database.
-``account_balance_forecast_service`` supplies the batch-fetched inputs
+``projection_kernel`` supplies the batch-fetched inputs
 (the already-paid signal, the reused PMT) and applies the resulting deltas.
 
 Design (``specs/2026-07-24-loan-account-type-v1-design.md`` §4, O2 resolved

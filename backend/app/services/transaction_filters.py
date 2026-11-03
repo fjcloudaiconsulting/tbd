@@ -110,7 +110,7 @@ def non_reverted_transaction_filter():
     legs and manual balance adjustments.
 
     Used by the Reports "Include transfers & adjustments" opt-in and by the
-    pending aggregates in ``account_balance_forecast_service`` and
+    pending aggregates in ``projection_kernel`` and
     ``recurring_service._settle_due_auto``: a reverted row must stay out,
     otherwise its amount double-counts against a balance that no longer
     contains it.
