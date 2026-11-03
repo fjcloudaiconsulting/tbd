@@ -42,9 +42,10 @@ from app.schemas.auth import (
     USERNAME_MIN_LENGTH,
     USERNAME_PATTERN,
 )
-from app.security import decode_token, hash_password
+from app.security import decode_token, hash_password, session_cutoff, token_cutoff
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
+from app.security import run_bcrypt
 from app.services.subscription_service import enforce_user_limit
 from app.services.user_service import normalize_email as _normalize_email_shared
 
@@ -455,7 +456,7 @@ async def accept_invitation(
         # sessions atomically with marking the invite accepted.
         existing.is_active = True
         existing.role = inv.role
-        existing.password_hash = hash_password(password)
+        existing.password_hash = await run_bcrypt(hash_password, password)
         # Whole-second session cutoff. The router mints an access token and
         # a refresh session immediately after this returns, and both stamp
         # "iat": int(now.timestamp()) — floored to a whole second. Every
@@ -473,7 +474,12 @@ async def accept_invitation(
         # ROUNDS fractional seconds on insert (measured on 8.0.46 — .5+
         # rounds up to the next second). Truncating on read cannot undo a
         # value that was already rounded UP past the token's iat.
-        cutoff = now.replace(microsecond=0)
+        #
+        # Never LOWER a cutoff already there: ``remove_member`` writes the
+        # next whole second, and flooring a re-join in that same second back
+        # down to it would revive a token from before the removal. The router
+        # then waits such a cutoff out before minting (TBD-583).
+        cutoff = max(now.replace(microsecond=0), token_cutoff(existing).replace(tzinfo=None))
         existing.password_changed_at = cutoff
         existing.sessions_invalidated_at = cutoff
         existing.email_verified = True
@@ -507,7 +513,7 @@ async def accept_invitation(
         org_id=inv.org_id,
         username=username,
         email=inv.email,
-        password_hash=hash_password(password),
+        password_hash=await run_bcrypt(hash_password, password),
         role=inv.role,
         is_superadmin=False,
         is_active=True,
@@ -684,6 +690,7 @@ async def remove_member(
             )
 
     target.is_active = False
-    target.sessions_invalidated_at = utcnow_naive()
+    # The next whole second, as in admin_org_members_service.update_member (TBD-583).
+    target.sessions_invalidated_at = session_cutoff()
     await db.flush()
     return target

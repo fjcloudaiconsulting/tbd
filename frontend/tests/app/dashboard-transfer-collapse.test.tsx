@@ -34,6 +34,7 @@ vi.mock("recharts", async () => {
 import DashboardPage from "@/app/dashboard/page";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { barPathWidth } from "@/tests/utils/recharts";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -278,5 +279,42 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
       expect(screen.queryAllByTestId(/^dash-settled-\d+$/)).toHaveLength(0),
     );
     expect(screen.getByText(EMPTY)).toBeInTheDocument();
+  });
+
+  it("TBD-505: the Budget Progress spent bars draw with real width", async () => {
+    // The page's own copy of the BudgetSpentBarShape chart (the widget and
+    // /budgets copies are fenced in tests/components/charts/budget-bar-geometry).
+    // Reduced motion so recharts paints the final geometry on first paint.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    }));
+    try {
+      mockDashboard([tx()], [
+        { id: 1, category_id: 9, category_name: "Rent", amount: "500.00", spent: "300.00",
+          percent_used: 60, period_start: "2026-05-01", period_end: null },
+        { id: 2, category_id: 8, category_name: "Food", amount: "100.00", spent: "100.00",
+          percent_used: 100, period_start: "2026-05-01", period_end: null },
+      ]);
+      const { container } = render(<DashboardPage />);
+      await screen.findByTestId("dash-settled-1");
+      // The spent series is the first <Bar> in the Budget Progress chart.
+      const spent = await waitFor(() => {
+        const layer = Array.from(container.querySelectorAll(".recharts-bar")).find((l) =>
+          l.closest(".recharts-wrapper")?.textContent?.includes("Rent"),
+        );
+        const widths = Array.from(layer?.querySelectorAll(".recharts-bar-rectangle path") ?? []).map(barPathWidth);
+        expect(widths).toHaveLength(2);
+        return widths;
+      });
+      for (const w of spent) expect(w).toBeGreaterThan(0);
+      expect(spent[0]).toBeGreaterThan(spent[1]); // 300 spent draws wider than 100
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

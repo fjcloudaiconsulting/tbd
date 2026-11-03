@@ -381,7 +381,7 @@ describe("Batch entry — description autocomplete integration", () => {
     fireEvent.click(screen.getByRole("button", { name: /Submit 1 row$/ }));
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Row 1 imported")).toBeTruthy();
+      expect(screen.getByText(/1 row imported/)).toBeTruthy();
     });
 
     // Verify the batch payload carried the suggestion's category.

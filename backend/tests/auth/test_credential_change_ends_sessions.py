@@ -33,6 +33,7 @@ from app.security import (
     session_cutoff,
     token_cutoff,
     wait_out_cutoff,
+    wait_out_cutoff_second,
 )
 from app.services.mfa_service import encrypt_secret, generate_recovery_codes, generate_totp_secret
 from slowapi import _rate_limit_exceeded_handler
@@ -212,6 +213,22 @@ async def test_wait_out_cutoff_sleeps_only_inside_the_cutoff_second(monkeypatch)
     passed = User(password_changed_at=now - timedelta(seconds=5), sessions_invalidated_at=None)
     await wait_out_cutoff(passed)
     assert len(slept) == 1
+
+
+@pytest.mark.asyncio
+async def test_cutoff_waits_are_capped_against_clock_skew(monkeypatch) -> None:
+    """TBD-583. A cutoff written by a replica whose clock runs ahead must not
+    stall a sign-in or a mint for longer than the cap."""
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(security.asyncio, "sleep", fake_sleep)
+    ahead = datetime.now(timezone.utc) + timedelta(seconds=30)
+    await wait_out_cutoff(User(password_changed_at=None, sessions_invalidated_at=ahead))
+    await wait_out_cutoff_second(ahead)
+    assert slept == [security.MAX_CUTOFF_WAIT_SECONDS] * 2
 
 
 @pytest.mark.asyncio
