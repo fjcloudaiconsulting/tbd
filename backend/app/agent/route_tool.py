@@ -52,6 +52,7 @@ from __future__ import annotations
 import datetime
 import enum
 import inspect
+import json
 import types
 import typing
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -340,8 +341,8 @@ def route_tool(
             raise
         except ConflictError as exc:
             raise ToolError("conflict", exc.detail) from None
-        if isinstance(out, Response):  # a 204 with no body
-            return None
+        if isinstance(out, Response):  # returned directly, past the response model
+            return None if out.status_code == 204 else json.loads(out.body)
         if response is None:
             return jsonable_encoder(out)
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")

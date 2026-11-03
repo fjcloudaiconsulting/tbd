@@ -47,6 +47,7 @@ from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
@@ -606,9 +607,15 @@ async def _subs(f, a):
 
 
 async def _in_use(f, a):
-    """Food is in use: its transaction and rule, a budget, an expense forecast
-    item that folds into Fun's and an income one that moves."""
+    """Food is in use: its transaction, recurring item and rule, a budget, an
+    expense forecast item that folds into Fun's and an income one that moves.
+    (A rule the target already owns cannot exist: ``uq_category_rules_org_token``.)"""
     await _rule_to_c1(f, a)
+    await _add(f, RecurringTransaction(
+        org_id=a["org"], account_id=a["acct"], category_id=a["c1"], description="Weekly shop",
+        amount=Decimal("40.00"), type="expense", frequency=Frequency("monthly"),
+        next_due_date=P_START + datetime.timedelta(days=40),
+    ))
     async with f() as db:
         pid = await db.scalar(select(BillingPeriod.id).where(BillingPeriod.org_id == a["org"]))
     [plan] = await _ids(f, ForecastPlan(org_id=a["org"], billing_period_id=pid))
@@ -730,7 +737,8 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
         assert sum(c["field"] == "type" for c in changes) == 3
     if sid == "category-delete-in-use-migrates":
         assert {c["entity"] for c in changes} == {
-            "categories", "transactions", "forecast_plan_items", "category_rules", "budgets"}
+            "categories", "transactions", "recurring_transactions", "forecast_plan_items",
+            "category_rules", "budgets"}
         assert any(c["after"] is None for c in changes if c["entity"] == "forecast_plan_items")
     if sid == "category-restore-recommended":
         parents = [c["after"] for c in changes if c["field"] == "parent_id"]

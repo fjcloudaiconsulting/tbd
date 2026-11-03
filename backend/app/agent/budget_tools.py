@@ -246,7 +246,8 @@ register(route_tool(
 # ── budgets_rebalance ─────────────────────────────────────────────────────
 #
 # The refusals of ``rebalance_budgets``, at preview: every id in the org, one
-# period, each row still at its ``expected_amount``, and a zero net.
+# period and a zero net. A row no longer at its ``expected_amount`` is
+# disclosed at its current amount with a warning; the handler refuses it.
 
 async def _rebalance_preview(ctx: ToolContext, args) -> Preview:
     ids = [i.budget_id for i in args.items]
@@ -258,20 +259,25 @@ async def _rebalance_preview(ctx: ToolContext, args) -> Preview:
         raise NotFoundError("Budget")
     if len({b.period_start for b in rows.values()}) != 1:
         raise ValidationError("All budgets must be in the same period.")
-    if any(rows[i.budget_id].amount != i.expected_amount for i in args.items):
-        raise ToolError("conflict", "Budgets changed since you opened this.")
     if sum(i.amount for i in args.items) != sum(i.expected_amount for i in args.items):
         raise ValidationError("Changes must net to zero.")
     currency = await _currency(ctx)
     changes = [
-        Change("budgets", i.budget_id, "amount", f"{i.expected_amount:.2f}", f"{i.amount:.2f}", currency)
-        for i in args.items if i.amount != i.expected_amount
+        Change("budgets", i.budget_id, "amount", f"{rows[i.budget_id].amount:.2f}", f"{i.amount:.2f}", currency)
+        for i in args.items if i.amount != rows[i.budget_id].amount
     ]
     if not changes:
         raise ToolError("no_change", "the budgets already have these amounts")
+    # Staged, not refused: a revert after drift must stage (TBD-589). The
+    # handler still refuses the stale rows at confirm, writing nothing.
+    stale = [i.budget_id for i in args.items if rows[i.budget_id].amount != i.expected_amount]
     return Preview(
         summary=f"Move allocation between {len(changes)} budgets",
         changes=changes,
+        warnings=[
+            f"Budget(s) {', '.join(map(str, stale))} changed since: confirming is refused "
+            "unless their amounts are back at expected_amount."
+        ] if stale else [],
         context={
             "period_start": next(iter(rows.values())).period_start.isoformat(),
             "categories": await _names(ctx, {rows[c.id].category_id for c in changes}),

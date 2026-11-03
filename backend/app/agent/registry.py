@@ -28,6 +28,7 @@ the per-token call limit, TBD-561) runs just above every admission.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -573,17 +574,19 @@ async def revert_action(db: AsyncSession, user: User, action_id: str) -> dict[st
         staged = (await invoke(
             db, user, spec.name, inverse, channel="in_app", reverts=rid
         ))["data"]
-        p = original[0]
-        expected = {
-            c["field"]: c["after"] for c in original
-            if (c["entity"], c["id"]) == (p["entity"], p["id"])
-        }
+        # Every row of the primary table the original changed (TBD-666: a
+        # rebalance changes several budgets).
+        table = original[0]["entity"]
+
+        def key(c):
+            return json.dumps(c["id"], sort_keys=True), c["field"]
+
+        expected = {key(c): c["after"] for c in original if c["entity"] == table}
         drift = [
             {"entity": c["entity"], "id": c["id"], "field": c["field"],
-             "expected": expected[c["field"]], "current": c["before"]}
+             "expected": expected[key(c)], "current": c["before"]}
             for c in staged["changes"]
-            if (c["entity"], c["id"]) == (p["entity"], p["id"])
-            and c["field"] in expected and c["before"] != expected[c["field"]]
+            if c["entity"] == table and key(c) in expected and c["before"] != expected[key(c)]
         ]
         if drift:
             raise ToolError(

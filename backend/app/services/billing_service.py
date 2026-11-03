@@ -234,10 +234,10 @@ async def plan_future_periods(
         # setting `end_date = None`. So a row that arm 2 matched a moment
         # ago (closed, intersecting) can become an open row at a start this
         # loop is still about to propose. Arm 2 alone would then miss it and
-        # `db.add` a duplicate, and the resulting IntegrityError surfaces
-        # from autoflush inside the NEXT iteration's `db.scalar` — outside
-        # the try/except around `db.commit()` below, so it escapes as a 500.
-        # Arm 1 matches regardless of `end_date` and closes that window.
+        # plan a duplicate, and `ensure_future_periods`' commit would hit
+        # `uq_billing_period_org_start`: it rolls back, so none of that
+        # call's stubs land. Arm 1 matches regardless of `end_date` and
+        # closes that window.
         #
         # ⚠ That argument depends on `close_period` never MOVING a
         # `start_date`. Arm 1 matches on exact start, so it can only cover the

@@ -124,11 +124,22 @@ async def test_draft_returns_the_suggestions_and_creates_no_budget(factory, w):
     assert await _count(factory, Budget, Budget.period_start == NEXT) == 0
 
 
-async def test_rebalance_refuses_a_stale_amount_or_a_nonzero_net(factory, w):
+async def test_rebalance_stages_a_stale_amount_with_a_warning_and_refuses_it_at_confirm(factory, w):
+    """A stale row is staged, disclosed at its current amount, so a revert
+    after drift can stage (TBD-589); the handler refuses it at confirm."""
     a = w["A"]
     item = {"budget_id": a["b1"], "expected_amount": "100.00", "amount": "90.00"}
     stale = [{**item, "expected_amount": "99.00"}, {"budget_id": a["b2"], "expected_amount": "50.00", "amount": "59.00"}]
-    assert (await _refused(_invoke(factory, a["member"], "budgets_rebalance", {"items": stale}))).code == "conflict"
+    out = await _invoke(factory, a["member"], "budgets_rebalance", {"items": stale})
+    assert out["warnings"] and [c["before"] for c in out["changes"]] == ["100.00", "50.00"]
+    assert (await _refused(_confirm(factory, a["member"], out["action_id"]))).code == "conflict"
+    async with factory() as db:
+        assert (await db.get(Budget, a["b1"])).amount == Decimal("100.00")
+
+
+async def test_rebalance_refuses_a_nonzero_net_or_another_orgs_budget(factory, w):
+    a = w["A"]
+    item = {"budget_id": a["b1"], "expected_amount": "100.00", "amount": "90.00"}
     uneven = [item, {"budget_id": a["b2"], "expected_amount": "50.00", "amount": "50.00"}]
     err = await _refused(_invoke(factory, a["member"], "budgets_rebalance", {"items": uneven}))
     assert (err.code, err.detail) == ("invalid_arguments", "Changes must net to zero.")
@@ -227,6 +238,33 @@ async def test_restore_is_owner_only_and_a_full_restore_is_too_large_to_preview(
 
 
 # ── route_tool ────────────────────────────────────────────────────────────
+
+def test_a_returned_response_is_none_only_for_a_204():
+    """Wrong implementation: every ``Response`` as ``None``, dropping the body
+    of a handler that returns a ``JSONResponse``."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import APIRouter, Response
+    from fastapi.responses import JSONResponse
+
+    from app.agent.route_tool import route_tool
+
+    router = APIRouter()
+
+    @router.delete("/api/v1/widgets/{widget_id}")
+    async def _delete(widget_id: int):
+        return Response(status_code=204) if widget_id == 1 else JSONResponse({"kept": widget_id})
+
+    spec = route_tool(
+        name="widgets_delete", risk="sensitive", router=router, method="DELETE",
+        path="/api/v1/widgets/{widget_id}", fields=(), product_area=None, min_role=Role.MEMBER,
+        description="t", preview=_noop,
+    )
+    ctx = SimpleNamespace(user=None, db=None, org_id=1)
+    assert asyncio.run(spec.execute(ctx, spec.args(widget_id=1))) is None
+    assert asyncio.run(spec.execute(ctx, spec.args(widget_id=2))) == {"kept": 2}
+
 
 class _NoArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")

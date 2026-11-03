@@ -143,9 +143,12 @@ async def test_f1_revert_then_confirm_restores_the_primary_entity(factory, w, to
     if not auto:
         out = await _confirm(factory, a["member"], out["action_id"])
     assert out["status"] == "done"
-    # One primary row, or several of one table (a rebalance's budgets).
+    # One primary row; several of one table only for a tool whose own inverse
+    # restores them all (a rebalance's budgets).
     primaries = [c for c in out["changes"] if c["entity"] not in _NATURAL_KEY]
     (table,) = {c["entity"] for c in primaries}
+    if registry.get_tool(tool).inverse is None:
+        assert len(primaries) == 1, "a default inverse restores changes[0]'s row only"
     assert all(c["before"] != c["after"] for c in primaries)
     if auto:
         # No derived row is written in auto mode: every other table is untouched.
@@ -210,6 +213,47 @@ async def test_f6_budget_drift_is_409_and_nothing_executes(factory, w):
     assert (await _amount(factory, a["b1"])) == Decimal("130.00")
     pending = [r for r in await _rows(factory) if r.status.value == "pending"]
     assert len(pending) == 1 and pending[0].id == err.data["action_id"]
+
+
+async def test_f6_rebalance_drift_on_any_of_its_budgets_is_409(factory, w):
+    """FENCE F6 (TBD-666). A rebalance changes several primary rows; drift on
+    the second one stages the inverse and is a 409. Wrong implementations:
+    the preview refusing (nothing staged), or comparing ``changes[0]``'s row
+    only. Confirming the staged row is refused by the handler (the budget is
+    not at its expected amount) and writes nothing."""
+    a = w["A"]
+    out = await _invoke(factory, a["member"], "budgets_rebalance", _WRITE_CASES["budgets_rebalance"](a))
+    await _confirm(factory, a["member"], out["action_id"])
+    await _set_amount(factory, a["b2"], "65.00")
+    err = await _refused(_revert(factory, a["member"], out["action_id"]))
+    assert err.code == "revert_drift"
+    [d] = err.data["drift"]
+    assert (d["id"], d["expected"], d["current"]) == (a["b2"], "70.00", "65.00")
+    assert err.data["warnings"]
+    pending = [r for r in await _rows(factory) if r.status.value == "pending"]
+    assert [r.id for r in pending] == [err.data["action_id"]]
+    assert (await _refused(_confirm(factory, a["member"], err.data["action_id"]))).code == "conflict"
+    assert (await _amount(factory, a["b1"]), await _amount(factory, a["b2"])) == (
+        Decimal("80.00"), Decimal("65.00"))
+
+
+async def test_reverting_a_type_change_puts_the_subcategories_back_too(factory, w):
+    """TBD-666. A master's type change re-types its subcategories (derived
+    rows of the same table); the revert restores the master and the route
+    cascades the subcategories back, which its preview discloses."""
+    from tests.agent.test_agent_honesty import _subs
+
+    a = w["A"]
+    await _subs(factory, a)
+    out = await _invoke(factory, a["member"], "categories_update", {"category_id": a["c2"], "type": "both"})
+    await _confirm(factory, a["member"], out["action_id"])
+    staged = await _revert(factory, a["member"], out["action_id"])
+    assert sorted(c["id"] for c in staged["changes"]) == sorted([a["c2"], a["cinema"], a["games"]])
+    await _confirm(factory, a["member"], staged["action_id"])
+    async with factory() as db:
+        types = {c.id: c.type for c in (await db.scalars(
+            select(Category).where(Category.id.in_([a["c2"], a["cinema"], a["games"]])))).all()}
+    assert set(types.values()) == {CategoryType.EXPENSE}
 
 
 async def test_f6_category_drift_is_409(factory, w):
