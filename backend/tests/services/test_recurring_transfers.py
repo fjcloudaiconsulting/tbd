@@ -621,3 +621,75 @@ async def test_report_account_dimension_counts_a_transfer_once_per_leg(db, seed)
     grouped = sum(r["value"] for r in await run([Dimension.ACCOUNT]))
     assert ungrouped == 250.0
     assert grouped == 2 * ungrouped
+
+
+@pytest.mark.asyncio
+async def test_auto_settle_is_atomic_per_pair(db, seed, monkeypatch):
+    """A failure on the second leg rolls back the first: neither leg is
+    settled and no balance moved. Per-row savepoints would leave the first
+    leg SETTLED and its account moved."""
+    await _create(db, seed, next_due_date=datetime.date(2026, 7, 20), auto_settle=True)
+    await recurring_service.generate_due_transactions(db, seed["org_id"], today=TODAY)
+    before = await _balances(db, seed)
+    real = recurring_service.apply_balance
+    calls = []
+
+    def flaky(acct, amount, tx_type):
+        calls.append(tx_type)
+        if len(calls) == 2:
+            raise RuntimeError("second leg fails")
+        real(acct, amount, tx_type)
+
+    monkeypatch.setattr(recurring_service, "apply_balance", flaky)
+    with pytest.raises(RuntimeError, match="second leg"):
+        await recurring_service._settle_due_auto(
+            db, seed["org_id"], datetime.date(2026, 7, 20)
+        )
+    assert len(calls) == 2
+    rows = await _rows(db, seed["org_id"])
+    assert [t.status for t in rows] == [TransactionStatus.PENDING] * 2
+    assert await _balances(db, seed) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", ["account_id", "to_account_id"])
+async def test_pair_sync_refuses_a_card_or_loan(db, seed, side):
+    """The sync re-checks the accounts it moves legs onto. Unreachable through
+    ``update_recurring`` (which validates first) or a later account-type
+    change (refused), so it is driven directly."""
+    r_id, exp, inc = await _pending_pair(db, seed)
+    card_type = AccountType(org_id=seed["org_id"], name="Card", slug="credit_card",
+                            is_system=True)
+    db.add(card_type)
+    await db.flush()
+    card = Account(org_id=seed["org_id"], name="Card", account_type_id=card_type.id,
+                   balance=Decimal("0"), currency="EUR")
+    db.add(card)
+    await db.commit()
+    r = await db.get(RecurringTransaction, r_id)
+    old_account, old_to = r.account_id, r.to_account_id
+    setattr(r, side, card.id)
+    with pytest.raises(ValidationError, match="credit card or loan"):
+        await recurring_service._sync_pending_transfer_pairs(
+            db, seed["org_id"], r, amount_was=r.amount, description_was=r.description,
+            category_was=r.category_id, account_was=old_account, to_account_was=old_to,
+        )
+
+
+@pytest.mark.asyncio
+async def test_inactive_account_is_refused_on_create_and_update(db, seed):
+    r_id = (await _create(db, seed)).id
+    third = Account(org_id=seed["org_id"], name="Archived", balance=Decimal("0"),
+                    currency="EUR", is_active=False,
+                    account_type_id=(await db.get(Account, seed["main"])).account_type_id)
+    db.add(third)
+    await db.commit()
+    third_id = third.id
+    for overrides in ({"to_account_id": third_id}, {"account_id": third_id}):
+        with pytest.raises(ValidationError, match="two active accounts"):
+            await _create(db, seed, **overrides)
+        await db.rollback()
+    for body in (RecurringUpdate(to_account_id=third_id), RecurringUpdate(account_id=third_id)):
+        with pytest.raises(ValidationError, match="two active accounts"):
+            await recurring_service.update_recurring(db, seed["org_id"], r_id, body, today=TODAY)
+        await db.rollback()

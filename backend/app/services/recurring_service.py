@@ -196,15 +196,19 @@ async def _validate_transfer_accounts(
     if to_account_id == account_id:
         raise ValidationError("Source and destination accounts must be different")
     rows = {
-        aid: (currency, slug) for aid, currency, slug in (await db.execute(
-            select(Account.id, Account.currency, AccountType.slug)
+        aid: (currency, slug, active) for aid, currency, slug, active in (await db.execute(
+            select(Account.id, Account.currency, AccountType.slug, Account.is_active)
             .join(AccountType, AccountType.id == Account.account_type_id, isouter=True)
             .where(Account.id.in_([account_id, to_account_id]), Account.org_id == org_id)
         )).all()
     }
     if len(rows) != 2:
         raise ValidationError("Invalid account")
-    _refuse_card_or_loan(slug for _, slug in rows.values())
+    # An account archived AFTER the series was set up keeps it running: its
+    # leg is still generated, and the projections show only the active leg.
+    if not all(active for _, _, active in rows.values()):
+        raise ValidationError("A recurring transfer needs two active accounts")
+    _refuse_card_or_loan(slug for _, slug, _ in rows.values())
     if rows[account_id][0] != rows[to_account_id][0]:
         raise ValidationError("Transfer accounts must have the same currency")
 
@@ -1204,15 +1208,17 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
     )
     rows = list(result.scalars().all())
     # Lock order: transaction rows first (the SELECT ... FOR UPDATE above),
-    # then the account row per item. /generate is user-triggered and the
-    # generation loop's FOR UPDATE on templates effectively serializes
-    # concurrent runs per org, so account locks are not contended across the
-    # sweep and the loop.
-    #
-    # TBD-600: both legs of a due transfer pair settle in ONE savepoint, their
-    # accounts locked in sorted id order as ``_create_occurrence`` locks them,
-    # so a failure can never settle one side only. The count is occurrences,
-    # not rows (a pair counts once), as generation's ``created_settled`` is.
+    # then every account the sweep touches, ONCE, up front, in ascending id
+    # order (TBD-600), so two sweeps never take account locks in opposite
+    # orders. /generate is user-triggered and the generation loop's FOR UPDATE
+    # on templates effectively serializes concurrent runs per org. Both
+    # legs of a due transfer pair then settle in ONE savepoint, so a failure
+    # can never settle one side only. The count is occurrences, not rows (a
+    # pair counts once), as generation's ``created_settled`` is.
+    accounts = {
+        aid: await get_account_for_update(db, aid, org_id)
+        for aid in sorted({tx.account_id for tx in rows})
+    }
     by_id = {tx.id: tx for tx in rows}
     units = []
     for tx in rows:
@@ -1224,11 +1230,10 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
             units.append([tx])
     for unit in units:
         async with db.begin_nested():
-            for tx in sorted(unit, key=lambda t: t.account_id):
+            for tx in unit:
                 tx.status = TransactionStatus.SETTLED
                 tx.settled_date = tx.date
-                acct = await get_account_for_update(db, tx.account_id, org_id)
-                apply_balance(acct, tx.amount, tx.type)
+                apply_balance(accounts[tx.account_id], tx.amount, tx.type)
     return len(units)
 
 

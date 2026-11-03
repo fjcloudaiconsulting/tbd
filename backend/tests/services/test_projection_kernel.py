@@ -841,3 +841,19 @@ async def test_scenario_org_total_is_unchanged_by_the_transfer(db_session):
     without_total, without_accounts = project(without)
     assert with_total == without_total
     assert with_accounts[seed["savings"]][-1] > without_accounts[seed["savings"]][-1]
+
+
+async def test_destination_archived_later_projects_the_source_leg_only(db_session):
+    """Documented behaviour: a destination archived after the series was set
+    up drops out of the projection, and the source leg still projects (per-
+    account truth). The series itself keeps running."""
+    seed = await _two_accounts(db_session)
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["savings"])
+    (await db_session.get(Account, seed["savings"])).is_active = False
+    await db_session.commit()
+    kb = await projection_kernel.baseline(
+        db_session, seed["org_id"], today=TODAY, horizon_end=P_END, window_start=P_START,
+    )
+    rows = {a.account.id: a for a in kb.accounts}
+    assert seed["savings"] not in rows
+    assert (datetime.date(2026, 5, 20), Decimal("-100.00")) in rows[seed["main"]].recurring_lines
