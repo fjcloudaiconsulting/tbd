@@ -744,7 +744,7 @@ async def signup_complete(
         email=claims.email,
         first_name=body.first_name,
         last_name=body.last_name,
-        password_hash=hash_password(body.password),
+        password_hash=await run_bcrypt(hash_password, body.password),
         role=Role.OWNER,
         # Never a grant site: setup is over (checked above), and the first
         # user comes only from /setup. Fenced in test_superadmin_bootstrap_predicate.
