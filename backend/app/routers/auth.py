@@ -69,6 +69,7 @@ from app import state_db
 from app.security import (
     MFA_EMAIL_TOKEN_TTL_SECONDS,
     PASSWORD_RESET_TTL_SECONDS,
+    SIGNUP_JTI_SCOPE,
     create_access_token,
     create_email_verification_token,
     create_mfa_challenge_token,
@@ -76,6 +77,7 @@ from app.security import (
     create_password_reset_token,
     create_refresh_token,
     decode_refresh_jti_sid,
+    decode_signup_token,
     decode_token,
     default_session_ttl_seconds,
     get_org_session_ttl_seconds,
@@ -647,6 +649,144 @@ async def signup_start(
         detail={"path": path},
     )
     return {"detail": "Check your email to continue signing up."}
+
+
+def _invalid_signup_token() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "invalid_signup_token",
+            "message": "This link has expired or was already used.",
+        },
+    )
+
+
+def _org_name_taken() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"code": "org_name_taken", "message": "An organization with that name already exists."},
+    )
+
+
+async def _signup_conflict(db: AsyncSession, email: str, username: str) -> HTTPException | None:
+    """The 409 a sign-up for ``email`` and ``username`` meets, if any.
+
+    The caller holds the inbox, so ``account_exists`` reveals nothing new.
+    The username compares case-insensitively, as MySQL's collation does at
+    the INSERT, so SQLite and MySQL answer the same 409.
+    """
+    if await db.scalar(select(User.id).where(User.email == email)):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "account_exists", "message": "This email already has an account. Sign in instead."},
+        )
+    if await db.scalar(select(User.id).where(func.lower(User.username) == username.lower())):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "username_taken",
+                "message": "That username is taken.",
+                "suggestion": await _find_available_username(db, username),
+            },
+        )
+    return None
+
+
+@router.post("/signup/complete", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def signup_complete(
+    request: Request,
+    body: SignupCompleteRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Step 2: create the account the signup link proved the inbox for, and
+    sign the person in.
+
+    The rows flush BEFORE the link's ``jti`` is claimed, so a name conflict,
+    even one lost in a race, answers 409 and leaves the link usable, and two
+    concurrent completes make one account and one clean 4xx. ``claim_token``
+    commits on its own engine: a failure after it burns the link, and the
+    person starts again.
+    """
+    if await _is_first_user_setup(db):
+        raise _setup_required()
+    claims = decode_signup_token(body.token)
+    if claims is None:
+        raise _invalid_signup_token()
+    conflict = await _signup_conflict(db, claims.email, body.username)
+    if conflict is not None:
+        raise conflict
+
+    try:
+        org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+    except HTTPException as exc:  # the only one it raises: a chosen name is taken
+        raise _org_name_taken() from exc
+    user = User(
+        org_id=org.id,
+        username=body.username,
+        email=claims.email,
+        first_name=body.first_name,
+        last_name=body.last_name,
+        password_hash=hash_password(body.password),
+        role=Role.OWNER,
+        # Never a grant site: setup is over (checked above), and the first
+        # user comes only from /setup. Fenced in test_superadmin_bootstrap_predicate.
+        is_superadmin=False,
+        is_founder=True,
+        # The signup token proved the inbox before this row existed.
+        email_verified=True,
+        password_set=True,
+    )
+    db.add(user)
+    try:
+        await db.flush()
+        await subscription_service.create_trial(db, org.id)
+    except IntegrityError:
+        await db.rollback()
+        raise await _signup_conflict(db, claims.email, body.username) or HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Registration conflict, please try again",
+        )
+
+    remaining = max(claims.exp - int(time.time()), 0)
+    try:
+        first_use = await state_db.claim_token(SIGNUP_JTI_SCOPE, claims.jti, remaining + 60)
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise _attempt_store_unavailable() from exc
+    if not first_use:
+        await db.rollback()
+        raise _invalid_signup_token()
+    await db.commit()
+    await db.refresh(user)
+    await db.refresh(org)
+    tokens = await _issue_tokens(user, response, db)
+
+    # Register's event, so the TBD-291 funnel and the TBD-365 query count
+    # these sign-ups too. The outcomes are read off the row (see register).
+    # Here is_first_user is always False while the row is verified: the
+    # TBD-365 equality holds for method="password" rows only.
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.register.success",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=org.id,
+        target_org_name=org.name,
+        request_id=logs.CONTEXT.get({}).get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "method": "email_link",
+            "is_first_user": False,
+            "granted_superadmin": user.is_superadmin,
+            "email_verified_on_create": user.email_verified,
+            "captcha_required": app_settings.captcha_required,
+        },
+    )
+    return tokens
 
 
 def _attempt_store_unavailable() -> HTTPException:
