@@ -32,9 +32,10 @@ from app.services.cc_cycle_service import CreditCardCycle, resolve_cycle_for_acc
 
 logger = logging.getLogger(__name__)
 
-# Safety cap on the enumeration walk (a horizon is at most a couple of
-# cycles; this only guards against a pathological resolver loop).
-_MAX_WALK_ITERS = 60
+# Safety margin on the enumeration walk, on top of two steps per month of the
+# horizon (a duplicate close costs a step). It only guards against a
+# pathological resolver loop; a horizon of any length is walked in full.
+_WALK_MARGIN = 12
 
 
 def due_cycles_in_horizon(
@@ -51,7 +52,8 @@ def due_cycles_in_horizon(
     cursor = p_start - relativedelta(months=lookback_months)
     seen: set[date] = set()
     cycles: list[CreditCardCycle] = []
-    for _ in range(_MAX_WALK_ITERS):
+    months = (p_end.year - cursor.year) * 12 + (p_end.month - cursor.month) + 1
+    for _ in range(2 * months + _WALK_MARGIN):
         cycle = resolve_cycle_for_account(account, cursor)
         close = cycle.period_end_inclusive
         if close in seen:
@@ -63,6 +65,16 @@ def due_cycles_in_horizon(
         if cycle.payment_date >= p_start:
             cycles.append(cycle)
         cursor = close + timedelta(days=1)
+    else:
+        # Never silent: a truncated walk would drop every later payment.
+        logger.error(
+            "cc_forecast.cycle_walk_cap_hit",
+            extra={
+                "account_id": getattr(account, "id", None),
+                "p_start": p_start.isoformat(),
+                "p_end": p_end.isoformat(),
+            },
+        )
     cycles.sort(key=lambda c: c.payment_date)
     return cycles
 
@@ -171,7 +183,12 @@ def synthesize_account_cc_payments(
         b_k = balance_at_close(opening_balance, ledger, cycle.period_end_inclusive)
         outstanding = outstanding_at_close(b_k)
         target = cc_target_payment(account, cycle, outstanding, per_cycle_amounts)
-        capped = min(target, outstanding)
+        # ``outstanding`` is the LEDGER's owed-at-close, blind to the payments
+        # projected for earlier cycles, so those come off it first and the
+        # target is capped at what is still owed. Subtracting ``s_prev`` from
+        # the TARGET instead let a fixed-amount card pay once per horizon.
+        # For full balance the two are the same number.
+        capped = min(target, outstanding - s_prev)
         p_k_owned = Decimal("0")
         for cid, eff, amt in credits:
             if cid in consumed:
@@ -179,7 +196,7 @@ def synthesize_account_cc_payments(
             if cycle.period_end_inclusive < eff <= cycle.payment_date:
                 p_k_owned += amt
                 consumed.add(cid)
-        outflow = max(Decimal("0"), capped - p_k_owned - s_prev)
+        outflow = max(Decimal("0"), capped - p_k_owned)
         s_prev += outflow
         if outflow > 0:
             payments.append((cycle.payment_date, outflow))

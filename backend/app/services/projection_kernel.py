@@ -13,8 +13,9 @@ cannot disagree about what the books already say will happen:
 
 ``baseline`` walks ``[walk_start .. horizon_end]`` one day at a time and emits
 a point per day for months 0-23 (month 0 is ``walk_start``'s calendar month)
-and a point per month-end after that. The last point is always
-``horizon_end``, so ``points[-1]`` IS the projection's final running total.
+and through the first period however long it is, then a point per month-end.
+The last point is always ``horizon_end``, so ``points[-1]`` IS the
+projection's final running total.
 
 Per account and per currency, never across currencies: every account has one
 currency, and ``Baseline.currencies`` sums an account only into its own
@@ -27,14 +28,20 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account, AccountType
+from app.models.user import Organization
 from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services import cc_forecast_service, loan_forecast_service
+from app.services.billing_service import (
+    current_cycle_window,
+    find_open_period,
+    period_spend_window_end,
+)
 from app.services.cc_statement_service import load_cc_ledgers
 from app.services.date_utils import occurrences_in_window
 from app.services.loan_service import compute_pmt
@@ -43,12 +50,15 @@ from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
     non_reverted_transaction_filter,
+    not_pending_of_series_filter,
 )
 
 # Months 0..DAILY_MONTHS-1 get one point per day; later months one point each.
 DAILY_MONTHS = 24
 
 Point = tuple[datetime.date, Decimal]
+
+_CENTS = Decimal("0.01")
 
 
 @dataclass
@@ -90,25 +100,33 @@ async def baseline(
 ) -> Baseline:
     """Project every active account of ``org_id`` up to ``horizon_end``.
 
-    ``window_start`` (default ``today``) is the lower bound of every delta
-    source; deltas dated before the clock are floored onto day 0 (see
-    ``_add_day_delta``). The dashboard passes its billing-period start.
+    ``window_start`` and ``first_period_end`` bound the FIRST period. Omitted,
+    they are the current billing period exactly as the dashboard resolves it
+    (``current_window``), so overdue pending rows and un-materialised
+    occurrences dated earlier in the period are kept and floored onto day 0
+    (see ``_add_day_delta``) rather than dropped. ``first_period_end`` alone
+    defaults to one month after ``window_start``. Later periods are
+    consecutive whole months.
 
     ``exclude_recurring_ids`` drops those series entirely: their frontier
-    (no projected occurrences) AND their already-generated PENDING rows.
-    Settled rows of the series are history and stay in the balance.
+    (no projected occurrences) AND their already-generated PENDING rows,
+    wherever those are read (pending deltas, CC ledgers and credits, the loan
+    already-paid probe). Settled rows of the series are history and stay.
 
-    ``first_period_end`` closes the first loan period (default: one month
-    after ``window_start``); later periods are consecutive months after it.
-    A loan pays at most once per period and skips a period that already has
-    a payment-in leg, exactly as the single-period dashboard always did.
-
-    Beyond-horizon settled rows stay in the seed (the dashboard's long-standing
-    behaviour), so a SHORTER horizon can read a month-end slightly differently
-    from a longer one when a settled row is dated past the shorter horizon.
+    Future-dated SETTLED rows are laid on their own date only inside the
+    first period; rows dated after it stay in the seed, the dashboard's
+    long-standing convention. That is what makes the first period's month-end
+    equal ``expected_month_end_balance`` whatever ``horizon_end`` is, and
+    every later month-end reads the same as it would under that convention.
     """
-    window_start = window_start if window_start is not None else today
     excluded = sorted(set(exclude_recurring_ids))
+    if window_start is None:
+        window_start, default_end = await current_window(db, org_id, today=today)
+        first_period_end = first_period_end or default_end
+    if first_period_end is None:
+        first_period_end = (
+            window_start + relativedelta(months=1) - datetime.timedelta(days=1)
+        )
 
     # The series starts at the later of the window start and the clock: days
     # already behind us are current state, not a projection. The ``min`` is
@@ -150,16 +168,14 @@ async def baseline(
             # TBD-272: a skipped (or rejected) PENDING row will never land.
             non_reverted_transaction_filter(),
             and_(eff_date >= window_start, eff_date <= horizon_end),
-            # `NOT IN` alone is NULL for a non-recurring row and would drop it.
-            *([or_(
-                Transaction.recurring_id.is_(None),
-                Transaction.recurring_id.not_in(excluded),
-            )] if excluded else []),
+            *([not_pending_of_series_filter(excluded)] if excluded else []),
         )
         .group_by(Transaction.account_id, Transaction.type, eff_date)
     )
 
     pending_by_account: dict[int, Decimal] = {}
+    # Unfloored, for the loan's running balance across periods.
+    pending_on: dict[int, list[Point]] = {}
     day_deltas: dict[int, dict[datetime.date, Decimal]] = {}
     for account_id, tx_type, eff, total in pending_result.all():
         delta = Decimal(str(total or 0))
@@ -168,6 +184,7 @@ async def baseline(
         pending_by_account[account_id] = (
             pending_by_account.get(account_id, Decimal("0")) + delta
         )
+        pending_on.setdefault(account_id, []).append((_as_date(eff), delta))
         _add_day_delta(day_deltas, account_id, _as_date(eff), delta, walk_start)
 
     # ── Credit-card projected-payment synthesis (Slice 3) ─────────────────────
@@ -205,7 +222,9 @@ async def baseline(
         # fetch at horizon_end would then drop ledger rows in
         # (horizon_end, close_date] that balance_at_close(close_date) needs,
         # silently under-counting outstanding.
-        ledger_by_account = await load_cc_ledgers(db, org_id, cc_ids)
+        ledger_by_account = await load_cc_ledgers(
+            db, org_id, cc_ids, exclude_pending_recurring_ids=excluded,
+        )
 
         credit_rows = (await db.execute(
             select(Transaction.id, Transaction.account_id, eff_date.label("eff"), Transaction.amount)
@@ -213,7 +232,8 @@ async def baseline(
                    Transaction.account_id.in_(cc_ids),
                    Transaction.linked_transaction_id.is_not(None),
                    Transaction.type == TransactionType.INCOME,
-                   balance_contribution_filter())
+                   balance_contribution_filter(),
+                   *([not_pending_of_series_filter(excluded)] if excluded else []))
         )).all()
         credits_by_account: dict[int, list[tuple]] = {}
         for cid, aid, eff, amt in credit_rows:
@@ -275,7 +295,8 @@ async def baseline(
                    Transaction.linked_transaction_id.is_not(None),
                    Transaction.type == TransactionType.INCOME,
                    balance_contribution_filter(),
-                   and_(eff_date >= window_start, eff_date <= horizon_end))
+                   and_(eff_date >= window_start, eff_date <= horizon_end),
+                   *([not_pending_of_series_filter(excluded)] if excluded else []))
         )).all()
         loan_paid = {(aid, _as_date(eff)) for aid, eff in loan_paid_rows}
 
@@ -291,11 +312,31 @@ async def baseline(
                 Decimal(str(loan.interest_rate_apr)),
                 int(loan.term_months),
             )
-            # shortcut: later periods start from the current balance plus the
-            # payments synthesised so far, blind to pending payment legs in
-            # earlier periods; thread the pending legs when Plans needs it.
+            rate = Decimal(str(loan.interest_rate_apr)) / Decimal("100") / Decimal("12")
+            # Running owed balance (stored NEGATIVE). Period 0 is the
+            # dashboard's: the CURRENT balance, interest-blind. Each later
+            # period first takes in the pending loan legs dated in the period
+            # before it (so a booked payment is never paid twice) and then
+            # accrues a month of interest on what is owed, booked on the loan
+            # on its due date, so the payment amortises and the schedule runs
+            # to term instead of ending early.
             balance = Decimal(str(loan.balance))
-            for seg_start, seg_end in periods:
+            for k, (seg_start, seg_end) in enumerate(periods):
+                if k:
+                    prev_start = periods[k - 1][0]
+                    balance += sum(
+                        (d for eff, d in pending_on.get(loan.id, [])
+                         if prev_start <= eff < seg_start),
+                        Decimal("0"),
+                    )
+                    due = loan_forecast_service.due_loan_payment_dates(
+                        loan.first_payment_date, int(loan.term_months),
+                        seg_start, seg_end,
+                    )
+                    interest = (-balance * rate).quantize(_CENTS) if due and balance < 0 else 0
+                    if interest > 0:
+                        balance -= interest
+                        _add_day_delta(day_deltas, loan.id, due[0], -interest, walk_start)
                 payments = loan_forecast_service.synthesize_account_loan_payment(
                     first_payment_date=loan.first_payment_date,
                     term_months=int(loan.term_months),
@@ -380,8 +421,8 @@ async def baseline(
     # are subtracted from the seed and laid back on their own effective dates,
     # so the walk's FINAL value is unchanged.
     #
-    # Bounded at ``horizon_end`` on purpose: rows dated beyond it are left in
-    # the seed. ``balance_contribution_filter()`` is the set that actually
+    # Bounded at the FIRST PERIOD's end on purpose: rows dated beyond it are
+    # left in the seed (see the docstring). ``balance_contribution_filter()`` is the set that actually
     # makes up ``accounts.balance`` — manual adjustments included,
     # reconcile-matched duplicates excluded.
     future_settled_rows = (await db.execute(
@@ -395,7 +436,7 @@ async def baseline(
             Transaction.org_id == org_id,
             Transaction.status == TransactionStatus.SETTLED,
             balance_contribution_filter(),
-            and_(eff_date > walk_start, eff_date <= horizon_end),
+            and_(eff_date > walk_start, eff_date <= min(first_period_end, horizon_end)),
         )
         .group_by(Transaction.account_id, Transaction.type, eff_date)
     )).all()
@@ -410,11 +451,13 @@ async def baseline(
         )
         _add_day_delta(day_deltas, account_id, _as_date(eff), delta, walk_start)
 
-    daily_end = min(
-        horizon_end,
+    # Daily through month 23 AND through the first period, so an over-long
+    # billing period never loses the in-month dips ``_risk_runs`` reads.
+    daily_end = min(horizon_end, max(
+        first_period_end,
         walk_start.replace(day=1) + relativedelta(months=DAILY_MONTHS)
         - datetime.timedelta(days=1),
-    )
+    ))
     accounts: list[AccountBaseline] = []
     currencies: dict[str, list[Point]] = {}
     for account, type_slug in rows:
@@ -446,17 +489,42 @@ async def baseline(
     )
 
 
+async def period_window_end(
+    db: AsyncSession, org_id: int, period, *, today: datetime.date,
+) -> datetime.date:
+    """A billing period's ONE window end (TBD-243): a closed row verbatim,
+    else the derived spend window, else the calendar month from its start."""
+    if period.end_date is not None:
+        return period.end_date
+    derived = await period_spend_window_end(db, org_id, period, today=today)
+    return derived if derived is not None else (
+        period.start_date + relativedelta(months=1) - datetime.timedelta(days=1)
+    )
+
+
+async def current_window(
+    db: AsyncSession, org_id: int, *, today: datetime.date,
+) -> tuple[datetime.date, datetime.date]:
+    """The current billing period's window, as the dashboard resolves it, but
+    READ-ONLY: with no open row it derives the cycle window instead of
+    creating one (``get_current_period`` would)."""
+    period = await find_open_period(db, org_id)
+    if period is not None:
+        return period.start_date, await period_window_end(db, org_id, period, today=today)
+    cycle_day = await db.scalar(
+        select(Organization.billing_cycle_day).where(Organization.id == org_id)
+    )
+    return current_cycle_window(cycle_day or 1, today)
+
+
 def _loan_periods(
     window_start: datetime.date,
-    first_period_end: datetime.date | None,
+    first_end: datetime.date,
     horizon_end: datetime.date,
 ) -> list[tuple[datetime.date, datetime.date]]:
-    """``[window_start, first_period_end]``, then whole months after it, clipped
-    at ``horizon_end``. Months are computed from one anchor, never chained, so
-    a 31st does not drift through February."""
-    first_end = first_period_end if first_period_end is not None else (
-        window_start + relativedelta(months=1) - datetime.timedelta(days=1)
-    )
+    """``[window_start, first_end]``, then whole months after it, clipped at
+    ``horizon_end``. Months are computed from one anchor, never chained, so a
+    31st does not drift through February."""
     periods = [(window_start, min(first_end, horizon_end))]
     anchor = first_end + datetime.timedelta(days=1)
     k = 0

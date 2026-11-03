@@ -32,6 +32,9 @@ Intended limitations (documented so nobody "fixes" a non-bug):
     models no interest accrual (V1 has no accrual-posting engine; the loan
     balance only moves on a recorded payment). If an accrual job is ever added,
     the synthesis must also add the accrual leg or it over-projects paydown.
+    This holds for the dashboard's single period; over a multi-month horizon
+    ``projection_kernel`` accrues a month of interest before each later
+    period's payment, so the schedule amortises to term.
   * A recorded PARTIAL payment (< PMT) suppresses the whole period (skip),
     under-projecting rather than topping up -- out of the V1 model; under-
     projecting is safer than double-counting.

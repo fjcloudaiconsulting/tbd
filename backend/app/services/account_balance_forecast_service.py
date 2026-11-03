@@ -48,11 +48,10 @@ response.
 import datetime
 from decimal import Decimal
 
-from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import projection_kernel
-from app.services.billing_service import period_spend_window_end, resolve_period
+from app.services.billing_service import resolve_period
 
 # ── Low-balance warning: the deny-list (TBD-198) ─────────────────────────────
 # Account types where a negative balance is NORMAL, not a warning. A deny-list,
@@ -132,13 +131,9 @@ async def compute_account_balance_forecast(
     # Closed rows verbatim, never floored (§4 F6). The `None` arm is the
     # roster tail; the calendar expression there keeps `period_end` non-null
     # and keeps `col <= window_end` compilable (§4 F5).
-    if period.end_date is not None:
-        window_end = period.end_date
-    else:
-        derived = await period_spend_window_end(db, org_id, period, today=today)
-        window_end = derived if derived is not None else (
-            p_start + relativedelta(months=1) - datetime.timedelta(days=1)
-        )
+    window_end = await projection_kernel.period_window_end(
+        db, org_id, period, today=today
+    )
 
     # ── The daily series' first day (TBD-198) ─────────────────────────────
     # ⚠ ``window_end`` above is UNCHANGED and must stay that way; this is a
