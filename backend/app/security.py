@@ -4,10 +4,12 @@ import hashlib
 import hmac as _hmac
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -257,6 +259,61 @@ def create_password_reset_token(user_id: int, email: str) -> str:
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+# Email-first sign-up (TBD-654). The link proves the inbox before any user
+# exists, so the token carries the address (encrypted: a JWT payload is only
+# base64) and no user id. Single use through its ``jti`` in ``used_tokens``.
+SIGNUP_TOKEN_TTL_SECONDS = 60 * 60
+SIGNUP_JTI_SCOPE = "signup"
+SIGNUP_EMAIL_PURPOSE = b"signup-email-v1"
+SIGNUP_MAIL_KEY_PURPOSE = b"signup-mail-v1"
+
+
+@dataclass(frozen=True)
+class SignupClaims:
+    email: str
+    jti: str
+    exp: int
+
+
+def _signup_fernet() -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(derive_hmac_key(SIGNUP_EMAIL_PURPOSE)))
+
+
+def create_signup_token(email: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "type": "signup",
+        "enc_email": _signup_fernet().encrypt(email.strip().lower().encode()).decode(),
+        "jti": secrets.token_urlsafe(16),
+        "iat": now,
+        "exp": now + timedelta(seconds=SIGNUP_TOKEN_TTL_SECONDS),
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def decode_signup_token(token: str) -> SignupClaims | None:
+    """The claims, or None on a bad signature, expiry, wrong type, a missing
+    claim or an address that does not decrypt. Never raises."""
+    payload = decode_token(token)
+    if payload is None or payload.get("type") != "signup":
+        return None
+    enc, jti, exp = payload.get("enc_email"), payload.get("jti"), payload.get("exp")
+    if not isinstance(enc, str) or not isinstance(jti, str) or not jti or not isinstance(exp, int):
+        return None
+    try:
+        email = _signup_fernet().decrypt(enc.encode()).decode()
+    except (InvalidToken, UnicodeDecodeError):
+        return None
+    return SignupClaims(email=email, jti=jti, exp=exp)
+
+
+def signup_mail_key(email: str) -> str:
+    """Keyed digest of an address for the signup mail caps. Keyed, not a plain
+    sha256, which a list of known addresses reverses (TBD-719)."""
+    key = derive_hmac_key(SIGNUP_MAIL_KEY_PURPOSE)
+    return _hmac.new(key, email.strip().lower().encode(), hashlib.sha256).hexdigest()
 
 
 MFA_CHALLENGE_TTL_SECONDS = 5 * 60
