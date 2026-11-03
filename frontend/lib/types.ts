@@ -254,7 +254,11 @@ export interface RecurringTransaction {
   category_name: string;
   description: string;
   amount: string;
-  type: "income" | "expense";
+  // TBD-600: a transfer moves money from `account_id` to `to_account_id`
+  // (null otherwise); each occurrence is a linked transfer pair.
+  type: "income" | "expense" | "transfer";
+  to_account_id?: number | null;
+  to_account_name?: string;
   frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly";
   next_due_date: string;
   auto_settle: boolean;

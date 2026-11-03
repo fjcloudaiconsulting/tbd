@@ -236,9 +236,17 @@ async def baseline(
     # delta, so the two cannot drift apart. A line carries the OCCURRENCE date
     # ``d``, not the day the delta is booked on (``_add_day_delta`` floors an
     # overdue occurrence onto ``walk_start``).
+    #
+    # TBD-600: a transfer series has TWO legs (``_recurring_legs``), booked
+    # together per occurrence. The ``(recurring_id, date)`` materialised key
+    # covers both generated legs, and ``exclude_recurring_ids`` drops both.
+    # When one leg's account is inactive or unknown, only the other leg
+    # projects: per-account truth, as for a single-leg series on an inactive
+    # account, which projects nothing.
     recurring_lines_by_account: dict[int, list[Point]] = {}
     for r in recurring_items:
-        if r.account_id is None or r.account_id not in accounts_by_id:
+        legs = [(a, d) for a, d in _recurring_legs(r) if a in accounts_by_id]
+        if not legs:
             continue  # template on an inactive/unknown account: no row to move
         for d in occurrences_in_window(
             r.next_due_date, r.frequency, window_start, horizon_end,
@@ -246,10 +254,9 @@ async def baseline(
         ):
             if (r.id, d) in materialised:
                 continue
-            amount = Decimal(str(r.amount))
-            delta = amount if r.type == "income" else -amount
-            _add_day_delta(day_deltas, r.account_id, d, delta, walk_start)
-            recurring_lines_by_account.setdefault(r.account_id, []).append((d, delta))
+            for account_id, delta in legs:
+                _add_day_delta(day_deltas, account_id, d, delta, walk_start)
+                recurring_lines_by_account.setdefault(account_id, []).append((d, delta))
 
     # ── Credit-card projected-payment synthesis (Slice 3) ─────────────────────
     # Ephemeral in-memory deltas with provenance source="credit_card_payment":
@@ -573,6 +580,19 @@ def _as_date(value) -> datetime.date:
     if isinstance(value, datetime.date):
         return value
     return datetime.date.fromisoformat(str(value)[:10])
+
+
+def _recurring_legs(r: RecurringTransaction) -> list[tuple[int, Decimal]]:
+    """``(account_id, signed delta)`` per account one occurrence of ``r`` moves.
+
+    A transfer (TBD-600) moves two accounts, out of ``account_id`` and into
+    ``to_account_id``, as the pair generation writes; income and expense move
+    ``account_id`` alone.
+    """
+    amount = Decimal(str(r.amount))
+    if r.type == "transfer":
+        return [(r.account_id, -amount), (r.to_account_id, amount)]
+    return [(r.account_id, amount if r.type == "income" else -amount)]
 
 
 def _add_day_delta(

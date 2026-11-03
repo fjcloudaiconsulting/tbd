@@ -412,4 +412,70 @@ describe("TransferForm", () => {
     // intentionally omits the key when the user did not override it.
     expect(body.category_id).toBeUndefined();
   });
+
+  // TBD-600: Repeats turns the form into a recurring transfer template.
+  it("Repeats posts one transfer template to /api/v1/recurring and no transfer", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockResolvedValue({} as never);
+    const onSaved = vi.fn();
+
+    render(
+      <TransferForm
+        accounts={[CHECKING, SAVINGS]}
+        categories={[TRANSFER_CAT]}
+        onSaved={onSaved}
+      />,
+    );
+    expect(screen.queryByLabelText("Frequency")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Repeats"));
+    // A series settles by auto-settle, so the one-off status goes away.
+    expect(screen.queryByLabelText("Status")).toBeNull();
+    fireEvent.change(screen.getByLabelText("To account"), {
+      target: { value: String(SAVINGS.id) },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "300.00" } });
+    fireEvent.change(screen.getByLabelText("First date"), { target: { value: "2026-12-01" } });
+    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "yearly" } });
+    fireEvent.change(screen.getByLabelText("Number of payments"), { target: { value: "12" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    const urls = apiFetchMock.mock.calls.map(([url]) => url);
+    expect(urls).toEqual(["/api/v1/recurring"]);
+    expect(JSON.parse(apiFetchMock.mock.calls[0][1]!.body as string)).toEqual({
+      type: "transfer",
+      account_id: CHECKING.id,
+      to_account_id: SAVINGS.id,
+      // No override picked: the default Transfer category, by slug.
+      category_id: TRANSFER_CAT.id,
+      description: "Transfer from Checking to Savings",
+      amount: "300.00",
+      frequency: "yearly",
+      next_due_date: "2026-12-01",
+      auto_settle: false,
+      occurrence_count: 12,
+    });
+  });
+
+  it("Repeats refuses to save without any transfer category", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    render(
+      <TransferForm accounts={[CHECKING, SAVINGS]} categories={[]} onSaved={() => {}} />,
+    );
+    fireEvent.click(screen.getByLabelText("Repeats"));
+    fireEvent.change(screen.getByLabelText("To account"), {
+      target: { value: String(SAVINGS.id) },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "300.00" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+    expect(screen.getByText(/Pick a transfer category/)).toBeInTheDocument();
+    expect(apiFetchMock).not.toHaveBeenCalled();
+  });
 });

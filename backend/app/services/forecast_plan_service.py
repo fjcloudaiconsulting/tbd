@@ -722,6 +722,9 @@ async def populate_from_sources(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
             active_series_filter(),
+            # TBD-600: a transfer series plans no income or expense, and its
+            # generated pair is not reportable history either.
+            RecurringTransaction.type != "transfer",
             # TBD-325 PR 2. ⚠ THE THIRD SOURCE, and the one that made this a
             # HALF-FIX until it was caught in review.
             #

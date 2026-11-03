@@ -1280,3 +1280,62 @@ def test_update_cc_with_close_day_31_accepted(session_factory, seeded):
         )
     assert res.status_code == 200, res.text
     assert res.json()["close_day"] == 31
+
+
+# ── TBD-600: an account a recurring transfer uses cannot become a card/loan ──
+
+
+async def _transfer_between(session_factory, seeded, *, is_active: bool) -> dict:
+    """A Savings account and a transfer template Main Checking -> Savings."""
+    from app.models.recurring import Frequency, RecurringTransaction
+
+    async with session_factory() as db:
+        savings = Account(
+            org_id=seeded["org_id"], account_type_id=seeded["savings_type_id"],
+            name="Savings", balance=Decimal("0.00"), currency="EUR", is_active=True,
+        )
+        loan_type = AccountType(org_id=seeded["org_id"], name="Loan", slug="loan",
+                                is_system=True)
+        transfer_cat = Category(org_id=seeded["org_id"], name="Transfer", slug="transfer",
+                                type=CategoryType.BOTH, is_system=True)
+        db.add_all([savings, loan_type, transfer_cat])
+        await db.flush()
+        db.add(RecurringTransaction(
+            org_id=seeded["org_id"], account_id=seeded["checking_acct_id"],
+            to_account_id=savings.id, category_id=transfer_cat.id,
+            description="To savings", amount=Decimal("100.00"), type="transfer",
+            frequency=Frequency.MONTHLY, next_due_date=date(2026, 12, 1),
+            auto_settle=False, is_active=is_active,
+        ))
+        await db.commit()
+        return {"savings_id": savings.id, "loan_type_id": loan_type.id}
+
+
+@pytest.mark.parametrize("is_active", [True, False])
+def test_change_type_refused_while_a_recurring_transfer_uses_the_account(
+    session_factory, seeded, is_active
+):
+    """Source -> credit card and destination -> loan are both refused, for a
+    paused series too (a resume does not re-check its accounts). The type is
+    left unchanged."""
+    extra = _run(_transfer_between(session_factory, seeded, is_active=is_active))
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        for account_id, body in (
+            (seeded["checking_acct_id"], {"account_type_id": seeded["cc_type_id"], "close_day": 20}),
+            (extra["savings_id"], {"account_type_id": extra["loan_type_id"]}),
+        ):
+            res = client.put(f"/api/v1/accounts/{account_id}", json=body)
+            assert res.status_code == 400, res.text
+            assert "recurring transfer" in res.json()["detail"]
+        # A type change that stays outside card/loan is still allowed.
+        ok = client.put(
+            f"/api/v1/accounts/{extra['savings_id']}",
+            json={"account_type_id": seeded["checking_type_id"]},
+        )
+        assert ok.status_code == 200, ok.text
+
+    async def _types():
+        async with session_factory() as db:
+            return (await db.get(Account, seeded["checking_acct_id"])).account_type_id
+    assert _run(_types()) == seeded["checking_type_id"]

@@ -75,7 +75,7 @@ class RecurringSnapshot:
     id: int
     account_id: int
     amount: Decimal
-    type: str  # "income" | "expense"
+    type: str  # "income" | "expense" | "transfer"
     frequency: Frequency
     next_due_date: datetime.date
     # PR3: category_id is carried so custom ``expense_off`` events with
@@ -89,6 +89,9 @@ class RecurringSnapshot:
     # and one that keeps paying rent for 30 years. Defaulted to None so legacy
     # fixtures constructing a snapshot positionally are unaffected.
     remaining: Optional[int] = None
+    # TBD-600: a transfer's destination; it moves money out of ``account_id``
+    # and into this account, so the org's total is unchanged.
+    to_account_id: Optional[int] = None
 
 
 @dataclass
@@ -489,12 +492,14 @@ class AnalyticEngine(ScenarioEngine):
                         and next_due <= month_end
                     ):
                         delta = Decimal(snap.amount)
-                        if snap.type == "expense":
-                            delta = -delta
-                        if snap.account_id in balances:
-                            balances[snap.account_id] = (
-                                balances[snap.account_id] + delta
-                            )
+                        legs = [(snap.account_id, delta)]
+                        if snap.type == "transfer":
+                            legs = [(snap.account_id, -delta), (snap.to_account_id, delta)]
+                        elif snap.type == "expense":
+                            legs = [(snap.account_id, -delta)]
+                        for account_id, leg_delta in legs:
+                            if account_id in balances:
+                                balances[account_id] = balances[account_id] + leg_delta
                     next_due = advance_date(next_due, snap.frequency)
                 new_queue.append((snap, next_due, remaining))
             recurring_queue = new_queue
@@ -741,6 +746,7 @@ async def build_world_state(
             next_due_date=r.next_due_date,
             category_id=r.category_id,
             remaining=remaining_occurrences(r),
+            to_account_id=r.to_account_id,
         )
         for r in recurring_rows
     ]

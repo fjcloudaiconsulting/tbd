@@ -75,7 +75,8 @@ def _txn_type_compatible(cat_type: CategoryType, tx_type: TransactionType) -> bo
 
 
 def _recurring_type_compatible(cat_type: CategoryType, recurring_type: str) -> bool:
-    """RecurringTransaction.type is a plain string Enum (`income`/`expense`)."""
+    """RecurringTransaction.type is a plain string Enum (`income`/`expense`/
+    `transfer`). A transfer takes BOTH only, as its legs share the category."""
     if cat_type == CategoryType.BOTH:
         return True
     if recurring_type == "income":
@@ -130,13 +131,14 @@ async def _count_incompatible_for_category(
         RecurringTransaction.org_id == org_id,
         RecurringTransaction.category_id == category_id,
     ]
+    # TBD-600: a transfer template is incompatible with any one-sided type.
     if new_type == CategoryType.EXPENSE:
-        rec_filters.append(RecurringTransaction.type == "income")
+        rec_filters.append(RecurringTransaction.type.in_(("income", "transfer")))
         rec_count = await db.scalar(
             select(func.count()).select_from(RecurringTransaction).where(*rec_filters)
         ) or 0
     elif new_type == CategoryType.INCOME:
-        rec_filters.append(RecurringTransaction.type == "expense")
+        rec_filters.append(RecurringTransaction.type.in_(("expense", "transfer")))
         rec_count = await db.scalar(
             select(func.count()).select_from(RecurringTransaction).where(*rec_filters)
         ) or 0
@@ -355,6 +357,17 @@ async def _dependent_breakdown(
             RecurringTransaction.type == "expense",
         )
     ) or 0
+    # TBD-600: a transfer template counts on BOTH sides, as its legs do (one
+    # income, one expense row), so it needs a BOTH migration target.
+    rec_transfer = await db.scalar(
+        select(func.count())
+        .select_from(RecurringTransaction)
+        .where(
+            RecurringTransaction.org_id == org_id,
+            RecurringTransaction.category_id == category_id,
+            RecurringTransaction.type == "transfer",
+        )
+    ) or 0
     fpi_income = await db.scalar(
         select(func.count())
         .select_from(ForecastPlanItem)
@@ -374,13 +387,13 @@ async def _dependent_breakdown(
         )
     ) or 0
 
-    income = tx_income + rec_income + fpi_income
-    expense = tx_expense + rec_expense + fpi_expense
+    income = tx_income + rec_income + rec_transfer + fpi_income
+    expense = tx_expense + rec_expense + rec_transfer + fpi_expense
     return _DependentBreakdown(
         income_count=income,
         expense_count=expense,
         transaction_count=tx_income + tx_expense,
-        recurring_count=rec_income + rec_expense,
+        recurring_count=rec_income + rec_expense + rec_transfer,
         forecast_item_count=fpi_income + fpi_expense,
     )
 

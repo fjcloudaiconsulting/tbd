@@ -41,12 +41,13 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.models.account import Account, AccountType
 from app.models.cc_cycle_payment import CcCyclePayment
+from app.models.recurring import RecurringTransaction
 
 
 _CC = "credit_card"
@@ -407,6 +408,33 @@ async def apply_type_change_in_session(
         raise HTTPException(status_code=422, detail="Invalid account type")
     target_slug = target_type.slug
     type_changed = target_type_id != old_type_id
+
+    # TBD-600: a recurring transfer cannot use a card or a loan yet
+    # (``recurring_service._validate_transfer_accounts``), so an account one
+    # uses cannot BECOME one either: its legs would enter the card and loan
+    # payment synthesis and the series would no longer be editable. Any
+    # transfer template counts, paused ones too: a resume does not re-check
+    # its accounts.
+    if type_changed and target_slug in _LIABILITY:
+        in_transfer = await svc_db.scalar(
+            select(RecurringTransaction.id).where(
+                RecurringTransaction.org_id == org_id,
+                RecurringTransaction.type == "transfer",
+                or_(
+                    RecurringTransaction.account_id == account_id,
+                    RecurringTransaction.to_account_id == account_id,
+                ),
+            ).limit(1)
+        )
+        if in_transfer is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This account is used by a recurring transfer, which cannot use a "
+                    "credit card or loan account. Delete that recurring transfer or "
+                    "change its accounts first."
+                ),
+            )
 
     # Validate the cascade against the post-lock snapshot.
     validate_close_day_cascade(

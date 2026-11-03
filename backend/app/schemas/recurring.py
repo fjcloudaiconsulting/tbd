@@ -16,7 +16,11 @@ class RecurringCreate(BaseModel):
     category_id: int
     description: str = Field(max_length=RECURRING_DESCRIPTION_MAX_LENGTH)
     amount: Money = Field(gt=0)
-    type: Literal["income", "expense"]
+    type: Literal["income", "expense", "transfer"]
+    # TBD-600: required iff ``type`` is transfer, and then a different account
+    # of the same org and currency. Checked in ``recurring_service`` (400):
+    # the org and currency rules need the database.
+    to_account_id: Optional[int] = None
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_due_date: datetime.date
     auto_settle: bool = False
@@ -30,6 +34,10 @@ class RecurringCreate(BaseModel):
 
 class RecurringUpdate(BaseModel):
     account_id: Optional[int] = None
+    # TBD-600: a transfer series only. There is no way to change a template
+    # into or out of a transfer (``type`` below stays income/expense, and the
+    # service refuses a type change on a transfer): its rows are pairs.
+    to_account_id: Optional[int] = None
     category_id: Optional[int] = None
     description: Optional[str] = Field(default=None, max_length=RECURRING_DESCRIPTION_MAX_LENGTH)
     amount: Optional[Money] = Field(default=None, gt=0)
@@ -58,7 +66,9 @@ class RecurringResponse(BaseModel):
     category_name: str = ""
     description: str
     amount: Decimal
-    type: Literal["income", "expense"]
+    type: Literal["income", "expense", "transfer"]
+    to_account_id: Optional[int] = None
+    to_account_name: str = ""
     frequency: str
     next_due_date: datetime.date
     auto_settle: bool

@@ -52,6 +52,18 @@ function instalmentLabel(r: RecurringTransaction): string | null {
   return `${r.occurrences_elapsed} of ${r.occurrence_count}`;
 }
 
+// TBD-600: a transfer is neither income nor expense, so it carries no sign
+// and no gain/loss colour, and its account reads "From -> To".
+function signOf(r: RecurringTransaction): string {
+  return r.type === "income" ? "+" : r.type === "expense" ? "-" : "";
+}
+function amountTone(r: RecurringTransaction): string {
+  return r.type === "income" ? "text-success" : r.type === "expense" ? "text-danger" : "text-text-secondary";
+}
+function accountLabel(r: RecurringTransaction): string {
+  return r.type === "transfer" ? `${r.account_name} → ${r.to_account_name ?? ""}` : r.account_name;
+}
+
 // Sort field identifiers for the recurring tables.
 type SortField =
   | "description"
@@ -164,9 +176,9 @@ function searchMatcher(
 ): (r: RecurringTransaction) => boolean {
   const amount = amountsHidden ? null : parseSearchAmount(query);
   return (r) => {
-    const sign = r.type === "income" ? "+" : "-";
+    const sign = signOf(r);
     if (
-      [r.description, r.account_name, r.category_name, `${sign}${money(r.amount)}`]
+      [r.description, accountLabel(r), r.category_name, `${sign}${money(r.amount)}`]
         .some((text) => text != null && text.toLowerCase().includes(query))
     ) {
       return true;
@@ -376,7 +388,7 @@ function RecurringTable({
                     </span>
                   )}
                 </td>
-                <td className="px-3 py-3 text-sm text-text-secondary">{r.account_name}</td>
+                <td className="px-3 py-3 text-sm text-text-secondary">{accountLabel(r)}</td>
                 <td className="px-3 py-3 text-sm text-text-secondary">{r.category_name}</td>
                 <td className="px-3 py-3 text-xs text-text-muted">
                   {FREQ_LABELS[r.frequency] ?? r.frequency}
@@ -385,9 +397,9 @@ function RecurringTable({
                   {r.next_due_date}
                 </td>
                 <td
-                  className={`px-3 py-3 text-right text-sm font-medium tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}
+                  className={`px-3 py-3 text-right text-sm font-medium tabular-nums ${amountTone(r)}`}
                 >
-                  {r.type === "income" ? "+" : "-"}
+                  {signOf(r)}
                   {money(r.amount)}
                 </td>
                 <td className="px-3 py-3">
@@ -478,7 +490,7 @@ function RecurringTable({
                   )}
                 </div>
                 <div className="mt-0.5 text-xs text-text-muted tabular-nums">
-                  Next: {r.next_due_date} &middot; {r.account_name}
+                  Next: {r.next_due_date} &middot; {accountLabel(r)}
                   {instalmentLabel(r) && (
                     <>
                       {" "}
@@ -491,9 +503,9 @@ function RecurringTable({
                 </div>
               </div>
               <div
-                className={`shrink-0 text-right text-sm font-semibold tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}
+                className={`shrink-0 text-right text-sm font-semibold tabular-nums ${amountTone(r)}`}
               >
-                {r.type === "income" ? "+" : "-"}
+                {signOf(r)}
                 {money(r.amount)}
               </div>
             </div>
@@ -610,7 +622,7 @@ function RecurringPage() {
   const money = useMoney();
   const amountsHidden = useBalancesHidden();
   const signed = (r: RecurringTransaction, value: number | string) =>
-    `${r.type === "income" ? "+" : "-"}${money(value)}`;
+    `${signOf(r)}${money(value)}`;
 
   // TBD-761. Sort lives here, not in each table, so the one Reset reaches both.
   const activeTable = useTableState<SortField>({
@@ -928,7 +940,11 @@ function RecurringPage() {
             emptyLabel="No active recurring transactions."
             onStop={handleStop}
             onSkipNext={setConfirmSkip}
-            onEditNext={(item) => setEditNext({ item, amount: String(item.amount), scope: null })}
+            onEditNext={(item) =>
+              // TBD-600: a transfer occurrence is a linked pair, which the server
+              // never applies to future occurrences, so it is this one only.
+              setEditNext({ item, amount: String(item.amount), scope: item.type === "transfer" ? "this" : null })
+            }
             onEditSeries={setEditSeries}
             onDelete={handleDelete}
             testId="recurring-active-table"
@@ -1015,13 +1031,15 @@ function RecurringPage() {
                 {editNextError}
               </p>
             )}
-            <SeriesScopeChoice
-              idSuffix="edit-next"
-              legend="Apply the new amount to"
-              stacked
-              value={editNext.scope}
-              onChange={(scope) => setEditNext({ ...editNext, scope })}
-            />
+            {editNext.item.type !== "transfer" && (
+              <SeriesScopeChoice
+                idSuffix="edit-next"
+                legend="Apply the new amount to"
+                stacked
+                value={editNext.scope}
+                onChange={(scope) => setEditNext({ ...editNext, scope })}
+              />
+            )}
           </div>
         )}
       </ConfirmModal>
