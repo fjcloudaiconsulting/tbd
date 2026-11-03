@@ -85,6 +85,7 @@ async def test_round_events_per_dispatched_round_only(
     _as(factory, w["user"])
     spin = lambda n: _resp([_call("accounts_list", cid=f"c{n}")])  # noqa: E731
 
+    _budget(monkeypatch, 1_000_000)  # the round cap ends this turn, not the budget
     provider(spin)
     seq, done = await _run(client, logs)
     assert seq == [(i, None) for i in range(1, 7)]

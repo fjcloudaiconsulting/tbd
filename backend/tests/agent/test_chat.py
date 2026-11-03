@@ -300,10 +300,13 @@ async def test_read_round_transcript_own_session_and_held_lock(
     assert await _turns(factory, w["org"]) == 1
 
 
-async def test_round_limit_is_six_dispatches(factory, w, client, provider):
+async def test_round_limit_is_six_dispatches(factory, w, client, provider, monkeypatch):
     """FENCE F-L1. Wrong implementation: a loop bounded by the client
     transcript, or not at all."""
     _as(factory, w["user"])
+    # Six rounds of the full tool list exceed the default turn budget: this
+    # fence is the round cap, so the budget must not end the turn first.
+    _budget(monkeypatch, 1_000_000)
     adapter = provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
     r = await client.post(URL, json=ASK)
     ev = _events(r.text)
