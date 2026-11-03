@@ -28,7 +28,6 @@ the per-token call limit, TBD-561) runs just above every admission.
 """
 from __future__ import annotations
 
-import dataclasses
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -135,6 +134,12 @@ _DOMAIN_ROUTES: dict[str, str] = {
     "/api/v1/settings/billing-periods": "recurring_and_billing",
     "/api/v1/transactions": "transactions",
 }
+
+
+def _route_domain(path: str) -> str | None:
+    return next(
+        (d for p, d in _DOMAIN_ROUTES.items() if path == p or path.startswith(p + "/")), None,
+    )
 
 
 class ToolError(Exception):
@@ -255,14 +260,12 @@ class ToolSpec:
     # it from ``mirrors_route`` (``_DOMAIN_ROUTES``).
     domain: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.domain is None:  # frozen: the documented way to set a derived field
+            object.__setattr__(self, "domain", _route_domain(self.mirrors_route[1]))
+
 
 _TOOLS: dict[str, ToolSpec] = {}
-
-
-def _route_domain(path: str) -> str | None:
-    return next(
-        (d for p, d in _DOMAIN_ROUTES.items() if path == p or path.startswith(p + "/")), None,
-    )
 
 
 def _never_exposable(path: str) -> bool:
@@ -332,8 +335,6 @@ def register(spec: ToolSpec) -> ToolSpec:
             raise ToolRegistrationError(
                 f"{spec.name}: a delete is never 'write'; declare it 'sensitive'"
             )
-    if spec.domain is None:
-        spec = dataclasses.replace(spec, domain=_route_domain(path))
     if spec.risk != "read" and spec.domain is None:
         raise ToolRegistrationError(f"{spec.name}: a {spec.risk} tool needs a domain")
     _TOOLS[spec.name] = spec
