@@ -282,10 +282,8 @@ export default function EditSeriesDialog({ item, onCancel, onSaved }: Props) {
           countError={countError}
         />
         <p className="text-xs text-text-muted">
-          {isTransfer
-            ? "Transfers already created keep their accounts, name and amount; edit them on the Transactions page. "
-            : "Pending occurrences already created follow a new name, category, account or amount, unless you changed them by hand. "}
-          Paid occurrences never change. A new frequency,
+          Pending occurrences already created follow a new name, category, account or amount,
+          unless you changed them by hand. Paid occurrences never change. A new frequency,
           next due date or number of occurrences applies from the next occurrence:
           occurrences already created keep their dates, so skip or delete any that no longer
           apply. To switch between income and expense, stop this series and create a new one.

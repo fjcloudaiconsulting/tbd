@@ -30,7 +30,19 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.scenario import Scenario, ScenarioType
 from app.schemas.recurring import RecurringCreate, RecurringUpdate
-from app.schemas.reports_query import SankeyQuery
+from app.reports import sources as report_sources
+from app.schemas.reports_query import (
+    Aggregation,
+    Dataset,
+    Dimension,
+    Filter,
+    FilterField,
+    FilterOp,
+    Measure,
+    MeasureField,
+    ReportsQuery,
+    SankeyQuery,
+)
 from app.schemas.transaction import TransactionUpdate
 from app.services import (
     account_balance_forecast_service,
@@ -332,9 +344,12 @@ async def test_auto_settle_settles_both_legs(db, seed):
     assert all(t.status == TransactionStatus.PENDING for t in await _rows(db, seed["org_id"]))
     before = await _balances(db, seed)
 
-    await recurring_service.generate_due_transactions(
+    res = await recurring_service.generate_due_transactions(
         db, seed["org_id"], today=datetime.date(2026, 7, 20)
     )
+    # One occurrence settled, not two rows: the scheduler's numbers count
+    # occurrences, as ``created_settled`` does.
+    assert res["settled"] == 1
     rows = [t for t in await _rows(db, seed["org_id"]) if t.date == datetime.date(2026, 7, 20)]
     assert [t.status for t in rows] == [TransactionStatus.SETTLED] * 2
     after = await _balances(db, seed)
@@ -411,3 +426,139 @@ async def test_transfer_template_needs_a_both_migration_target(db, seed):
     assert await category_service._count_incompatible_for_category(
         db, seed["org_id"], seed["transfer"], CategoryType.EXPENSE
     ) == (0, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_occurrence_count_exhaustion_stops_a_transfer_series(db, seed):
+    r = await _create(db, seed, frequency="weekly", next_due_date=datetime.date(2026, 7, 2),
+                      occurrence_count=2)
+    await recurring_service.generate_due_transactions(
+        db, seed["org_id"], today=datetime.date(2026, 7, 31)
+    )
+    _assert_pairs(await _rows(db, seed["org_id"]), seed, r.id, 2)
+
+
+async def _pending_pair(db, seed, **overrides) -> tuple[int, Transaction, Transaction]:
+    """A transfer template with one PENDING pair materialised ahead of the
+    wall clock (stop/delete only remove rows dated today or later)."""
+    today = datetime.date.today()
+    due = today + datetime.timedelta(days=10)
+    r = await _create(db, seed, next_due_date=due, **overrides)
+    r_id = r.id
+    await recurring_service.materialise_next(
+        db, seed["org_id"], r_id, occurrence_date=due, skipped=False, today=today
+    )
+    rows = await _rows(db, seed["org_id"])
+    exp = next(t for t in rows if t.type == TransactionType.EXPENSE)
+    inc = next(t for t in rows if t.type == TransactionType.INCOME)
+    return r_id, exp, inc
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["stop", "delete"])
+async def test_stop_and_delete_keep_a_half_settled_pair_whole(db, seed, action):
+    """The user settles the source leg by hand, then stops the series. The
+    still-pending destination leg is kept, so the settled leg stays a transfer
+    leg: deleting it would null the link and make a reportable expense."""
+    r_id, exp, _ = await _pending_pair(db, seed)
+    await transaction_service.update_transaction(
+        db, seed["org_id"], exp.id, TransactionUpdate(status="settled", settled_date=exp.date)
+    )
+    balances = await _balances(db, seed)
+    sankey = await build_sankey(db, org_id=seed["org_id"], query=SankeyQuery(filters=[]))
+
+    if action == "stop":
+        res = await recurring_service.stop_recurring(db, seed["org_id"], r_id)
+    else:
+        (await db.get(RecurringTransaction, r_id)).is_active = False
+        await db.commit()
+        res = await recurring_service.delete_recurring(db, seed["org_id"], r_id)
+
+    assert (res.removed, res.demoted_ids) == (0, [])
+    rows = await _rows(db, seed["org_id"])
+    assert len(rows) == 2
+    a, b = rows
+    assert (a.linked_transaction_id, b.linked_transaction_id) == (b.id, a.id)
+    assert await _balances(db, seed) == balances
+    assert (await build_sankey(
+        db, org_id=seed["org_id"], query=SankeyQuery(filters=[])
+    )).links == sankey.links
+
+
+@pytest.mark.asyncio
+async def test_template_edit_moves_its_pending_pairs(db, seed):
+    """TBD-756/760 for transfers: amount, name and category on both legs, the
+    source on the expense leg and the destination on the income leg."""
+    r_id, exp, inc = await _pending_pair(db, seed)
+    at_id = (await db.get(Account, seed["main"])).account_type_id
+    third = Account(org_id=seed["org_id"], name="Third", account_type_id=at_id,
+                    balance=Decimal("0"), currency="EUR")
+    fourth = Account(org_id=seed["org_id"], name="Fourth", account_type_id=at_id,
+                     balance=Decimal("0"), currency="EUR")
+    goals = Category(org_id=seed["org_id"], name="Goals", slug="goals", type=CategoryType.BOTH)
+    db.add_all([third, fourth, goals])
+    await db.commit()
+    balances = await _balances(db, seed)
+
+    await recurring_service.update_recurring(
+        db, seed["org_id"], r_id,
+        RecurringUpdate(amount=Decimal("275.00"), description="Pension", category_id=goals.id,
+                        account_id=third.id, to_account_id=fourth.id),
+        today=TODAY,
+    )
+    exp, inc = await db.get(Transaction, exp.id, populate_existing=True), await db.get(
+        Transaction, inc.id, populate_existing=True
+    )
+    for leg in (exp, inc):
+        assert (leg.amount, leg.description, leg.category_id) == (
+            Decimal("275.00"), "Pension", goals.id
+        )
+        assert leg.status == TransactionStatus.PENDING
+    assert (exp.account_id, inc.account_id) == (third.id, fourth.id)
+    assert (exp.linked_transaction_id, inc.linked_transaction_id) == (inc.id, exp.id)
+    assert await _balances(db, seed) == balances
+
+
+@pytest.mark.asyncio
+async def test_template_edit_leaves_a_hand_edited_pair(db, seed):
+    r_id, exp, inc = await _pending_pair(db, seed)
+    # Editing one leg's amount mirrors it onto the partner.
+    await transaction_service.update_transaction(
+        db, seed["org_id"], exp.id, TransactionUpdate(amount=Decimal("90.00"))
+    )
+    await recurring_service.update_recurring(
+        db, seed["org_id"], r_id, RecurringUpdate(amount=Decimal("300.00")), today=TODAY
+    )
+    for leg_id in (exp.id, inc.id):
+        leg = await db.get(Transaction, leg_id, populate_existing=True)
+        assert leg.amount == Decimal("90.00")
+
+
+@pytest.mark.asyncio
+async def test_recurring_report_counts_transfers_only_when_asked(db, seed):
+    await _create(db, seed)
+    await _create(db, seed, type="expense", category_id=seed["food"], to_account_id=None,
+                  amount=Decimal("100.00"), description="Rent")
+    src = report_sources.get_source("recurring")
+    total = Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT)
+
+    async def run(dimensions=(), filters=()):
+        q = ReportsQuery(dataset=Dataset.RECURRING, measure=total,
+                         dimensions=list(dimensions), filters=list(filters))
+        src.validate(q)
+        rows, _ = await src.build_rows(db, seed["org_id"], q)
+        return rows
+
+    transfers = Filter(field=FilterField.TXN_TYPE, op=FilterOp.IN, value=["transfer"])
+    savings = Filter(field=FilterField.ACCOUNT_ID, op=FilterOp.IN, value=[seed["savings"]])
+    # Unfiltered: the expense only, a transfer is not spending.
+    assert [r["value"] for r in await run()] == [100.0]
+    assert [r["txn_type"] for r in await run([Dimension.TXN_TYPE])] == ["expense"]
+    # Asked for, by account: on both of its accounts.
+    by_account = await run([Dimension.ACCOUNT], [transfers])
+    assert sorted((r["account"], r["value"]) for r in by_account) == [
+        ("Main", 250.0), ("Savings", 250.0)
+    ]
+    # The destination account matches the account filter, once.
+    assert [r["value"] for r in await run([], [transfers, savings])] == [250.0]
+    assert [r["value"] for r in await run([Dimension.ACCOUNT], [transfers, savings])] == [250.0]

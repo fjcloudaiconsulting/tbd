@@ -139,6 +139,8 @@ describe("recurring page: transfer series (TBD-600)", () => {
     const to = within(dialog).getByLabelText("To account") as HTMLSelectElement;
     expect(to.value).toBe("2");
     expect(within(dialog).getByLabelText("From account")).toBeInTheDocument();
+    // Pending pairs follow a template edit, as other series do.
+    expect(dialog.textContent).toContain("Pending occurrences already created follow");
     fireEvent.focus(within(dialog).getByLabelText("Category"));
     const categories = within(within(dialog).getByRole("listbox"))
       .getAllByRole("option").map((o) => o.textContent);

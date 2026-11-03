@@ -81,6 +81,19 @@ LIABILITY_SLUGS: frozenset[str] = frozenset({"credit_card", "loan"})
 LOW_BALANCE_THRESHOLD = Decimal("0")
 
 
+def recurring_account_deltas(r) -> list[tuple[int, Decimal]]:
+    """``(account_id, signed delta)`` per account one occurrence of ``r`` moves.
+
+    TBD-600: a transfer moves two accounts, out of ``account_id`` and into
+    ``to_account_id``, exactly as the pair generation writes; income and
+    expense move ``account_id`` alone.
+    """
+    amount = Decimal(str(r.amount))
+    if r.type == "transfer":
+        return [(r.account_id, -amount), (r.to_account_id, amount)]
+    return [(r.account_id, amount if r.type == "income" else -amount)]
+
+
 async def compute_account_balance_forecast(
     db: AsyncSession,
     org_id: int,
@@ -419,17 +432,11 @@ async def compute_account_balance_forecast(
     # the CC/loan lines, which also carry their own resolved due date); the
     # floor is made visible instead by ``series_start`` on the response.
     #
-    # TBD-600: a transfer series moves both sides, out of ``account_id`` and
-    # into ``to_account_id``, as the pair generation will write.
+    # TBD-600: a transfer series moves both sides (``recurring_account_deltas``).
     recurring_lines_by_account: dict[int, list[dict]] = {}
     for r in recurring_items:
-        amount = Decimal(str(r.amount))
-        if r.type == "transfer":
-            legs = [(r.account_id, -amount), (r.to_account_id, amount)]
-        else:
-            legs = [(r.account_id, amount if r.type == "income" else -amount)]
         # A leg on an inactive/unknown account has no row to move.
-        legs = [(aid, delta) for aid, delta in legs if aid in accounts_by_id]
+        legs = [(aid, delta) for aid, delta in recurring_account_deltas(r) if aid in accounts_by_id]
         if not legs:
             continue
         for d in occurrences_in_window(

@@ -8,9 +8,9 @@ import dataclasses
 import datetime
 
 import logging
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.models.account import Account
 from app.models.recurring import Frequency, RecurringTransaction
@@ -24,7 +24,11 @@ from app.services.recurring_filters import (
     active_series_filter,
     has_remaining_occurrences,
 )
-from app.services.transaction_filters import non_reverted_transaction_filter
+from app.services.transaction_filters import (
+    REVERTED_RECONCILIATION_STATES,
+    is_reciprocal_pair,
+    non_reverted_transaction_filter,
+)
 from app.services.transaction_service import (
     _link_pair,
     _load_opts as _tx_load_opts,
@@ -349,6 +353,7 @@ async def update_recurring(
     old_description = r.description
     old_category_id = r.category_id
     old_account_id = r.account_id
+    old_to_account_id = r.to_account_id
     old_next_due = r.next_due_date
 
     if body.account_id is not None:
@@ -485,6 +490,16 @@ async def update_recurring(
             account_was=old_account_id,
             amount=r.amount if amount_changed else None, amount_was=old_amount,
         )
+    # TBD-600: that sync skips linked legs, so a transfer's pairs take their own.
+    if r.type == "transfer" and (
+        amount_changed or desc_changed or acct_changed
+        or r.category_id != old_category_id or r.to_account_id != old_to_account_id
+    ):
+        await _sync_pending_transfer_pairs(
+            db, org_id, r, amount_was=old_amount, description_was=old_description,
+            category_was=old_category_id, account_was=old_account_id,
+            to_account_was=old_to_account_id,
+        )
 
     await db.commit()
 
@@ -492,6 +507,64 @@ async def update_recurring(
         select(RecurringTransaction).options(*_load_opts()).where(RecurringTransaction.id == r.id)
     )
     return result.scalar_one()
+
+
+async def _sync_pending_transfer_pairs(
+    db: AsyncSession, org_id: int, r: RecurringTransaction, *,
+    amount_was, description_was: str, category_was: int,
+    account_was: int, to_account_was: int | None,
+) -> None:
+    """Move a transfer template's edit onto its PENDING pairs (TBD-600).
+
+    The series sync (TBD-756/760, ``_propagate_fields_to_series``) skips
+    linked legs because a bulk write cannot keep a pair's invariants; this
+    writes both legs of each pair together. A field follows only while it
+    still holds the old template value, so a leg changed by hand keeps its
+    own: amount and category per pair (both legs share them), the name per
+    leg, the source account on the expense leg and the destination on the
+    income leg, never onto the partner's account. Pending rows only, so no
+    balance logic; currency and the ``both`` category were validated on the
+    template.
+
+    Skipped, as ``_series_sync_targets`` skips them: reverted pairs, and legs
+    a bank row was reconcile-matched against (a referrer other than the
+    partner). Lock order template -> rows, as the other series writes.
+    """
+    referrer = aliased(Transaction)
+    legs = (await db.execute(
+        select(Transaction)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.recurring_id == r.id,
+            Transaction.status == TransactionStatus.PENDING,
+            Transaction.linked_transaction_id.is_not(None),
+            Transaction.reconciliation_state.not_in(REVERTED_RECONCILIATION_STATES),
+            ~exists().where(
+                referrer.org_id == org_id,
+                referrer.linked_transaction_id == Transaction.id,
+                referrer.id != Transaction.linked_transaction_id,
+            ),
+        )
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    by_id = {t.id: t for t in legs}
+    for exp in legs:
+        inc = by_id.get(exp.linked_transaction_id)
+        if exp.type != TransactionType.EXPENSE or not is_reciprocal_pair(exp, inc):
+            continue
+        if exp.amount == inc.amount == amount_was:
+            exp.amount = inc.amount = r.amount
+        if exp.category_id == inc.category_id == category_was:
+            exp.category_id = inc.category_id = r.category_id
+        for leg in (exp, inc):
+            if leg.description == description_was:
+                leg.description = r.description
+        if exp.account_id == account_was and r.account_id != inc.account_id:
+            exp.account_id = r.account_id
+        if inc.account_id == to_account_was and r.to_account_id != exp.account_id:
+            inc.account_id = r.to_account_id
 
 
 async def _check_frontier_clears_series(
@@ -778,6 +851,18 @@ async def _remove_pending_transactions(
         if r.recurring_id == recurring_id
         and r.status == TransactionStatus.PENDING
         and r.date >= today
+    }
+    # TBD-600: never split a transfer pair. A pending leg whose partner
+    # survives (settled by hand, or past-dated) is KEPT: deleting it would let
+    # the FK null the survivor's link and turn a settled transfer leg into a
+    # reportable income/expense row. Kept, the pair stays a transfer and the
+    # user can still settle or delete it whole.
+    doomed -= {
+        i for i in doomed
+        if is_reciprocal_pair(
+            locked_rows[i], locked_rows.get(locked_rows[i].linked_transaction_id)
+        )
+        and locked_rows[i].linked_transaction_id not in doomed
     }
     if not doomed:
         return PendingRemovalResult(removed=0, demoted_ids=[])
@@ -1103,7 +1188,13 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
             tx.settled_date = tx.date
             acct = await get_account_for_update(db, tx.account_id, org_id)
             apply_balance(acct, tx.amount, tx.type)
-    return len(rows)
+    # Occurrences, not rows (TBD-600): a transfer pair settled together counts
+    # once, as generation's own ``created_settled`` does.
+    ids = {tx.id for tx in rows}
+    return sum(
+        1 for tx in rows
+        if not (tx.type == TransactionType.INCOME and tx.linked_transaction_id in ids)
+    )
 
 
 async def generate_due_transactions(
