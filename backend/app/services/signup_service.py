@@ -7,8 +7,24 @@ address only, so they hold identically on every path.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import Literal
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app import state_db
-from app.security import signup_mail_key
+from app.models.user import User
+from app.security import create_email_verification_token, create_signup_token, signup_mail_key
+from app.services.email_service import (
+    send_existing_account_signup_email,
+    send_legacy_verification_email,
+    send_signup_link_email,
+)
+from app.services.user_service import normalize_email
+
+SignupPath = Literal["new", "existing", "legacy_unverified", "inactive", "capped"]
 
 # ``used_tokens.scope`` is ``ascii_id(32)``: a longer scope fails every request
 # on MySQL strict mode while SQLite accepts it. The per-address key goes in the
@@ -30,3 +46,32 @@ async def claim_mail_slot(email: str) -> bool:
         if await state_db.claim_token(MAIL_CAP_24H_SCOPE, f"{key}:{slot}", 24 * 60 * 60):
             return True
     return False
+
+
+async def plan_start(
+    db: AsyncSession, email: str
+) -> tuple[SignupPath, Callable[[], Awaitable[bool]] | None]:
+    """Decide what step 1 mails to ``email``: the path (for the audit row) and
+    the zero-argument send the route queues, or None when nothing goes out.
+
+    The caps are claimed before the account is looked up, so a capped address
+    reads no state and every path spends the same claims.
+    """
+    email = normalize_email(email)
+    if not await claim_mail_slot(email):
+        return "capped", None
+    row = (
+        await db.execute(
+            select(User.id, User.email, User.is_active, User.email_verified).where(
+                User.email == email
+            )
+        )
+    ).first()
+    if row is None:
+        return "new", partial(send_signup_link_email, email, create_signup_token(email))
+    if not row.is_active:
+        return "inactive", None
+    if row.email_verified:
+        return "existing", partial(send_existing_account_signup_email, row.email)
+    token = create_email_verification_token(row.id, row.email)
+    return "legacy_unverified", partial(send_legacy_verification_email, row.email, token)
