@@ -963,10 +963,15 @@ def turnlog(monkeypatch):
     return log
 
 
-def _all_schemas():
-    return [{"type": "function", "function": {
-        "name": s.name, "description": s.description, "parameters": s.args.model_json_schema(),
-    }} for s in registry.all_tools()]
+def _largest_round_schemas():
+    """The costliest tool list one round can send (TBD-788): every read, the
+    largest domain for any role, and ``load_tools``."""
+    def round_of(domain):
+        return [*({"type": "function", "function": {
+            "name": s.name, "description": s.description, "parameters": s.args.model_json_schema(),
+        }} for s in registry.all_tools() if s.risk == "read" or s.domain == domain),
+            chat._load_tools_schema()]
+    return max(map(round_of, registry.domains()), key=lambda t: chat._estimate([], t))
 
 
 async def test_message_cap_is_on_the_last_message_only(factory, w, client, provider, monkeypatch):
@@ -1254,7 +1259,7 @@ def test_limit_defaults_fit_every_plan():
     from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS, TURN_INPUT_TOKENS_BY_PLAN_SLUG
 
     assert (chat.MAX_MESSAGE_CHARS, chat.MAX_TOOL_RESULT_CHARS) == (7000, 40_000)
-    schemas = _all_schemas()
+    schemas = _largest_round_schemas()
     for budget in {DEFAULT_TURN_INPUT_TOKENS, *TURN_INPUT_TOKENS_BY_PLAN_SLUG.values()}:
         ascii_ = chat._estimate(chat.opening([_msg("user", "a" * 7000)]), schemas)
         emoji = chat._estimate(chat.opening([_msg("user", "\U0001F600" * 7000)]), schemas)
