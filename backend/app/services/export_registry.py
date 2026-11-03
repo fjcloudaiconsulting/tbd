@@ -43,7 +43,7 @@ from typing import Union
 # Bumped whenever a disposition, a scope, or a redact set changes. Recorded
 # in the export header and in the ``org.data.exported`` audit row so an
 # artifact handed to a data subject can be tied to the rules that built it.
-REGISTRY_VERSION = 3
+REGISTRY_VERSION = 4
 
 
 # ── Scoping ────────────────────────────────────────────────────────────────
@@ -320,6 +320,7 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     ),
     "org_settings": Include(OrgColumn(), "settings the subject chose"),
     "organizations": Include(OrgColumn("id"), "the org record itself"),
+    "plan_goals": Include(OrgColumn(), "goals inside the plans the subject built"),
     "plans": Exclude("platform-global price list"),
     "platform_ai_models": Exclude("platform-global catalog, no org data"),
     "platform_ai_spend": Exclude("platform-global operational counter, no org data"),

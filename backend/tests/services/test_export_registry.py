@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 61
-    assert len(EXPORT_DISPOSITION) == 61
+    assert len(Base.metadata.tables) == 62
+    assert len(EXPORT_DISPOSITION) == 62
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════
@@ -212,7 +212,7 @@ async def _seed_org(db: AsyncSession, *, marker: str) -> dict:
     from app.models.org_ai_routing import OrgAIDefaultRouting, OrgAIFeatureRouting
     from app.models.recurring import Frequency, RecurringTransaction
     from app.models.report import Report, ReportVersion, ReportVisibility
-    from app.models.scenario import Scenario, ScenarioType
+    from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
     from app.models.settings import OrgSetting
     from app.models.subscription import (
         BillingInterval,
@@ -431,14 +431,24 @@ async def _seed_org(db: AsyncSession, *, marker: str) -> dict:
             canvas_filters_json={},
         )
     )
+    scenario = Scenario(
+        org_id=oid,
+        user_id=uid,
+        name=f"SCENARIO-{marker}",
+        scenario_type=ScenarioType.CUSTOM,
+        params_json={"m": f"SCENARIOPARAM-{marker}"},
+        horizon_months=12,
+    )
+    db.add(scenario)
+    await db.flush()
     db.add(
-        Scenario(
+        PlanGoal(
             org_id=oid,
-            user_id=uid,
-            name=f"SCENARIO-{marker}",
-            scenario_type=ScenarioType.CUSTOM,
-            params_json={"m": f"SCENARIOPARAM-{marker}"},
-            horizon_months=12,
+            scenario_id=scenario.id,
+            name=f"GOAL-{marker}",
+            tier=PlanGoalTier.WANT,
+            kind=PlanGoalKind.LUMP,
+            params_json={"m": f"GOALPARAM-{marker}"},
         )
     )
 

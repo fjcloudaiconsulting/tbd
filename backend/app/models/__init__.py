@@ -45,7 +45,14 @@ from app.models.notification import (  # noqa: F401
 )
 from app.models.report import Report, ReportVersion, ReportVisibility  # noqa: F401
 from app.models.dashboard import DashboardLayout  # noqa: F401
-from app.models.scenario import Scenario, ScenarioType  # noqa: F401
+from app.models.scenario import (  # noqa: F401
+    PlanGoal,
+    PlanGoalKind,
+    PlanGoalTier,
+    Scenario,
+    ScenarioStatus,
+    ScenarioType,
+)
 from app.models.org_ai_credential import (  # noqa: F401
     AiProvider,
     OrgAICredential,
@@ -144,7 +151,11 @@ __all__ = [
     "ReportVisibility",
     "DashboardLayout",
     "Scenario",
+    "ScenarioStatus",
     "ScenarioType",
+    "PlanGoal",
+    "PlanGoalKind",
+    "PlanGoalTier",
     "BroadcastStatus",
     "RecipientStatus",
     "EmailBroadcast",

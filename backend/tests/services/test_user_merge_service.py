@@ -588,7 +588,7 @@ async def _seed_owned_rows(db: AsyncSession, org_id: int, user_id: int) -> None:
     from app.models.import_batch import ImportBatch, ImportSourceFormat
     from app.models.notification import Notification, NotificationCategory
     from app.models.report import Report
-    from app.models.scenario import Scenario, ScenarioType
+    from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
 
     atype = AccountType(org_id=org_id, name="Checking", slug="checking", is_system=True)
     db.add(atype)
@@ -612,6 +612,12 @@ async def _seed_owned_rows(db: AsyncSession, org_id: int, user_id: int) -> None:
             title="t", body="b",
         ),
     ])
+    await db.flush()
+    scenario = await db.scalar(select(Scenario).where(Scenario.user_id == user_id))
+    db.add(PlanGoal(
+        org_id=org_id, scenario_id=scenario.id, name="Flights",
+        tier=PlanGoalTier.ESSENTIAL, kind=PlanGoalKind.LUMP,
+    ))
     await db.flush()
 
 
@@ -646,6 +652,11 @@ async def test_merge_moves_restrict_and_cascade_rows_to_target(fk_session_factor
             owners = (await db.execute(select(column))).scalars().all()
             assert owners == [target.id], column
         assert await db.get(User, source.id) is None
+        # plan_goals has no users FK: goals move with their plan.
+        from app.models.scenario import PlanGoal
+        goal_plans = (await db.execute(select(PlanGoal.scenario_id))).scalars().all()
+        assert goal_plans == (await db.execute(select(Scenario.id))).scalars().all()
+        assert len(goal_plans) == 1
 
 
 @pytest.mark.asyncio
