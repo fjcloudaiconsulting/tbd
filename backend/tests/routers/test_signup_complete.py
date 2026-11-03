@@ -279,6 +279,45 @@ async def test_complete_org_name_taken(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_complete_double_click_answers_account_exists_not_org_name(
+    session_factory, monkeypatch
+):
+    """Two clicks race: the second passes the pre-check, then meets the first
+    one's org name. The caller should be told to sign in, not to rename."""
+    await _seed(session_factory, username="first", email="new@example.com")
+    real = auth_module._signup_conflict
+    calls = {"n": 0}
+
+    async def _miss_first(db, email, username):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else await real(db, email, username)
+
+    monkeypatch.setattr(auth_module, "_signup_conflict", _miss_first)
+    with TestClient(_make_app(session_factory)) as client:
+        res = _complete(
+            client, create_signup_token("new@example.com"), username="second", org_name="first Org"
+        )
+    assert res.status_code == 409 and _code(res) == "account_exists", res.text
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_every_default_org_name_taken_is_a_409(session_factory, monkeypatch):
+    """No org name given and every default attempt collides: a retryable 409,
+    never a 500, and the link is not spent."""
+    await _seed(session_factory)
+    monkeypatch.setattr(auth_module, "_default_org_name", lambda username: "seed Org")
+    token = create_signup_token("new@example.com")
+    with TestClient(_make_app(session_factory)) as client:
+        res = _complete(client, token)
+        assert res.status_code == 409, res.text
+        assert res.json()["detail"] == "Registration conflict, please try again"
+        monkeypatch.undo()
+        assert _complete(client, token).status_code == 200
+    assert await _count(session_factory, User) == 2
+
+
+@pytest.mark.asyncio
 async def test_complete_resubmit_after_username_conflict_succeeds(session_factory):
     """Review focus 2: a 409 does not burn the link."""
     await _seed(session_factory, username="taken", email="taken@example.com")

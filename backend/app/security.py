@@ -1,10 +1,10 @@
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import hmac as _hmac
 import secrets
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -270,7 +270,7 @@ SIGNUP_EMAIL_PURPOSE = b"signup-email-v1"
 SIGNUP_MAIL_KEY_PURPOSE = b"signup-mail-v1"
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class SignupClaims:
     email: str
     jti: str
@@ -309,11 +309,25 @@ def decode_signup_token(token: str) -> SignupClaims | None:
     return SignupClaims(email=email, jti=jti, exp=exp)
 
 
+_GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
+
+def _mailbox(email: str) -> str:
+    """The inbox an address delivers to, so ``bob+1@x`` and ``bob+2@x`` (and
+    Gmail's dot variants) share one cap. Only the cap key uses it; the account
+    email is stored as given."""
+    local, _, domain = email.strip().lower().rpartition("@")
+    local = local.split("+", 1)[0]
+    if domain in _GMAIL_DOMAINS:
+        local, domain = local.replace(".", ""), "gmail.com"
+    return f"{local}@{domain}"
+
+
 def signup_mail_key(email: str) -> str:
-    """Keyed digest of an address for the signup mail caps. Keyed, not a plain
-    sha256, which a list of known addresses reverses (TBD-719)."""
+    """Keyed digest of an address's mailbox for the signup mail caps. Keyed,
+    not a plain sha256, which a list of known addresses reverses (TBD-719)."""
     key = derive_hmac_key(SIGNUP_MAIL_KEY_PURPOSE)
-    return _hmac.new(key, email.strip().lower().encode(), hashlib.sha256).hexdigest()
+    return _hmac.new(key, _mailbox(email).encode(), hashlib.sha256).hexdigest()
 
 
 MFA_CHALLENGE_TTL_SECONDS = 5 * 60

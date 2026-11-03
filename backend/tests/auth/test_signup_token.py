@@ -110,3 +110,18 @@ def test_signup_mail_key_is_keyed_and_normalised():
     assert signup_mail_key(" A@B.co ") == signup_mail_key("a@b.co")
     assert signup_mail_key("a@b.co") != hashlib.sha256(b"a@b.co").hexdigest()
     assert len(signup_mail_key("a@b.co")) == 64
+
+
+def test_signup_mail_key_is_per_mailbox():
+    assert signup_mail_key("bob+1@x.co") == signup_mail_key("bob+2@x.co") == signup_mail_key("bob@x.co")
+    assert signup_mail_key("b.o.b@gmail.com") == signup_mail_key("bob+news@googlemail.com")
+    assert signup_mail_key("b.o.b@gmail.com") == signup_mail_key("Bob@Gmail.com")
+    # Dots only collapse at Gmail; other providers treat them as distinct.
+    assert signup_mail_key("b.ob@x.co") != signup_mail_key("bob@x.co")
+    assert signup_mail_key("bob@x.co") != signup_mail_key("bob@y.co")
+
+
+def test_signup_token_keeps_the_address_as_given():
+    """The mailbox form is for the cap only; the account gets the real address."""
+    claims = decode_signup_token(create_signup_token("B.ob+tag@Gmail.com"))
+    assert claims.email == "b.ob+tag@gmail.com"

@@ -668,6 +668,14 @@ def _org_name_taken() -> HTTPException:
     )
 
 
+def _signup_retry() -> HTTPException:
+    # A collision that is gone by the time it is classified; the link is not spent.
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Registration conflict, please try again",
+    )
+
+
 async def _signup_conflict(db: AsyncSession, email: str, username: str) -> HTTPException | None:
     """The 409 a sign-up for ``email`` and ``username`` meets, if any.
 
@@ -721,8 +729,14 @@ async def signup_complete(
 
     try:
         org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
-    except HTTPException as exc:  # the only one it raises: a chosen name is taken
-        raise _org_name_taken() from exc
+    except (HTTPException, IntegrityError) as exc:
+        # HTTPException: a chosen name is taken. IntegrityError: every default
+        # name attempt collided. A parallel complete with the same link (a
+        # double click) also lands here, so account_exists is checked first,
+        # after a rollback so the re-read sees what that request committed.
+        await db.rollback()
+        fallback = _org_name_taken() if isinstance(exc, HTTPException) else _signup_retry()
+        raise (await _signup_conflict(db, claims.email, body.username) or fallback) from exc
     user = User(
         org_id=org.id,
         username=body.username,
@@ -745,10 +759,7 @@ async def signup_complete(
         await subscription_service.create_trial(db, org.id)
     except IntegrityError:
         await db.rollback()
-        raise await _signup_conflict(db, claims.email, body.username) or HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Registration conflict, please try again",
-        )
+        raise await _signup_conflict(db, claims.email, body.username) or _signup_retry()
 
     remaining = max(claims.exp - int(time.time()), 0)
     try:

@@ -80,6 +80,18 @@ async def test_cap_key_is_normalised():
     assert await claim_mail_slot("a@b.co") is False
 
 
+@pytest.mark.asyncio
+async def test_plus_tags_share_one_cap():
+    assert await claim_mail_slot("bob+1@x.co") is True
+    assert await claim_mail_slot("bob+2@x.co") is False
+
+
+@pytest.mark.asyncio
+async def test_gmail_dot_variants_share_one_cap():
+    assert await claim_mail_slot("b.o.b@gmail.com") is True
+    assert await claim_mail_slot("bob@googlemail.com") is False
+
+
 def test_scopes_fit_column():
     assert MAIL_CAP_DAILY == 5
     for scope in (MAIL_CAP_10M_SCOPE, MAIL_CAP_24H_SCOPE):

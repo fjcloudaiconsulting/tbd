@@ -104,7 +104,7 @@ async def test_concurrent_completes_with_one_link_make_one_account(factory):
     codes = sorted(r.status_code for r in results)
     assert codes[0] == 200 and 400 <= codes[1] < 500, [r.text for r in results]
     loser = next(r for r in results if r.status_code != 200)
-    assert loser.json()["detail"]["code"] in ("account_exists", "invalid_signup_token")
+    assert loser.json()["detail"]["code"] == "account_exists", loser.text
     async with factory() as db:
         assert await db.scalar(
             select(func.count()).select_from(User).where(User.email == email)

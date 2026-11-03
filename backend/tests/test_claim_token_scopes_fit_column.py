@@ -3,7 +3,8 @@
 The column is ``ascii_id(32)``. MySQL strict mode refuses a longer value on
 every request while SQLite stores it, so the shards cannot see the defect.
 This scans ``backend/app`` for ``claim_token(...)`` calls and resolves each
-first argument, a string literal or a module-level string constant.
+scope (the first argument or ``scope=``), a string literal or a module-level
+string constant.
 """
 from __future__ import annotations
 
@@ -40,13 +41,15 @@ def _claim_scopes() -> list[tuple[str, int, str]]:
     found: list[tuple[str, int, str]] = []
     for path, tree in trees:
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
+            if not isinstance(node, ast.Call):
                 continue
             callee = node.func
             name = callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", None)
             if name != "claim_token":
                 continue
-            arg = node.args[0]
+            scope_kw = [kw.value for kw in node.keywords if kw.arg == "scope"]
+            assert node.args or scope_kw, f"{path.relative_to(APP)}:{node.lineno}: claim_token without a scope"
+            arg = node.args[0] if node.args else scope_kw[0]
             where = f"{path.relative_to(APP)}:{node.lineno}"
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 found.append((where, node.lineno, arg.value))
@@ -72,3 +75,18 @@ def test_every_claim_token_scope_fits_the_column():
 def test_scan_is_not_vacuous():
     scopes = {s for _, _, s in _claim_scopes()}
     assert {"password_reset", "signup", "signup_mail_10m", "signup_mail_24h"} <= scopes
+
+
+
+def test_keyword_scope_is_read(monkeypatch, tmp_path):
+    """``claim_token(scope=...)`` is checked like a positional scope."""
+    import sys
+
+    long_scope = "s" * 33
+    (tmp_path / "m.py").write_text(
+        'LONG = "' + long_scope + '"\n'
+        'state_db.claim_token(scope="short", token="t", ttl_seconds=1)\n'
+        "state_db.claim_token(token=\"t\", scope=LONG, ttl_seconds=1)\n"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "APP", tmp_path)
+    assert sorted(s for _, _, s in _claim_scopes()) == ["short", long_scope]
