@@ -38,7 +38,8 @@ from sqlalchemy import select, update
 
 from app.agent import registry
 from app.agent.registry import Change, Preview, ToolSpec
-from app.models import Account
+from app.models import Account, AccountType, Organization
+from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.agent_pending_action import AgentPendingAction
 from app.models.base import Base
 from app.models.budget import Budget
@@ -549,6 +550,93 @@ SENSITIVE_SCENARIOS = [
 ]
 
 
+# ── the account tools (TBD-665) ───────────────────────────────────────────
+
+CYCLE_YEAR = datetime.date.today().year + 1  # a future cycle the routes accept
+
+
+def _t(tool, **fields):
+    def build(a):
+        return tool, _resolve(a, fields)
+    return build
+
+
+async def _cc(f, a):
+    """A credit card account (close day 15, zero balance) in its own type."""
+    [a["cc_type"]] = await _ids(f, AccountType(org_id=a["org"], name="Card", slug="credit_card"))
+    [a["cc"]] = await _ids(f, Account(
+        org_id=a["org"], name="Card", account_type_id=a["cc_type"], balance=Decimal("0.00"),
+        currency="EUR", is_default=False, close_day=15,
+    ))
+
+
+async def _cycle_paid(f, a):
+    await _add(f, CcCyclePayment(account_id=a["cc"], period_anchor_year=CYCLE_YEAR,
+                                 period_anchor_month=6, amount=Decimal("80.00")))
+
+
+async def _doomed(f, a):
+    """A zero-balance account the card is paid from, holding a cycle payment."""
+    [a["old"]] = await _ids(f, Account(org_id=a["org"], name="Old", account_type_id=a["type"],
+                                       balance=Decimal("0.00"), currency="EUR", is_default=False))
+    async with f() as db:
+        await db.execute(update(Account).where(Account.id == a["cc"]).values(payment_source_account_id=a["old"]))
+        await db.commit()
+    await _add(f, CcCyclePayment(account_id=a["old"], period_anchor_year=CYCLE_YEAR,
+                                 period_anchor_month=1, amount=Decimal("10.00")))
+
+
+async def _adjustable(f, a):
+    async with f() as db:
+        await db.execute(update(Organization).where(Organization.id == a["org"]).values(
+            allow_manual_balance_adjustment=True))
+        await db.commit()
+
+
+async def _adjust_category(f, a):
+    await _add(f, Category(org_id=a["org"], name="Balance Adjustment", slug="balance-adjustment",
+                           type=CategoryType.BOTH, is_system=True))
+
+
+async def _spare_type(f, a):
+    [a["spare"]] = await _ids(f, AccountType(org_id=a["org"], name="Spare"))
+
+
+_CYCLE = {"account_id": "@cc", "year": CYCLE_YEAR, "month": 6}
+
+ACCOUNT_SCENARIOS = [
+    ("account-create-with-an-opening-balance",
+     _t("accounts_create", name="  Brokerage ", account_type_id="@type", opening_balance="250.00",
+        opening_balance_date=P_START.isoformat()), _none, False),
+    ("account-create-a-credit-card",
+     _t("accounts_create", name="Visa", account_type_id="@cc_type", currency="eur", close_day=20,
+        credit_limit="1000.00", opening_balance_date=P_START.isoformat()), _cc, False),
+    ("account-rename", _t("accounts_update", account_id="@acct", name="Daily"), _none, False),
+    ("account-rename-auto", _t("accounts_update", account_id="@acct", name="Daily"), _none, True),
+    ("account-make-default-clears-the-other",
+     _t("accounts_update", account_id="@savings", is_default=True), _savings, False),
+    ("account-deactivate-at-zero-and-move-its-opening-date",
+     _t("accounts_update", account_id="@cc", is_active=False, opening_balance_date=P_START.isoformat()),
+     _cc, False),
+    ("account-delete-unlinks-and-takes-its-cycle-payments",
+     _t("accounts_delete", account_id="@old"), _seq(_cc, _doomed), False),
+    ("account-adjust-up-creates-the-category",
+     _t("accounts_adjust_balance", account_id="@acct", target_balance="1200.00", reason="bank says so"),
+     _adjustable, False),
+    ("account-adjust-down-into-the-existing-category",
+     _t("accounts_adjust_balance", account_id="@acct", target_balance="900.50"),
+     _seq(_adjustable, _adjust_category), False),
+    ("account-type-create", _t("account_types_create", name="Brokerage"), _none, False),
+    ("account-type-rename", _t("account_types_update", type_id="@type", name="Current"), _none, False),
+    ("account-type-delete-an-unused-one", _t("account_types_delete", type_id="@spare"), _spare_type, False),
+    ("cycle-payment-create", _t("cycle_payments_create", **_CYCLE, amount="80.00"), _cc, False),
+    ("cycle-payment-upsert-inserts", _t("cycle_payments_upsert", **_CYCLE, amount="80.00"), _cc, False),
+    ("cycle-payment-upsert-updates", _t("cycle_payments_upsert", **_CYCLE, amount="95.50"),
+     _seq(_cc, _cycle_paid), False),
+    ("cycle-payment-delete", _t("cycle_payments_delete", **_CYCLE), _seq(_cc, _cycle_paid), False),
+]
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -563,6 +651,7 @@ SCENARIOS = [
     ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
     *SENSITIVE_SCENARIOS,
+    *ACCOUNT_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
@@ -575,8 +664,9 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
     a = w["A"]
     await setup(factory, a)
     tool, args = build(a)
+    uid = a["member"] if registry.get_tool(tool).min_role == Role.MEMBER else a["admin"]
     changes = await honest_run(
-        factory, windows, a["member"], tool, args, a["org"], auto_token=a["t1"] if auto else None
+        factory, windows, uid, tool, args, a["org"], auto_token=a["t1"] if auto else None
     )
     if sid == "category-creates-a-new-rule":
         assert [c["entity"] for c in changes] == ["transactions", "category_rules"]

@@ -34,6 +34,19 @@ const TOOL_LABELS: Record<string, string> = {
   transactions_create: "Add a transaction",
   transactions_delete: "Delete a transaction",
   transactions_transfer: "Move money between accounts",
+  accounts_get: "Read an account",
+  account_types_list: "Looked up account types",
+  cycle_payments_list: "Read a card's upcoming payments",
+  accounts_create: "Add an account",
+  accounts_update: "Edit an account",
+  accounts_delete: "Delete an account",
+  accounts_adjust_balance: "Adjust an account's balance",
+  account_types_create: "Add an account type",
+  account_types_update: "Rename an account type",
+  account_types_delete: "Delete an account type",
+  cycle_payments_create: "Set a card payment",
+  cycle_payments_upsert: "Set a card payment",
+  cycle_payments_delete: "Remove a card payment",
 };
 
 export function toolLabel(name: string): string {
@@ -61,6 +74,23 @@ const FIELD_LABELS: Record<string, string> = {
   "transaction_tags.tag_id": "Tag",
   "category_rules.category_id": "Categorization rule",
   "accounts.balance_delta": "Balance",
+  "accounts.balance": "Balance",
+  "accounts.name": "Name",
+  "accounts.account_type_id": "Account type",
+  "accounts.currency": "Currency",
+  "accounts.opening_balance": "Opening balance",
+  "accounts.opening_balance_date": "Opening balance date",
+  "accounts.is_active": "Active",
+  "accounts.is_default": "Default account",
+  "accounts.payment_source_account_id": "Paid from",
+  "accounts.close_day": "Statement close day",
+  "accounts.credit_limit": "Credit limit",
+  "account_types.name": "Account type name",
+  "cc_cycle_payments.amount": "Card payment",
+  "cc_cycle_payments.period_anchor_year": "Cycle year",
+  "cc_cycle_payments.period_anchor_month": "Cycle month",
+  "cc_cycle_payments.account_id": "Card account",
+  "categories.name": "Category name",
   "import_batches.row_count_delta": "Import rows",
   "import_batches.accepted_count_delta": "Accepted import rows",
   "import_batches.pending_count_delta": "Import rows to review",
@@ -78,6 +108,7 @@ export function isNew(id: unknown): boolean {
 
 const ROW_NOUN: Record<string, string> = {
   transactions: "Transaction", accounts: "Account", import_batches: "Import",
+  account_types: "Account type", cc_cycle_payments: "Card payment", categories: "Category",
 };
 
 // Which row a change is on, for a preview that touches several rows of one

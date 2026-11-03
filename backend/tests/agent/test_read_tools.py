@@ -134,6 +134,8 @@ async def _call(factory, user, name, args=None):
             args = {"transaction_id": await db.scalar(
                 select(Transaction.id).where(Transaction.org_id == u.org_id).order_by(Transaction.id)
             )}
+        if args is None and name in ("accounts_get", "cycle_payments_list"):  # TBD-665
+            args = {"account_id": await db.scalar(select(Account.id).where(Account.org_id == u.org_id))}
         return await invoke(db, u, name, _args(name) if args is None else args, channel="in_app")
 
 
@@ -170,6 +172,10 @@ async def test_invoke_runs_all_six_reads_for_an_entitled_user(factory):
     assert out["transactions_search"]["items"][0]["currency"] == "EUR"
     assert [c["category_id"] for c in out["spending_by_category"]["categories"]] == [a["sub"].id]
     assert out["forecast_get"]["executed_expense"] == "12.50"
+    # TBD-665
+    assert out["accounts_get"]["id"] == a["acct"].id
+    assert [t["account_count"] for t in out["account_types_list"]] == [1]
+    assert out["cycle_payments_list"] == []  # not a credit card
     for name in PERIOD_TOOLS:
         assert out[name]["currency_scope"]["currency"] == "EUR", name
         assert out[name]["period_start"] == str(P_START), name

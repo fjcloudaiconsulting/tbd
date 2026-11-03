@@ -140,7 +140,8 @@ async def w(factory):
             db.add(tx)
             await db.flush()
             out[tag] = {"org": org.id, "member": member.id, "b1": b1.id, "b2": b2.id,
-                        "c1": master.id, "c2": master2.id, "acct": acct.id, "tx": tx.id}
+                        "c1": master.id, "c2": master2.id, "acct": acct.id, "tx": tx.id,
+                        "type": at.id}
         a = out["A"]
         admin = _user(a["org"], "adminA", Role.ADMIN)
         other = _user(a["org"], "otherA", Role.MEMBER)
@@ -857,6 +858,8 @@ _WRITE_CASES = {
     # A reportable row on the confirm path: the category rule upsert is disclosed.
     "transactions_set_category": lambda a: {"transaction_id": a["tx"], "category_id": a["c2"]},
     "transactions_update": lambda a: {"transaction_id": a["tx"], "description": "Renamed"},
+    "accounts_update": lambda a: {"account_id": a["acct"], "name": "Renamed"},
+    "account_types_update": lambda a: {"type_id": a["type"], "name": "Renamed"},
 }
 
 # A derived row is disclosed by its natural key, not its surrogate id: the

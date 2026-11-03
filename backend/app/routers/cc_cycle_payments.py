@@ -16,7 +16,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -111,7 +111,7 @@ async def _audit_cycle_payment(
     *,
     event_type: str,
     current_user: User,
-    request: Request,
+    client_ip: str | None,
     account_id: int,
     year: int,
     month: int,
@@ -125,7 +125,7 @@ async def _audit_cycle_payment(
         target_org_id=current_user.org_id,
         target_org_name=None,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=client_ip,
         outcome="success",
         detail={"account_id": account_id, "year": year, "month": month, **detail_extra},
     )
@@ -137,10 +137,10 @@ async def create_cycle_payment(
     year: int,
     month: int,
     body: CyclePaymentWrite,
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    client_ip: str | None = Depends(get_client_ip),
 ):
     account = await _load_account_or_404(
         db, account_id=account_id, org_id=current_user.org_id
@@ -174,7 +174,7 @@ async def create_cycle_payment(
     await db.commit()
     await _audit_cycle_payment(
         session_factory, event_type="account.cycle_payment.created",
-        current_user=current_user, request=request,
+        current_user=current_user, client_ip=client_ip,
         account_id=account_id, year=year, month=month,
         detail_extra={"amount": str(body.amount)},
     )
@@ -187,10 +187,10 @@ async def upsert_cycle_payment(
     year: int,
     month: int,
     body: CyclePaymentWrite,
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    client_ip: str | None = Depends(get_client_ip),
 ):
     account = await _load_account_or_404(
         db, account_id=account_id, org_id=current_user.org_id
@@ -223,7 +223,7 @@ async def upsert_cycle_payment(
         await db.commit()
         await _audit_cycle_payment(
             session_factory, event_type="account.cycle_payment.created",
-            current_user=current_user, request=request,
+            current_user=current_user, client_ip=client_ip,
             account_id=account_id, year=year, month=month,
             detail_extra={"amount": str(body.amount)},
         )
@@ -233,7 +233,7 @@ async def upsert_cycle_payment(
         await db.commit()
         await _audit_cycle_payment(
             session_factory, event_type="account.cycle_payment.updated",
-            current_user=current_user, request=request,
+            current_user=current_user, client_ip=client_ip,
             account_id=account_id, year=year, month=month,
             detail_extra={"old_amount": str(old_amount), "amount": str(body.amount)},
         )
@@ -245,10 +245,10 @@ async def delete_cycle_payment(
     account_id: int,
     year: int,
     month: int,
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    client_ip: str | None = Depends(get_client_ip),
 ):
     account = await _load_account_or_404(
         db, account_id=account_id, org_id=current_user.org_id
@@ -272,7 +272,7 @@ async def delete_cycle_payment(
     await db.commit()
     await _audit_cycle_payment(
         session_factory, event_type="account.cycle_payment.deleted",
-        current_user=current_user, request=request,
+        current_user=current_user, client_ip=client_ip,
         account_id=account_id, year=year, month=month,
         detail_extra={"amount": str(old_amount)},
     )

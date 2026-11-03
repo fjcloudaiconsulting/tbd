@@ -12,7 +12,10 @@ the tool runs the code REST runs instead of a second adapter over a service.
   as "leave alone" and a preview of the null would lie.
 * ``execute`` (``run`` for a read) calls ``route.endpoint`` in-process, so the
   handler's inline guards run. Its parameters come from a CLOSED dependency
-  map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``; a
+  map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``;
+  ``get_session_factory`` opens sessions on ``ctx.db``'s engine (the
+  handler's post-commit audit rows) and ``get_client_ip`` is ``None`` (an
+  in-process call has no client; TBD-665); a
   product-area gate must be the tool's ``product_area``; a role gate must not
   be stricter than ``min_role`` (``register`` re-checks both at invoke time).
   Anything else fails registration: an unknown dependency,
@@ -48,6 +51,7 @@ which the caller still calls.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import enum
 import inspect
@@ -64,6 +68,7 @@ from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agent.registry import (
     ROLE_RANK,
@@ -79,8 +84,9 @@ from app.agent.registry import (
 from app.auth.org_permissions import require_org_admin, require_org_owner
 from app.auth.pat import require_interactive_session
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.user import Role
+from app.rate_limit import get_client_ip
 from app.services.exceptions import ConflictError, NotFoundError
 from app.services.feature_gate import Feature
 
@@ -122,13 +128,32 @@ def _none(ctx: ToolContext) -> None:
     return None
 
 
+def _sessions(ctx: ToolContext) -> Any:
+    return async_sessionmaker(ctx.db.bind, expire_on_commit=False)
+
+
 # The closed dependency map: what the handler receives in-process, by callable.
 _SUPPLIED: dict[Callable[..., Any], Callable[[ToolContext], Any]] = {
-    get_current_user: _user, get_db: _db,
+    get_current_user: _user, get_db: _db, get_session_factory: _sessions, get_client_ip: _none,
 }
 _ROLE_GATES: dict[Callable[..., Any], Role] = {
     require_org_admin: Role.ADMIN, require_org_owner: Role.OWNER,
 }
+
+
+@contextlib.contextmanager
+def refusals():
+    """A handler's or a route helper's 4xx ``HTTPException`` (and a service
+    ``ConflictError``) as a ``ToolError``; a 5xx stays opaque."""
+    try:
+        yield
+    except HTTPException as exc:
+        if 400 <= exc.status_code < 500:
+            detail = exc.detail if isinstance(exc.detail, str) else ""
+            raise ToolError(_HTTP_CODES.get(exc.status_code, "refused"), detail) from None
+        raise
+    except ConflictError as exc:
+        raise ToolError("conflict", exc.detail) from None
 
 
 def _find_route(router: APIRouter, method: str, path: str) -> APIRoute:
@@ -326,15 +351,8 @@ def route_tool(
             kwargs[body_param.name] = body_model.model_validate(
                 {k: getattr(a, k) for k in body_fields if k in a.model_fields_set}
             )
-        try:
+        with refusals():
             out = await route.endpoint(**kwargs)
-        except HTTPException as exc:
-            if 400 <= exc.status_code < 500:
-                detail = exc.detail if isinstance(exc.detail, str) else ""
-                raise ToolError(_HTTP_CODES.get(exc.status_code, "refused"), detail) from None
-            raise
-        except ConflictError as exc:
-            raise ToolError("conflict", exc.detail) from None
         if response is None:
             return jsonable_encoder(out)
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")

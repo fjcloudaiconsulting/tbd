@@ -51,4 +51,14 @@ describe("present (TBD-664)", () => {
     expect(actionHeadline("transactions_delete", "s", [])).toBe("Delete a transaction");
     expect(actionHeadline("transactions_transfer", "s", [])).toBe("Move money between accounts");
   });
+
+  it("the account tools (TBD-665) have headlines and name their rows", () => {
+    expect(actionHeadline("accounts_adjust_balance", "s", [])).toBe("Adjust an account's balance");
+    expect(actionHeadline("cycle_payments_upsert", "s", [])).toBe("Set a card payment");
+    const pay = c({ entity: "cc_cycle_payments", id: "new:1", field: "amount", after: "80.00", currency: "EUR" });
+    expect(changeLabel(pay)).toBe("Card payment");
+    expect(rowLabel(pay)).toBe("New card payment 1");
+    expect(changeValue(pay, "after", undefined, {})).toBe("€80.00");
+    expect(changeLabel(c({ entity: "accounts", field: "is_default" }))).toBe("Default account");
+  });
 });
