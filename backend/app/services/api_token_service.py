@@ -9,7 +9,6 @@ verify-only) so tokens minted before a key rotation keep validating until
 they are re-issued or expire.
 """
 
-import asyncio
 import hashlib
 import hmac
 import secrets
@@ -300,14 +299,7 @@ async def _lock_owner_under_cap(
     between and must win. On refusal the session is rolled back first, so the
     lock is gone before the caller writes its out-of-band audit row. Shared by
     the manual mint and the OAuth consent (one cap, one lock discipline).
-
-    A mint inside the cutoff's own second first waits it out, before taking
-    the lock: ``created_at`` is floored, so it would land ON the cutoff and the
-    ``created_at <= cutoff`` check would kill the token on arrival (TBD-583).
     """
-    delay = (cutoff_seen + timedelta(seconds=1) - datetime.now(timezone.utc)).total_seconds()
-    if delay > 0:
-        await asyncio.sleep(delay)
     fresh = (
         await db.execute(
             select(User)

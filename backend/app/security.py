@@ -465,13 +465,32 @@ def session_cutoff(now: datetime | None = None) -> datetime:
     return now.replace(microsecond=0) + timedelta(seconds=1)
 
 
+# Never more than this, so clock skew between app replicas cannot turn a
+# sub-second wait into a stall (TBD-583).
+MAX_CUTOFF_WAIT_SECONDS = 2.0
+
+
+async def _sleep_until(instant: datetime) -> None:
+    delay = min((instant - datetime.now(timezone.utc)).total_seconds(), MAX_CUTOFF_WAIT_SECONDS)
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
 async def wait_out_cutoff(user: User) -> None:
     """Sleep until ``user``'s session cutoff has passed, so a token minted next
     carries an ``iat`` the cutoff accepts. Only a sign-in in the second after a
     credential change waits, and for under a second."""
-    delay = (token_cutoff(user) - datetime.now(timezone.utc)).total_seconds()
-    if delay > 0:
-        await asyncio.sleep(delay)
+    await _sleep_until(token_cutoff(user))
+
+
+async def wait_out_cutoff_second(cutoff: datetime) -> None:
+    """Sleep until the second that starts at ``cutoff`` has passed (TBD-583).
+
+    Agent tokens and OAuth grants floor ``created_at`` and die at
+    ``created_at <= cutoff``, so one minted inside that second would be dead
+    on arrival. The mint routers call this first, before any write, so no row
+    lock is held while it sleeps."""
+    await _sleep_until(cutoff + timedelta(seconds=1))
 
 
 def token_cutoff(user: User) -> datetime:

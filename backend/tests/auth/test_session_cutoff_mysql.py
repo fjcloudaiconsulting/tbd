@@ -24,8 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models.api_token import ApiToken
 from app.models.user import Organization, Role, User
-from app.security import create_access_token, decode_token, session_cutoff, token_cutoff, wait_out_cutoff
-from app.services import admin_org_members_service, api_token_service
+from app.security import (
+    create_access_token, decode_token, session_cutoff, token_cutoff, wait_out_cutoff,
+    wait_out_cutoff_second,
+)
+from app.services import admin_org_members_service, api_token_service, invitation_service
 
 URL = os.environ.get("SESSION_CUTOFF_MYSQL_URL")
 if not URL:
@@ -84,28 +87,35 @@ def _iat(token: str) -> datetime:
     return datetime.fromtimestamp(decode_token(token)["iat"], tz=timezone.utc)
 
 
+async def _update_member(db, org_id: int, owner: User, member_id: int) -> None:
+    await admin_org_members_service.update_member(
+        db, org_id=org_id, user_id=member_id, actor=owner, is_active=False,
+    )
+
+
+async def _remove_member(db, org_id: int, owner: User, member_id: int) -> None:
+    await invitation_service.remove_member(
+        db, org_id=org_id, current_user=owner, target_user_id=member_id,
+    )
+
+
 @pytest.mark.asyncio
-async def test_a_deactivation_refuses_that_seconds_tokens_after_a_reactivation(factory) -> None:
+@pytest.mark.parametrize("deactivate", [_update_member, _remove_member], ids=["update_member", "remove_member"])
+async def test_a_deactivation_refuses_that_seconds_tokens(factory, deactivate) -> None:
     """The deactivation lands at .2 of a second. Written raw, MySQL rounds it
     DOWN to that second, so a token minted earlier in it (``iat`` floored to
-    the same second) passes ``iat < cutoff`` again once an admin reactivates
-    the member."""
+    the same second) passes ``iat < cutoff`` again once the member is
+    reactivated or re-joins."""
     owner_id, member_id = await _org_with(factory, Role.OWNER, Role.MEMBER)
     async with factory() as db:
         owner = await db.get(User, owner_id)
         org_id = owner.org_id
         await _at_fraction(0.2)
         token = create_access_token(member_id, org_id, Role.MEMBER.value)
-        await admin_org_members_service.update_member(
-            db, org_id=org_id, user_id=member_id, actor=owner, is_active=False,
-        )
-        await db.commit()
-        await admin_org_members_service.update_member(
-            db, org_id=org_id, user_id=member_id, actor=owner, is_active=True,
-        )
+        await deactivate(db, org_id, owner, member_id)
         await db.commit()
     member = await _user(factory, member_id)
-    assert member.is_active
+    assert not member.is_active
     assert _iat(token) < token_cutoff(member)
 
 
@@ -114,7 +124,8 @@ async def test_b_tokens_minted_after_a_waited_out_change_are_live(factory) -> No
     """The change lands at .7 of a second; a raw cutoff would round UP past
     it. A sign-in waits the stored cutoff out and its JWT passes; an agent
     token minted in that same second was floored ONTO the cutoff and died on
-    arrival (``created_at <= cutoff``) until the mint waited a second too."""
+    arrival (``created_at <= cutoff``) until the mint routers waited a second
+    too (``wait_out_cutoff_second``)."""
     (uid,) = await _org_with(factory, Role.MEMBER)
     await _at_fraction(0.7)
     async with factory() as db:
@@ -128,6 +139,7 @@ async def test_b_tokens_minted_after_a_waited_out_change_are_live(factory) -> No
     assert not _iat(create_access_token(uid, user.org_id, Role.MEMBER.value)) < token_cutoff(user)
     async with factory() as db:
         user = await db.get(User, uid)
+        await wait_out_cutoff_second(token_cutoff(user))  # what the mint routers do
         _plain, row = await api_token_service.mint_agent(
             db, user=user, name="cli", scope="agent:read", expires_in_days=1,
             cutoff_seen=token_cutoff(user),
