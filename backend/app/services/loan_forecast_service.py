@@ -2,7 +2,7 @@
 
 DB-free, mirroring ``cc_forecast_service``: all arithmetic for the loan
 forecast synthesis lives here so it is unit-testable without a database.
-``account_balance_forecast_service`` supplies the batch-fetched inputs
+``projection_kernel`` supplies the batch-fetched inputs
 (the already-paid signal, the reused PMT) and applies the resulting deltas.
 
 Design (``specs/2026-07-24-loan-account-type-v1-design.md`` §4, O2 resolved
@@ -32,6 +32,9 @@ Intended limitations (documented so nobody "fixes" a non-bug):
     models no interest accrual (V1 has no accrual-posting engine; the loan
     balance only moves on a recorded payment). If an accrual job is ever added,
     the synthesis must also add the accrual leg or it over-projects paydown.
+    This holds for the dashboard's single period; over a multi-month horizon
+    ``projection_kernel`` accrues a month of interest before each later
+    period's payment, so the schedule amortises to term.
   * A recorded PARTIAL payment (< PMT) suppresses the whole period (skip),
     under-projecting rather than topping up -- out of the V1 model; under-
     projecting is safer than double-counting.
