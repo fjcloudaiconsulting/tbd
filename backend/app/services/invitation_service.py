@@ -42,9 +42,10 @@ from app.schemas.auth import (
     USERNAME_MIN_LENGTH,
     USERNAME_PATTERN,
 )
-from app.security import decode_token, hash_password, run_bcrypt
+from app.security import decode_token, hash_password
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
+from app.security import run_bcrypt
 from app.services.subscription_service import enforce_user_limit
 from app.services.user_service import normalize_email as _normalize_email_shared
 
