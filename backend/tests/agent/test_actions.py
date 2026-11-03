@@ -1111,3 +1111,20 @@ async def test_purge_never_raises_and_logs_only_the_error_class(monkeypatch, log
     lines = [ln for ln in log_lines() if ln["msg"] == "scheduler.agent_action_purge.failed"]
     assert len(lines) == 1 and lines[0]["error"] == "OperationalError"
     assert secret not in json.dumps(log_lines())
+
+
+def test_t786_a_summary_total_needs_one_stated_currency():
+    """FENCE (TBD-786 review). Wrong implementations: summing EUR and USD rows
+    into one number, or totalling rows that state no currency."""
+    def row(amount, currency, field="amount"):
+        return [{"entity": "transactions", "id": 1, "field": field, "before": None,
+                 "after": amount, "currency": currency}]
+
+    assert actions._totals([row("1.50", "EUR"), row("2.25", "EUR")]) == {
+        "amount": "3.75", "currency": "EUR"}
+    assert actions._totals([row("1.50", "EUR"), row("2.25", "USD")]) == {}
+    assert actions._totals([row("1.50", "EUR"), row("2.25", None)]) == {}
+    assert actions._totals([row("1.50", None)]) == {}
+    # two money fields in two currencies: only the first keeps its total
+    assert actions._totals([row("1.00", "EUR"), row("4.00", "USD", "planned_amount")]) == {
+        "amount": "1.00", "currency": "EUR"}

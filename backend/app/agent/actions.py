@@ -178,16 +178,17 @@ def _summary_class(rows: dict, key: tuple[str, str], deleted: set) -> tuple | No
 
 
 def _totals(rows: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Each money field's sum, with its currency. A field whose rows mix
+    currencies or state none has no total: that sum means nothing."""
     out: dict[str, Any] = {}
     for f in TOTAL_FIELDS:
         vals = [c for cs in rows for c in cs if c["field"] == f]
-        if not vals:
-            continue
         currencies = {c.get("currency") for c in vals}
+        (cur,) = currencies if len(currencies) == 1 else (None,)
+        if cur is None or out.get("currency", cur) != cur:  # one currency for the summary
+            continue
         total = sum(Decimal(str(c["after"] if c["after"] is not None else c["before"])) for c in vals)
-        out[f] = f"{total:.2f}"
-        if len(currencies) == 1 and None not in currencies:
-            out["currency"] = currencies.pop()
+        out[f], out["currency"] = f"{total:.2f}", cur
     return out
 
 
