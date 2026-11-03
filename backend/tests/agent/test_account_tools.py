@@ -8,18 +8,24 @@ sensitive tool.
 """
 from __future__ import annotations
 
+import datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.dialects import mysql
+from sqlalchemy.orm import Session
 
 from app.models import Account, AccountType, Transaction
 from app.models.cc_cycle_payment import CcCyclePayment
+from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
+from app.models.recurring import Frequency, RecurringTransaction
 
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
     _confirm, _invoke, _refused, engine, factory, w,
 )
 from tests.agent.test_agent_honesty import CYCLE_YEAR, _adjustable, _cc, _cycle_paid, _ids
+from tests.agent.test_revert import _revert
 from tests.agent.test_set_category import _set
 
 CYCLE = {"year": CYCLE_YEAR, "month": 6}
@@ -73,6 +79,54 @@ async def test_accounts_refuse_at_preview_what_the_routes_refuse(factory, w):
     assert err.code == "invalid_arguments"
 
 
+@pytest.mark.parametrize("blocker", ["import_batch", "recurring"])
+async def test_delete_refuses_an_account_an_import_batch_or_a_template_uses(factory, w, blocker):
+    """FENCE. Wrong implementation: no blocker check, so the preview promises a
+    delete the database refuses (no ON DELETE on either foreign key)."""
+    a = w["A"]
+    aid = await _zero_account(factory, a)
+    if blocker == "import_batch":
+        row = ImportBatch(org_id=a["org"], account_id=aid, source_format=ImportSourceFormat.CSV,
+                          file_name="bank.csv", created_by_user_id=a["member"],
+                          status=ImportBatchStatus.OPEN)
+        noun = "import batch"
+    else:
+        row = RecurringTransaction(org_id=a["org"], account_id=aid, category_id=a["c1"],
+                                   description="Rent", amount=Decimal("9.99"), type="expense",
+                                   frequency=Frequency("monthly"), next_due_date=datetime.date(2030, 1, 1))
+        noun = "recurring transaction"
+    await _ids(factory, row)
+    err = await _refused(_invoke(factory, a["member"], "accounts_delete", {"account_id": aid}))
+    assert (err.code, err.detail) == ("conflict", f"Cannot delete: 1 {noun}(s) use this account")
+    assert await _get(factory, Account, aid) is not None
+
+
+@pytest.fixture
+def selects():
+    """Every ORM SELECT, as MySQL would run it (SQLite renders no FOR UPDATE)."""
+    seen: list[str] = []
+
+    def grab(state):
+        if state.is_select:
+            seen.append(str(state.statement.compile(dialect=mysql.dialect())))
+
+    event.listen(Session, "do_orm_execute", grab)
+    yield seen
+    event.remove(Session, "do_orm_execute", grab)
+
+
+async def test_adjust_preview_locks_the_account_it_computes_from(factory, w, selects):
+    """FENCE. Wrong implementation: an unlocked read of the balance, so a
+    concurrent write between the confirm's re-preview and the service's own
+    lock books a delta the preview never showed."""
+    a = w["A"]
+    await _adjustable(factory, a)
+    await _invoke(factory, a["admin"], "accounts_adjust_balance",
+                  {"account_id": a["acct"], "target_balance": "1200.00"})
+    locked = [q for q in selects if "FROM accounts" in q and q.rstrip().endswith("FOR UPDATE")]
+    assert locked, "the preview reads the account without FOR UPDATE"
+
+
 async def test_auto_refuses_a_default_switch_that_clears_another_account(factory, w):
     """FENCE (``ToolContext.auto``). Wrong implementation: an unconfirmed write
     clearing the current default account, a row the person never saw."""
@@ -85,6 +139,25 @@ async def test_auto_refuses_a_default_switch_that_clears_another_account(factory
     assert (await _get(factory, Account, a["acct"])).is_default is True
     out = await _invoke(factory, a["member"], "accounts_update", args)  # confirmed in-app: fine
     assert [c["id"] for c in out["changes"]] == [other, a["acct"]]
+
+
+async def test_a_default_switch_that_cleared_another_default_is_not_revertible(factory, w):
+    """FENCE. Wrong implementation: the inverse restoring only the switched
+    account, leaving the org with no default account."""
+    a = w["A"]
+    other = await _zero_account(factory, a)
+    out = await _invoke(factory, a["member"], "accounts_update", {"account_id": other, "is_default": True})
+    await _confirm(factory, a["member"], out["action_id"])
+    err = await _refused(_revert(factory, a["member"], out["action_id"]))
+    assert (err.code, err.data["reason"]) == ("not_revertible", "one_way")
+    assert "without a default account" in err.detail
+    assert (await _get(factory, Account, other)).is_default is True
+    # Clearing nothing else (the org had no default) stays revertible.
+    out = await _invoke(factory, a["member"], "accounts_update", {"account_id": other, "is_default": False})
+    await _confirm(factory, a["member"], out["action_id"])
+    staged = await _revert(factory, a["member"], out["action_id"])
+    await _confirm(factory, a["member"], staged["action_id"])
+    assert (await _get(factory, Account, other)).is_default is True
 
 
 async def test_account_create_returns_the_route_response(factory, w):
@@ -178,6 +251,25 @@ async def test_a_cycle_payment_is_written_and_read_back(factory, w, tool):
     async with factory() as db:
         [row] = (await db.scalars(select(CcCyclePayment))).all()
     assert (row.account_id, row.amount) == (a["cc"], Decimal("80.00"))
+
+
+@pytest.mark.parametrize("over", [{"period_anchor_year": 2020}, "no_close_day"], ids=["past-cycle", "no-close-day"])
+async def test_a_cycle_payment_deletes_wherever_rest_deletes_it(factory, w, over):
+    """PARITY. The REST delete runs no cycle validation. Wrong implementation:
+    refusing a stored row on a past cycle, or on a card whose close day was
+    cleared, which the person can delete in the app."""
+    a = w["A"]
+    await _cc(factory, a)
+    year = 2020 if over != "no_close_day" else CYCLE_YEAR
+    [pid] = await _ids(factory, CcCyclePayment(account_id=a["cc"], period_anchor_year=year,
+                                               period_anchor_month=6, amount=Decimal("80.00")))
+    if over == "no_close_day":
+        await _set(factory, Account, a["cc"], close_day=None)
+    out = await _invoke(factory, a["admin"], "cycle_payments_delete",
+                        {"account_id": a["cc"], "year": year, "month": 6})
+    done = await _confirm(factory, a["admin"], out["action_id"])
+    assert done["result"] == {"year": year, "month": 6, "deleted": True}
+    assert await _get(factory, CcCyclePayment, pid) is None
 
 
 async def test_the_audit_rows_carry_no_client_ip(factory, w):

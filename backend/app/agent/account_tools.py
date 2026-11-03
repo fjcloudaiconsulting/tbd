@@ -149,6 +149,7 @@ async def _update_check(ctx: ToolContext, acct: Account, args) -> None:
 
 async def _update_present(ctx: ToolContext, acct: Account, args, changes: list[Change]) -> Preview:
     fields = [c.field for c in changes]
+    cleared: list[Change] = []
     if args.is_default:
         others = await ctx.db.scalars(
             select(Account.id).where(
@@ -162,10 +163,18 @@ async def _update_present(ctx: ToolContext, acct: Account, args, changes: list[C
                 "stage it with a confirming token", data={"reason": "derived_rows"},
             )
         changes = changes + cleared
+    context = {"name": acct.name}
+    if cleared:
+        # The inverse restores this account only, which would leave the org
+        # with no default account.
+        context["not_revertible"] = (
+            "Reverting would leave the organization without a default account; "
+            "make the previous default account the default instead."
+        )
     return Preview(
         summary=f"Change the {', '.join(fields)} of account {acct.id}",
         changes=changes,
-        context={"name": acct.name},
+        context=context,
     )
 
 
@@ -409,13 +418,14 @@ register(route_tool(
 # The planned payment for one billing cycle of a credit card, keyed by the
 # cycle's close month. Owner or admin (the routes check inline). Three ids in
 # the path, so the previews are hand-written; each runs the routes' own cycle
-# validation (a credit card with a close day, a current or future cycle).
+# validation (a credit card with a close day, a current or future cycle) for
+# a write; a delete, like its route, takes any stored row.
 
 def _cycle_label(args) -> str:
     return f"{args.year}-{args.month:02d}"
 
 
-async def _cycle_rows(ctx: ToolContext, args, amount: Decimal | None):
+async def _cycle_rows(ctx: ToolContext, args, amount: Decimal | None, *, validate: bool = True):
     acct = await ctx.db.scalar(
         select(Account).options(selectinload(Account.account_type))
         .where(Account.id == args.account_id, Account.org_id == ctx.org_id)
@@ -423,11 +433,12 @@ async def _cycle_rows(ctx: ToolContext, args, amount: Decimal | None):
     )
     if acct is None:
         raise NotFoundError("Account")
-    with refusals():
-        validate_cycle_payment(
-            account=acct, account_slug=acct.account_type.slug if acct.account_type else None,
-            year=args.year, month=args.month, today=datetime.date.today(), amount=amount,
-        )
+    if validate:
+        with refusals():
+            validate_cycle_payment(
+                account=acct, account_slug=acct.account_type.slug if acct.account_type else None,
+                year=args.year, month=args.month, today=datetime.date.today(), amount=amount,
+            )
     row = await ctx.db.scalar(
         select(CcCyclePayment).where(
             CcCyclePayment.account_id == acct.id, CcCyclePayment.period_anchor_year == args.year,
@@ -471,7 +482,9 @@ async def _cycle_upsert_preview(ctx: ToolContext, args) -> Preview:
 
 
 async def _cycle_delete_preview(ctx: ToolContext, args) -> Preview:
-    acct, row = await _cycle_rows(ctx, args, None)
+    # As the REST delete: any stored row, a past cycle or a card that lost its
+    # close day included (no cycle validation).
+    acct, row = await _cycle_rows(ctx, args, None, validate=False)
     if row is None:
         raise NotFoundError("Cycle payment")
     return Preview(
@@ -506,6 +519,6 @@ register(route_tool(
     name="cycle_payments_delete", risk="sensitive",
     router=CYCLES, method="DELETE", path=CYCLE_PATH,
     fields=(), product_area=None, min_role=Role.ADMIN,
-    description=f"Remove the payment amount set for a credit card cycle. {CYCLE_ARGS} {CONFIRM}",
+    description=f"Remove the payment amount set for a cycle, past ones included. Owner or admin. {CONFIRM}",
     preview=_cycle_delete_preview,
 ))

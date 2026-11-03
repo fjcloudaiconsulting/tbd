@@ -204,7 +204,13 @@ def inverse_args(spec: ToolSpec, args_json: dict[str, Any], preview_json: dict[s
     """The args that restore a done write: the stored args with every field of
     the PRIMARY entity (``changes[0]``) put back to its ``before``. Derived
     changes (a learned rule) are not inverted; the revert's own preview
-    re-discloses them."""
+    re-discloses them. A preview whose ``context["not_revertible"]`` says why
+    it cannot be inverted is refused with that reason."""
+    # A tool whose preview says its inverse would not restore the derived rows
+    # (TBD-665: a default-account switch clears another account's default).
+    one_way = (preview_json.get("context") or {}).get("not_revertible")
+    if one_way:
+        raise ToolError("not_revertible", one_way, data={"reason": "one_way"})
     changes = preview_json["changes"]
     p = changes[0]
     restore = {
