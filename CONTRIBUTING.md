@@ -297,6 +297,8 @@ Only failures count. A success empties the account's window, a completed passwor
 |----------|-------|
 | `POST /api/v1/auth/login` | 10/minute |
 | `POST /api/v1/auth/register` | 5/hour |
+| `POST /api/v1/auth/signup/start` | 5/hour per IP, plus per address 1 email per 10 minutes and 5 per 24 hours |
+| `POST /api/v1/auth/signup/complete` | 10/minute |
 | `GET /api/v1/auth/check-username` | 20/minute |
 | `POST /api/v1/auth/verify-email` | 10/minute |
 | `POST /api/v1/auth/resend-verification` | 3/hour |
@@ -361,9 +363,9 @@ Legitimate use stays far below 30 a minute.
 
 ### Public endpoints (no auth required)
 
-Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 13 are genuinely **open**, and 17 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "30 public routes" is not 30 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
+Exactly **32** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 14 are genuinely **open**, and 18 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify/signup JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "32 public routes" is not 32 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
 
-**Open — no identity check at all (13)**
+**Open — no identity check at all (14)**
 
 | Route | Why it cannot carry auth |
 | --- | --- |
@@ -373,6 +375,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
 | `POST /api/v1/auth/register` | Account creation. Nothing to authenticate yet. |
+| `POST /api/v1/auth/signup/start` | Email-first sign-up, step 1 (TBD-654). Nothing to authenticate yet. Answers the same 202 for every address that passes the captcha, stores nothing, and queues the email for the address's state in the background. |
 | `POST /api/v1/auth/forgot-password` | Password reset request. Answers uniformly whether or not the address exists, so it leaks no account inventory. |
 | `POST /api/v1/auth/resend-verification-public` | Targets an unverified account, which cannot hold a usable session. The non-`-public` sibling `POST /api/v1/auth/resend-verification` **is** authenticated. |
 | `GET /api/v1/auth/google` | Starts the Google OAuth redirect; the caller is anonymous at this point by construction. |
@@ -381,7 +384,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414), same reasons as the line above. |
 | `POST /api/v1/oauth/register` | Open dynamic client registration (RFC 7591, operator ruling). Public clients only, no secret issued; idempotent on identical metadata; new clients capped per https host, per loopback pool and IP, per IP per hour, and by a global row ceiling, all failing closed. |
 
-**Credential-bearing — authenticated, but no bearer token by construction (17)**
+**Credential-bearing — authenticated, but no bearer token by construction (18)**
 
 | Route | Credential, and why not a bearer token |
 | --- | --- |
@@ -391,6 +394,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `POST /api/v1/auth/logout` | Must succeed once the access token has expired, or a user cannot log out of a stale session. The refresh cookie's HMAC signature is verified before any session family is revoked, so an anonymous caller cannot revoke a session they do not hold; with no cookie it is a no-op cookie clear. |
 | `POST /api/v1/auth/reset-password` | The single-use reset JWT. A caller who could already authenticate would not need this route. |
 | `POST /api/v1/auth/verify-email` | The emailed verification JWT. The account is not yet usable for login. |
+| `POST /api/v1/auth/signup/complete` | The single-use signup JWT mailed by `/signup/start`. No account exists before it; the route creates one, verified, and signs it in. |
 | `POST /api/v1/auth/mfa/verify` | Short-lived `mfa_token` from the first login leg. |
 | `POST /api/v1/auth/mfa/recovery` | Short-lived `mfa_token` from the first login leg. |
 | `POST /api/v1/auth/mfa/email-code` | Short-lived `mfa_token` from the first login leg. |

@@ -8,6 +8,7 @@ can't get an access token yet.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -180,6 +181,31 @@ async def test_resend_public_sends_for_unverified_user(
     assert res.status_code == 200
     assert len(stub_send_verification_email) == 1
     assert stub_send_verification_email[0][0] == "alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_resend_public_never_awaits_send(session_factory, monkeypatch):
+    """TBD-654: the send is queued, not awaited inside the request, so the
+    response time does not show whether the login is an unverified account."""
+    await _seed_user(session_factory, email_verified=False)
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(auth_module, "send_verification_email", send)
+    awaited_at_add: list[int] = []
+    real_add = auth_module.BackgroundTasks.add_task
+
+    def _spy(self, func, *args, **kwargs):
+        awaited_at_add.append(send.await_count)
+        assert func is send and args[0] == "alice@example.com"
+        return real_add(self, func, *args, **kwargs)
+
+    monkeypatch.setattr(auth_module.BackgroundTasks, "add_task", _spy)
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post("/api/v1/auth/resend-verification-public", json={"login": "alice"})
+
+    assert res.status_code == 200
+    assert awaited_at_add == [0]
+    send.assert_awaited_once()
 
 
 @pytest.mark.asyncio

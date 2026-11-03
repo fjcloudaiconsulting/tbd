@@ -102,6 +102,8 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
         "3/hour",
     ),
     ("auth", "reset_password"): ("auth.reset_password", "10/minute"),
+    ("auth", "signup_complete"): ("auth.signup_complete", "10/minute"),
+    ("auth", "signup_start"): ("auth.signup_start", "5/hour"),
     ("auth", "sso_stepup_callback"): ("auth.sso_stepup_callback", "60/hour"),
     ("auth", "sso_stepup_initiate"): ("auth.sso_stepup_initiate", "10/hour"),
     ("auth", "verify"): ("auth.verify", "120/minute"),

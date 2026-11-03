@@ -83,11 +83,23 @@ ALLOWED_WRITE_SITES: tuple[tuple[str, str, str], ...] = (
         "bootstrap grant on the SSO path; binds sso_first_user_setup",
     ),
     (
+        "routers/auth.py",
+        "signup_complete",
+        "hardcoded False — TBD-654 email-first sign-up runs only after setup",
+    ),
+    (
         "services/invitation_service.py",
         "accept_invitation",
         "hardcoded False — an org invitation must never write a platform flag",
     ),
 )
+
+# Sites that may only ever write the literal ``False``: they are not grant
+# sites, and both are public routes.
+HARDCODED_FALSE_SITES: frozenset[tuple[str, str]] = frozenset({
+    ("routers/auth.py", "signup_complete"),
+    ("services/invitation_service.py", "accept_invitation"),
+})
 
 
 @dataclass(frozen=True)
@@ -288,11 +300,12 @@ def test_grant_sites_bind_the_single_bootstrap_predicate() -> None:
     ``_is_first_user_setup``.
     """
     for site in _collect():
-        if site.file == "services/invitation_service.py":
+        if (site.file, site.function) in HARDCODED_FALSE_SITES:
             assert site.value_repr == "Constant(False)", (
                 f"{site.file}::{site.function}:{site.lineno} writes "
-                f"is_superadmin={site.value_repr}. An org invitation must "
-                "never write the platform flag — this route is public."
+                f"is_superadmin={site.value_repr}. This site is not a grant "
+                "site and must never write the platform flag — its route is "
+                "public."
             )
             continue
         assert site.value_repr.startswith("Name("), (
@@ -339,6 +352,23 @@ def test_grant_sites_bind_the_single_bootstrap_predicate() -> None:
                 f"{getattr(v, 'lineno', '?')}. Only _is_first_user_setup() and "
                 "the literal False hoist are permitted."
             )
+
+
+def test_signup_complete_is_not_a_grant_site() -> None:
+    """FENCE — TBD-654. ``signup_complete`` creates a user from the open
+    internet after setup, so it writes ``is_superadmin`` only as the literal
+    ``False``: never a name, never the bootstrap predicate.
+
+    Wrong implementation killed: ``is_superadmin=is_first_user_setup`` copied
+    from ``register``, which the grant-site test above would ACCEPT for any
+    function on the allowlist that binds the approved predicate.
+    """
+    sites = [
+        s for s in _collect()
+        if (s.file, s.function) == ("routers/auth.py", "signup_complete")
+    ]
+    assert sites, "signup_complete no longer constructs a User with is_superadmin"
+    assert all(s.value_repr == "Constant(False)" for s in sites), sites
 
 
 def test_no_promote_or_demote_path_exists() -> None:

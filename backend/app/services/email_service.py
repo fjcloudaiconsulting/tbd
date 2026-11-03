@@ -664,6 +664,114 @@ async def send_verification_email(to: str, token: str) -> bool:
     return await send_email(to, subject, body_html, body_text)
 
 
+async def send_signup_link_email(to: str, token: str) -> bool:
+    """Send the "finish signing up" link to an address with no account (TBD-654)."""
+    signup_url = _safe_link("/signup/complete", token)
+    subject = "Finish signing up for The Better Decision"
+    body_html = _render_html(
+        heading="Finish signing up",
+        paragraphs=[
+            "Someone (you, we hope) started creating a The Better Decision "
+            "account with this email address. Use the button below to choose "
+            "your username and password.",
+        ],
+        cta_label="Finish signing up",
+        cta_url=signup_url,
+        footnote=(
+            "This link expires in 1 hour and works once. If you didn't start "
+            "signing up, you can ignore this email and no account will be created."
+        ),
+    )
+    body_text = (
+        "Finish signing up\n\n"
+        "Someone started creating a The Better Decision account with this "
+        "email address. Open this link to choose your username and password:\n\n"
+        f"{signup_url}\n\n"
+        "This link expires in 1 hour and works once. If you didn't start "
+        "signing up, you can ignore this email and no account will be created."
+    )
+    return await send_email(to, subject, body_html, body_text)
+
+
+async def send_existing_account_signup_email(to: str) -> bool:
+    """Tell an account owner that someone tried to sign up with their email.
+
+    Sent by ``/auth/signup/start`` instead of a signup link when the address
+    already has an active, verified account (TBD-654). It names no username
+    and no requester detail; the per-address signup mail caps bound how often.
+    """
+    login_url = f"{settings.app_url}/login"
+    reset_url = f"{settings.app_url}/forgot-password"
+    subject = "Someone tried to sign up for The Better Decision with your email"
+    body_html = _render_html(
+        heading="You already have an account",
+        paragraphs=[
+            "Someone (you, we hope) just tried to create a The Better Decision "
+            "account with this email address. It already has an account, so "
+            "no new one was created.",
+            "If it was you, sign in the way you usually do. If you forgot your "
+            f'password, you can <a href="{reset_url}">reset it</a>.',
+        ],
+        cta_label="Sign in",
+        cta_url=login_url,
+        footnote=(
+            "If it wasn't you, you can ignore this email. Nothing on your "
+            "account has changed."
+        ),
+    )
+    body_text = (
+        "You already have an account\n\n"
+        "Someone just tried to create a The Better Decision account with "
+        "this email address. It already has an account, so no new one was "
+        "created.\n\n"
+        f"If it was you, sign in: {login_url}\n"
+        f"Forgot your password? Reset it: {reset_url}\n\n"
+        "If it wasn't you, you can ignore this email. Nothing on your "
+        "account has changed."
+    )
+    return await send_email(to, subject, body_html, body_text)
+
+
+async def send_legacy_verification_email(to: str, token: str) -> bool:
+    """Send a fresh verification link to an unverified account created before
+    email-first sign-up, when someone signs up with its address (TBD-654).
+
+    Whoever registered it may not own the inbox, so the real owner is told to
+    reset the password before relying on the account.
+    """
+    verify_url = _safe_link("/verify-email", token)
+    reset_url = f"{settings.app_url}/forgot-password"
+    subject = "Confirm your email for The Better Decision"
+    body_html = _render_html(
+        heading="Confirm your email",
+        paragraphs=[
+            "Someone (you, we hope) just tried to sign up with this email "
+            "address. It already has an account that was never confirmed. "
+            "Use the button below to confirm it.",
+            "If you don't know this account's password, reset it first. "
+            f'You can <a href="{reset_url}">reset it here</a>.',
+        ],
+        cta_label="Confirm email",
+        cta_url=verify_url,
+        footnote=(
+            "If it wasn't you, you can ignore this email. Nothing on the "
+            "account has changed."
+        ),
+    )
+    body_text = (
+        "Confirm your email\n\n"
+        "Someone just tried to sign up with this email address. It already "
+        "has an account that was never confirmed. Open this link to confirm "
+        "it:\n\n"
+        f"{verify_url}\n\n"
+        "If you don't know this account's password, reset it first. "
+        f"Reset it here: {reset_url}\n\n"
+        "If it wasn't you, you can ignore this email. Nothing on the account "
+        "has changed."
+    )
+    return await send_email(to, subject, body_html, body_text)
+
+
 async def send_invitation_email(
     to: str, *, inviter_name: str, org_name: str, accept_url: str
 ) -> bool:
