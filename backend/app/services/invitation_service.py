@@ -26,7 +26,6 @@ isolation:
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 from app._time import utcnow_naive
 
@@ -43,7 +42,7 @@ from app.schemas.auth import (
     USERNAME_MIN_LENGTH,
     USERNAME_PATTERN,
 )
-from app.security import decode_token, hash_password
+from app.security import decode_token, hash_password, run_bcrypt
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.subscription_service import enforce_user_limit
@@ -456,7 +455,7 @@ async def accept_invitation(
         # sessions atomically with marking the invite accepted.
         existing.is_active = True
         existing.role = inv.role
-        existing.password_hash = await asyncio.to_thread(hash_password, password)
+        existing.password_hash = await run_bcrypt(hash_password, password)
         # Whole-second session cutoff. The router mints an access token and
         # a refresh session immediately after this returns, and both stamp
         # "iat": int(now.timestamp()) — floored to a whole second. Every
@@ -508,7 +507,7 @@ async def accept_invitation(
         org_id=inv.org_id,
         username=username,
         email=inv.email,
-        password_hash=await asyncio.to_thread(hash_password, password),
+        password_hash=await run_bcrypt(hash_password, password),
         role=inv.role,
         is_superadmin=False,
         is_active=True,

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import re
 
@@ -28,6 +27,7 @@ from app.schemas.user import PasswordChange, ProfileUpdate
 from app.security import (
     create_email_verification_token,
     hash_password,
+    run_bcrypt,
     session_cutoff,
 )
 from app.services import audit_service, notification_service
@@ -521,7 +521,7 @@ async def change_password(
     # and the family revoke make that hold for a token minted earlier in this
     # same second too (BE-04).
     cutoff = session_cutoff()
-    current_user.password_hash = await asyncio.to_thread(hash_password, body.new_password)
+    current_user.password_hash = await run_bcrypt(hash_password, body.new_password)
     current_user.password_set = True
     current_user.password_changed_at = cutoff
     current_user.sessions_invalidated_at = cutoff

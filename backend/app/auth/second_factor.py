@@ -10,8 +10,6 @@ accepted time step is claimed in ``used_tokens``, and so are the two steps
 before it, so neither the same code nor an older one still inside the +/- 1
 window works after it.
 """
-import asyncio
-
 from fastapi import HTTPException, Request, status
 from sqlalchemy import update
 from sqlalchemy.exc import SQLAlchemyError
@@ -21,7 +19,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from app import state_db
 from app.auth import attempts
 from app.models.user import User
-from app.security import verify_password
+from app.security import run_bcrypt, verify_password
 from app.services.mfa_service import (
     MfaConfigError,
     decrypt_secret,
@@ -132,7 +130,7 @@ async def reauth_password(
         )
     if not password:
         raise HTTPException(status_code=status_code, detail=detail)
-    if await asyncio.to_thread(verify_password, password, user.password_hash):
+    if await run_bcrypt(verify_password, password, user.password_hash):
         # A right password empties the account's window, as at /login, so
         # typos here do not leave /login one failure from its full refusal.
         try:
