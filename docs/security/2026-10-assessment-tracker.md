@@ -20,7 +20,20 @@ exploit detail into public issues, PRs or commit messages.
 
 ## Current state
 
-- **2026-11-01 (latest):**
+- **2026-11-03 (latest):**
+  - **Register response (TBD-654 item 2):** PR 1 of 4, the backend
+    email-first sign-up endpoints, merged as #1077. It ships in v0.306.0.
+    The frontend (PR 2) must wait until that release is live. #1045 stays
+    open until PR 3 replaces it.
+  - **Related auth fixes merged:** #1068 (TBD-583, whole-second session
+    cutoff on MySQL), #1070 (TBD-782, password hashing off the event loop)
+    and #1071 (TBD-783, the captcha check fails closed on malformed
+    replies).
+  - **Release:** v0.306.0 (#1081) is merged; its tag was pending CI at
+    handoff. Production still runs v0.305.0.
+  - **Waiting on the owner:** #1007, item 1 of the owner decision queue
+    (TBD-739).
+- **2026-11-01:**
   - **Follow-up PRs:** all of them are merged. Eleven merged on 2026-10-25;
     #1035, #1041, #1042 and #1043 merged on 2026-11-01.
   - **Releases:** v0.304.0 and v0.305.0 were released on 2026-11-01.
@@ -317,7 +330,7 @@ titles only; the detail is in Jira.
 |---|---|---|---|
 | TBD-653 | Sign-in and MFA attempt limits (earlier audit) | BE-02, BE-26 | Checked 2026-10-25: all three items shipped in #1009; the remaining paths are in #1033. Close when #1033 merges |
 | TBD-611 | Login timing (earlier audit) | BE-25 | Confirmed shipped in #1009; closed 2026-10-25 |
-| TBD-654 | Auth hardening lows (earlier audit) | BE-25, FE-03 | Items 1 and 3 (backend) shipped in #1009; item 3 (frontend) in #1034; item 4 in #1033; item 2 (register response) needs an owner decision |
+| TBD-654 | Auth hardening lows (earlier audit) | BE-25, FE-03 | Items 1 and 3 (backend) shipped in #1009; item 3 (frontend) in #1034; item 4 in #1033; item 2 (register response): email-first sign-up, PR 1 (backend) merged in #1077, PRs 2 to 4 to follow |
 | TBD-609 | AI credential base URL handling | DB-02 | Shipped in #1008; confirm and close |
 | TBD-655 | Database user separation | DB-04 | Same work as DB-04; the app part is #1030, the user split follows in cloud-infra |
 | TBD-477, TBD-401, TBD-475 | CSP report writer, audit retention, audit UI | BE-10 | The writer is bounded by #1008, and CSP rows have a 30-day retention since #1019; check each, then narrow or close |
@@ -332,6 +345,19 @@ titles only; the detail is in Jira.
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-11-03, backlog round: coding session (Claude Code, with Jira access)
+
+- **Did:** parallel agent teams on the high-priority backlog, one independent
+  review per PR, and a local integration run of the first merge batch.
+  Merged #1067 to #1073, #1075, #1077, #1079 and #1080 (which combined three
+  agent-parity PRs), then the v0.306.0 release (#1081).
+- **Security-relevant:** #1068 (TBD-583), #1070 (TBD-782), #1071 (TBD-783)
+  and #1077 (TBD-654 PR 1). Agent-tool tiers are tightened in #1080: every
+  money-moving recurring and account change needs a browser confirm.
+- **Changed here:** current state and the TBD-654 row.
+- **Next:** TBD-654 PR 2 after v0.306.0 is live; owner item 1 for #1007
+  (TBD-739).
 
 ### 2026-11-01, PR queue and releases: coding session (Claude Code, with Jira access)
 
