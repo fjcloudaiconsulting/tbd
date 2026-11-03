@@ -5,7 +5,10 @@ import hashlib
 import hmac as _hmac
 import secrets
 import uuid
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 
 import bcrypt
 import jwt
@@ -49,6 +52,17 @@ def mfa_email_code_hmac(code: str) -> str:
 # bcrypt only reads 72 bytes. bcrypt 4 truncated silently; bcrypt 5 raises.
 # Truncating here keeps every hash bcrypt 4 stored verifying (TBD-635).
 _BCRYPT_MAX_BYTES = 72
+
+# bcrypt runs here, never on the loop or its default executor: a login burst of
+# ~250 ms hashes must not starve ``asyncio.to_thread`` callers (the limits buckets).
+_BCRYPT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bcrypt")
+
+_T = TypeVar("_T")
+
+
+async def run_bcrypt(fn: Callable[..., _T], *args: object) -> _T:
+    """Run a bcrypt helper (``hash_password`` and friends) from async code."""
+    return await asyncio.get_running_loop().run_in_executor(_BCRYPT_EXECUTOR, fn, *args)
 
 
 def hash_password(password: str) -> str:

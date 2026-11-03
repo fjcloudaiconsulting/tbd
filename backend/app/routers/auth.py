@@ -84,6 +84,7 @@ from app.security import (
     hash_password,
     mfa_email_code_hmac,
     reset_email_digest,
+    run_bcrypt,
     session_cutoff,
     token_cutoff,
     verify_password_or_dummy,
@@ -436,7 +437,7 @@ async def register(
         email=email_norm,
         first_name=body.first_name,
         last_name=body.last_name,
-        password_hash=hash_password(body.password),
+        password_hash=await run_bcrypt(hash_password, body.password),
         role=Role.OWNER,
         is_superadmin=is_first_user_setup,
         is_founder=True,
@@ -900,7 +901,7 @@ async def login(
         raise _attempt_store_unavailable() from exc
     stored_hash = user.password_hash if user is not None and not account_full else None
 
-    if not verify_password_or_dummy(body.password, stored_hash):
+    if not await run_bcrypt(verify_password_or_dummy, body.password, stored_hash):
         try:
             filled = await attempts.record_password_failure(body.login, user_id)
         except SQLAlchemyError as exc:
@@ -2496,7 +2497,7 @@ async def reset_password(
     # Whole-second cutoff past this second (BE-04): every token minted
     # before the reset is refused, whatever MySQL's rounding does.
     cutoff = session_cutoff()
-    user.password_hash = hash_password(body.new_password)
+    user.password_hash = await run_bcrypt(hash_password, body.new_password)
     # Flip `password_set` so an SSO user who reset via token lands in
     # the standard branch on every future /users/me/password call and
     # the UI stops offering "Set a Password". Without this flip the
@@ -4771,7 +4772,7 @@ async def google_callback(
             # branch does. No credential other than the password can exist on an
             # unverified row (login 403s it); attacker-chosen username, profile
             # and org name can survive.
-            user.password_hash = hash_password(secrets.token_urlsafe(32))
+            user.password_hash = await run_bcrypt(hash_password, secrets.token_urlsafe(32))
             user.password_set = False
             mutated = True
         # Backfill profile fields from Google only when ours are empty so
@@ -4813,7 +4814,7 @@ async def google_callback(
             first_name=first_name,
             last_name=last_name,
             avatar_url=_safe_avatar_url(_google_str_field(google_user, "picture")),
-            password_hash=hash_password(secrets.token_urlsafe(32)),
+            password_hash=await run_bcrypt(hash_password, secrets.token_urlsafe(32)),
             email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,
             is_superadmin=sso_first_user_setup,
