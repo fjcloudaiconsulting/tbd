@@ -26,6 +26,7 @@ isolation:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from app._time import utcnow_naive
 
@@ -455,7 +456,7 @@ async def accept_invitation(
         # sessions atomically with marking the invite accepted.
         existing.is_active = True
         existing.role = inv.role
-        existing.password_hash = hash_password(password)
+        existing.password_hash = await asyncio.to_thread(hash_password, password)
         # Whole-second session cutoff. The router mints an access token and
         # a refresh session immediately after this returns, and both stamp
         # "iat": int(now.timestamp()) — floored to a whole second. Every
@@ -507,7 +508,7 @@ async def accept_invitation(
         org_id=inv.org_id,
         username=username,
         email=inv.email,
-        password_hash=hash_password(password),
+        password_hash=await asyncio.to_thread(hash_password, password),
         role=inv.role,
         is_superadmin=False,
         is_active=True,

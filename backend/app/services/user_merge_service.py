@@ -28,6 +28,7 @@ workflow we don't have yet. Out of scope here.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from sqlalchemy import delete, func, select, update
@@ -231,7 +232,7 @@ async def merge_users(
         target.email_verified = True
         # TBD-651: nobody proved the target's password belongs to the email
         # owner, so verifying the row must not keep it (same as Google link).
-        target.password_hash = hash_password(secrets.token_urlsafe(32))
+        target.password_hash = await asyncio.to_thread(hash_password, secrets.token_urlsafe(32))
         target.password_set = False
 
     # Finally delete the source row. With every reference reassigned or
