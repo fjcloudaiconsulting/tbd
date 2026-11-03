@@ -12,7 +12,7 @@ from sqlalchemy import delete, exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.models.account import Account
+from app.models.account import Account, AccountType
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
@@ -195,15 +195,34 @@ async def _validate_transfer_accounts(
         raise ValidationError("A transfer needs a destination account")
     if to_account_id == account_id:
         raise ValidationError("Source and destination accounts must be different")
-    currencies = dict((await db.execute(
-        select(Account.id, Account.currency).where(
-            Account.id.in_([account_id, to_account_id]), Account.org_id == org_id
-        )
-    )).all())
-    if len(currencies) != 2:
+    rows = {
+        aid: (currency, slug) for aid, currency, slug in (await db.execute(
+            select(Account.id, Account.currency, AccountType.slug)
+            .join(AccountType, AccountType.id == Account.account_type_id, isouter=True)
+            .where(Account.id.in_([account_id, to_account_id]), Account.org_id == org_id)
+        )).all()
+    }
+    if len(rows) != 2:
         raise ValidationError("Invalid account")
-    if currencies[account_id] != currencies[to_account_id]:
+    _refuse_card_or_loan(slug for _, slug in rows.values())
+    if rows[account_id][0] != rows[to_account_id][0]:
         raise ValidationError("Transfer accounts must have the same currency")
+
+
+# Not yet supported on either side of a recurring transfer (ticketed
+# separately). As a destination the projection would pay a card twice (its
+# generated legs and ``synthesize_account_cc_payments``) and read a loan leg as
+# that month's payment; as a source a card is a cash advance with the same
+# first-period gap.
+_UNSUPPORTED_TRANSFER_SLUGS = {"credit_card", "loan"}
+
+
+def _refuse_card_or_loan(slugs) -> None:
+    if _UNSUPPORTED_TRANSFER_SLUGS & set(slugs):
+        raise ValidationError(
+            "A recurring transfer cannot use a credit card or loan account yet. "
+            "Choose two other accounts."
+        )
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -530,6 +549,13 @@ async def _sync_pending_transfer_pairs(
     a bank row was reconcile-matched against (a referrer other than the
     partner). Lock order template -> rows, as the other series writes.
     """
+    # The template's accounts were validated by ``update_recurring``; checked
+    # again here because this is what moves legs onto them.
+    _refuse_card_or_loan((await db.scalars(
+        select(AccountType.slug)
+        .join(Account, Account.account_type_id == AccountType.id)
+        .where(Account.id.in_([r.account_id, r.to_account_id]), Account.org_id == org_id)
+    )).all())
     referrer = aliased(Transaction)
     legs = (await db.execute(
         select(Transaction)
@@ -1182,19 +1208,28 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
     # generation loop's FOR UPDATE on templates effectively serializes
     # concurrent runs per org, so account locks are not contended across the
     # sweep and the loop.
+    #
+    # TBD-600: both legs of a due transfer pair settle in ONE savepoint, their
+    # accounts locked in sorted id order as ``_create_occurrence`` locks them,
+    # so a failure can never settle one side only. The count is occurrences,
+    # not rows (a pair counts once), as generation's ``created_settled`` is.
+    by_id = {tx.id: tx for tx in rows}
+    units = []
     for tx in rows:
+        partner = by_id.get(tx.linked_transaction_id)
+        if is_reciprocal_pair(tx, partner):
+            if tx.type == TransactionType.EXPENSE:
+                units.append([tx, partner])
+        else:
+            units.append([tx])
+    for unit in units:
         async with db.begin_nested():
-            tx.status = TransactionStatus.SETTLED
-            tx.settled_date = tx.date
-            acct = await get_account_for_update(db, tx.account_id, org_id)
-            apply_balance(acct, tx.amount, tx.type)
-    # Occurrences, not rows (TBD-600): a transfer pair settled together counts
-    # once, as generation's own ``created_settled`` does.
-    ids = {tx.id for tx in rows}
-    return sum(
-        1 for tx in rows
-        if not (tx.type == TransactionType.INCOME and tx.linked_transaction_id in ids)
-    )
+            for tx in sorted(unit, key=lambda t: t.account_id):
+                tx.status = TransactionStatus.SETTLED
+                tx.settled_date = tx.date
+                acct = await get_account_for_update(db, tx.account_id, org_id)
+                apply_balance(acct, tx.amount, tx.type)
+    return len(units)
 
 
 async def generate_due_transactions(

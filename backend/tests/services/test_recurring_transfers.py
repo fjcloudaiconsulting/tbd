@@ -18,7 +18,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -70,6 +70,15 @@ async def db():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    # ``recurring_id`` is ON DELETE SET NULL; sqlite enforces it only with
+    # foreign keys on, as MySQL always does.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _fk_on(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -562,3 +571,53 @@ async def test_recurring_report_counts_transfers_only_when_asked(db, seed):
     # The destination account matches the account filter, once.
     assert [r["value"] for r in await run([], [transfers, savings])] == [250.0]
     assert [r["value"] for r in await run([Dimension.ACCOUNT], [transfers, savings])] == [250.0]
+
+
+@pytest.mark.asyncio
+async def test_kept_leg_after_delete_settles_by_hand(db, seed):
+    """After ``delete_recurring`` keeps a half-settled pair whole, the kept
+    pending leg has no series (``recurring_id`` NULL), so auto-settle never
+    reaches it. It settles by hand as an ordinary linked transfer leg; the
+    partner is untouched (a leg's status is never mirrored onto it)."""
+    r_id, exp, inc = await _pending_pair(db, seed, auto_settle=True)
+    await transaction_service.update_transaction(
+        db, seed["org_id"], exp.id, TransactionUpdate(status="settled", settled_date=exp.date)
+    )
+    (await db.get(RecurringTransaction, r_id)).is_active = False
+    await db.commit()
+    await recurring_service.delete_recurring(db, seed["org_id"], r_id)
+    kept = await db.get(Transaction, inc.id, populate_existing=True)
+    assert (kept.status, kept.recurring_id) == (TransactionStatus.PENDING, None)
+    before = await _balances(db, seed)
+
+    await transaction_service.update_transaction(
+        db, seed["org_id"], kept.id, TransactionUpdate(status="settled", settled_date=kept.date)
+    )
+    kept = await db.get(Transaction, inc.id, populate_existing=True)
+    partner = await db.get(Transaction, exp.id, populate_existing=True)
+    assert kept.status == partner.status == TransactionStatus.SETTLED
+    assert (kept.linked_transaction_id, partner.linked_transaction_id) == (exp.id, inc.id)
+    after = await _balances(db, seed)
+    assert after[seed["savings"]] == before[seed["savings"]] + AMOUNT
+    assert after[seed["main"]] == before[seed["main"]]
+
+
+@pytest.mark.asyncio
+async def test_report_account_dimension_counts_a_transfer_once_per_leg(db, seed):
+    """Intended: with transfers asked for, the account dimension shows a
+    transfer on BOTH its accounts, so the grouped rows sum to twice the
+    ungrouped total. Transfers are opt-in, so no default total is affected."""
+    await _create(db, seed)
+    src = report_sources.get_source("recurring")
+    transfers = [Filter(field=FilterField.TXN_TYPE, op=FilterOp.EQ, value="transfer")]
+    total = Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT)
+
+    async def run(dimensions):
+        q = ReportsQuery(dataset=Dataset.RECURRING, measure=total,
+                         dimensions=dimensions, filters=transfers)
+        return (await src.build_rows(db, seed["org_id"], q))[0]
+
+    ungrouped = sum(r["value"] for r in await run([]))
+    grouped = sum(r["value"] for r in await run([Dimension.ACCOUNT]))
+    assert ungrouped == 250.0
+    assert grouped == 2 * ungrouped
