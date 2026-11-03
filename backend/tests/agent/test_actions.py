@@ -858,7 +858,7 @@ _WRITE_CASES = {
     # A reportable row on the confirm path: the category rule upsert is disclosed.
     "transactions_set_category": lambda a: {"transaction_id": a["tx"], "category_id": a["c2"]},
     "transactions_update": lambda a: {"transaction_id": a["tx"], "description": "Renamed"},
-    "recurring_update": lambda a: {"recurring_id": a["rec"], "amount": "550.00"},
+    "recurring_update": lambda a: {"recurring_id": a["rec"], "description": "Rent, flat 2"},
 }
 
 

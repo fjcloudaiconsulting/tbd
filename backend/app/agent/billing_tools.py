@@ -27,8 +27,6 @@ from app.services.exceptions import ValidationError
 
 ROUTER = settings_router.router
 PERIODS = "billing_periods"
-# ``POST /billing-periods/ensure-future``: its default count and its clamp.
-ENSURE_DEFAULT, ENSURE_MIN, ENSURE_MAX = 3, 1, 6
 
 
 async def _open_period(ctx: ToolContext) -> BillingPeriod:
@@ -105,8 +103,8 @@ register(route_tool(
 # ── billing_periods_ensure_future ─────────────────────────────────────────
 
 async def _ensure_preview(ctx: ToolContext, args) -> Preview:
-    count = args.count if "count" in args.model_fields_set else ENSURE_DEFAULT
-    count = min(max(count, ENSURE_MIN), ENSURE_MAX)
+    sent = "count" in args.model_fields_set
+    count = billing_service.clamp_future_count(args.count if sent else billing_service.FUTURE_PERIODS_DEFAULT)
     current = await _open_period(ctx)
     planned = await billing_service.plan_future_periods(ctx.db, ctx.org_id, current.start_date, count)
     if not planned:

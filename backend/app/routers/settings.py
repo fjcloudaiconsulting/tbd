@@ -1094,11 +1094,11 @@ async def create_period(
 async def ensure_future_periods(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    count: int = 3,
+    count: int = billing_service.FUTURE_PERIODS_DEFAULT,
 ):
     """Create stub periods for upcoming months so the user can plan ahead."""
     _require_admin(current_user)
-    count = min(max(count, 1), 6)  # Cap between 1 and 6 months
+    count = billing_service.clamp_future_count(count)
     created = await billing_service.ensure_future_periods(db, current_user.org_id, count=count)
     return [
         {

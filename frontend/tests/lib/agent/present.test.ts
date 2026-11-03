@@ -55,6 +55,7 @@ describe("present (TBD-664)", () => {
   it("the recurring and billing-period tools read by their rows (TBD-667)", () => {
     expect(actionHeadline("recurring_stop", "s", [])).toBe("Stop a recurring transaction");
     expect(actionHeadline("billing_period_close", "s", [])).toBe("Close the billing period");
+    expect(actionHeadline("recurring_update_money", "s", [])).toBe("Change a recurring transaction's amount or schedule");
     const left = c({ field: "recurring_id", before: 4, after: null });
     expect(changeLabel(left)).toBe("Recurring series");
     expect(changeValue(left, "before", undefined, {})).toBe("recurring transaction #4");

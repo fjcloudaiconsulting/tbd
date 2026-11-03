@@ -597,6 +597,29 @@ async def _due(f, a):
                _occurrence(a, a["weekly"], P_START, description="GYM"))
 
 
+async def _lapsed(f, a):
+    """An auto-settle template three cycles behind: generation catches up four
+    occurrences, each settled into the balance."""
+    [a["lapsed"]] = await _ids(f, _template(
+        a, auto_settle=True, next_due_date=P_START - relativedelta(months=3), amount=Decimal("15.00"),
+    ))
+
+
+CLAMP_START = P_START - relativedelta(months=1)
+
+
+async def _clamp(f, a):
+    """The open period started a month ago with a budget, and a stub begins five
+    days after it: a close today is clamped to the day before the stub, which
+    is revived."""
+    async with f() as db:
+        await db.execute(update(BillingPeriod).where(
+            BillingPeriod.org_id == a["org"], BillingPeriod.end_date.is_(None)).values(start_date=CLAMP_START))
+        await db.commit()
+    await _add(f, BillingPeriod(org_id=a["org"], start_date=CLAMP_START + 5 * DAY, end_date=CLAMP_START + 8 * DAY),
+               Budget(org_id=a["org"], category_id=a["c1"], amount=Decimal("70.00"), period_start=CLAMP_START))
+
+
 async def _next_month_stub(f, a):
     start = P_START + relativedelta(months=1)
     await _add(f, BillingPeriod(org_id=a["org"], start_date=start,
@@ -634,18 +657,26 @@ RECURRING_SCENARIOS = [
         "type": "expense", "frequency": "monthly", "next_due_date": P_START.isoformat(),
         "occurrence_count": 12,
     }), _none, False),
-    ("recurring-update-mirrors-onto-pending-siblings",
-     _rec("recurring_update", amount="11.00", description="Spotify Family", account_id="@savings",
-          category_id="@c2"), _seq(_savings, _series), False),
-    ("recurring-update-auto", _rec("recurring_update", amount="11.00"), _series, True),
-    ("recurring-update-resume-re-anchors", _rec("recurring_update", is_active=True), _paused, False),
-    ("recurring-update-open-ended-resumes-a-finished-series",
-     _rec("recurring_update", occurrence_count=None), _finished, False),
+    ("recurring-update-mirrors-name-and-category-onto-pending-siblings",
+     _rec("recurring_update", description="Spotify Family", category_id="@c2"), _series, False),
+    ("recurring-update-auto", _rec("recurring_update", description="Spotify Family"), _series, True),
+    ("recurring-update-pauses", _rec("recurring_update", is_active=False), _series, False),
+    ("recurring-update-money-mirrors-amount-and-account-onto-pending-siblings",
+     _rec("recurring_update_money", amount="11.00", account_id="@savings", auto_settle=True),
+     _seq(_savings, _series), False),
+    ("recurring-update-money-type-with-its-category",
+     _rec("recurring_update_money", type="income", category_id="@salary"),
+     _seq(_income_category, _series), False),
+    ("recurring-update-money-resume-re-anchors", _rec("recurring_update_money", is_active=True),
+     _paused, False),
+    ("recurring-update-money-open-ended-resumes-a-finished-series",
+     _rec("recurring_update_money", occurrence_count=None), _finished, False),
     ("recurring-stop", _rec("recurring_stop"), _series_matched, False),
     ("recurring-delete", _rec("recurring_delete"), _series_matched, False),
     ("recurring-skip-next", _rec_next("recurring_skip_next"), _series, False),
     ("recurring-materialise-next", _rec_next("recurring_materialise_next"), _series, False),
     ("recurring-generate", _plain("recurring_generate"), _due, False),
+    ("recurring-generate-catches-up-several-cycles", _plain("recurring_generate"), _lapsed, False),
     ("billing-cycle-day", _plain("billing_cycle_update", billing_cycle_day=15), _none, False),
     ("billing-period-create", _plain("billing_period_create",
                                      start_date=(P_START + relativedelta(months=6)).isoformat()), _none, False),
@@ -653,6 +684,8 @@ RECURRING_SCENARIOS = [
     ("billing-periods-ensure-future-skips-a-stub", _plain("billing_periods_ensure_future"),
      _next_month_stub, False),
     ("billing-period-close", _plain("billing_period_close", close_date=TODAY.isoformat()), _none, False),
+    ("billing-period-close-is-clamped-to-the-next-period",
+     _plain("billing_period_close", close_date=TODAY.isoformat()), _clamp, False),
     ("billing-period-close-revives-the-next-stub",
      _plain("billing_period_close", close_date=TODAY.isoformat()), _stub_after_today, False),
 ]
@@ -717,6 +750,12 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
         assert changes[1]["before"] == changes[1]["after"] == a["c2"]
     if sid == "category-auto-learns-no-rule":
         assert [c["entity"] for c in changes] == ["transactions"]
+    if sid == "recurring-generate-catches-up-several-cycles":
+        assert sum(1 for c in changes if c["field"] == "recurring_id") == 4
+    if sid == "billing-period-close-is-clamped-to-the-next-period":
+        ends = {(c["id"], c["after"]) for c in changes if c["field"] in ("end_date", "period_end")}
+        assert (CLAMP_START + 4 * DAY).isoformat() in {after for _, after in ends}
+        assert any(c["entity"] == "billing_periods" and c["before"] and c["after"] is None for c in changes)
 
 
 def _uncovered():

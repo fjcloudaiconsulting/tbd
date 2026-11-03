@@ -9,12 +9,16 @@ tags, the rows those deletions unlink or mark rejected, the import-batch
 counters, the rows that leave the series, and every occurrence generation
 writes with the balances it moves.
 
-``recurring_update`` is the one ``write``: it changes the template and pending
-occurrences only, never a balance, and its inverse restores the template.
-Everything else is ``sensitive`` (never auto-applied, confirmed only by the
-person in the app): generation and materialising move or create money rows,
-a create, a skip and a materialise insert rows no revert can remove, and a
-stop or delete removes rows and marks matched import rows rejected for good.
+``recurring_update`` is the one ``write``: description, category and pause.
+It changes the template and pending occurrences only, and nothing it sets
+moves money later either; its inverse restores the template. Everything else
+is ``sensitive`` (never auto-applied, confirmed only by the person in the
+app): ``recurring_update_money`` sets what generation later settles into the
+balance (amount, account, type, auto-settle, schedule, resume, count), as a
+pending amount edit (``transactions_update_money``) is; generation and
+materialising move or create money rows; a create, a skip and a materialise
+insert rows no revert can remove; a stop or delete removes rows and marks
+matched import rows rejected for good.
 """
 from __future__ import annotations
 
@@ -108,7 +112,15 @@ register(route_tool(
 ))
 
 
-# ── recurring_update ──────────────────────────────────────────────────────
+# ── recurring_update / recurring_update_money ─────────────────────────────
+#
+# One route, two tools, by what the field does once generation runs (TBD-667
+# review): an ``agent:auto`` write could otherwise raise the amount and turn
+# on auto-settle, and the scheduled generation would settle it into the
+# balance with no person ever confirming. Each tool refuses the other's
+# fields (its args model forbids them) and the other's ``is_active`` value:
+# the write pauses, only the sensitive tool resumes. The category is on both:
+# a type change has to carry a category valid for the new type.
 #
 # ``update_recurring`` writes beyond the fields sent, and the preview names it:
 # a resume (``is_active`` false -> true, or a higher ``occurrence_count`` on a
@@ -134,7 +146,7 @@ async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, chang
         id=r.id, next_due_date=new["next_due_date"], frequency=Frequency(new["frequency"]),
         occurrence_count=new["occurrence_count"], occurrences_elapsed=r.occurrences_elapsed,
     )
-    resumed = args.is_active is True and not r.is_active
+    resumed = getattr(args, "is_active", None) is True and not r.is_active
     if resumed or (has_remaining_occurrences(post) and not has_remaining_occurrences(r)):
         await recurring_service._reanchor_frontier_on_resume(ctx.db, ctx.org_id, post, today=today)
     try:
@@ -192,19 +204,44 @@ async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, chang
     )
 
 
+def _is_active_only(allowed: bool, other: str):
+    async def check(ctx: ToolContext, r: RecurringTransaction, args) -> None:
+        if "is_active" in args.model_fields_set and args.is_active is not allowed:
+            verb = "pause" if allowed else "resume"
+            raise ToolError("invalid_arguments", f"this tool cannot {verb} a template; use {other}")
+    return check
+
+
 register(route_tool(
     name="recurring_update", risk="write",
     router=ROUTER, method="PUT", path="/api/v1/recurring/{recurring_id}",
-    fields=UPDATE_FIELDS, nullable=("occurrence_count",),
+    fields=("description", "category_id", "is_active"),
     product_area=None, min_role=Role.MEMBER,
     description=(
-        "Edit a recurring template. An amount, description, category or account change also "
-        "applies to its pending occurrences that still have the old value; is_active true "
-        "resumes a paused template; occurrence_count null makes the series open-ended. "
-        "Returns a preview to confirm; nothing changes until it is confirmed."
+        "Rename a recurring template, change its category, or pause it (is_active false). A "
+        "description or category change also applies to its pending occurrences that still "
+        "have the old value. Use recurring_update_money for the amount, account, type, "
+        "auto-settle, schedule, count, or to resume. Returns a preview to confirm; nothing "
+        "changes until it is confirmed."
     ),
-    entity=RecurringTransaction, present=_update_present,
-    no_change="the recurring transaction already has these values",
+    entity=RecurringTransaction, check=_is_active_only(False, "recurring_update_money"),
+    present=_update_present, no_change="the recurring transaction already has these values",
+))
+register(route_tool(
+    name="recurring_update_money", risk="sensitive",
+    router=ROUTER, method="PUT", path="/api/v1/recurring/{recurring_id}",
+    fields=("amount", "account_id", "type", "category_id", "auto_settle", "frequency",
+            "next_due_date", "occurrence_count", "is_active"),
+    nullable=("occurrence_count",), product_area=None, min_role=Role.MEMBER,
+    description=(
+        "Change what a recurring template generates: its amount, account, type (with a "
+        "category valid for it), auto_settle, frequency, next_due_date or occurrence_count "
+        "(null: open-ended), or resume it (is_active true). An amount or account change also "
+        "applies to its pending occurrences that still have the old value; generation settles "
+        f"auto-settle occurrences into the balance. {CONFIRM}"
+    ),
+    entity=RecurringTransaction, check=_is_active_only(True, "recurring_update"),
+    present=_update_present, no_change="the recurring transaction already has these values",
 ))
 
 

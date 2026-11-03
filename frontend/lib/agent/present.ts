@@ -37,6 +37,7 @@ const TOOL_LABELS: Record<string, string> = {
   recurring_list: "Looked up recurring transactions",
   recurring_create: "Add a recurring transaction",
   recurring_update: "Edit a recurring transaction",
+  recurring_update_money: "Change a recurring transaction's amount or schedule",
   recurring_stop: "Stop a recurring transaction",
   recurring_delete: "Delete a recurring transaction",
   recurring_skip_next: "Skip the next occurrence",

@@ -18,7 +18,7 @@ from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction
 
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    P_START, _confirm, _invoke, _refused, engine, factory, w,
+    AUTO, P_START, _confirm, _invoke, _refused, engine, factory, w,
 )
 from tests.agent.test_agent_honesty import TODAY, _occurrence, _series, _series_matched, _template
 from tests.agent.test_set_category import _add
@@ -104,7 +104,7 @@ async def test_update_refuses_a_next_due_date_onto_an_existing_occurrence(factor
     """The service's own frontier check runs at preview, as a ``conflict``."""
     a = w["A"]
     await _series(factory, a)
-    err = await _refused(_invoke(factory, a["member"], "recurring_update",
+    err = await _refused(_invoke(factory, a["member"], "recurring_update_money",
                                  {"recurring_id": a["rec"], "next_due_date": (TODAY + 50 * DAY).isoformat()}))
     assert err.code == "conflict"
 
@@ -112,6 +112,52 @@ async def test_update_refuses_a_next_due_date_onto_an_existing_occurrence(factor
 async def test_generate_with_nothing_due_is_no_change(factory, w):
     err = await _refused(_invoke(factory, w["A"]["member"], "recurring_generate", {}))
     assert err.code == "no_change"
+
+
+# ── the write / sensitive split of PUT /recurring/{id} ────────────────────
+
+async def _template_row(f, rid) -> RecurringTransaction:
+    async with f() as db:
+        return await db.get(RecurringTransaction, rid)
+
+
+async def test_auto_cannot_change_what_generation_settles(factory, w):
+    """FENCE (TBD-667 review). Wrong implementation: amount or auto_settle on
+    the ``write`` tool, so an ``agent:auto`` token raises the amount and turns
+    on auto-settle with no person confirming, and the scheduled generation
+    settles it into the balance. The write tool refuses those fields; the
+    money tool only stages, and over MCP only the person confirms it."""
+    a = w["A"]
+    await _series(factory, a)
+    kw = {"api_token_id": a["t1"], **AUTO}
+    for money in ({"amount": "5000.00"}, {"auto_settle": True}, {"account_id": a["acct"]},
+                  {"type": "income"}, {"occurrence_count": None}, {"next_due_date": TODAY.isoformat()},
+                  {"frequency": "weekly"}):
+        err = await _refused(_invoke(factory, a["member"], "recurring_update",
+                                     {"recurring_id": a["rec"], **money}, **kw))
+        assert err.code == "invalid_arguments", money
+    out = await _invoke(factory, a["member"], "recurring_update_money",
+                        {"recurring_id": a["rec"], "amount": "5000.00", "auto_settle": True}, **kw)
+    assert out["requires_browser_confirmation"] is True and "status" not in out
+    err = await _refused(_confirm(factory, a["member"], out["action_id"], **kw))
+    assert err.code == "requires_browser_confirmation"
+    r = await _template_row(factory, a["rec"])
+    assert (str(r.amount), r.auto_settle) == ("9.99", False)
+
+
+async def test_only_the_sensitive_tool_resumes_and_only_the_write_pauses(factory, w):
+    a = w["A"]
+    await _series(factory, a)
+    err = await _refused(_invoke(factory, a["member"], "recurring_update_money",
+                                 {"recurring_id": a["rec"], "is_active": False}))
+    assert (err.code, err.detail) == ("invalid_arguments", "this tool cannot pause a template; use recurring_update")
+    await _apply(factory, a["member"], "recurring_update", {"recurring_id": a["rec"], "is_active": False})
+    assert (await _template_row(factory, a["rec"])).is_active is False
+    err = await _refused(_invoke(factory, a["member"], "recurring_update",
+                                 {"recurring_id": a["rec"], "is_active": True}))
+    assert err.detail == "this tool cannot resume a template; use recurring_update_money"
+    await _apply(factory, a["member"], "recurring_update_money", {"recurring_id": a["rec"], "is_active": True})
+    assert (await _template_row(factory, a["rec"])).is_active is True
 
 
 # ── results ───────────────────────────────────────────────────────────────
@@ -126,10 +172,10 @@ async def test_stop_reports_and_discloses_the_demoted_row(factory, w):
     assert any("marked rejected" in x for x in out["warnings"])
 
 
-async def test_update_mirrors_onto_siblings_at_the_old_amount_only(factory, w):
+async def test_update_money_mirrors_onto_siblings_at_the_old_amount_only(factory, w):
     a = w["A"]
     await _series(factory, a)
-    out, done = await _apply(factory, a["member"], "recurring_update",
+    out, done = await _apply(factory, a["member"], "recurring_update_money",
                              {"recurring_id": a["rec"], "amount": "11.00"})
     assert done["result"]["amount"] == "11.00"
     async with factory() as db:
@@ -155,7 +201,6 @@ async def test_skip_next_writes_a_skipped_row_and_moves_the_frontier(factory, w)
 
 async def test_generate_settles_and_writes_what_is_due(factory, w):
     a = w["A"]
-    [rid] = [None]
     async with factory() as db:
         t = _template(a, auto_settle=True, next_due_date=P_START, amount=Decimal("20.00"))
         db.add(t)

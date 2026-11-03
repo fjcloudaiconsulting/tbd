@@ -9,7 +9,9 @@ the tool runs the code REST runs instead of a second adapter over a service.
   model, so its validators run (and normalise: the preview shows the stripped
   description the service stores). ``required`` makes a field mandatory; only
   a ``nullable`` field accepts null, because elsewhere the service reads null
-  as "leave alone" and a preview of the null would lie.
+  as "leave alone" and a preview of the null would lie. An omitted query field
+  is the route's default, so a query param with no plain default (required, or
+  a ``default_factory``) must be in ``required``.
 * ``execute`` (``run`` for a read) calls ``route.endpoint`` in-process, so the
   handler's inline guards run. Its parameters come from a CLOSED dependency
   map: ``get_current_user`` is ``ctx.user``, ``get_db`` is ``ctx.db``,
@@ -309,6 +311,11 @@ def route_tool(
     missing += [k for k, q in query.items() if q.field_info.is_required() and k not in fields]
     if missing:
         raise ToolRegistrationError(f"{name}: the route requires {missing}, outside the allowlist")
+    # An omitted query field is handed to the handler as its route default, so
+    # one with no plain default must be sent: required by the tool too.
+    for alias, q in query.items():
+        if (q.field_info.is_required() or q.field_info.default_factory is not None) and alias not in required:
+            raise ToolRegistrationError(f"{name}: query param {alias!r} has no plain default; list it in required")
 
     defs: dict[str, Any] = {
         p.name: _arg(p.field_info, required=True, nullable=True) for p in dep.path_params

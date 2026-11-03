@@ -11,7 +11,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -139,6 +139,31 @@ async def _hand_preview(ctx, args):
 
 
 # ── T-B2: the fields allowlist ────────────────────────────────────────────
+
+def _query_router(with_factory: bool):
+    r = APIRouter(prefix="/api/v1/widgets")
+
+    async def _required(widget_id: int, ids: list[int] = Query(),
+                        current_user: User = Depends(get_current_user)):
+        return {}
+
+    async def _factory(widget_id: int, ids: list[int] = Query(default_factory=list),
+                       current_user: User = Depends(get_current_user)):
+        return {}
+
+    r.post("/{widget_id}/approve")(_factory if with_factory else _required)
+    return r
+
+
+@pytest.mark.parametrize("with_factory", [False, True], ids=["required", "factory"])
+def test_tb2_a_query_param_without_a_plain_default_must_be_required(with_factory):
+    """FENCE T-B2 (TBD-667). Wrong implementation: an omitted query field with
+    no plain default reaching the handler as ``PydanticUndefined``."""
+    router = _query_router(with_factory)
+    with pytest.raises(ToolRegistrationError, match="no plain default"):
+        _tool(router, verb=True, fields=("ids",), entity=None)
+    assert _tool(router, verb=True, fields=("ids",), required=("ids",), entity=None)
+
 
 def test_tb2_args_are_the_path_params_plus_the_allowlist_only():
     """FENCE T-B2. Wrong implementation: the whole REST body exposed (the

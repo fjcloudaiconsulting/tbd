@@ -207,6 +207,15 @@ async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
     return list(result.scalars().all())
 
 
+# ``POST /billing-periods/ensure-future``: the stub count it defaults to and
+# the range it clamps a requested count to (the route and the agent preview).
+FUTURE_PERIODS_DEFAULT, FUTURE_PERIODS_MIN, FUTURE_PERIODS_MAX = 3, 1, 6
+
+
+def clamp_future_count(count: int) -> int:
+    return min(max(count, FUTURE_PERIODS_MIN), FUTURE_PERIODS_MAX)
+
+
 async def ensure_future_periods(
     db: AsyncSession, org_id: int, count: int = 3,
 ) -> list[BillingPeriod]:
