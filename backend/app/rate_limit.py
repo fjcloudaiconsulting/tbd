@@ -193,6 +193,13 @@ def get_client_ip(request: Request) -> str:
     return client_host or "127.0.0.1"
 
 
+def client_ip(request: Request) -> str:
+    """:func:`get_client_ip` as a dependency, so a handler that audits the
+    caller's address takes no raw ``Request``: an in-process agent tool
+    (``app.agent.route_tool``) supplies none and the audit row records none."""
+    return get_client_ip(request)
+
+
 def rate_limit_key(request: Request) -> str:
     """Bucket key for per-IP limits: ``get_client_ip``, with IPv6 cut to its /64.
 

@@ -225,6 +225,15 @@ class ToolSpec:
     # The APIRoute a route-bound tool runs in-process (``app.agent.route_tool``,
     # TBD-664); ``None`` for a hand-written adapter.
     route: Any = field(default=None, compare=False, repr=False)
+    # Further product-area switches the route also carries (TBD-666: seeding
+    # budgets from a forecast is behind both Budgets and Forecast).
+    extra_areas: tuple[Feature, ...] = ()
+    # ``(args_json, preview_json) -> args`` restoring a done write, for a tool
+    # whose primary fields are not its own args (TBD-666: a rebalance's items);
+    # ``None`` uses ``actions.inverse_args``' field-for-field default.
+    inverse: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = field(
+        default=None, compare=False, repr=False,
+    )
 
 
 _TOOLS: dict[str, ToolSpec] = {}
@@ -272,6 +281,10 @@ def register(spec: ToolSpec) -> ToolSpec:
         raise ToolRegistrationError(f"{spec.name}: min_role must be a Role")
     if spec.product_area is not None and not isinstance(spec.product_area, Feature):
         raise ToolRegistrationError(f"{spec.name}: product_area must be a Feature or None")
+    if spec.extra_areas and (
+        spec.product_area is None or not all(isinstance(f, Feature) for f in spec.extra_areas)
+    ):
+        raise ToolRegistrationError(f"{spec.name}: extra_areas are Features beside a product_area")
     method, path = spec.mirrors_route
     if method not in _ROUTE_METHODS or not path.startswith("/api/v1/"):
         raise ToolRegistrationError(f"{spec.name}: bad mirrors_route {spec.mirrors_route!r}")
@@ -397,8 +410,9 @@ async def check_gates(
     if not await feature_service.has_feature(db, org_id, AGENT_FEATURE_KEY):
         raise ToolError("feature_not_entitled", AGENT_FEATURE_KEY)
     # 3. Product area (env floor, operator switch, tenant opt-out).
-    if spec.product_area is not None and not await resolve_feature(spec.product_area, org_id, db):
-        raise ToolError("feature_disabled", spec.product_area.value)
+    for area in (spec.product_area, *spec.extra_areas):
+        if area is not None and not await resolve_feature(area, org_id, db):
+            raise ToolError("feature_disabled", area.value)
     # 4. Role.
     if ROLE_RANK.get(user.role, 0) < ROLE_RANK[spec.min_role]:
         raise ToolError("insufficient_role", spec.min_role.value)

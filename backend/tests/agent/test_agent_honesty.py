@@ -34,20 +34,24 @@ from decimal import Decimal
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, update
+from dateutil.relativedelta import relativedelta
+from sqlalchemy import delete, select, update
 
 from app.agent import registry
 from app.agent.registry import Change, Preview, ToolSpec
 from app.models import Account
 from app.models.agent_pending_action import AgentPendingAction
 from app.models.base import Base
+from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
+from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.models.user import Role
+from app.models.user import Role, User
+from app.services import org_bootstrap_service
 from app.services.category_rules_service import normalize_description
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
     P_START, _confirm, _invoke, engine, factory, w,
@@ -549,6 +553,133 @@ SENSITIVE_SCENARIOS = [
 ]
 
 
+# ── the budget and category tools (TBD-666) ───────────────────────────────
+
+NEXT = P_START + relativedelta(months=1)
+
+
+async def _rent(f, a):
+    [a["rent"]] = await _ids(f, Category(org_id=a["org"], name="Rent", type=CategoryType.EXPENSE))
+
+
+async def _next_period(f, a):
+    """The next period already exists, closed: no stub is added."""
+    for k in range(1, 4):
+        start = P_START + relativedelta(months=k)
+        await _add(f, BillingPeriod(org_id=a["org"], start_date=start,
+                                    end_date=start + relativedelta(months=1) - datetime.timedelta(days=1)))
+
+
+async def _forecast(f, a):
+    """A plan for the open period: Rent's own item and a Rent subcategory's sum
+    into one Rent budget; Food (budgeted already) is skipped."""
+    await _rent(f, a)
+    [a["garage"]] = await _ids(f, Category(org_id=a["org"], name="Garage", type=CategoryType.EXPENSE,
+                                           parent_id=a["rent"]))
+    async with f() as db:
+        pid = await db.scalar(select(BillingPeriod.id).where(BillingPeriod.org_id == a["org"]))
+    [plan] = await _ids(f, ForecastPlan(org_id=a["org"], billing_period_id=pid))
+    await _add(f, *(ForecastPlanItem(plan_id=plan, org_id=a["org"], category_id=c, type=ForecastItemType.EXPENSE,
+                                     planned_amount=Decimal(v))
+                    for c, v in ((a["rent"], "800.00"), (a["garage"], "75.50"), (a["c1"], "300.00"))))
+
+
+def _tool(tool, /, **fields):
+    def build(a):
+        return tool, _resolve(a, fields)
+    return build
+
+
+def _rebalance(a):
+    return "budgets_rebalance", {"items": [
+        {"budget_id": a["b1"], "expected_amount": "100.00", "amount": "80.00"},
+        {"budget_id": a["b2"], "expected_amount": "50.00", "amount": "70.00"},
+    ]}
+
+
+async def _subs(f, a):
+    """Snacks under Food, Cinema and Games under Fun."""
+    a["snacks"], a["cinema"], a["games"] = await _ids(f, *(
+        Category(org_id=a["org"], name=n, type=CategoryType.EXPENSE, parent_id=a[p])
+        for n, p in (("Snacks", "c1"), ("Cinema", "c2"), ("Games", "c2"))
+    ))
+
+
+async def _in_use(f, a):
+    """Food is in use: its transaction and rule, a budget, an expense forecast
+    item that folds into Fun's and an income one that moves."""
+    await _rule_to_c1(f, a)
+    async with f() as db:
+        pid = await db.scalar(select(BillingPeriod.id).where(BillingPeriod.org_id == a["org"]))
+    [plan] = await _ids(f, ForecastPlan(org_id=a["org"], billing_period_id=pid))
+    await _add(f, *(ForecastPlanItem(plan_id=plan, org_id=a["org"], category_id=a[c], type=t,
+                                     planned_amount=Decimal(v))
+                    for c, t, v in (("c1", ForecastItemType.EXPENSE, "30.00"),
+                                    ("c2", ForecastItemType.EXPENSE, "20.00"),
+                                    ("c1", ForecastItemType.INCOME, "5.00"))))
+
+
+async def _floor(f, a):
+    """An expense master with a subcategory, so the org keeps its floor (one
+    expense master and one expense subcategory) after a master is deleted."""
+    [home] = await _ids(f, Category(org_id=a["org"], name="Home", type=CategoryType.EXPENSE))
+    await _add(f, Category(org_id=a["org"], name="Repairs", type=CategoryType.EXPENSE, parent_id=home))
+
+
+async def _owner_missing_some(f, a):
+    """The member owns the org, which has every recommended category but one
+    master with its subcategories and one other subcategory."""
+    async with f() as db:
+        await db.execute(update(User).where(User.id == a["member"]).values(role=Role.OWNER))
+        await org_bootstrap_service.restore_recommended_categories(db, org_id=a["org"])
+        await db.commit()
+    from app.models.category import SYSTEM_CATEGORIES
+
+    master = min(SYSTEM_CATEGORIES, key=lambda m: len(m.get("children", [])) or 99)
+    other = next(m for m in SYSTEM_CATEGORIES if m is not master and m.get("children"))
+    gone = [c["slug"] for c in master.get("children", [])] + [master["slug"], other["children"][0]["slug"]]
+    async with f() as db:
+        for slug in gone:
+            await db.execute(delete(Category).where(Category.org_id == a["org"], Category.slug == slug))
+        await db.commit()
+
+
+PLANNING_SCENARIOS = [
+    ("budget-create-in-the-open-period", _tool("budgets_create", category_id="@rent", amount="900.00"), _rent, False),
+    ("budget-create-in-a-closed-period", _tool("budgets_create", category_id="@rent", amount="900.00",
+                                               period_start=NEXT.isoformat()), _seq(_rent, _next_period), False),
+    ("budget-from-forecast-open-period", _tool("budgets_from_forecast"), _forecast, False),
+    ("budget-from-forecast-named-period-adds-stubs",
+     _tool("budgets_from_forecast", period_start=P_START.isoformat()), _forecast, False),
+    ("budget-copy-into-a-stub-it-adds", _tool("budgets_copy_from_period", source_period_start=P_START.isoformat(),
+                                              target_period_start=NEXT.isoformat()), _none, False),
+    ("budget-copy-into-an-existing-period", _tool("budgets_copy_from_period", source_period_start=P_START.isoformat(),
+                                                  target_period_start=NEXT.isoformat()), _next_period, False),
+    ("budget-draft-adds-stubs", _tool("budgets_draft_next", period_start=NEXT.isoformat()), _none, False),
+    ("budget-draft-writes-nothing", _tool("budgets_draft_next", period_start=NEXT.isoformat()), _next_period, False),
+    ("budget-rebalance", _rebalance, _none, False),
+    ("budget-rebalance-auto", _rebalance, _none, True),
+    ("budget-delete", _tool("budgets_delete", budget_id="@b1"), _none, False),
+    ("category-create-master", _tool("categories_create", name="  Travel ", type="expense", description="Trips"),
+     _none, False),
+    ("category-create-sub-takes-the-master-type", _tool("categories_create", name="Bakery", type="income",
+                                                         parent_id="@c1"), _none, False),
+    ("category-rename", _tool("categories_update", category_id="@c1", name="Groceries", description=None), _none, False),
+    ("category-rename-auto", _tool("categories_update", category_id="@c1", name="Groceries"), _none, True),
+    ("category-type-cascades-to-subs", _tool("categories_update", category_id="@c2", type="both"), _subs, False),
+    ("category-move", _tool("categories_move", category_id="@cinema", target_parent_id="@c1"), _subs, False),
+    ("category-batch-move", lambda a: ("categories_batch_move", {"moves": [
+        {"subcategory_id": a["cinema"], "target_parent_id": a["c1"]},
+        {"subcategory_id": a["snacks"], "target_parent_id": a["c2"]},
+    ]}), _subs, False),
+    ("category-delete-unused-drops-its-rule-and-budget", _tool("categories_delete", category_id="@c2"),
+     _seq(_floor, _rule_to_c2), False),
+    ("category-delete-in-use-migrates", _tool("categories_delete", category_id="@c1", target_category_id="@c2"),
+     _seq(_floor, _in_use), False),
+    ("category-restore-recommended", _tool("categories_restore_recommended"), _owner_missing_some, False),
+]
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -563,6 +694,7 @@ SCENARIOS = [
     ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
     *SENSITIVE_SCENARIOS,
+    *PLANNING_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
@@ -585,6 +717,24 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
         assert changes[1]["before"] == changes[1]["after"] == a["c2"]
     if sid == "category-auto-learns-no-rule":
         assert [c["entity"] for c in changes] == ["transactions"]
+    # TBD-666: the shapes these scenarios exist for were really exercised.
+    named = {(c["entity"], c["field"]): c["after"] for c in changes}
+    if sid == "budget-from-forecast-named-period-adds-stubs":
+        assert sum(c["entity"] == "billing_periods" for c in changes) == 6
+        assert named[("budgets", "amount")] == "875.50"  # Rent's own item plus its subcategory's
+    if sid == "budget-draft-writes-nothing":
+        assert changes == []
+    if sid == "category-create-sub-takes-the-master-type":
+        assert named[("categories", "type")] == "expense"
+    if sid == "category-type-cascades-to-subs":
+        assert sum(c["field"] == "type" for c in changes) == 3
+    if sid == "category-delete-in-use-migrates":
+        assert {c["entity"] for c in changes} == {
+            "categories", "transactions", "forecast_plan_items", "category_rules", "budgets"}
+        assert any(c["after"] is None for c in changes if c["entity"] == "forecast_plan_items")
+    if sid == "category-restore-recommended":
+        parents = [c["after"] for c in changes if c["field"] == "parent_id"]
+        assert any(isinstance(p, str) for p in parents) and any(isinstance(p, int) for p in parents)
 
 
 def _uncovered():

@@ -1,7 +1,7 @@
 from typing import Optional
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -12,7 +12,7 @@ from app.deps import get_current_user
 from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.rate_limit import get_client_ip
+from app.rate_limit import client_ip
 from app.schemas.category import (
     BatchMoveRequest,
     BatchMoveResult,
@@ -207,9 +207,9 @@ async def list_categories(
     response_model=RestoreRecommendedResult,
 )
 async def restore_recommended_categories_endpoint(
-    request: Request,
     current_user: User = Depends(require_org_owner),
     db: AsyncSession = Depends(get_db),
+    ip_address: str | None = Depends(client_ip),
 ):
     """Re-run the system-categories seed for the current org. Idempotent.
 
@@ -232,7 +232,7 @@ async def restore_recommended_categories_endpoint(
         target_org_id=current_user.org_id,
         target_org_name=org_name,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=ip_address,
         outcome="success",
         detail={"created_count": created_count},
     )
@@ -249,10 +249,10 @@ async def restore_recommended_categories_endpoint(
 
 @router.post("", response_model=CategoryResponse, status_code=201)
 async def create_category(
-    request: Request,
     body: CategoryCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    ip_address: str | None = Depends(client_ip),
 ):
     # Children silently inherit their parent's type.
     effective_type = CategoryType(body.type)
@@ -290,7 +290,7 @@ async def create_category(
         target_org_id=current_user.org_id,
         target_org_name=org_name,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=ip_address,
         outcome="success",
         detail={
             "category_id": cat.id,
@@ -325,11 +325,11 @@ async def create_category(
 
 @router.put("/{category_id}", response_model=CategoryResponse)
 async def update_category(
-    request: Request,
     category_id: int,
     body: CategoryUpdate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    ip_address: str | None = Depends(client_ip),
 ):
     result = await db.execute(
         select(Category).where(
@@ -433,7 +433,7 @@ async def update_category(
             target_org_id=current_user.org_id,
             target_org_name=org_name,
             request_id=_request_id(),
-            ip_address=get_client_ip(request),
+            ip_address=ip_address,
             outcome="success",
             detail={
                 "category_id": cat.id,
@@ -460,7 +460,7 @@ async def update_category(
             target_org_id=current_user.org_id,
             target_org_name=org_name,
             request_id=_request_id(),
-            ip_address=get_client_ip(request),
+            ip_address=ip_address,
             outcome="success",
             detail={
                 "category_id": cat.id,
@@ -535,11 +535,11 @@ async def preview_move_endpoint(
 
 @router.patch("/{category_id}/move", response_model=CategoryMoveResult)
 async def move_category_endpoint(
-    request: Request,
     category_id: int,
     body: CategoryMoveRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    ip_address: str | None = Depends(client_ip),
 ):
     """Move a single subcategory under a different master."""
     org_name = await _actor_org_name(db, current_user.org_id)
@@ -553,7 +553,7 @@ async def move_category_endpoint(
             actor_email=current_user.email,
             actor_org_name=org_name,
             request_id=_request_id(),
-            ip_address=get_client_ip(request),
+            ip_address=ip_address,
         )
     except NotFoundError as exc:
         await db.rollback()
@@ -577,10 +577,10 @@ async def move_category_endpoint(
 
 @router.post("/batch-move", response_model=BatchMoveResult)
 async def batch_move_endpoint(
-    request: Request,
     body: BatchMoveRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    ip_address: str | None = Depends(client_ip),
 ):
     """Atomic batch move of N subcategories."""
     org_name = await _actor_org_name(db, current_user.org_id)
@@ -593,7 +593,7 @@ async def batch_move_endpoint(
             actor_email=current_user.email,
             actor_org_name=org_name,
             request_id=_request_id(),
-            ip_address=get_client_ip(request),
+            ip_address=ip_address,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -612,13 +612,13 @@ async def batch_move_endpoint(
 
 @router.delete("/{category_id}")
 async def delete_category(
-    request: Request,
     category_id: int,
     target_category_id: Optional[int] = Query(
         None, description="Migration target ID (required when category has dependents)",
     ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    ip_address: str | None = Depends(client_ip),
 ):
     """Delete a category, optionally migrating dependents to a target.
 
@@ -640,7 +640,7 @@ async def delete_category(
             actor_email=current_user.email,
             actor_org_name=org_name,
             request_id=_request_id(),
-            ip_address=get_client_ip(request),
+            ip_address=ip_address,
         )
     except NotFoundError as exc:
         await db.rollback()

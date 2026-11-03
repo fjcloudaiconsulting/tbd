@@ -88,15 +88,27 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "budgets_update_amount", "transactions_set_category", "transactions_update",
         "transactions_update_money", "transactions_create", "transactions_delete",
         "transactions_transfer",
+        "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
+        "budgets_draft_next", "budgets_rebalance", "budgets_delete",
+        "categories_create", "categories_update", "categories_move", "categories_batch_move",
+        "categories_delete", "categories_restore_recommended",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
+        "budgets_rebalance", "categories_update",
     }
     # TBD-664 B: everything that moves money, creates or deletes is sensitive
     # (never auto, never confirmed over MCP).
+    # TBD-666: so is every budget and category create, seed, move and delete,
+    # and the draft (it adds billing periods); a rebalance and a category
+    # edit are writes with an inverse.
     assert {t.name for t in TOOLS if t.risk == "sensitive"} == {
         "transactions_update_money", "transactions_create", "transactions_delete",
         "transactions_transfer",
+        "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
+        "budgets_draft_next", "budgets_delete",
+        "categories_create", "categories_move", "categories_batch_move", "categories_delete",
+        "categories_restore_recommended",
     }
 
 
@@ -178,6 +190,7 @@ _BENIGN = {
     ("app.database", "_session"),
     ("app.deps", "get_current_user"),
     ("app.deps", "get_session_factory"),
+    ("app.rate_limit", "client_ip"),  # the audit address; an agent call has none
 }
 
 
@@ -224,7 +237,7 @@ def test_fr4_guards_are_a_superset_of_the_mirrored_route(tool):
     routes = _live_routes()
     assert tool.mirrors_route in routes, f"{tool.name} mirrors a route that does not exist"
     areas, role, plan_keys = _route_guards(routes[tool.mirrors_route])
-    assert areas <= ({tool.product_area} - {None}), (tool.name, areas)
+    assert areas <= ({tool.product_area, *tool.extra_areas} - {None}), (tool.name, areas)
     assert ROLE_RANK[tool.min_role] >= ROLE_RANK[role], (tool.name, role)
     # Every tool is gated on ai.agent by invoke; a route needing another plan
     # key is a guard the tool does not carry.
@@ -254,7 +267,18 @@ def _valid_base(tool) -> dict:
                 "type": "expense", "date": "2026-01-01"}
     if tool.name == "transactions_transfer":
         return {"from_account_id": 1, "to_account_id": 2, "amount": "1.00", "date": "2026-01-01"}
-    return {}
+    return {
+        "budgets_create": {"category_id": 1, "amount": "10.00"},
+        "budgets_copy_from_period": {"source_period_start": "2026-01-01"},
+        "budgets_draft_next": {"period_start": "2026-02-01"},
+        "budgets_rebalance": {"items": [{"budget_id": 1, "expected_amount": "1.00", "amount": "1.00"}]},
+        "budgets_delete": {"budget_id": 1},
+        "categories_create": {"name": "x"},
+        "categories_update": {"category_id": 1},
+        "categories_move": {"category_id": 1, "target_parent_id": 2},
+        "categories_batch_move": {"moves": [{"subcategory_id": 1, "target_parent_id": 2}]},
+        "categories_delete": {"category_id": 1},
+    }.get(tool.name, {})
 
 
 def _route_params(route) -> dict[str, object]:

@@ -205,6 +205,8 @@ def inverse_args(spec: ToolSpec, args_json: dict[str, Any], preview_json: dict[s
     the PRIMARY entity (``changes[0]``) put back to its ``before``. Derived
     changes (a learned rule) are not inverted; the revert's own preview
     re-discloses them."""
+    if spec.inverse is not None:
+        return spec.inverse(args_json, preview_json)
     changes = preview_json["changes"]
     p = changes[0]
     restore = {

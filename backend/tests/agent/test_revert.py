@@ -78,7 +78,7 @@ def _chg(entity, id_, field, before, after):
 def test_f4_inverse_restores_every_primary_field_and_ignores_derived():
     """FENCE F4. Wrong implementation: an inverse from ``changes[0]`` only (the
     second primary field stays at its new value)."""
-    spec = SimpleNamespace(args=_Two)
+    spec = SimpleNamespace(args=_Two, inverse=None)
     preview = {"changes": [
         _chg("things", 1, "amount", "1.00", "2.00"),
         _chg("things", 1, "note", "old", "new"),
@@ -92,14 +92,14 @@ def test_f4_inverse_unwraps_disclosed_user_text():
     """FENCE F4 (TBD-664). Wrong implementation: restoring the wrapped
     ``{"untrusted": ...}`` disclosure as the argument, so a text edit could
     never be reverted (the stored args would no longer validate)."""
-    spec = SimpleNamespace(args=_Two)
+    spec = SimpleNamespace(args=_Two, inverse=None)
     preview = {"changes": [_chg("things", 1, "note", {"untrusted": "old"}, {"untrusted": "new"})]}
     out = actions.inverse_args(spec, {"thing_id": 1, "amount": "2.00", "note": "new"}, preview)
     assert out == {"thing_id": 1, "amount": "2.00", "note": "old"}
 
 
 def test_f4_a_primary_field_the_tool_does_not_take_is_no_inverse():
-    spec = SimpleNamespace(args=_Two)
+    spec = SimpleNamespace(args=_Two, inverse=None)
     preview = {"changes": [_chg("things", 1, "colour", "a", "b")]}
     with pytest.raises(ToolError) as exc:
         actions.inverse_args(spec, {"thing_id": 1, "amount": "2.00", "note": "n"}, preview)
@@ -143,14 +143,16 @@ async def test_f1_revert_then_confirm_restores_the_primary_entity(factory, w, to
     if not auto:
         out = await _confirm(factory, a["member"], out["action_id"])
     assert out["status"] == "done"
-    [primary] = [c for c in out["changes"] if c["entity"] not in _NATURAL_KEY]
-    assert primary["before"] != primary["after"]
+    # One primary row, or several of one table (a rebalance's budgets).
+    primaries = [c for c in out["changes"] if c["entity"] not in _NATURAL_KEY]
+    (table,) = {c["entity"] for c in primaries}
+    assert all(c["before"] != c["after"] for c in primaries)
     if auto:
         # No derived row is written in auto mode: every other table is untouched.
         mid = await _snapshot(factory)
-        for table in start:
-            if table not in _BOOKKEEPING and table != primary["entity"]:
-                assert mid[table] == start[table], table
+        for t in start:
+            if t not in _BOOKKEEPING and t != table:
+                assert mid[t] == start[t], t
 
     staged = await _revert(factory, a["member"], out["action_id"])
     assert staged["context"]["reverts"] == out["action_id"]
@@ -163,9 +165,10 @@ async def test_f1_revert_then_confirm_restores_the_primary_entity(factory, w, to
     end = await _snapshot(factory)
 
     def entity(snap):
-        row = dict(snap[primary["entity"]][(primary["id"],)])
-        row.pop("updated_at", None)
-        return row
+        rows = {c["id"]: dict(snap[table][(c["id"],)]) for c in primaries}
+        for row in rows.values():
+            row.pop("updated_at", None)
+        return rows
 
     assert entity(end) == entity(start)
 

@@ -51,4 +51,16 @@ describe("present (TBD-664)", () => {
     expect(actionHeadline("transactions_delete", "s", [])).toBe("Delete a transaction");
     expect(actionHeadline("transactions_transfer", "s", [])).toBe("Move money between accounts");
   });
+
+  it("TBD-666: budget and category rows read by their kind, a new master by its number", () => {
+    expect(actionHeadline("budgets_create", "s", [])).toBe("Create a budget");
+    expect(actionHeadline("categories_restore_recommended", "s", [])).toBe("Restore recommended categories");
+    expect(rowLabel(c({ entity: "budgets", id: "new:2" }))).toBe("New budget 2");
+    expect(rowLabel(c({ entity: "billing_periods", id: "new:1" }))).toBe("New billing period 1");
+    expect(changeLabel(c({ entity: "categories", field: "parent_id" }))).toBe("Master category");
+    expect(changeValue(c({ entity: "categories", field: "parent_id", after: "new:3" }), "after", undefined, {}))
+      .toBe("new category 3");
+    expect(changeValue(c({ entity: "categories", field: "parent_id", before: 4 }), "before", undefined, {}))
+      .toBe("category #4");
+  });
 });

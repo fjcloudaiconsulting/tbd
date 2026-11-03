@@ -207,25 +207,19 @@ async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
     return list(result.scalars().all())
 
 
-async def ensure_future_periods(
-    db: AsyncSession, org_id: int, count: int = 3,
-) -> list[BillingPeriod]:
-    """Create stub periods for the `count` cycles after the OPEN period.
-
-    Anchored to the open period's ``start_date`` (the ``base`` local below),
-    not to today.
-    For an org whose open period is months behind the calendar the stubs are
-    therefore historic; correcting the anchor is TBD-235 blocker 1, not this
-    function's job. Calling this repeatedly is idempotent: a candidate whose
-    window intersects an existing period is skipped.
-    """
-    current = await get_current_period(db, org_id)
+async def plan_future_periods(
+    db: AsyncSession, org_id: int, current: BillingPeriod, count: int = 3,
+) -> list[tuple[datetime.date, datetime.date]]:
+    """The ``(start, end)`` stubs :func:`ensure_future_periods` adds after
+    ``current``. Read-only (TBD-666): an agent preview names them before the
+    confirm writes them. Candidates are successive months, so none of them
+    overlaps another and planning them all up front is the same decision."""
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     cycle_day = org.billing_cycle_day if org else 1
 
     # Build the target months: 1, 2, ... count months from current period
     base = current.start_date
-    created = []
+    planned: list[tuple[datetime.date, datetime.date]] = []
     for i in range(1, count + 1):
         next_start = _snap_to_cycle(base + relativedelta(months=i), cycle_day)
         end_date = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
@@ -315,6 +309,25 @@ async def ensure_future_periods(
             )
             continue
 
+        planned.append((next_start, end_date))
+    return planned
+
+
+async def ensure_future_periods(
+    db: AsyncSession, org_id: int, count: int = 3,
+) -> list[BillingPeriod]:
+    """Create stub periods for the `count` cycles after the OPEN period.
+
+    Anchored to the open period's ``start_date`` (``base`` in
+    :func:`plan_future_periods`), not to today.
+    For an org whose open period is months behind the calendar the stubs are
+    therefore historic; correcting the anchor is TBD-235 blocker 1, not this
+    function's job. Calling this repeatedly is idempotent: a candidate whose
+    window intersects an existing period is skipped.
+    """
+    current = await get_current_period(db, org_id)
+    created = []
+    for next_start, end_date in await plan_future_periods(db, org_id, current, count):
         stub = BillingPeriod(org_id=org_id, start_date=next_start, end_date=end_date)
         db.add(stub)
         created.append(stub)

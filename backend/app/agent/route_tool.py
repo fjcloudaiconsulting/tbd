@@ -12,8 +12,9 @@ the tool runs the code REST runs instead of a second adapter over a service.
   as "leave alone" and a preview of the null would lie.
 * ``execute`` (``run`` for a read) calls ``route.endpoint`` in-process, so the
   handler's inline guards run. Its parameters come from a CLOSED dependency
-  map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``; a
-  product-area gate must be the tool's ``product_area``; a role gate must not
+  map: ``get_current_user`` is ``ctx.user``, ``get_db`` is ``ctx.db`` and
+  ``client_ip`` is none; a product-area gate must be the tool's
+  ``product_area`` or one of its ``extra_areas``; a role gate must not
   be stricter than ``min_role`` (``register`` re-checks both at invoke time).
   Anything else fails registration: an unknown dependency,
   ``require_interactive_session`` anywhere in the tree (browser-only), a raw
@@ -58,7 +59,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
@@ -81,6 +82,7 @@ from app.auth.pat import require_interactive_session
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import Role
+from app.rate_limit import client_ip
 from app.services.exceptions import ConflictError, NotFoundError
 from app.services.feature_gate import Feature
 
@@ -123,8 +125,9 @@ def _none(ctx: ToolContext) -> None:
 
 
 # The closed dependency map: what the handler receives in-process, by callable.
+# An in-process call has no client address: the route's audit row records none.
 _SUPPLIED: dict[Callable[..., Any], Callable[[ToolContext], Any]] = {
-    get_current_user: _user, get_db: _db,
+    get_current_user: _user, get_db: _db, client_ip: _none,
 }
 _ROLE_GATES: dict[Callable[..., Any], Role] = {
     require_org_admin: Role.ADMIN, require_org_owner: Role.OWNER,
@@ -158,7 +161,7 @@ def _all_calls(dep: Any) -> Iterable[Any]:
 
 
 def _dependency_map(
-    name: str, dep: Any, product_area: Feature | None, min_role: Role,
+    name: str, dep: Any, areas: Sequence[Feature | None], min_role: Role,
 ) -> dict[str, Callable[[ToolContext], Any]]:
     """Handler parameter name -> how to supply it from the tool context."""
     for raw in _RAW_PARAMS:
@@ -175,7 +178,7 @@ def _dependency_map(
         if call in _SUPPLIED:
             supply = _SUPPLIED[call]
         elif feature is not None:
-            if feature != product_area:
+            if feature not in areas:
                 raise ToolRegistrationError(
                     f"{name}: the route's product area {feature.value} is not the tool's"
                 )
@@ -274,6 +277,8 @@ def route_tool(
     preview: Callable[..., Awaitable[Preview]] | None = None,
     describe: Sequence[str] = (),
     cascade: CascadeDisclosure | None = None,
+    extra_areas: Sequence[Feature] = (),
+    inverse: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> ToolSpec:
     """A ``ToolSpec`` for ``method path`` on ``router`` (see the module doc)."""
     route = _find_route(router, method, path)
@@ -285,7 +290,7 @@ def route_tool(
         raise ToolRegistrationError(f"{name}: the route takes more than one body")
     if not inspect.iscoroutinefunction(route.endpoint):
         raise ToolRegistrationError(f"{name}: the handler is not a coroutine function")
-    supplied = _dependency_map(name, dep, product_area, min_role)
+    supplied = _dependency_map(name, dep, (product_area, *extra_areas), min_role)
 
     body_param = dep.body_params[0] if dep.body_params else None
     body_model = body_param.field_info.annotation if body_param else None
@@ -335,6 +340,8 @@ def route_tool(
             raise
         except ConflictError as exc:
             raise ToolError("conflict", exc.detail) from None
+        if isinstance(out, Response):  # a 204 with no body
+            return None
         if response is None:
             return jsonable_encoder(out)
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")
@@ -343,7 +350,7 @@ def route_tool(
         return ToolSpec(
             name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
             mirrors_route=(method, path), description=description, run=_call_handler,
-            route=route,
+            route=route, extra_areas=tuple(extra_areas),
         )
 
     if preview is None and method == "DELETE":
@@ -357,7 +364,7 @@ def route_tool(
     return ToolSpec(
         name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
         mirrors_route=(method, path), description=description, preview=preview,
-        execute=_call_handler, route=route,
+        execute=_call_handler, route=route, extra_areas=tuple(extra_areas), inverse=inverse,
     )
 
 

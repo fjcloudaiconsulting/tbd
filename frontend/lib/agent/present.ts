@@ -34,6 +34,18 @@ const TOOL_LABELS: Record<string, string> = {
   transactions_create: "Add a transaction",
   transactions_delete: "Delete a transaction",
   transactions_transfer: "Move money between accounts",
+  budgets_create: "Create a budget",
+  budgets_from_forecast: "Create budgets from the forecast",
+  budgets_copy_from_period: "Copy budgets from another period",
+  budgets_draft_next: "Draft next period's budgets",
+  budgets_rebalance: "Rebalance budgets",
+  budgets_delete: "Delete a budget",
+  categories_create: "Create a category",
+  categories_update: "Edit a category",
+  categories_move: "Move a subcategory",
+  categories_batch_move: "Move subcategories",
+  categories_delete: "Delete a category",
+  categories_restore_recommended: "Restore recommended categories",
 };
 
 export function toolLabel(name: string): string {
@@ -48,6 +60,20 @@ export function actionHeadline(tool: string, summary: string, changes: ActionCha
 
 const FIELD_LABELS: Record<string, string> = {
   "budgets.amount": "Budget amount",
+  "budgets.category_id": "Category",
+  "budgets.period_start": "Period start",
+  "budgets.period_end": "Period end",
+  "billing_periods.start_date": "Period start",
+  "billing_periods.end_date": "Period end",
+  "categories.name": "Name",
+  "categories.type": "Type",
+  "categories.description": "Description",
+  "categories.parent_id": "Master category",
+  "categories.slug": "Recommended as",
+  "categories.is_system": "Recommended",
+  "recurring_transactions.category_id": "Category",
+  "forecast_plan_items.category_id": "Category",
+  "forecast_plan_items.planned_amount": "Planned amount",
   "transactions.category_id": "Category",
   "transactions.description": "Description",
   "transactions.date": "Date",
@@ -78,6 +104,8 @@ export function isNew(id: unknown): boolean {
 
 const ROW_NOUN: Record<string, string> = {
   transactions: "Transaction", accounts: "Account", import_batches: "Import",
+  budgets: "Budget", categories: "Category", billing_periods: "Billing period",
+  recurring_transactions: "Recurring item", forecast_plan_items: "Forecast item",
 };
 
 // Which row a change is on, for a preview that touches several rows of one
@@ -112,6 +140,7 @@ export function changeValue(
   if (c.field === "linked_transaction_id") return isNew(v) ? "the other new transaction" : `transaction #${text(v)}`;
   if (c.field === "account_id") return `account #${text(v)}`;
   if (c.field === "tag_id") return `tag #${text(v)}`;
+  if (c.field === "parent_id") return isNew(v) ? `new category ${text(v).slice(4)}` : `category #${text(v)}`;
   if (c.field === "category_id") {
     const named = (k: "from" | "to") =>
       primary && primary.field === "category_id" && primary[k === "from" ? "before" : "after"] === v
