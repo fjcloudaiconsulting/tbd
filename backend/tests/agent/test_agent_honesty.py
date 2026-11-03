@@ -718,7 +718,75 @@ def _plain(tool, **args):
     return build
 
 
+# ── recurring transfers (TBD-600) ─────────────────────────────────────────
+
+async def _pair(f, a, rid, date, *, settled=(False, False), amount=Decimal("25.00")):
+    """A linked occurrence of transfer ``rid``: an expense leg on ``acct`` and
+    an income leg on ``savings``; ``settled`` per leg. Returns (expense, income)."""
+    legs = [
+        _tx_row(a, **{"recurring_id": rid, "amount": amount, "description": "SAVINGS",
+                      "category_id": a["transfer_cat"], "account_id": acct, "type": t, "date": date,
+                      "status": TransactionStatus.SETTLED if done else PENDING,
+                      "settled_date": date if done else None})
+        for acct, t, done in ((a["acct"], TransactionType.EXPENSE, settled[0]),
+                              (a["savings"], TransactionType.INCOME, settled[1]))
+    ]
+    exp, inc = await _ids(f, *legs)
+    async with f() as db:
+        await db.execute(update(Transaction).where(Transaction.id == exp).values(linked_transaction_id=inc))
+        await db.execute(update(Transaction).where(Transaction.id == inc).values(linked_transaction_id=exp))
+        await db.commit()
+    return exp, inc
+
+
+async def _transfer_series(f, a, **kw):
+    await _savings(f, a)
+    [a["rec"]] = await _ids(f, _template(a, **{
+        "type": "transfer", "to_account_id": a["savings"], "category_id": a["transfer_cat"],
+        "description": "SAVINGS", "amount": Decimal("25.00"), **kw,
+    }))
+
+
+async def _transfer_due(f, a):
+    """An auto-settle transfer due today with an overdue pending pair."""
+    await _transfer_series(f, a, auto_settle=True, next_due_date=P_START)
+    await _pair(f, a, a["rec"], P_START - 5 * DAY)
+
+
+async def _transfer_half_settled(f, a):
+    """A pair whose expense leg was settled by hand, and a whole pending pair."""
+    await _transfer_series(f, a)
+    a["kept_exp"], a["kept_inc"] = await _pair(f, a, a["rec"], TODAY + 10 * DAY, settled=(True, False))
+    await _pair(f, a, a["rec"], TODAY + 40 * DAY)
+
+
+async def _transfer_pending(f, a):
+    """A transfer with one pending pair, and a third EUR account, ``pot``."""
+    await _transfer_series(f, a)
+    a["pair"] = await _pair(f, a, a["rec"], TODAY + 10 * DAY)
+    async with f() as db:
+        type_id = (await db.get(Account, a["acct"])).account_type_id
+    [a["pot"]] = await _ids(f, Account(org_id=a["org"], name="Pot", account_type_id=type_id,
+                                       balance=Decimal("0.00"), currency="EUR", is_default=False))
+
+
+TRANSFER_SCENARIOS = [
+    ("recurring-create-a-transfer", lambda a: ("recurring_create", {
+        "account_id": a["acct"], "to_account_id": a["savings"], "category_id": a["transfer_cat"],
+        "description": "Savings", "amount": "25.00", "type": "transfer", "frequency": "monthly",
+        "next_due_date": P_START.isoformat(),
+    }), _savings, False),
+    ("recurring-generate-a-transfer-writes-both-legs", _plain("recurring_generate"), _transfer_due, False),
+    ("recurring-stop-keeps-a-half-settled-pair", _rec("recurring_stop"), _transfer_half_settled, False),
+    ("recurring-update-money-moves-a-transfer-destination",
+     _rec("recurring_update_money", to_account_id="@pot", amount="30.00"), _transfer_pending, False),
+    ("recurring-materialise-next-of-a-transfer", _rec_next("recurring_materialise_next"),
+     _transfer_series, False),
+]
+
+
 RECURRING_SCENARIOS = [
+    *TRANSFER_SCENARIOS,
     ("recurring-create", lambda a: ("recurring_create", {
         "account_id": a["acct"], "category_id": a["c2"], "description": "Gym", "amount": "30.00",
         "type": "expense", "frequency": "monthly", "next_due_date": P_START.isoformat(),
@@ -1108,6 +1176,19 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
         assert [c["entity"] for c in changes] == ["transactions"]
     if sid == "recurring-generate-catches-up-several-cycles":
         assert sum(1 for c in changes if c["field"] == "recurring_id") == 4
+    if sid in ("recurring-generate-a-transfer-writes-both-legs", "recurring-materialise-next-of-a-transfer"):
+        legs = {c["id"]: c["after"] for c in changes if c["field"] == "linked_transaction_id"}
+        assert legs and all(legs[other] == gid for gid, other in legs.items()), legs
+        moves = [Decimal(c["after"]) for c in changes if c["field"] == "balance_delta"]
+        assert sum(moves) == 0 and (len(moves) == 2 or sid.startswith("recurring-materialise"))
+    if sid == "recurring-stop-keeps-a-half-settled-pair":
+        gone = {c["id"] for c in changes if c["field"] == "type" and c["after"] is None}
+        assert len(gone) == 2 and not gone & {a["kept_exp"], a["kept_inc"]}
+    if sid == "recurring-update-money-moves-a-transfer-destination":
+        exp, inc = a["pair"]
+        assert {(c["id"], c["field"], c["after"]) for c in changes if c["entity"] == "transactions"} == {
+            (exp, "amount", "30.00"), (inc, "amount", "30.00"), (inc, "account_id", a["pot"]),
+        }
     if sid == "billing-period-close-is-clamped-to-the-next-period":
         ends = {(c["id"], c["after"]) for c in changes if c["field"] in ("end_date", "period_end")}
         assert (CLAMP_START + 4 * DAY).isoformat() in {after for _, after in ends}

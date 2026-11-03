@@ -66,6 +66,7 @@ describe("present (TBD-664)", () => {
     expect(changeValue(left, "before", undefined, {})).toBe("recurring transaction #4");
     const frontier = c({ entity: "recurring_transactions", id: 4, field: "next_due_date" });
     expect(changeLabel(frontier)).toBe("Next due date");
+    expect(changeLabel(c({ entity: "recurring_transactions", field: "to_account_id" }))).toBe("Destination account");
     expect(rowLabel(frontier)).toBe("Recurring transaction #4");
     expect(drillDown(frontier)?.href).toBe("/recurring");
     expect(rowLabel(c({ entity: "billing_periods", id: "new:2", field: "start_date" }))).toBe("New billing period 2");

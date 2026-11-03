@@ -148,6 +148,7 @@ const FIELD_LABELS: Record<string, string> = {
   "import_batches.status": "Import",
   "transactions.recurring_id": "Recurring series",
   "recurring_transactions.account_id": "Account",
+  "recurring_transactions.to_account_id": "Destination account",
   "recurring_transactions.description": "Description",
   "recurring_transactions.amount": "Amount",
   "recurring_transactions.type": "Type",

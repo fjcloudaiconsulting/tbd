@@ -24,7 +24,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 from pydantic import ConfigDict
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from app import logs
@@ -43,6 +43,7 @@ from app.routers import accounts as accounts_router
 from app.routers import cc_cycle_payments as cycle_router
 from app.schemas.account import BalanceAdjustmentRequest, BalanceAdjustmentResponse
 from app.services.account_type_change_service import (
+    _LIABILITY,
     _reject_same_month_payment_before_close,
     validate_close_day_cascade,
     validate_payment_day_cascade,
@@ -232,6 +233,18 @@ async def _type_change(ctx: ToolContext, acct: Account, args, after: dict) -> li
     if target is None:
         raise HTTPException(status_code=422, detail="Invalid account type")
     slug = target.slug
+    # TBD-600: the refusal ``apply_type_change_in_session`` makes, word for word.
+    if target.id != acct.account_type_id and slug in _LIABILITY and await ctx.db.scalar(
+        select(RecurringTransaction.id).where(
+            RecurringTransaction.org_id == ctx.org_id, RecurringTransaction.type == "transfer",
+            or_(RecurringTransaction.account_id == acct.id, RecurringTransaction.to_account_id == acct.id),
+        ).limit(1)
+    ):
+        raise HTTPException(status_code=400, detail=(
+            "This account is used by a recurring transfer, which cannot use a "
+            "credit card or loan account. Delete that recurring transfer or "
+            "change its accounts first."
+        ))
     validate_close_day_cascade(
         source_slug=acct.account_type.slug if acct.account_type else None, target_slug=slug,
         close_day_in_payload="close_day" in sent, close_day_value=args.close_day,
@@ -360,6 +373,12 @@ async def _delete_check(ctx: ToolContext, acct: Account, args) -> None:
             await assert_no_dependents(
                 ctx.db, model, [model.account_id == acct.id, model.org_id == ctx.org_id], noun, "account",
             )
+        # TBD-600: a recurring transfer's destination (no ON DELETE either).
+        await assert_no_dependents(
+            ctx.db, RecurringTransaction,
+            [RecurringTransaction.to_account_id == acct.id, RecurringTransaction.org_id == ctx.org_id],
+            "recurring transaction", "account",
+        )
 
 
 async def _delete_cascade(ctx: ToolContext, acct: Account, args) -> list[Change]:
@@ -412,7 +431,8 @@ register(route_tool(
     cascade=CascadeDisclosure(
         covers=frozenset({
             "accounts.payment_source_account_id", "cc_cycle_payments.account_id",
-            "import_batches.account_id", "recurring_transactions.account_id", "transactions.account_id",
+            "import_batches.account_id", "recurring_transactions.account_id",
+            "recurring_transactions.to_account_id", "transactions.account_id",
             "plan_goals.account_id", "scenarios.funding_account_id",
         }),
         disclose=_delete_cascade,

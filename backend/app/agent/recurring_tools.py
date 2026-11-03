@@ -7,7 +7,10 @@ Each preview names every row the confirm changes (fenced by
 template mirrors onto, the occurrences a stop or delete removes with their
 tags, the rows those deletions unlink or mark rejected, the import-batch
 counters, the rows that leave the series, and every occurrence generation
-writes with the balances it moves.
+writes with the balances it moves. A transfer template (TBD-600) writes a
+linked pair per occurrence, an expense leg on ``account_id`` and an income leg
+on ``to_account_id``: every preview names both legs, both balances, and the
+pending pairs an edit moves; a removal never splits a pair.
 
 ``recurring_update`` is the one ``write``: description, category and pause.
 It changes the template and pending occurrences only, and nothing it sets
@@ -26,7 +29,8 @@ import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import exists, func, select
+from sqlalchemy.orm import aliased
 
 from app.agent.registry import Change, Preview, ToolContext, ToolError, register
 from app.agent.route_tool import CascadeDisclosure, route_tool
@@ -43,9 +47,11 @@ from app.routers import recurring as recurring_router
 from app.services import recurring_service
 from app.services.billing_service import current_cycle_window
 from app.services.date_utils import advance_date
-from app.services.exceptions import ConflictError, NotFoundError
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.recurring_filters import active_series_filter, has_remaining_occurrences
-from app.services.transaction_filters import non_reverted_transaction_filter
+from app.services.transaction_filters import (
+    REVERTED_RECONCILIATION_STATES, is_reciprocal_pair, non_reverted_transaction_filter,
+)
 from app.services.transaction_service import (
     _series_sync_targets, validate_account, validate_category_for_type,
 )
@@ -53,6 +59,12 @@ from app.services.transaction_service import (
 ROUTER = recurring_router.router
 TEMPLATE = "recurring_transactions"
 PENDING = TransactionStatus.PENDING.value
+TRANSFER = "transfer"
+
+
+def _accounts(r) -> set[int]:
+    """The accounts a template's occurrences land on: a transfer's two (TBD-600)."""
+    return {r.account_id, r.to_account_id} - {None}
 
 
 async def _template(ctx: ToolContext, recurring_id: int, *, lock: bool) -> RecurringTransaction:
@@ -82,11 +94,14 @@ register(route_tool(
 async def _create_check(ctx: ToolContext, _row, args) -> None:
     await validate_account(ctx.db, args.account_id, ctx.org_id)
     await validate_category_for_type(ctx.db, args.category_id, ctx.org_id, TransactionType(args.type))
+    await recurring_service._validate_transfer_accounts(
+        ctx.db, ctx.org_id, args.type, args.account_id, args.to_account_id,
+    )
     await recurring_service.validate_frontier(ctx.db, ctx.org_id, args.next_due_date)
 
 
 async def _create_present(ctx: ToolContext, _row, args, changes: list[Change]) -> Preview:
-    cur = (await _currencies(ctx, {args.account_id})).get(args.account_id)
+    cur = (await _currencies(ctx, {args.account_id})).get(args.account_id)  # both legs share it
     return Preview(
         summary=f"Create a recurring {args.type}",
         changes=[Change(c.entity, c.id, c.field, c.before, c.after, cur if c.field == "amount" else None)
@@ -98,15 +113,17 @@ async def _create_present(ctx: ToolContext, _row, args, changes: list[Change]) -
 register(route_tool(
     name="recurring_create", risk="sensitive",
     router=ROUTER, method="POST", path="/api/v1/recurring",
-    fields=("account_id", "category_id", "description", "amount", "type", "frequency",
-            "next_due_date", "auto_settle", "occurrence_count"),
+    fields=("account_id", "to_account_id", "category_id", "description", "amount", "type",
+            "frequency", "next_due_date", "auto_settle", "occurrence_count"),
     required=("account_id", "category_id", "description", "amount", "type", "frequency",
               "next_due_date"),
     product_area=None, min_role=Role.MEMBER,
     description=(
-        "Create a recurring income or expense template. Generation then writes one transaction "
-        "per occurrence from next_due_date on (settled ones move the balance when auto_settle "
-        "is on); occurrence_count limits how many. "
+        "Create a recurring income, expense or transfer template. Generation then writes each "
+        "occurrence from next_due_date on (settled ones move the balance when auto_settle is "
+        "on); occurrence_count limits how many. A transfer moves money from account_id to "
+        "to_account_id (another account in the same currency, not a credit card or loan) as a "
+        "linked expense and income pair, and needs a category of type both. "
         f"{CONFIRM}"
     ),
     entity=RecurringTransaction, check=_create_check, present=_create_present,
@@ -131,8 +148,63 @@ register(route_tool(
 # validators and the re-anchor are the service's own, run on a detached copy
 # of the template so the preview writes nothing.
 
-UPDATE_FIELDS = ("account_id", "category_id", "description", "amount", "type", "frequency",
-                 "next_due_date", "auto_settle", "is_active", "occurrence_count")
+UPDATE_FIELDS = ("account_id", "to_account_id", "category_id", "description", "amount", "type",
+                 "frequency", "next_due_date", "auto_settle", "is_active", "occurrence_count")
+
+
+async def _pair_changes(ctx: ToolContext, r: RecurringTransaction, new: dict) -> list[Change]:
+    """What ``_sync_pending_transfer_pairs`` writes onto a transfer's pending
+    pairs (TBD-600): its legs, read as it reads them, and its rules applied
+    to a copy. A field follows only while it still holds the old template
+    value; the source account onto the expense leg, the destination onto the
+    income leg, never onto the partner's account."""
+    referrer = aliased(Transaction)
+    legs = (await ctx.db.scalars(
+        select(Transaction).where(
+            Transaction.org_id == ctx.org_id, Transaction.recurring_id == r.id,
+            Transaction.status == TransactionStatus.PENDING,
+            Transaction.linked_transaction_id.is_not(None),
+            Transaction.reconciliation_state.not_in(REVERTED_RECONCILIATION_STATES),
+            ~exists().where(
+                referrer.org_id == ctx.org_id, referrer.linked_transaction_id == Transaction.id,
+                referrer.id != Transaction.linked_transaction_id,
+            ),
+        ).order_by(Transaction.id).with_for_update().execution_options(populate_existing=True)
+    )).all()
+    by_id = {t.id: t for t in legs}
+    cur = await _currencies(ctx, _accounts(r) | _accounts(SimpleNamespace(**new)))
+    out: list[Change] = []
+    for exp in legs:
+        inc = by_id.get(exp.linked_transaction_id)
+        if exp.type != TransactionType.EXPENSE or not is_reciprocal_pair(exp, inc):
+            continue
+        after = {leg.id: {"amount": leg.amount, "category_id": leg.category_id,
+                          "description": leg.description, "account_id": leg.account_id}
+                 for leg in (exp, inc)}
+        if exp.amount == inc.amount == r.amount:
+            after[exp.id]["amount"] = after[inc.id]["amount"] = new["amount"]
+        if exp.category_id == inc.category_id == r.category_id:
+            after[exp.id]["category_id"] = after[inc.id]["category_id"] = new["category_id"]
+        for leg in (exp, inc):
+            if leg.description == r.description:
+                after[leg.id]["description"] = new["description"]
+        if exp.account_id == r.account_id and new["account_id"] != inc.account_id:
+            after[exp.id]["account_id"] = new["account_id"]
+        if inc.account_id == r.to_account_id and new["to_account_id"] != after[exp.id]["account_id"]:
+            after[inc.id]["account_id"] = new["to_account_id"]
+        for leg in (exp, inc):
+            for f, a in after[leg.id].items():
+                b = getattr(leg, f)
+                if a == b:
+                    continue
+                if f == "amount":
+                    out.append(Change("transactions", leg.id, f, f"{b:.2f}", f"{a:.2f}",
+                                      cur.get(after[leg.id]["account_id"])))
+                elif f == "description":
+                    out.append(Change("transactions", leg.id, f, {"untrusted": b}, {"untrusted": a}))
+                else:
+                    out.append(Change("transactions", leg.id, f, b, a))
+    return out
 
 
 async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, changes: list[Change]) -> Preview:
@@ -140,6 +212,12 @@ async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, chang
     new = {f: getattr(args, f) if f in sent else getattr(r, f) for f in UPDATE_FIELDS}
     if "account_id" in sent:
         await validate_account(ctx.db, new["account_id"], ctx.org_id)
+    if "account_id" in sent or "to_account_id" in sent:
+        await recurring_service._validate_transfer_accounts(
+            ctx.db, ctx.org_id, r.type, new["account_id"], new["to_account_id"],
+        )
+    if "type" in sent and new["type"] != r.type and r.type == TRANSFER:
+        raise ValidationError("A recurring transfer cannot change type. Stop it and create a new series.")
     if "type" in sent or "category_id" in sent:
         await validate_category_for_type(ctx.db, new["category_id"], ctx.org_id, TransactionType(new["type"]))
     today = datetime.date.today()
@@ -192,6 +270,8 @@ async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, chang
                 if f == "description":
                     before, after = {"untrusted": before}, {"untrusted": after}
                 siblings.append(Change("transactions", t.id, f, before, after))
+    if r.type == TRANSFER:  # its legs are linked, so the sync above skips them
+        siblings += await _pair_changes(ctx, r, new)
     siblings.sort(key=lambda c: c.id)
     warnings = []
     if siblings:
@@ -231,15 +311,16 @@ register(route_tool(
 register(route_tool(
     name="recurring_update_money", risk="sensitive",
     router=ROUTER, method="PUT", path="/api/v1/recurring/{recurring_id}",
-    fields=("amount", "account_id", "type", "category_id", "auto_settle", "frequency",
-            "next_due_date", "occurrence_count", "is_active"),
+    fields=("amount", "account_id", "to_account_id", "type", "category_id", "auto_settle",
+            "frequency", "next_due_date", "occurrence_count", "is_active"),
     nullable=("occurrence_count",), product_area=None, min_role=Role.MEMBER,
     description=(
-        "Change what a recurring template generates: its amount, account, type (with a "
-        "category valid for it), auto_settle, frequency, next_due_date or occurrence_count "
+        "Change what a recurring template generates: its amount, account, a transfer's "
+        "destination (to_account_id), type (income or expense, with a category valid for it; a "
+        "transfer cannot change type), auto_settle, frequency, next_due_date or occurrence_count "
         "(null: open-ended), or resume it (is_active true). An amount or account change also "
-        "applies to its pending occurrences that still have the old value; generation settles "
-        f"auto-settle occurrences into the balance. {CONFIRM}"
+        "applies to its pending occurrences (a transfer's pending pairs) that still have the old "
+        f"value; generation settles auto-settle occurrences into the balance. {CONFIRM}"
     ),
     entity=RecurringTransaction, check=_is_active_only(True, "recurring_update"),
     present=_update_present, no_change="the recurring transaction already has these values",
@@ -283,12 +364,30 @@ async def _removal(ctx: ToolContext, r: RecurringTransaction) -> list[Change]:
     return out
 
 
-def _removal_preview(summary: str, r: RecurringTransaction, changes: list[Change], deleted: list) -> Preview:
+async def _removal_preview(
+    ctx: ToolContext, summary: str, r: RecurringTransaction, changes: list[Change], deleted: list,
+) -> Preview:
     gone = {c.id for c in changes if c.entity == "transactions" and c.field == "type"}
     demoted = sum(1 for c in changes if c.field == "reconciliation_state")
     warnings = []
     if gone:
-        warnings.append(f"{len(gone)} pending occurrence(s) are deleted.")
+        links = dict((await ctx.db.execute(
+            select(Transaction.id, Transaction.linked_transaction_id).where(Transaction.id.in_(sorted(gone)))
+        )).all())
+        occurrences = len({min(i, links[i]) if links[i] in gone else i for i in gone})
+        warnings.append(f"{occurrences} pending occurrence(s) are deleted.")
+    # A due-later pending row the removal keeps is a transfer leg whose
+    # partner is settled or past-dated: a pair is never split (TBD-600).
+    kept = await ctx.db.scalar(select(func.count(Transaction.id)).where(
+        Transaction.org_id == ctx.org_id, Transaction.recurring_id == r.id,
+        Transaction.status == TransactionStatus.PENDING, Transaction.date >= datetime.date.today(),
+        Transaction.id.notin_(sorted(gone)),
+    ))
+    if kept:
+        warnings.append(
+            f"{kept} pending transfer leg(s) are kept, because the other leg of the pair is "
+            "already settled or past: a transfer pair is never split."
+        )
     if demoted:
         warnings.append(
             f"{demoted} matched import row(s) pointing at them will be marked rejected, "
@@ -309,7 +408,7 @@ async def _stop_preview(ctx: ToolContext, args) -> Preview:
     changes += await _removal(ctx, r)
     if not changes:
         raise ToolError("no_change", "the recurring transaction is already stopped")
-    return _removal_preview(f"Stop recurring transaction {r.id}", r, changes, [])
+    return await _removal_preview(ctx, f"Stop recurring transaction {r.id}", r, changes, [])
 
 
 register(route_tool(
@@ -340,7 +439,7 @@ async def _delete_present(ctx: ToolContext, r: RecurringTransaction, args, chang
         Change(c.entity, c.id, c.field, c.before, c.after, cur)
         if (c.entity, c.field) == (TEMPLATE, "amount") else c for c in changes
     ]
-    pv = _removal_preview(f"Delete recurring transaction {r.id}", r, changes, [])
+    pv = await _removal_preview(ctx, f"Delete recurring transaction {r.id}", r, changes, [])
     pv.warnings.insert(0, "A delete cannot be undone.")
     return pv
 
@@ -371,19 +470,34 @@ register(route_tool(
 # balance moves) and spends it. The preview refuses what it refuses, read
 # under the same template lock.
 
+def _legs(r) -> list[tuple[int, str]]:
+    """(account, type) of each row one occurrence writes: a transfer is an
+    expense leg on the source and an income leg on the destination."""
+    if r.type == TRANSFER:
+        return [(r.account_id, "expense"), (r.to_account_id, "income")]
+    return [(r.account_id, r.type)]
+
+
 def _occurrence(
-    r: RecurringTransaction, due: datetime.date, status: str, currency, gid: str = "new:1", **extra,
+    r: RecurringTransaction, due: datetime.date, status: str, cur: dict, first: int = 1, **extra,
 ) -> list[Change]:
-    """The row ``_create_occurrence`` inserts for ``r`` at ``due``."""
-    cols = {
-        "account_id": r.account_id, "category_id": r.category_id,
-        "description": {"untrusted": r.description}, "amount": f"{r.amount:.2f}", "type": r.type,
-        "status": status, "date": _iso(due),
-        "settled_date": _iso(due) if status == TransactionStatus.SETTLED.value else None,
-        "recurring_id": r.id, **extra,
-    }
-    return [Change("transactions", gid, f, None, v, currency if f == "amount" else None)
-            for f, v in cols.items() if v is not None]
+    """The rows ``_create_occurrence`` inserts for ``r`` at ``due``, as groups
+    ``new:first`` (and ``new:first+1``, the income leg of a transfer, the two
+    linked to each other)."""
+    legs = _legs(r)
+    out: list[Change] = []
+    for i, (account_id, leg_type) in enumerate(legs):
+        gid, other = f"new:{first + i}", f"new:{first + 1 - i}"
+        cols = {
+            "account_id": account_id, "category_id": r.category_id,
+            "description": {"untrusted": r.description}, "amount": f"{r.amount:.2f}", "type": leg_type,
+            "status": status, "date": _iso(due),
+            "settled_date": _iso(due) if status == TransactionStatus.SETTLED.value else None,
+            "recurring_id": r.id, "linked_transaction_id": other if len(legs) == 2 else None, **extra,
+        }
+        out += [Change("transactions", gid, f, None, v, cur.get(account_id) if f == "amount" else None)
+                for f, v in cols.items() if v is not None]
+    return out
 
 
 def _next_preview(skipped: bool):
@@ -402,7 +516,7 @@ def _next_preview(skipped: bool):
             Transaction.org_id == ctx.org_id, Transaction.recurring_id == r.id, Transaction.date == due,
         ).limit(1)):
             raise _conflict(f"The occurrence on {due.isoformat()} already exists.")
-        cur = (await _currencies(ctx, {r.account_id})).get(r.account_id)
+        cur = await _currencies(ctx, _accounts(r))
         extra = {"reconciliation_state": "skipped"} if skipped else {}
         changes = _occurrence(r, due, PENDING, cur, **extra) + [
             Change(TEMPLATE, r.id, "next_due_date", _iso(due), _iso(advance_date(due, r.frequency))),
@@ -466,11 +580,15 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
             non_reverted_transaction_filter(),
         ).order_by(Transaction.id).execution_options(populate_existing=True)
     )).all()
+    by_id = {tx.id: tx for tx in due_rows}
+    settling = 0  # occurrences: both legs of a due transfer pair count once
     for tx in due_rows:
         changes.append(Change("transactions", tx.id, "status", PENDING, "settled"))
         if tx.settled_date != tx.date:
             changes.append(Change("transactions", tx.id, "settled_date", _iso(tx.settled_date), _iso(tx.date)))
         _add(deltas, tx.account_id, _signed(tx.amount, tx.type))
+        pair = is_reciprocal_pair(tx, by_id.get(tx.linked_transaction_id))
+        settling += 0 if pair and tx.type != TransactionType.EXPENSE else 1
 
     templates = (await db.scalars(
         select(RecurringTransaction).where(
@@ -478,8 +596,8 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
             RecurringTransaction.next_due_date <= period_end,
         ).order_by(RecurringTransaction.id).execution_options(populate_existing=True)
     )).all()
-    cur = await _currencies(ctx, {r.account_id for r in templates})
-    k = 0
+    cur = await _currencies(ctx, {a for r in templates for a in _accounts(r)})
+    k = n = 0  # insert groups, occurrences
     for r in templates:
         walk = SimpleNamespace(occurrence_count=r.occurrence_count, occurrences_elapsed=r.occurrences_elapsed)
         due, steps = r.next_due_date, 0
@@ -489,12 +607,14 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
                 Transaction.org_id == org_id, Transaction.recurring_id == r.id, Transaction.date == due,
             ).limit(1))
             if not exists:
-                k += 1
+                n += 1
                 settled = r.auto_settle and due <= today
                 status = "settled" if settled else PENDING
-                changes += _occurrence(r, due, status, cur.get(r.account_id), gid=f"new:{k}")
+                changes += _occurrence(r, due, status, cur, first=k + 1)
+                k += len(_legs(r))
                 if settled:
-                    _add(deltas, r.account_id, _signed(r.amount, r.type))
+                    for account_id, leg_type in _legs(r):
+                        _add(deltas, account_id, _signed(r.amount, leg_type))
             due = advance_date(due, r.frequency)
             walk.occurrences_elapsed += 1
         if due != r.next_due_date:
@@ -506,7 +626,8 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
     if not changes:
         raise ToolError("no_change", "no recurring transaction is due")
     return Preview(
-        summary=f"Generate the recurring transactions due by {period_end.isoformat()}",
+        summary=f"Write {n} recurring occurrence(s) due by {period_end.isoformat()} "
+                f"and settle {settling} due one(s)",
         changes=changes + money, warnings=[MONEY] if money else [],
     )
 
