@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 import pytest
+from dateutil.relativedelta import relativedelta
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, update
 
@@ -41,10 +42,12 @@ from app.agent.registry import Change, Preview, ToolSpec
 from app.models import Account
 from app.models.agent_pending_action import AgentPendingAction
 from app.models.base import Base
+from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role
@@ -528,6 +531,133 @@ def _transfer(**over):
     return build
 
 
+# ── the recurring and billing-period tools (TBD-667) ──────────────────────
+
+TODAY = datetime.date.today()
+DAY = datetime.timedelta(days=1)
+PENDING = TransactionStatus.PENDING
+
+
+def _template(a, **kw):
+    return RecurringTransaction(**{
+        "org_id": a["org"], "account_id": a["acct"], "category_id": a["c1"],
+        "description": "SPOTIFY PREMIUM", "amount": Decimal("9.99"), "type": "expense",
+        "frequency": Frequency.MONTHLY, "next_due_date": TODAY + 100 * DAY, **kw,
+    })
+
+
+def _occurrence(a, rid, date, **kw):
+    return _tx_row(a, **{"recurring_id": rid, "amount": Decimal("9.99"), "description": "SPOTIFY PREMIUM",
+                         "status": PENDING, "settled_date": None, "date": date, **kw})
+
+
+async def _series(f, a):
+    """Template ``rec``: a settled occurrence (kept), two future pending ones at
+    the template's amount (``rec_next`` tagged) and one whose amount was edited."""
+    [a["rec"]] = await _ids(f, _template(a))
+    a["rec_settled"], a["rec_next"], _, _ = await _ids(
+        f,
+        _occurrence(a, a["rec"], P_START, status=TransactionStatus.SETTLED, settled_date=P_START),
+        _occurrence(a, a["rec"], TODAY + 10 * DAY),
+        _occurrence(a, a["rec"], TODAY + 40 * DAY),
+        _occurrence(a, a["rec"], TODAY + 70 * DAY, amount=Decimal("12.00")),
+    )
+    [tag] = await _ids(f, Tag(org_id=a["org"], name="subs", name_normalized="subs"))
+    await _add(f, TransactionTag(transaction_id=a["rec_next"], tag_id=tag))
+
+
+async def _series_matched(f, a):
+    """``_series`` plus an import row matched against ``rec_next``, pending
+    review: removing ``rec_next`` demotes it and closes its batch."""
+    await _series(f, a)
+    [bid] = await _ids(f, _batch(a, row_count=1, accepted_count=0, pending_count=1))
+    await _add(f, _import_row(a, bid, "pending_review", linked_transaction_id=a["rec_next"]))
+
+
+async def _paused(f, a):
+    [a["rec"]] = await _ids(f, _template(a, is_active=False, next_due_date=P_START - relativedelta(months=2)))
+
+
+async def _finished(f, a):
+    [a["rec"]] = await _ids(f, _template(
+        a, occurrence_count=2, occurrences_elapsed=2, next_due_date=P_START - relativedelta(months=2),
+    ))
+
+
+async def _due(f, a):
+    """An auto-settle template due today with an overdue pending occurrence, and
+    a weekly one (three occurrences in all) whose first is already written."""
+    a["auto"], a["weekly"] = await _ids(
+        f,
+        _template(a, auto_settle=True, next_due_date=P_START, amount=Decimal("20.00")),
+        _template(a, frequency=Frequency.WEEKLY, next_due_date=P_START, occurrence_count=3,
+                  description="GYM"),
+    )
+    await _add(f, _occurrence(a, a["auto"], P_START - 5 * DAY, amount=Decimal("20.00")),
+               _occurrence(a, a["weekly"], P_START, description="GYM"))
+
+
+async def _next_month_stub(f, a):
+    start = P_START + relativedelta(months=1)
+    await _add(f, BillingPeriod(org_id=a["org"], start_date=start,
+                                end_date=start + relativedelta(months=1) - DAY))
+
+
+async def _stub_after_today(f, a):
+    """A closed stub starting tomorrow with a budget: a close today revives both."""
+    await _add(f, BillingPeriod(org_id=a["org"], start_date=TODAY + DAY, end_date=TODAY + 20 * DAY),
+               Budget(org_id=a["org"], category_id=a["c1"], amount=Decimal("80.00"),
+                      period_start=TODAY + DAY, period_end=TODAY + 20 * DAY))
+
+
+def _rec(tool, **fields):
+    def build(a):
+        return tool, {"recurring_id": a["rec"], **_resolve(a, fields)}
+    return build
+
+
+def _rec_next(tool):
+    def build(a):
+        return tool, {"recurring_id": a["rec"], "occurrence_date": (TODAY + 100 * DAY).isoformat()}
+    return build
+
+
+def _plain(tool, **args):
+    def build(a):
+        return tool, args
+    return build
+
+
+RECURRING_SCENARIOS = [
+    ("recurring-create", lambda a: ("recurring_create", {
+        "account_id": a["acct"], "category_id": a["c2"], "description": "Gym", "amount": "30.00",
+        "type": "expense", "frequency": "monthly", "next_due_date": P_START.isoformat(),
+        "occurrence_count": 12,
+    }), _none, False),
+    ("recurring-update-mirrors-onto-pending-siblings",
+     _rec("recurring_update", amount="11.00", description="Spotify Family", account_id="@savings",
+          category_id="@c2"), _seq(_savings, _series), False),
+    ("recurring-update-auto", _rec("recurring_update", amount="11.00"), _series, True),
+    ("recurring-update-resume-re-anchors", _rec("recurring_update", is_active=True), _paused, False),
+    ("recurring-update-open-ended-resumes-a-finished-series",
+     _rec("recurring_update", occurrence_count=None), _finished, False),
+    ("recurring-stop", _rec("recurring_stop"), _series_matched, False),
+    ("recurring-delete", _rec("recurring_delete"), _series_matched, False),
+    ("recurring-skip-next", _rec_next("recurring_skip_next"), _series, False),
+    ("recurring-materialise-next", _rec_next("recurring_materialise_next"), _series, False),
+    ("recurring-generate", _plain("recurring_generate"), _due, False),
+    ("billing-cycle-day", _plain("billing_cycle_update", billing_cycle_day=15), _none, False),
+    ("billing-period-create", _plain("billing_period_create",
+                                     start_date=(P_START + relativedelta(months=6)).isoformat()), _none, False),
+    ("billing-periods-ensure-future", _plain("billing_periods_ensure_future", count=2), _none, False),
+    ("billing-periods-ensure-future-skips-a-stub", _plain("billing_periods_ensure_future"),
+     _next_month_stub, False),
+    ("billing-period-close", _plain("billing_period_close", close_date=TODAY.isoformat()), _none, False),
+    ("billing-period-close-revives-the-next-stub",
+     _plain("billing_period_close", close_date=TODAY.isoformat()), _stub_after_today, False),
+]
+
+
 SENSITIVE_SCENARIOS = [
     ("money-amount-of-a-settled-row", _money(amount="25.00"), _none, False),
     ("money-settled-to-pending", _money(status="pending"), _none, False),
@@ -563,6 +693,7 @@ SCENARIOS = [
     ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
     *SENSITIVE_SCENARIOS,
+    *RECURRING_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
@@ -575,8 +706,9 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
     a = w["A"]
     await setup(factory, a)
     tool, args = build(a)
+    uid = a["member"] if registry.get_tool(tool).min_role == Role.MEMBER else a["admin"]
     changes = await honest_run(
-        factory, windows, a["member"], tool, args, a["org"], auto_token=a["t1"] if auto else None
+        factory, windows, uid, tool, args, a["org"], auto_token=a["t1"] if auto else None
     )
     if sid == "category-creates-a-new-rule":
         assert [c["entity"] for c in changes] == ["transactions", "category_rules"]

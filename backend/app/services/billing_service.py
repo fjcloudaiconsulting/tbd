@@ -220,12 +220,38 @@ async def ensure_future_periods(
     window intersects an existing period is skipped.
     """
     current = await get_current_period(db, org_id)
+    created = [
+        BillingPeriod(org_id=org_id, start_date=start, end_date=end)
+        for start, end in await plan_future_periods(db, org_id, current.start_date, count)
+    ]
+    db.add_all(created)
+
+    if created:
+        from sqlalchemy.exc import IntegrityError
+        try:
+            await db.commit()
+            for s in created:
+                await db.refresh(s)
+        except IntegrityError:
+            # Concurrent request already created the stubs — safe to ignore
+            await db.rollback()
+            created = []
+
+    return created
+
+
+async def plan_future_periods(
+    db: AsyncSession, org_id: int, base: datetime.date, count: int,
+) -> list[tuple[datetime.date, datetime.date]]:
+    """The (start, end) of each stub :func:`ensure_future_periods` inserts
+    after the open period starting at ``base``. Reads only, so an agent
+    preview renders it (TBD-667); the candidates are consecutive cycles, so
+    none can collide with another."""
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     cycle_day = org.billing_cycle_day if org else 1
 
     # Build the target months: 1, 2, ... count months from current period
-    base = current.start_date
-    created = []
+    planned = []
     for i in range(1, count + 1):
         next_start = _snap_to_cycle(base + relativedelta(months=i), cycle_day)
         end_date = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
@@ -240,9 +266,8 @@ async def ensure_future_periods(
         # setting `end_date = None`. So a row that arm 2 matched a moment
         # ago (closed, intersecting) can become an open row at a start this
         # loop is still about to propose. Arm 2 alone would then miss it and
-        # `db.add` a duplicate, and the resulting IntegrityError surfaces
-        # from autoflush inside the NEXT iteration's `db.scalar` — outside
-        # the try/except around `db.commit()` below, so it escapes as a 500.
+        # plan a duplicate, which fails the commit with an IntegrityError and
+        # loses every stub of the run.
         # Arm 1 matches regardless of `end_date` and closes that window.
         #
         # ⚠ That argument depends on `close_period` never MOVING a
@@ -315,22 +340,9 @@ async def ensure_future_periods(
             )
             continue
 
-        stub = BillingPeriod(org_id=org_id, start_date=next_start, end_date=end_date)
-        db.add(stub)
-        created.append(stub)
+        planned.append((next_start, end_date))
 
-    if created:
-        from sqlalchemy.exc import IntegrityError
-        try:
-            await db.commit()
-            for s in created:
-                await db.refresh(s)
-        except IntegrityError:
-            # Concurrent request already created the stubs — safe to ignore
-            await db.rollback()
-            created = []
-
-    return created
+    return planned
 
 
 async def reanchor_period_dependents(

@@ -12,8 +12,10 @@ the tool runs the code REST runs instead of a second adapter over a service.
   as "leave alone" and a preview of the null would lie.
 * ``execute`` (``run`` for a read) calls ``route.endpoint`` in-process, so the
   handler's inline guards run. Its parameters come from a CLOSED dependency
-  map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``; a
-  product-area gate must be the tool's ``product_area``; a role gate must not
+  map: ``get_current_user`` is ``ctx.user``, ``get_db`` is ``ctx.db``,
+  ``get_session_factory`` a factory on ``ctx.db``'s engine (the handler's own
+  audit row) and ``get_client_ip`` is ``None`` (an agent call has no client
+  address; the confirm's audit row names the principal); a product-area gate must be the tool's ``product_area``; a role gate must not
   be stricter than ``min_role`` (``register`` re-checks both at invoke time).
   Anything else fails registration: an unknown dependency,
   ``require_interactive_session`` anywhere in the tree (browser-only), a raw
@@ -64,6 +66,7 @@ from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agent.registry import (
     ROLE_RANK,
@@ -79,8 +82,9 @@ from app.agent.registry import (
 from app.auth.org_permissions import require_org_admin, require_org_owner
 from app.auth.pat import require_interactive_session
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.user import Role
+from app.rate_limit import get_client_ip
 from app.services.exceptions import ConflictError, NotFoundError
 from app.services.feature_gate import Feature
 
@@ -122,9 +126,14 @@ def _none(ctx: ToolContext) -> None:
     return None
 
 
+def _session_factory(ctx: ToolContext) -> Any:
+    return async_sessionmaker(ctx.db.bind, expire_on_commit=False)
+
+
 # The closed dependency map: what the handler receives in-process, by callable.
 _SUPPLIED: dict[Callable[..., Any], Callable[[ToolContext], Any]] = {
-    get_current_user: _user, get_db: _db,
+    get_current_user: _user, get_db: _db, get_session_factory: _session_factory,
+    get_client_ip: _none,
 }
 _ROLE_GATES: dict[Callable[..., Any], Role] = {
     require_org_admin: Role.ADMIN, require_org_owner: Role.OWNER,
@@ -321,7 +330,9 @@ def route_tool(
         kwargs = {k: supply(ctx) for k, supply in supplied.items()}
         kwargs.update({p: getattr(a, p) for p in path_names})
         for alias, q in query.items():
-            kwargs[q.name] = getattr(a, alias) if alias in fields else q.field_info.default
+            # Omitted is the route's own default, not the args model's None.
+            sent = alias in fields and alias in a.model_fields_set
+            kwargs[q.name] = getattr(a, alias) if sent else q.field_info.default
         if body_param is not None:
             kwargs[body_param.name] = body_model.model_validate(
                 {k: getattr(a, k) for k in body_fields if k in a.model_fields_set}

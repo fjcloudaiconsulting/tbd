@@ -26,10 +26,12 @@ from app.services.recurring_filters import (
 from app.services.transaction_filters import non_reverted_transaction_filter
 from app.services.transaction_service import (
     _load_opts as _tx_load_opts,
+    BatchSettlementPlan,
     _propagate_fields_to_series,
-    _settle_batch_counters_and_demote_orphans,
     apply_balance,
+    apply_batch_settlement,
     get_account_for_update,
+    plan_batch_settlement,
     validate_account,
     validate_category_for_type,
 )
@@ -635,46 +637,24 @@ async def _reanchor_frontier_on_resume(
         steps += 1
 
 
-async def _remove_pending_transactions(
+@dataclasses.dataclass(frozen=True)
+class PendingRemovalPlan:
+    """What :func:`_remove_pending_transactions` will do, decided under its
+    locks without writing (TBD-667): ``rows`` is the locked set, ``doomed`` the
+    pending rows it deletes, ``settlement`` the demotions and batch counters
+    (``None`` when nothing is doomed). An agent preview renders this plan, so
+    the preview and the removal cannot disagree."""
+
+    rows: dict[int, Transaction]
+    doomed: frozenset[int]
+    settlement: BatchSettlementPlan | None
+
+
+async def plan_pending_removal(
     db: AsyncSession, org_id: int, recurring_id: int,
-) -> PendingRemovalResult:
-    """Bulk-delete pending future transactions for a recurring template.
-
-    Returns BOTH the number of rows removed and the ids demoted to REJECTED
-    (TBD-312). The demotion is irreversible through every API we expose --
-    REJECTED is terminal and ``reconciliation_state`` is not settable through
-    ``TransactionUpdate`` -- so it must not be silent, and it used to be: this
-    function computed the ids and threw them away, leaving the caller able to
-    report only ``pending_removed``.
-
-    THE THIRD DELETE PATH (TBD-294). ``transaction_service`` has two --
-    ``delete_transaction`` and ``bulk_delete_transactions`` -- and this is the
-    third; ``stop_recurring`` and ``delete_recurring`` both reach it. It is
-    not user-CRUD-shaped (no requested id, no cascade, no balance revert,
-    because every row it removes is PENDING) but it destroys rows all the
-    same, and ``transactions.linked_transaction_id`` is ``ON DELETE SET NULL``
-    for these rows exactly as it is for the other two paths.
-
-    ``reconciliation_service._apply_match`` validates its target on org,
-    existence and not-self and NOTHING else -- no status filter, no
-    ``recurring_id`` filter -- so a settled bank row matched against the
-    PENDING recurring row it settles is a legal, and in fact the most natural,
-    reconcile action. Stopping that template used to delete the target, the FK
-    nulled the link, and the matched duplicate re-entered
-    ``balance_contribution_filter`` and ``reportable_transaction_filter``
-    carrying an amount ``accounts.balance`` does not contain.
-
-    So this routes through ``_settle_batch_counters_and_demote_orphans`` -- the SHARED entry
-    point, deliberately not a third copy of the probe. A fourth delete path
-    will appear; it should have one function to call.
-
-    Lock discipline mirrors ``delete_transaction``: an UNLOCKED pre-read to
-    discover the candidate set and its inbound referrers, then ONE ascending-id
-    ``FOR UPDATE`` over the union. A second, separate lock could invert
-    against ``update_transaction`` (which locks {row, link target} sorted) and
-    deadlock. The DELETE set is then RE-DERIVED from the locked rows, so the
-    predicate is evaluated on locked state and the pre-read cannot widen it.
-    """
+) -> PendingRemovalPlan:
+    """The decision half of :func:`_remove_pending_transactions`: the reads and
+    the locks, no write."""
     today = datetime.date.today()
     candidate_ids = set(
         (
@@ -689,7 +669,7 @@ async def _remove_pending_transactions(
         ).all()
     )
     if not candidate_ids:
-        return PendingRemovalResult(removed=0, demoted_ids=[])
+        return PendingRemovalPlan(rows={}, doomed=frozenset(), settlement=None)
 
     referrer_ids = set(
         (
@@ -727,15 +707,64 @@ async def _remove_pending_transactions(
         and r.date >= today
     }
     if not doomed:
+        return PendingRemovalPlan(rows=locked_rows, doomed=frozenset(), settlement=None)
+    return PendingRemovalPlan(
+        rows=locked_rows, doomed=frozenset(doomed),
+        settlement=plan_batch_settlement(org_id, locked_rows=locked_rows, deleted_ids=doomed),
+    )
+
+
+async def _remove_pending_transactions(
+    db: AsyncSession, org_id: int, recurring_id: int,
+) -> PendingRemovalResult:
+    """Bulk-delete pending future transactions for a recurring template.
+
+    Returns BOTH the number of rows removed and the ids demoted to REJECTED
+    (TBD-312). The demotion is irreversible through every API we expose --
+    REJECTED is terminal and ``reconciliation_state`` is not settable through
+    ``TransactionUpdate`` -- so it must not be silent, and it used to be: this
+    function computed the ids and threw them away, leaving the caller able to
+    report only ``pending_removed``.
+
+    THE THIRD DELETE PATH (TBD-294). ``transaction_service`` has two --
+    ``delete_transaction`` and ``bulk_delete_transactions`` -- and this is the
+    third; ``stop_recurring`` and ``delete_recurring`` both reach it. It is
+    not user-CRUD-shaped (no requested id, no cascade, no balance revert,
+    because every row it removes is PENDING) but it destroys rows all the
+    same, and ``transactions.linked_transaction_id`` is ``ON DELETE SET NULL``
+    for these rows exactly as it is for the other two paths.
+
+    ``reconciliation_service._apply_match`` validates its target on org,
+    existence and not-self and NOTHING else -- no status filter, no
+    ``recurring_id`` filter -- so a settled bank row matched against the
+    PENDING recurring row it settles is a legal, and in fact the most natural,
+    reconcile action. Stopping that template used to delete the target, the FK
+    nulled the link, and the matched duplicate re-entered
+    ``balance_contribution_filter`` and ``reportable_transaction_filter``
+    carrying an amount ``accounts.balance`` does not contain.
+
+    So this routes through the two halves of ``_settle_batch_counters_and_demote_orphans``
+    (``plan_batch_settlement`` in :func:`plan_pending_removal`, then
+    ``apply_batch_settlement``) -- the SHARED entry point, deliberately not a third
+    copy of the probe. A fourth delete path
+    will appear; it should have one function to call.
+
+    Lock discipline mirrors ``delete_transaction``: an UNLOCKED pre-read to
+    discover the candidate set and its inbound referrers, then ONE ascending-id
+    ``FOR UPDATE`` over the union. A second, separate lock could invert
+    against ``update_transaction`` (which locks {row, link target} sorted) and
+    deadlock. The DELETE set is then RE-DERIVED from the locked rows, so the
+    predicate is evaluated on locked state and the pre-read cannot widen it.
+    """
+    plan = await plan_pending_removal(db, org_id, recurring_id)
+    if not plan.doomed:
         return PendingRemovalResult(removed=0, demoted_ids=[])
 
-    demoted_ids = await _settle_batch_counters_and_demote_orphans(
-        db, org_id, locked_rows=locked_rows, deleted_ids=doomed
-    )
+    demoted_ids = await apply_batch_settlement(db, org_id, plan.settlement)
 
     result = await db.execute(
         delete(Transaction).where(
-            Transaction.id.in_(doomed), Transaction.org_id == org_id
+            Transaction.id.in_(plan.doomed), Transaction.org_id == org_id
         )
     )
     return PendingRemovalResult(removed=result.rowcount, demoted_ids=demoted_ids)
