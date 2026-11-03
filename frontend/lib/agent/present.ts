@@ -34,6 +34,21 @@ const TOOL_LABELS: Record<string, string> = {
   transactions_create: "Add a transaction",
   transactions_delete: "Delete a transaction",
   transactions_transfer: "Move money between accounts",
+  recurring_list: "Looked up recurring transactions",
+  recurring_create: "Add a recurring transaction",
+  recurring_update: "Edit a recurring transaction",
+  recurring_update_money: "Change a recurring transaction's amount or schedule",
+  recurring_stop: "Stop a recurring transaction",
+  recurring_delete: "Delete a recurring transaction",
+  recurring_skip_next: "Skip the next occurrence",
+  recurring_materialise_next: "Write the next occurrence now",
+  recurring_generate: "Generate the recurring transactions due",
+  billing_cycle_get: "Read the billing cycle day",
+  billing_periods_list: "Looked up billing periods",
+  billing_cycle_update: "Change the billing cycle day",
+  billing_period_create: "Add a billing period",
+  billing_periods_ensure_future: "Add the upcoming billing periods",
+  billing_period_close: "Close the billing period",
 };
 
 export function toolLabel(name: string): string {
@@ -65,6 +80,22 @@ const FIELD_LABELS: Record<string, string> = {
   "import_batches.accepted_count_delta": "Accepted import rows",
   "import_batches.pending_count_delta": "Import rows to review",
   "import_batches.status": "Import",
+  "transactions.recurring_id": "Recurring series",
+  "recurring_transactions.account_id": "Account",
+  "recurring_transactions.category_id": "Category",
+  "recurring_transactions.description": "Description",
+  "recurring_transactions.amount": "Amount",
+  "recurring_transactions.type": "Type",
+  "recurring_transactions.frequency": "Frequency",
+  "recurring_transactions.next_due_date": "Next due date",
+  "recurring_transactions.auto_settle": "Settle automatically",
+  "recurring_transactions.is_active": "Active",
+  "recurring_transactions.occurrence_count": "Number of occurrences",
+  "recurring_transactions.occurrences_elapsed": "Occurrences so far",
+  "billing_periods.start_date": "Period start",
+  "billing_periods.end_date": "Period end",
+  "budgets.period_end": "Budget period end",
+  "organizations.billing_cycle_day": "Billing cycle day",
 };
 
 export function changeLabel(c: ActionChange): string {
@@ -78,6 +109,7 @@ export function isNew(id: unknown): boolean {
 
 const ROW_NOUN: Record<string, string> = {
   transactions: "Transaction", accounts: "Account", import_batches: "Import",
+  recurring_transactions: "Recurring transaction", billing_periods: "Billing period", budgets: "Budget",
 };
 
 // Which row a change is on, for a preview that touches several rows of one
@@ -111,6 +143,7 @@ export function changeValue(
   if (c.currency) return formatMoney(text(v), c.currency);
   if (c.field === "linked_transaction_id") return isNew(v) ? "the other new transaction" : `transaction #${text(v)}`;
   if (c.field === "account_id") return `account #${text(v)}`;
+  if (c.field === "recurring_id") return `recurring transaction #${text(v)}`;
   if (c.field === "tag_id") return `tag #${text(v)}`;
   if (c.field === "category_id") {
     const named = (k: "from" | "to") =>
@@ -129,6 +162,8 @@ export function drillDown(c: ActionChange | undefined): { href: string; label: s
     return { href: `/transactions?transaction_id=${encodeURIComponent(text(c.id))}`, label: "Open the transaction" };
   }
   if (c.entity === "budgets") return { href: "/budgets", label: "Open budgets" };
+  if (c.entity === "recurring_transactions") return { href: "/recurring", label: "Open recurring" };
+  if (c.entity === "billing_periods") return { href: "/settings/billing", label: "Open billing periods" };
   return null;
 }
 

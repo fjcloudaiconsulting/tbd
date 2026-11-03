@@ -25,7 +25,7 @@ from app.models.transaction import Transaction
 from app.models.user import User
 
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    AUTO, MCP, _BOOKKEEPING, _NATURAL_KEY, _WRITE_CASES, _amount, _snapshot, _audits, _confirm, _invoke, _refused, _row, _rows, _set_amount, _stage,
+    AUTO, MCP, _BOOKKEEPING, _NATURAL_KEY, _WRITE_CASES, write_setup, _amount, _snapshot, _audits, _confirm, _invoke, _refused, _row, _rows, _set_amount, _stage,
     engine, factory, scratch, w,
 )
 from tests.agent.test_agent_routes import _as, _reset_limiter, client  # noqa: F401
@@ -137,6 +137,7 @@ async def test_f1_revert_then_confirm_restores_the_primary_entity(factory, w, to
     execute."""
     a = w["A"]
     kw = {"api_token_id": a["t1"], **AUTO} if auto else {}
+    await write_setup(factory, a, tool)
     args = _WRITE_CASES[tool](a)
     start = await _snapshot(factory)
     out = await _invoke(factory, a["member"], tool, args, **kw)

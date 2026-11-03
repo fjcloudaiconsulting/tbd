@@ -503,10 +503,10 @@ async def get_billing_cycle(
 @router.put("/billing-cycle")
 async def update_billing_cycle(
     body: BillingCycleUpdate,
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    ip: str | None = Depends(get_client_ip),
 ):
     """Set the org's billing cycle day. Applies from the NEXT period.
 
@@ -555,7 +555,6 @@ async def update_billing_cycle(
     actor_email = current_user.email
     actor_org_id = current_user.org_id
     req_id = _request_id()
-    ip = get_client_ip(request)
 
     result = await db.execute(
         select(Organization).where(Organization.id == actor_org_id)
@@ -1095,11 +1094,11 @@ async def create_period(
 async def ensure_future_periods(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    count: int = 3,
+    count: int = billing_service.FUTURE_PERIODS_DEFAULT,
 ):
     """Create stub periods for upcoming months so the user can plan ahead."""
     _require_admin(current_user)
-    count = min(max(count, 1), 6)  # Cap between 1 and 6 months
+    count = billing_service.clamp_future_count(count)
     created = await billing_service.ensure_future_periods(db, current_user.org_id, count=count)
     return [
         {
@@ -1113,10 +1112,10 @@ async def ensure_future_periods(
 
 @router.post("/billing-period/close")
 async def close_period(
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    ip: str | None = Depends(get_client_ip),
     close_date: datetime.date | None = None,
 ):
     """Close the open period and open the next one.
@@ -1142,7 +1141,6 @@ async def close_period(
     actor_email = current_user.email
     actor_org_id = current_user.org_id
     req_id = _request_id()
-    ip = get_client_ip(request)
 
     org_name = await db.scalar(
         select(Organization.name).where(Organization.id == actor_org_id)

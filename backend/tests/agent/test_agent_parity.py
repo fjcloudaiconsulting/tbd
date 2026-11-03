@@ -34,7 +34,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 75
+MAX_GAPS = 64
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -80,17 +80,6 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("PATCH", "/api/v1/categories/{category_id}/move"): "TBD-666",
     # TBD-667
     ("PUT", "/api/v1/notifications/preferences"): "TBD-667",
-    ("POST", "/api/v1/recurring"): "TBD-667",
-    ("POST", "/api/v1/recurring/generate"): "TBD-667",
-    ("DELETE", "/api/v1/recurring/{recurring_id}"): "TBD-667",
-    ("PUT", "/api/v1/recurring/{recurring_id}"): "TBD-667",
-    ("POST", "/api/v1/recurring/{recurring_id}/materialise-next"): "TBD-667",
-    ("POST", "/api/v1/recurring/{recurring_id}/skip-next"): "TBD-667",
-    ("POST", "/api/v1/recurring/{recurring_id}/stop"): "TBD-667",
-    ("PUT", "/api/v1/settings/billing-cycle"): "TBD-667",
-    ("POST", "/api/v1/settings/billing-period"): "TBD-667",
-    ("POST", "/api/v1/settings/billing-period/close"): "TBD-667",
-    ("POST", "/api/v1/settings/billing-periods/ensure-future"): "TBD-667",
     # TBD-668
     ("POST", "/api/v1/forecast-plans/copy"): "TBD-668",
     ("POST", "/api/v1/forecast-plans/populate"): "TBD-668",

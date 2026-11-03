@@ -33,6 +33,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
@@ -857,7 +858,29 @@ _WRITE_CASES = {
     # A reportable row on the confirm path: the category rule upsert is disclosed.
     "transactions_set_category": lambda a: {"transaction_id": a["tx"], "category_id": a["c2"]},
     "transactions_update": lambda a: {"transaction_id": a["tx"], "description": "Renamed"},
+    "recurring_update": lambda a: {"recurring_id": a["rec"], "description": "Rent, flat 2"},
 }
+
+
+async def _a_template(f, a):
+    async with f() as db:
+        r = RecurringTransaction(
+            org_id=a["org"], account_id=a["acct"], category_id=a["c1"], description="RENT",
+            amount=Decimal("500.00"), type="expense", frequency=Frequency.MONTHLY,
+            next_due_date=P_START + datetime.timedelta(days=60),
+        )
+        db.add(r)
+        await db.commit()
+        a["rec"] = r.id
+
+
+# Rows a case needs beyond the shared world ``w`` (TBD-667).
+_WRITE_SETUP = {"recurring_update": _a_template}
+
+
+async def write_setup(f, a, tool):
+    if tool in _WRITE_SETUP:
+        await _WRITE_SETUP[tool](f, a)
 
 # A derived row is disclosed by its natural key, not its surrogate id: the
 # rule's change id is the normalized token (so a description edit goes stale),
@@ -898,6 +921,7 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     """FENCE F-A3. Wrong implementation: a ``write`` tool with an undisclosed
     side write. Whole-database row diff, not review."""
     a = w["A"]
+    await write_setup(factory, a, tool)
     args = _WRITE_CASES[tool](a)
     out = await _invoke(factory, a["member"], tool, args)
     disclosed = {(c["entity"], _disclosed_key(a["org"], c)) for c in out["changes"]}

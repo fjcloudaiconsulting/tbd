@@ -88,15 +88,26 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "budgets_update_amount", "transactions_set_category", "transactions_update",
         "transactions_update_money", "transactions_create", "transactions_delete",
         "transactions_transfer",
+        # TBD-667
+        "recurring_list", "recurring_create", "recurring_update", "recurring_update_money", "recurring_stop",
+        "recurring_delete", "recurring_skip_next", "recurring_materialise_next",
+        "recurring_generate", "billing_cycle_get", "billing_periods_list", "billing_cycle_update",
+        "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
+        "recurring_update",
     }
     # TBD-664 B: everything that moves money, creates or deletes is sensitive
-    # (never auto, never confirmed over MCP).
+    # (never auto, never confirmed over MCP). TBD-667: so is every billing-period
+    # write (it moves the boundary every budget and report counts by).
     assert {t.name for t in TOOLS if t.risk == "sensitive"} == {
         "transactions_update_money", "transactions_create", "transactions_delete",
         "transactions_transfer",
+        "recurring_create", "recurring_update_money", "recurring_stop", "recurring_delete",
+        "recurring_skip_next",
+        "recurring_materialise_next", "recurring_generate", "billing_cycle_update",
+        "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
     }
 
 
@@ -178,6 +189,7 @@ _BENIGN = {
     ("app.database", "_session"),
     ("app.deps", "get_current_user"),
     ("app.deps", "get_session_factory"),
+    ("app.rate_limit", "get_client_ip"),
 }
 
 
@@ -254,6 +266,17 @@ def _valid_base(tool) -> dict:
                 "type": "expense", "date": "2026-01-01"}
     if tool.name == "transactions_transfer":
         return {"from_account_id": 1, "to_account_id": 2, "amount": "1.00", "date": "2026-01-01"}
+    if tool.name == "recurring_create":
+        return {"account_id": 1, "category_id": 2, "description": "x", "amount": "1.00",
+                "type": "expense", "frequency": "monthly", "next_due_date": "2026-01-01"}
+    if tool.name in ("recurring_update", "recurring_update_money", "recurring_stop", "recurring_delete"):
+        return {"recurring_id": 1}
+    if tool.name in ("recurring_skip_next", "recurring_materialise_next"):
+        return {"recurring_id": 1, "occurrence_date": "2026-01-01"}
+    if tool.name == "billing_cycle_update":
+        return {"billing_cycle_day": 1}
+    if tool.name == "billing_period_create":
+        return {"start_date": "2026-01-01"}
     return {}
 
 

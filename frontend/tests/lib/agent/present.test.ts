@@ -51,4 +51,18 @@ describe("present (TBD-664)", () => {
     expect(actionHeadline("transactions_delete", "s", [])).toBe("Delete a transaction");
     expect(actionHeadline("transactions_transfer", "s", [])).toBe("Move money between accounts");
   });
+
+  it("the recurring and billing-period tools read by their rows (TBD-667)", () => {
+    expect(actionHeadline("recurring_stop", "s", [])).toBe("Stop a recurring transaction");
+    expect(actionHeadline("billing_period_close", "s", [])).toBe("Close the billing period");
+    expect(actionHeadline("recurring_update_money", "s", [])).toBe("Change a recurring transaction's amount or schedule");
+    const left = c({ field: "recurring_id", before: 4, after: null });
+    expect(changeLabel(left)).toBe("Recurring series");
+    expect(changeValue(left, "before", undefined, {})).toBe("recurring transaction #4");
+    const frontier = c({ entity: "recurring_transactions", id: 4, field: "next_due_date" });
+    expect(changeLabel(frontier)).toBe("Next due date");
+    expect(rowLabel(frontier)).toBe("Recurring transaction #4");
+    expect(drillDown(frontier)?.href).toBe("/recurring");
+    expect(rowLabel(c({ entity: "billing_periods", id: "new:2", field: "start_date" }))).toBe("New billing period 2");
+  });
 });
