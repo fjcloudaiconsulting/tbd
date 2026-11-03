@@ -14,10 +14,11 @@ the tool runs the code REST runs instead of a second adapter over a service.
   a ``default_factory``) must be in ``required``.
 * ``execute`` (``run`` for a read) calls ``route.endpoint`` in-process, so the
   handler's inline guards run. Its parameters come from a CLOSED dependency
-  map: ``get_current_user`` is ``ctx.user``, ``get_db`` is ``ctx.db``,
-  ``get_session_factory`` a factory on ``ctx.db``'s engine (the handler's own
-  audit row) and ``get_client_ip`` is ``None`` (an agent call has no client
-  address; the confirm's audit row names the principal); a product-area gate must be the tool's ``product_area``; a role gate must not
+  map: ``get_current_user`` is ``ctx.user`` and ``get_db`` is ``ctx.db``;
+  ``get_session_factory`` opens sessions on ``ctx.db``'s engine (the
+  handler's post-commit audit rows) and ``get_client_ip`` is ``None`` (an
+  in-process call has no client; TBD-665); a
+  product-area gate must be the tool's ``product_area``; a role gate must not
   be stricter than ``min_role`` (``register`` re-checks both at invoke time).
   Anything else fails registration: an unknown dependency,
   ``require_interactive_session`` anywhere in the tree (browser-only), a raw
@@ -52,6 +53,7 @@ which the caller still calls.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import enum
 import inspect
@@ -140,6 +142,21 @@ _SUPPLIED: dict[Callable[..., Any], Callable[[ToolContext], Any]] = {
 _ROLE_GATES: dict[Callable[..., Any], Role] = {
     require_org_admin: Role.ADMIN, require_org_owner: Role.OWNER,
 }
+
+
+@contextlib.contextmanager
+def refusals():
+    """A handler's or a route helper's 4xx ``HTTPException`` (and a service
+    ``ConflictError``) as a ``ToolError``; a 5xx stays opaque."""
+    try:
+        yield
+    except HTTPException as exc:
+        if 400 <= exc.status_code < 500:
+            detail = exc.detail if isinstance(exc.detail, str) else ""
+            raise ToolError(_HTTP_CODES.get(exc.status_code, "refused"), detail) from None
+        raise
+    except ConflictError as exc:
+        raise ToolError("conflict", exc.detail) from None
 
 
 def _find_route(router: APIRouter, method: str, path: str) -> APIRoute:
@@ -344,15 +361,8 @@ def route_tool(
             kwargs[body_param.name] = body_model.model_validate(
                 {k: getattr(a, k) for k in body_fields if k in a.model_fields_set}
             )
-        try:
+        with refusals():
             out = await route.endpoint(**kwargs)
-        except HTTPException as exc:
-            if 400 <= exc.status_code < 500:
-                detail = exc.detail if isinstance(exc.detail, str) else ""
-                raise ToolError(_HTTP_CODES.get(exc.status_code, "refused"), detail) from None
-            raise
-        except ConflictError as exc:
-            raise ToolError("conflict", exc.detail) from None
         if response is None:
             return jsonable_encoder(out)
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")

@@ -30,6 +30,7 @@ from app.agent.registry import (
     register,
 )
 from app.models.user import Role
+from app.schemas.account import BalanceAdjustmentRequest
 from app.services.feature_gate import Feature
 
 APP_DIR = pathlib.Path(registry.__file__).resolve().parents[1]
@@ -93,10 +94,16 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "recurring_delete", "recurring_skip_next", "recurring_materialise_next",
         "recurring_generate", "billing_cycle_get", "billing_periods_list", "billing_cycle_update",
         "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
+        # TBD-665
+        "accounts_get", "account_types_list", "cycle_payments_list",
+        "accounts_create", "accounts_update", "accounts_delete", "accounts_adjust_balance",
+        "account_types_create", "account_types_update", "account_types_delete",
+        "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
         "recurring_update",
+        "accounts_update", "account_types_update",
     }
     # TBD-664 B: everything that moves money, creates or deletes is sensitive
     # (never auto, never confirmed over MCP). TBD-667: so is every billing-period
@@ -108,6 +115,9 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "recurring_skip_next",
         "recurring_materialise_next", "recurring_generate", "billing_cycle_update",
         "billing_period_create", "billing_periods_ensure_future", "billing_period_close",
+        "accounts_create", "accounts_delete", "accounts_adjust_balance",
+        "account_types_create", "account_types_delete",
+        "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
     }
 
 
@@ -190,6 +200,7 @@ _BENIGN = {
     ("app.deps", "get_current_user"),
     ("app.deps", "get_session_factory"),
     ("app.rate_limit", "get_client_ip"),
+    ("app.rate_limit_overrides", "load_rate_limit_overrides"),
 }
 
 
@@ -277,7 +288,31 @@ def _valid_base(tool) -> dict:
         return {"billing_cycle_day": 1}
     if tool.name == "billing_period_create":
         return {"start_date": "2026-01-01"}
+    if tool.name in ("accounts_get", "cycle_payments_list", "accounts_update", "accounts_delete"):
+        return {"account_id": 1}
+    if tool.name == "accounts_create":
+        return {"name": "x", "account_type_id": 1, "opening_balance_date": "2026-01-01"}
+    if tool.name == "accounts_adjust_balance":
+        return {"account_id": 1, "target_balance": "1.00"}
+    if tool.name == "account_types_create":
+        return {"name": "x"}
+    if tool.name in ("account_types_update", "account_types_delete"):
+        return {"type_id": 1, **({"name": "x"} if tool.name == "account_types_update" else {})}
+    if tool.name.startswith("cycle_payments_"):
+        base = {"account_id": 1, "year": 2026, "month": 1}
+        return base if tool.name == "cycle_payments_delete" else {**base, "amount": "1.00"}
     return {}
+
+
+# Tools whose every argument the route accepts in any form, so no vector can
+# be rejected: the vacuity guard does not apply.
+_NOTHING_TO_REJECT = {"account_types_create"}  # a free-text name
+
+# Routes that parse their body by hand (so their gates answer before a 422):
+# the model they validate it with.
+_MANUAL_BODY = {
+    ("POST", "/api/v1/accounts/{account_id}/adjust-balance"): BalanceAdjustmentRequest,
+}
 
 
 def _route_params(route) -> dict[str, object]:
@@ -285,8 +320,9 @@ def _route_params(route) -> dict[str, object]:
     out: dict[str, object] = {}
     for f in route.dependant.query_params + route.dependant.path_params:
         out[f.alias] = f
-    for f in route.dependant.body_params:
-        model = f.field_info.annotation
+    models = [f.field_info.annotation for f in route.dependant.body_params]
+    models += [m for (verb, path), m in _MANUAL_BODY.items() if path == route.path and verb in route.methods]
+    for model in models:
         for n in getattr(model, "model_fields", {}):
             out[n] = model
     return out
@@ -335,7 +371,7 @@ def test_fr4_args_reject_everything_the_route_rejects(tool):
             checked += 1
             with pytest.raises(PydanticValidationError):
                 tool.args.model_validate({**base, name: [v] if is_list else v})
-    if shared:
+    if shared and tool.name not in _NOTHING_TO_REJECT:
         assert checked, f"{tool.name}: no vector was rejected by REST; the fence tested nothing"
 
 

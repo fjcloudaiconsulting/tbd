@@ -286,10 +286,12 @@ async def get_account(
 async def update_account(
     account_id: int,
     body: AccountUpdate,
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    # A dependency, not a raw ``Request``, so the agent tool runs this handler
+    # in-process (TBD-665; an agent call has no client IP).
+    client_ip: str | None = Depends(get_client_ip),
 ):
     """Update an account.
 
@@ -321,7 +323,7 @@ async def update_account(
     actor_org_id = current_user.org_id
     actor_is_admin = _is_admin_user(current_user)
     req_id = _request_id()
-    ip = get_client_ip(request)
+    ip = client_ip
 
     touches_type_or_liability_columns = (
         body.account_type_id is not None

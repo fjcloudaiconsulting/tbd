@@ -22,7 +22,8 @@ from app.agent.route_tool import route_tool
 from app.auth.org_permissions import require_org_admin
 from app.auth.pat import require_interactive_session
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
+from app.rate_limit import get_client_ip
 from app.models.budget import Budget
 from app.models.user import Role, User
 from app.services.feature_gate import Feature
@@ -238,6 +239,27 @@ def test_tb3_a_matching_gate_registers():
     """Control: the same gates register when the tool carries them."""
     _tool(router=_router(product=Feature.BUDGETS), product_area=Feature.BUDGETS)
     _tool(router=_router(Depends(require_org_admin)), min_role=Role.ADMIN)
+
+
+async def test_tb3_audit_dependencies_are_supplied_in_process():
+    """FENCE T-B3 (TBD-665). A handler that records post-commit audit rows
+    gets a session factory on the tool's own engine and no client IP. Wrong
+    implementations: the app-wide factory (another database in tests, and a
+    second pool beside ``ctx.db``'s in production), or a fabricated IP."""
+    seen = {}
+    r = APIRouter(prefix="/api/v1/widgets")
+
+    @r.put("/{widget_id}")
+    async def _h(widget_id: int, body: _Body, sf=Depends(get_session_factory),
+                 ip: str | None = Depends(get_client_ip)):
+        seen.update(bind=sf.kw["bind"], ip=ip)
+        return {}
+
+    spec = _tool(router=r)
+    engine = object()
+    ctx = SimpleNamespace(user=None, db=SimpleNamespace(bind=engine), org_id=1)
+    await spec.execute(ctx, spec.args.model_validate({"widget_id": 1}))
+    assert seen == {"bind": engine, "ip": None}
 
 
 # ── T-B4 / T-B5: execute runs the handler, 4xx becomes a ToolError ────────
