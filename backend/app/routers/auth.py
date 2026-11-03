@@ -54,6 +54,8 @@ from app.schemas.auth import (
     RegisterRequest,
     ResendVerificationPublicRequest,
     ResetPasswordRequest,
+    SignupCompleteRequest,
+    SignupStartRequest,
     StepUpInitiateRequest,
     TokenResponse,
     UsernameCheckResponse,
@@ -89,7 +91,7 @@ from app.captcha import verify_captcha
 from app.models.notification import NotificationCategory
 from app.rate_limit import get_client_ip, limiter, rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
-from app.services import audit_service, notification_service
+from app.services import audit_service, notification_service, signup_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
 from app.services.notification_templates import (
     user_mfa_disabled as _tpl_user_mfa_disabled,
@@ -566,6 +568,85 @@ async def register(
     )
 
     return _user_response(user, org)
+
+
+# ── Email-first sign-up (TBD-654) ───────────────────────────────────────────
+
+
+def _setup_required() -> HTTPException:
+    # The first user comes only from /setup, which uses /register.
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"code": "setup_required", "message": "Finish setting up this install first."},
+    )
+
+
+@router.post("/signup/start", status_code=202)
+@limiter.limit("5/hour")
+async def signup_start(
+    request: Request,
+    body: SignupStartRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Step 1: mail a signup link, or the right notice, to the address.
+
+    The answer is the same 202 for every address that passes the captcha, and
+    nothing is stored. Which email goes out depends on the account state
+    (``signup_service.plan_start``); it is queued, never awaited here, so the
+    response time does not show the state either.
+    """
+    if await _is_first_user_setup(db):
+        raise _setup_required()
+    email_norm = normalize_email(body.email)
+    captcha_result = await verify_captcha(body.captcha_token, get_client_ip(request))
+    if not captcha_result.ok:
+        # Same event as register's, so the TBD-291 funnel stays whole. See the
+        # register call for why request_id comes from the log context.
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="auth.register.captcha_failed",
+            actor_user_id=None,
+            actor_email=email_norm,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=logs.CONTEXT.get({}).get("request_id"),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={
+                "reason": captcha_result.reason,
+                "provider_error_codes": list(captcha_result.provider_error_codes),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "captcha_failed",
+                "message": "Could not verify you are human. Please try again.",
+            },
+        )
+
+    try:
+        path, send = await signup_service.plan_start(db, email_norm)
+    except SQLAlchemyError as exc:
+        raise _attempt_store_unavailable() from exc
+    if send is not None:
+        background_tasks.add_task(send)
+
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.signup.started",
+        actor_user_id=None,
+        actor_email=email_norm,
+        target_org_id=None,
+        target_org_name=None,
+        request_id=logs.CONTEXT.get({}).get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"path": path},
+    )
+    return {"detail": "Check your email to continue signing up."}
 
 
 def _attempt_store_unavailable() -> HTTPException:

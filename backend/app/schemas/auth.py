@@ -43,6 +43,35 @@ class RegisterRequest(BaseModel):
     _check_email = field_validator("email")(reject_non_ascii_email)
 
 
+class SignupStartRequest(BaseModel):
+    """Step 1 of email-first sign-up (TBD-654): the address only."""
+
+    # Same bound and DB-01 refusal as ``RegisterRequest.email``.
+    email: EmailStr = Field(max_length=120)
+    captcha_token: str | None = Field(default=None, max_length=2048)
+
+    _check_email = field_validator("email")(reject_non_ascii_email)
+
+
+class SignupCompleteRequest(BaseModel):
+    """Step 2 of email-first sign-up (TBD-654). The address comes from the
+    token, so it is not a field. The other rules are ``RegisterRequest``'s."""
+
+    token: str = Field(min_length=1, max_length=2048)
+    username: str = Field(
+        min_length=USERNAME_MIN_LENGTH,
+        max_length=USERNAME_MAX_LENGTH,
+        pattern=USERNAME_PATTERN,
+    )
+    password: str = Field(min_length=8, max_length=128)
+    first_name: str | None = Field(default=None, max_length=100)
+    last_name: str | None = Field(default=None, max_length=100)
+    org_name: str | None = Field(default=None, max_length=200)
+
+    _check_names = field_validator("first_name", "last_name")(check_display_name)
+    _check_org_name = field_validator("org_name")(reject_control_characters)
+
+
 class LoginRequest(BaseModel):
     login: str = Field(min_length=1, max_length=120)
     password: str = Field(max_length=128)

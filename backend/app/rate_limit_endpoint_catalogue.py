@@ -172,6 +172,9 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.register",
     "auth.resend_verification_public",
     "auth.reset_password",
+    # TBD-654 email-first sign-up: both legs run before any account exists.
+    "auth.signup_complete",
+    "auth.signup_start",
     "auth.sso_stepup_callback",
     "auth.verify",
     "auth.verify_email",
