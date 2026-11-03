@@ -115,6 +115,11 @@ WRITING_CALLEES: frozenset[str] = frozenset({"User"})
 #       TWO sites, one entry. Google asserted ``verified_email`` on an
 #       existing row, and the new-row constructor for a first Google sign-in.
 #
+#   * routers/auth.py::signup_complete
+#       TBD-654 email-first sign-up. The new-row constructor writes the
+#       literal ``True``: the signup token, mailed to the address, proved the
+#       inbox before the row existed.
+#
 #   * services/invitation_service.py::accept_invitation
 #       TWO sites, one entry. Reactivation of a soft-deleted same-org row,
 #       and the new-user constructor. The invite was mailed to the address,
@@ -149,6 +154,11 @@ ALLOWED_WRITE_SITES: tuple[tuple[str, str, str], ...] = (
         "routers/auth.py",
         "google_callback",
         "Google asserted verified_email (existing row + new-row constructor)",
+    ),
+    (
+        "routers/auth.py",
+        "signup_complete",
+        "TBD-654 email-first: the inbox is proven by the signup token before the row exists",
     ),
     (
         "services/invitation_service.py",
@@ -295,7 +305,7 @@ def test_email_verified_writer_set_is_closed():
         f"Allowlisted ``email_verified`` writer(s) are gone: {sorted(missing)}. "
         "Either the arm was removed (drop the entry WITH a justification) or "
         "the function was renamed (update the allowlist). Do not delete an "
-        "entry to make this green — the six arms are the whole verification "
+        "entry to make this green — the seven arms are the whole verification "
         "surface."
     )
 
