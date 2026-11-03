@@ -181,11 +181,15 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
     try:
         data = response.json()
     except ValueError:
+        data = None
+    # Valid JSON that is not the documented object (TBD-783) fails closed too,
+    # rather than raising out of a function that must never raise.
+    if not isinstance(data, dict) or not isinstance(data.get("error-codes") or [], list):
         logger.warning("captcha.verify.invalid_json")
         return CaptchaVerifyResult(ok=False, reason=REASON_PROVIDER_ERROR)
 
     success = bool(data.get("success"))
-    error_codes = tuple(str(c) for c in data.get("error-codes", []) or [])
+    error_codes = tuple(str(c) for c in data.get("error-codes") or [])
     observed_hostname = data.get("hostname")
     observed_action = data.get("action")
 

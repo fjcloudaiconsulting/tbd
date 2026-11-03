@@ -284,6 +284,27 @@ async def test_invalid_json_fails_closed(monkeypatch):
     assert result.reason == REASON_PROVIDER_ERROR
 
 
+class _RawJsonResponse(_FakeResponse):
+    """``json()`` returns the payload as-is, ``None`` (JSON null) included."""
+
+    def json(self) -> Any:
+        return self._payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [[], "x", None, 1, {"error-codes": "x"}])
+async def test_non_object_json_fails_closed(monkeypatch, log_lines, payload):
+    """FENCE (TBD-783). Wrong implementation: calling ``data.get`` on any
+    valid JSON body, so a non-object reply raises and register answers 500."""
+    _patch_httpx(monkeypatch, response=_RawJsonResponse(200, payload))
+
+    result = await verify_captcha("token", None)
+
+    assert result.ok is False
+    assert result.reason == REASON_PROVIDER_ERROR
+    assert "captcha.verify.invalid_json" in [ln["msg"] for ln in log_lines()]
+
+
 # ── secrecy ─────────────────────────────────────────────────────────────────
 
 
