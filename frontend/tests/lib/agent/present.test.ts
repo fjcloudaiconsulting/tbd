@@ -8,6 +8,7 @@ import {
   summaryLabel, summaryTotal, toolLabel,
 } from "@/lib/agent/present";
 import type { ActionChange, ActionSummary } from "@/lib/agent/types";
+import { BALANCE_MASK, setBalancesHidden } from "@/lib/format";
 
 const c = (over: Partial<ActionChange>): ActionChange => ({
   entity: "transactions", id: 7, field: "amount", before: null, after: null, ...over,
@@ -110,6 +111,15 @@ describe("present (TBD-664)", () => {
     expect(summaryLabel(added)).toBe("80 categories added");
     expect(summaryTotal(added)).toBe("");
     expect(summaryTotal(s({ totals: { amount: "630.00", currency: "EUR" } }))).toBe("€630.00");
-    expect(summaryTotal(s({ totals: { planned_amount: "12.00" } }))).toBe("12.00");
+    // no stated currency (mixed or missing): no total, never a bare unmasked number
+    expect(summaryTotal(s({ totals: { planned_amount: "12.00" } }))).toBe("");
+    setBalancesHidden(true);
+    try {
+      const masked = summaryTotal(s({ totals: { amount: "630.00", currency: "EUR" } }));
+      expect(masked).toContain(BALANCE_MASK);
+      expect(masked).not.toContain("630");
+    } finally {
+      setBalancesHidden(false);
+    }
   });
 });

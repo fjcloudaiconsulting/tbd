@@ -205,10 +205,12 @@ export function summaryChange(s: ActionSummary): ActionChange | null {
   return { entity: s.entity, id: null, field: s.field, before: s.before ?? null, after: s.after ?? null };
 }
 
+// Only a one-currency total is shown, and always through formatMoney, so hidden
+// balances mask it (and a total always has a currency, which makes Apply blind).
 export function summaryTotal(s: ActionSummary): string {
   const v = s.totals.amount ?? s.totals.planned_amount;
-  if (v === undefined) return "";
-  return s.totals.currency ? formatMoney(v, s.totals.currency) : v;
+  if (v === undefined || !s.totals.currency) return "";
+  return formatMoney(v, s.totals.currency);
 }
 
 // A counter or a balance is named by how much it moves, never by its value.

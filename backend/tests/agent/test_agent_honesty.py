@@ -1560,7 +1560,8 @@ async def test_t786_stopping_a_long_series(factory, w, windows):
     await honest_run(factory, windows, a["member"], "recurring_stop", {"recurring_id": a["rec"]}, a["org"])
     pv = await _done_preview(factory)
     gone = _summary(pv, "transactions", "delete")
-    assert gone["count"] == 40 and gone["totals"]["amount"] == f"{40 * Decimal('9.99'):.2f}"
+    # a deleted row states no currency, so its group has no total (TBD-786 review)
+    assert gone["count"] == 40 and gone["totals"] == {}
     assert _summary(pv, "transactions", "update", "recurring_id")["count"] == 300
     assert pv["changes"] == [{"entity": "recurring_transactions", "id": a["rec"], "field": "is_active",
                               "before": True, "after": False, "currency": None}]

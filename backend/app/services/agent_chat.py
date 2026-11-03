@@ -24,8 +24,10 @@ executed without the user's confirm. Auto mode never applies in-app
 (``channel="in_app"`` carries no token scope).
 
 Tools load by domain (TBD-788): every round sends the read tools the user may
-call plus ``load_tools``, which adds a domain's write and sensitive tools for
-the rest of the turn. A change tool of a domain not loaded is refused.
+call plus ``load_tools``, which loads ONE domain's write and sensitive tools; a
+later load replaces it. One is enough (a turn ends at its first preview) and it
+bounds every round's tool list by the largest domain. A change tool of a domain
+not loaded is refused.
 
 Lives outside ``app/agent`` on purpose: it calls the AI dispatch (egress),
 which F-R5 keeps out of the tool package.
@@ -123,12 +125,13 @@ def _schema(name: str, description: str, parameters: dict[str, Any]) -> dict[str
 def _load_tools_schema() -> dict[str, Any]:
     return _schema(
         LOAD_TOOLS,
-        "Make the change tools of one or more domains available for the rest of this reply. "
-        "Call it before proposing any change. Returns the names of the tools loaded.",
+        "Make the change tools of one domain available for the rest of this reply; loading "
+        "another domain replaces it. Call it before proposing any change. Returns the names "
+        "of the tools loaded.",
         {
             "type": "object",
             "properties": {"domains": {
-                "type": "array", "minItems": 1,
+                "type": "array", "minItems": 1, "maxItems": 1,
                 "items": {"type": "string", "enum": registry.domains()},
             }},
             "required": ["domains"], "additionalProperties": False,
@@ -137,11 +140,14 @@ def _load_tools_schema() -> dict[str, Any]:
 
 
 def _load_domains(raw: Any) -> set[str]:
-    """The domains a ``load_tools`` call names, or ``invalid_arguments``."""
+    """The one domain a ``load_tools`` call names, or ``invalid_arguments``."""
     known = registry.domains()
     got = raw.get("domains") if isinstance(raw, dict) and set(raw) == {"domains"} else None
-    if not isinstance(got, list) or not got or not all(d in known for d in got):
-        raise ToolError("invalid_arguments", "domains: a non-empty list of " + ", ".join(known))
+    if not isinstance(got, list) or len(got) != 1 or got[0] not in known:
+        raise ToolError(
+            "invalid_arguments",
+            "domains: exactly one of " + ", ".join(known) + "; load the one this change needs",
+        )
     return set(got)
 
 
@@ -329,7 +335,7 @@ async def stream_turn(
     sse_code: str | None = None  # the code of the SSE error event actually sent
     rd: dict[str, Any] | None = None  # the dispatched round not yet reported
     platform_failed = False
-    loaded: set[str] = set()  # domains ``load_tools`` added this turn
+    loaded: set[str] = set()  # the domain ``load_tools`` loaded this turn (one at most)
 
     async def emit(stop: str | None) -> None:
         """One INFO event per DISPATCHED round, ids and counts only (never content)."""
@@ -431,7 +437,7 @@ async def stream_turn(
                         rd["tools"][-1]["code"] = exc.code
                         yield _sse("tool_result", {"name": shown, "ok": False, "code": exc.code})
                     else:
-                        loaded |= want
+                        loaded = want
                         tools = await tool_schemas(db, user, frozenset(loaded))
                         names = [t["function"]["name"] for t in tools
                                  if (s := registry.get_tool(t["function"]["name"]))
@@ -444,11 +450,17 @@ async def stream_turn(
                     rd["tools"][-1]["code"] = "unknown_tool"
                     yield _sse("tool_result", {"name": shown, "ok": False, "code": "unknown_tool"})
                 elif spec.risk != "read" and spec.domain not in loaded:
-                    # Defence in depth: the model was never sent this tool.
-                    result = {"error": "domain_not_loaded", "detail": (
-                        f'call load_tools with domains ["{spec.domain}"] first')}
-                    rd["tools"][-1]["code"] = "domain_not_loaded"
-                    yield _sse("tool_result", {"name": shown, "ok": False, "code": "domain_not_loaded"})
+                    # A change tool runs only while its domain is loaded (earlier
+                    # in this round or turn); ``invoke``'s gates still all apply.
+                    try:  # a tool the user may never use gets that refusal, not a load hint
+                        await registry.check_gates(db, user, spec, "in_app", None)
+                    except ToolError as exc:
+                        result = {"error": exc.code, "detail": {"untrusted": exc.detail}}
+                    else:
+                        result = {"error": "domain_not_loaded", "detail": (
+                            f'call load_tools with domains ["{spec.domain}"] first')}
+                    rd["tools"][-1]["code"] = result["error"]
+                    yield _sse("tool_result", {"name": shown, "ok": False, "code": result["error"]})
                 else:
                     try:
                         data = (await registry.invoke(

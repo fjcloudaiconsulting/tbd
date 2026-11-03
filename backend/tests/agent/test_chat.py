@@ -431,10 +431,11 @@ async def test_roles_still_filter_inside_a_loaded_domain(factory, w, client, pro
 
 @pytest.mark.parametrize("args", [
     {"domains": ["payroll"]}, {"domains": []}, {}, {"domains": "accounts"},
-    {"domains": ["accounts"], "extra": 1},
+    {"domains": ["accounts"], "extra": 1}, {"domains": ["accounts", "transactions"]},
 ])
 async def test_load_tools_refuses_an_unknown_domain(factory, w, client, provider, args):
-    """FENCE (TBD-788). Wrong implementation: loading nothing, or everything, silently."""
+    """FENCE (TBD-788). Wrong implementations: loading nothing, or everything,
+    silently; loading two domains at once (the per-round bound is one domain)."""
     _as(factory, w["user"])
     adapter = provider([_resp([_call("load_tools", args)]), _resp(content="ok")])
     ev = _events((await client.post(URL, json=ASK)).text)
@@ -443,9 +444,69 @@ async def test_load_tools_refuses_an_unknown_domain(factory, w, client, provider
     assert _names(adapter.tools[1]) == _names(adapter.tools[0])
 
 
+async def test_a_later_load_replaces_the_domain(factory, w, client, provider):
+    """FENCE (TBD-788). Wrong implementation: loads that accumulate, so a turn
+    loading every domain in turn sends all of them each round."""
+    _as(factory, w["user"])
+    adapter = provider([
+        _resp([_call("load_tools", {"domains": ["budgets_and_categories"]})]),
+        _resp([_call("load_tools", {"domains": ["recurring_and_billing"]}, cid="c2"),
+               _call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"},
+                     cid="c3")]),
+        _resp(content="ok"),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert "budgets_update_amount" in _names(adapter.tools[1])
+    third = _names(adapter.tools[2])
+    assert "recurring_create" in third and "budgets_update_amount" not in third
+    assert ("tool_result", {"name": "budgets_update_amount", "ok": False,
+                            "code": "domain_not_loaded"}) in ev and "preview" not in [e for e, _ in ev]
+
+
+async def test_a_same_round_load_keeps_the_role_gate(factory, w, client, provider):
+    """FENCE (TBD-788). A tool called in the round that loads its domain runs
+    through every gate. Wrong implementation: a load that lets the round's later
+    calls skip ``invoke``'s role check."""
+    _as(factory, w["user"])
+    provider([
+        _resp([_call("load_tools", {"domains": ["recurring_and_billing"]}),
+               _call("billing_cycle_update", {"billing_cycle_day": 5}, cid="c2")]),
+        _resp(content="ok"),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert ("tool_result", {"name": "billing_cycle_update", "ok": False,
+                            "code": "insufficient_role"}) in ev
+    assert "preview" not in [e for e, _ in ev]
+
+
+async def test_an_unloaded_tool_the_user_cannot_use_gets_the_gate_refusal(
+    factory, w, client, provider,
+):
+    """FENCE (TBD-788). Wrong implementation: a load hint for a tool no load
+    would let this user run, so the model spends rounds loading it."""
+    from app.models.settings import OrgSetting
+
+    await _add(factory, OrgSetting(org_id=w["org"], key="orgpref.budgets", value="off"))
+    _as(factory, w["user"])
+    adapter = provider([
+        _resp([_call("billing_cycle_update", {"billing_cycle_day": 5}),
+               _call("budgets_update_amount", {"budget_id": w["budget"], "amount": "1.00"}, "c2"),
+               _call("recurring_stop", {"recurring_id": 1}, "c3")]),
+        _resp(content="ok"),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    codes = {d["name"]: d["code"] for e, d in ev if e == "tool_result"}
+    assert codes == {"billing_cycle_update": "insufficient_role",
+                     "budgets_update_amount": "feature_disabled",
+                     "recurring_stop": "domain_not_loaded"}
+    msgs = [json.loads(m["content"]) for m in adapter.seen[1][-3:]]
+    assert msgs[0] == {"error": "insufficient_role", "detail": {"untrusted": "admin"}}
+
+
 async def test_five_rounds_fit_the_default_budget_with_the_largest_domain(factory, w):
-    """FENCE (TBD-788). The owner (every tool) with the costliest single domain
-    loaded still gets five rounds of the base request on the default plan.
+    """FENCE (TBD-788). The worst round ``load_tools`` allows is every read
+    plus the costliest single domain (one is loaded at a time), for the owner
+    (every tool). Five rounds of the base request must fit the default plan.
     Fails when a domain grows past that: split it."""
     from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS
 
@@ -965,7 +1026,8 @@ def turnlog(monkeypatch):
 
 def _largest_round_schemas():
     """The costliest tool list one round can send (TBD-788): every read, the
-    largest domain for any role, and ``load_tools``."""
+    largest domain for any role (``load_tools`` loads one at a time), and
+    ``load_tools``."""
     def round_of(domain):
         return [*({"type": "function", "function": {
             "name": s.name, "description": s.description, "parameters": s.args.model_json_schema(),
