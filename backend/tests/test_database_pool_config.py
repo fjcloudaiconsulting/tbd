@@ -82,6 +82,9 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
     # all already-imported ``from app.config import settings`` references
     # stranded on a stale instance (causing cross-test monkeypatch pollution).
     _original_settings = app_config.settings
+    # Reloading again would swap in a new engine and new functions, which the
+    # conftest dependency overrides no longer match; restore the namespace instead.
+    _original_database = dict(vars(app_database))
 
     monkeypatch.setattr(sa_async, "create_async_engine", _fake_create_async_engine)
 
@@ -100,7 +103,7 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
         # Restore the original singleton so ``from app.config import settings``
         # references in other modules continue to see the live object.
         app_config.settings = _original_settings
-        importlib.reload(app_database)
+        vars(app_database).update(_original_database)
 
 
 def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch, log_lines):
@@ -130,6 +133,7 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch, log_lines):
 
         # Capture original singleton before reload (see test above for rationale).
         _original_settings = app_config.settings
+        _original_database = dict(vars(app_database))
 
         monkeypatch.setattr(sa_async, "create_async_engine", _fake_engine)
         importlib.reload(app_config)
@@ -150,7 +154,7 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch, log_lines):
         import app.config as app_config
         import app.database as app_database
         app_config.settings = _original_settings
-        importlib.reload(app_database)
+        vars(app_database).update(_original_database)
 
 
 # ── TBD-785: the rate-limit and state-db side pools ───────────────────────
