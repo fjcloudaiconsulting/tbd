@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import BudgetOverviewChart from "@/app/budgets/BudgetOverviewChart";
@@ -61,6 +61,10 @@ function mockMatchMedia(reduce: boolean) {
 }
 
 afterEach(() => {
+  // Unmount while the fake clock is still installed: recharts' store, built
+  // under the fake rAF, would otherwise queue a real timer on unmount that
+  // calls cancelAnimationFrame after the fake one is gone.
+  cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
