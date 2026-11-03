@@ -15,10 +15,25 @@ export interface ActionChange {
   currency?: string | null;
 }
 
+// A bulk group of rows a preview over the size cap shows as a count, a sample
+// and totals (TBD-786). Only row classes that move no money are summarised.
+export interface ActionSummary {
+  entity: string;
+  change: "update" | "insert" | "delete";
+  // An update: the one field every row of the group changes, and how.
+  field?: string;
+  before?: Wire;
+  after?: Wire;
+  count: number;
+  sample: ActionChange[];
+  totals: Record<string, string>;
+}
+
 export interface StagedAction {
   action_id: string;
   summary: string;
   changes: ActionChange[];
+  summaries?: ActionSummary[];
   warnings: string[];
   context: Record<string, unknown>;
   expires_at: string;
@@ -44,7 +59,7 @@ export interface AgentActionRow {
   risk: "read" | "write" | "sensitive";
   mode: "confirm" | "auto";
   status: ActionStatus;
-  preview: { summary: string; changes: ActionChange[]; warnings: string[]; context: Record<string, unknown> };
+  preview: { summary: string; changes: ActionChange[]; summaries?: ActionSummary[]; warnings: string[]; context: Record<string, unknown> };
   error_code: string | null;
   created_at: string;
   expires_at: string;

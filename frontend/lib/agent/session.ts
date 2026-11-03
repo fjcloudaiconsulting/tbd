@@ -81,7 +81,11 @@ function validEntry(x: unknown): x is Entry {
     case "preview": {
       const a = x.action;
       if (!isStr(x.tool) || !isObj(a) || !isStr(a.action_id) || !isStr(a.summary)) return false;
-      if (!Array.isArray(a.changes) || !a.changes.every((c) => isObj(c) && isStr(c.entity) && isStr(c.field))) return false;
+      const change = (c: unknown) => isObj(c) && isStr(c.entity) && isStr(c.field);
+      if (!Array.isArray(a.changes) || !a.changes.every(change)) return false;
+      if (a.summaries !== undefined && !(Array.isArray(a.summaries) && a.summaries.every((s) =>
+        isObj(s) && isStr(s.entity) && typeof s.count === "number" && isObj(s.totals)
+        && Array.isArray(s.sample) && s.sample.every(change)))) return false;
       if (a.warnings !== undefined && !Array.isArray(a.warnings)) return false;
       if (a.context !== undefined && !isObj(a.context)) return false;
       return x.outcome === undefined || (isStr(x.outcome) && OUTCOMES.includes(x.outcome));
