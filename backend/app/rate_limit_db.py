@@ -26,7 +26,11 @@ _PURGE_MARGIN = 60
 _PURGE_BATCH = 100
 
 
-def _build_engine(url: str | None = None) -> Engine:
+def _build_engine(
+    url: str | None = None,
+    pool_size: int = settings.rate_limit_db_pool_size,
+    max_overflow: int = settings.rate_limit_db_max_overflow,
+) -> Engine:
     u = make_url(url or settings.database_url).set(query={})
     if u.drivername.startswith("sqlite"):
         return create_engine(u.set(drivername="sqlite"))
@@ -40,8 +44,8 @@ def _build_engine(url: str | None = None) -> Engine:
             "init_command": "SET SESSION innodb_lock_wait_timeout=1, time_zone='+00:00'",
         },
         isolation_level="READ COMMITTED",
-        pool_size=2,
-        max_overflow=5,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
         pool_timeout=2,
         pool_pre_ping=True,
         pool_recycle=settings.db_pool_recycle,
