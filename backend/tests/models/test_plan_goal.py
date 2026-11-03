@@ -11,7 +11,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -25,7 +25,6 @@ from app.models.scenario import (
     PlanGoalKind,
     PlanGoalTier,
     Scenario,
-    ScenarioStatus,
     ScenarioType,
 )
 from app.models.tag import Tag
@@ -103,23 +102,28 @@ async def _seed(db) -> dict:
 
 @pytest.mark.asyncio
 async def test_legacy_scenario_row_gets_valid_defaults(session_factory):
-    """A row written the legacy way (routers, AI wrapper) is a draft plan
-    with zero rates and no links."""
+    """A row that names only the pre-098 columns is a draft plan with zero
+    rates and no links. Raw SQL, so the server defaults are what fills it,
+    not the ORM's Python defaults."""
     async with session_factory() as db:
         ids = await _seed(db)
-        org_id = ids["org_id"]
         user_id = await db.scalar(select(User.id))
-        db.add(Scenario(
-            org_id=org_id, user_id=user_id, name="Old", scenario_type=ScenarioType.CUSTOM,
-            params_json={},
-        ))
+        await db.execute(
+            text(
+                "INSERT INTO scenarios (org_id, user_id, name, scenario_type, params_json) "
+                "VALUES (:o, :u, 'Old', 'custom', '{}')"
+            ),
+            {"o": ids["org_id"], "u": user_id},
+        )
         await db.commit()
-        old = await db.scalar(select(Scenario).where(Scenario.name == "Old"))
-        assert old.status is ScenarioStatus.DRAFT
-        assert old.return_pct == Decimal("0") and old.inflation_pct == Decimal("0")
-        assert old.currency is None and old.monthly_budget is None
-        assert old.funding_account_id is old.category_id is old.tag_id is None
-        assert old.started_at is old.finished_at is old.baseline_projection_json is None
+        row = (await db.execute(text(
+            "SELECT status, return_pct, inflation_pct, currency, monthly_budget, "
+            "funding_account_id, category_id, tag_id, started_at, finished_at, "
+            "baseline_projection_json FROM scenarios WHERE name = 'Old'"
+        ))).one()
+        assert row.status == "draft"
+        assert Decimal(str(row.return_pct)) == Decimal(str(row.inflation_pct)) == Decimal("0")
+        assert set(row[3:]) == {None}
 
 
 @pytest.mark.asyncio

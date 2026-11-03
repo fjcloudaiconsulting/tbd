@@ -320,7 +320,11 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     ),
     "org_settings": Include(OrgColumn(), "settings the subject chose"),
     "organizations": Include(OrgColumn("id"), "the org record itself"),
-    "plan_goals": Include(OrgColumn(), "goals inside the plans the subject built"),
+    # Scoped through the plan, not its own org_id, so a goal written with a
+    # wrong org_id still exports with its plan's org only.
+    "plan_goals": Include(
+        Via("scenarios", "scenario_id"), "goals inside the plans the subject built"
+    ),
     "plans": Exclude("platform-global price list"),
     "platform_ai_models": Exclude("platform-global catalog, no org data"),
     "platform_ai_spend": Exclude("platform-global operational counter, no org data"),

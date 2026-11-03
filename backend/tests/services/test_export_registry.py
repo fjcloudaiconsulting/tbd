@@ -707,6 +707,30 @@ async def test_leg4_audit_events_scoped_by_target_org_only(two_orgs):
     assert "admin.org.renamed" not in text
 
 
+@pytest.mark.asyncio
+async def test_leg4_plan_goals_scoped_by_their_plan_not_their_org_id(two_orgs):
+    """A goal whose ``org_id`` says org A but whose plan is org B's exports
+    with org B only. Wrong implementation: ``OrgColumn()`` on plan_goals."""
+    from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario
+
+    a_oid, b_oid = two_orgs["a"]["org_id"], two_orgs["b"]["org_id"]
+    async with two_orgs["factory"]() as db:
+        b_plan = await db.scalar(select(Scenario.id).where(Scenario.org_id == b_oid))
+        db.add(
+            PlanGoal(
+                org_id=a_oid,  # disagrees with its plan's org
+                scenario_id=b_plan,
+                name="MISSCOPED-GOAL",
+                tier=PlanGoalTier.DREAM,
+                kind=PlanGoalKind.LUMP,
+            )
+        )
+        await db.commit()
+
+    assert "MISSCOPED-GOAL" not in await _export_text(two_orgs["factory"], a_oid)
+    assert "MISSCOPED-GOAL" in await _export_text(two_orgs["factory"], b_oid)
+
+
 # ══ §6 — redaction ════════════════════════════════════════════════════════
 
 

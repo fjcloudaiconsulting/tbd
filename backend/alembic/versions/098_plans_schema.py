@@ -15,7 +15,9 @@ itself nullable, so a copy could not make the column required anyway).
 
 The three FKs on ``scenarios`` are ``ON DELETE SET NULL`` so org reset and
 delete, which wipe accounts, categories and tags, never trip them.
-``scenarios`` is small (a few plans per user), so the FK table copy is short.
+The three are added in one ALTER, so MySQL copies ``scenarios`` once; it is
+small (a few plans per user), so the copy is short. That statement is
+MySQL syntax; production and CI migrate MySQL only.
 
 New table ``plan_goals``, deleted with its plan (``scenario_id`` CASCADE) and
 with its org. It is not called ``plans``: subscription tiers own that name.
@@ -72,11 +74,15 @@ def upgrade() -> None:
     op.add_column("scenarios", sa.Column("started_at", sa.DateTime(), nullable=True))
     op.add_column("scenarios", sa.Column("finished_at", sa.DateTime(), nullable=True))
     op.add_column("scenarios", sa.Column("baseline_projection_json", sa.JSON(), nullable=True))
-    for column, table in _SCENARIO_FKS:
-        op.create_foreign_key(
-            f"fk_scenarios_{column}", "scenarios", table, [column], ["id"],
-            ondelete="SET NULL",
+    # One ALTER so MySQL copies the table once, not once per FK.
+    op.execute(
+        "ALTER TABLE scenarios "
+        + ", ".join(
+            f"ADD CONSTRAINT fk_scenarios_{column} FOREIGN KEY ({column}) "
+            f"REFERENCES {table} (id) ON DELETE SET NULL"
+            for column, table in _SCENARIO_FKS
         )
+    )
 
     op.create_table(
         "plan_goals",
@@ -132,8 +138,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("plan_goals")
-    for column, _ in _SCENARIO_FKS:
-        op.drop_constraint(f"fk_scenarios_{column}", "scenarios", type_="foreignkey")
+    op.execute(
+        "ALTER TABLE scenarios "
+        + ", ".join(f"DROP FOREIGN KEY fk_scenarios_{c}" for c, _ in _SCENARIO_FKS)
+    )
     for column in (
         "baseline_projection_json",
         "finished_at",
