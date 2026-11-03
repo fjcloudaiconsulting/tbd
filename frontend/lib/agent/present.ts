@@ -4,7 +4,7 @@
 
 import { scopeLabel } from "@/components/system/api-tokens/expiry";
 import { formatMoney } from "@/lib/format";
-import type { ActionChange, AgentScope, Wire } from "./types";
+import type { ActionChange, ActionSummary, AgentScope, Wire } from "./types";
 
 // The backend serializes naive UTC datetimes without an offset.
 export function utcDate(iso: string): Date {
@@ -182,6 +182,32 @@ export function rowLabel(c: ActionChange): string {
   if (c.entity === "transaction_tags" && Array.isArray(c.id)) return `Transaction #${text(c.id[0])}`;
   const noun = ROW_NOUN[c.entity] ?? c.entity;
   return isNew(c.id) ? `New ${noun.toLowerCase()} ${text(c.id).slice(4)}` : `${noun} #${text(c.id)}`;
+}
+
+const PLURAL: Record<string, string> = {
+  transactions: "transactions", recurring_transactions: "recurring transactions",
+  forecast_plan_items: "forecast items", category_rules: "categorization rules",
+  categories: "categories", budgets: "budgets", billing_periods: "billing periods",
+};
+
+// A summarised group (TBD-786) reads by the count the server stated.
+export function summaryLabel(s: ActionSummary): string {
+  const noun = PLURAL[s.entity] ?? s.entity;
+  if (s.change === "insert") return `${s.count} ${noun} added`;
+  if (s.change === "delete") return `${s.count} ${noun} deleted`;
+  return `${s.count} ${noun} changed`;
+}
+
+// The group's one changed field, as a change row the card renders.
+export function summaryChange(s: ActionSummary): ActionChange | null {
+  if (s.change !== "update" || !s.field) return null;
+  return { entity: s.entity, id: null, field: s.field, before: s.before ?? null, after: s.after ?? null };
+}
+
+export function summaryTotal(s: ActionSummary): string {
+  const v = s.totals.amount ?? s.totals.planned_amount;
+  if (v === undefined) return "";
+  return s.totals.currency ? formatMoney(v, s.totals.currency) : v;
 }
 
 // A counter or a balance is named by how much it moves, never by its value.

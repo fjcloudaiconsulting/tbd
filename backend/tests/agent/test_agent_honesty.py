@@ -29,16 +29,18 @@ import dataclasses
 import datetime
 import enum
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 
 import pytest
 from dateutil.relativedelta import relativedelta
 from pydantic import BaseModel, ConfigDict
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import delete, select, update
+from types import SimpleNamespace
 
-from app.agent import registry
+from sqlalchemy import delete, func, select, update
+
+from app.agent import actions, registry
 from app.agent.registry import Change, Preview, ToolSpec
 from app.models import Account, AccountType, Organization
 from app.models.cc_cycle_payment import CcCyclePayment
@@ -58,7 +60,7 @@ from app.models.user import Role, User
 from app.services import org_bootstrap_service
 from app.services.category_rules_service import normalize_description
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    P_START, _confirm, _invoke, engine, factory, w,
+    P_START, _confirm, _invoke, _refused, engine, factory, w,
 )
 
 # Counters are named only as signed nonzero deltas, never as absolutes.
@@ -85,6 +87,22 @@ INSERT_IDENTITY = {
 }
 
 TABLES = {t.name: t for t in Base.metadata.sorted_tables}
+
+# TBD-786: the only classes a preview may summarise. Widening the allowlist in
+# ``app.agent.actions`` means widening this pin, in review.
+SUMMARY_CLASSES = {
+    ("transactions", "update", "category_id"),
+    ("recurring_transactions", "update", "category_id"),
+    ("forecast_plan_items", "update", "category_id"),
+    ("forecast_plan_items", "delete", None),
+    ("category_rules", "update", "category_id"),
+    ("category_rules", "delete", None),
+    ("transactions", "update", "recurring_id"),
+    ("transactions", "delete", None),
+    ("categories", "insert", None),
+    ("budgets", "insert", None),
+    ("billing_periods", "insert", None),
+}
 
 
 # ── snapshots ─────────────────────────────────────────────────────────────
@@ -220,8 +238,13 @@ def _unwrap(v):
     return v
 
 
-def check_execute(w: Window, changes: list[dict], org_id: int, risk: str) -> None:
+def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summaries=()) -> None:
     pre, post = w.pre, w.post
+    # 9. a summary (TBD-786) is an allowlisted class; its sample rows are
+    # checked as Changes, the rest of the class is counted against the diff.
+    for s in summaries:
+        assert (s["entity"], s["change"], s.get("field")) in SUMMARY_CLASSES, f"rule 9: {s['entity']} summarised"
+    changes = [*changes, *(c for s in summaries for c in s["sample"])]
     changes = [{**c, "before": _unwrap(c["before"]), "after": _unwrap(c["after"])} for c in changes]
 
     # 8. tier
@@ -320,6 +343,9 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str) -> Non
         _, target = matched[json.dumps(ref)]
         assert (post[table][pk][f],) == target, f"rule 4: {table}.{f} names {ref!r} but links elsewhere"
 
+    for s in summaries:
+        check_summary(s, pre, post, org_id, claimed, claimed_del, ins_rows, matched)
+
     # 2. completeness: nothing changed that no Change names
     for table in ins_rows:
         extra = ins_rows[table]
@@ -338,13 +364,47 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str) -> Non
                 )
 
 
-def check_all(windows: list[Window], changes: list[dict], org_id: int, risk: str) -> None:
+def check_summary(s, pre, post, org_id, claimed, claimed_del, ins_rows, matched) -> None:
+    """Rule 9: the rows of a summarised class the sample does not name number
+    exactly ``count`` minus the sample, and the class (sample included) sums
+    to the stated totals. They are then claimed for rule 2."""
+    table, tobj = s["entity"], TABLES[s["entity"]]
+    ids = {json.dumps(c["id"], sort_keys=True): c["id"] for c in s["sample"]}
+    if s["change"] == "insert":
+        named = [matched[json.dumps(i)][1] for i in ids.values()]
+        rest = sorted(ins_rows[table], key=str)
+        ins_rows[table].clear()
+    else:
+        named = [_locate(table, i, pre, post, org_id)[1] for i in ids.values()]
+        if s["change"] == "update":
+            f = s["field"]
+            rest = [pk for pk in post[table] if pk in pre[table] and (table, pk, f) not in claimed
+                    and _norm(tobj.c[f], pre[table][pk][f]) == _unwrap(s["before"])
+                    and _norm(tobj.c[f], post[table][pk][f]) == _unwrap(s["after"])]
+            claimed.update((table, pk, f) for pk in rest)
+        else:
+            rest = [pk for pk in pre[table] if pk not in post[table] and (table, pk) not in claimed_del]
+            claimed_del.update((table, pk) for pk in rest)
+    assert len(rest) == s["count"] - len(ids), (
+        f"rule 9: {table} {s['change']} summary counts {s['count']}, wrote {len(rest) + len(ids)}"
+    )
+    rows = [(post if s["change"] != "delete" else pre)[table][pk] for pk in named + rest]
+    if (table, s["change"]) == ("transactions", "delete"):
+        assert all(_norm(tobj.c["status"], r["status"]) == "pending" for r in rows), (
+            "rule 9: a summarised transaction delete removed a settled row"
+        )
+    for f, total in s["totals"].items():
+        if f != "currency":
+            assert f"{sum(Decimal(str(r[f])) for r in rows):.2f}" == total, f"rule 9: {table}.{f} total"
+
+
+def check_all(windows: list[Window], changes: list[dict], org_id: int, risk: str, summaries=()) -> None:
     previews = [x for x in windows if x.kind == "preview"]
     executes = [x for x in windows if x.kind == "execute"]
     assert len(previews) >= 2 and len(executes) == 1, "fence is vacuous: wrong number of windows"
     for p in previews:
         check_preview_window(p)
-    check_execute(executes[0], changes, org_id, risk)
+    check_execute(executes[0], changes, org_id, risk, summaries)
 
 
 # ── running a scenario ────────────────────────────────────────────────────
@@ -357,7 +417,8 @@ async def honest_run(factory, windows, uid, tool, args, org_id, *, auto_token=No
     async with factory() as db:
         row = await db.get(AgentPendingAction, out["action_id"])
     assert row.status.value == "done"
-    check_all(windows, row.preview_json["changes"], org_id, row.risk.value)
+    check_all(windows, row.preview_json["changes"], org_id, row.risk.value,
+              row.preview_json.get("summaries", ()))
     return row.preview_json["changes"]
 
 
@@ -1363,3 +1424,151 @@ def test_ta9b_the_detector_sees_an_unregistered_scenario(mutant):
         return None
     name = mutant("m_uncovered", lambda args: [], ex)
     assert _uncovered() == [name]
+
+
+# ── TBD-786: previews over the size cap summarise bulk rows ───────────────
+
+async def _done_preview(f) -> dict:
+    async with f() as db:
+        rows = (await db.scalars(select(AgentPendingAction).where(
+            AgentPendingAction.status == "done"))).all()
+    [row] = rows
+    return row.preview_json
+
+
+def _summary(pv, entity, change, field=None) -> dict:
+    [s] = [s for s in pv["summaries"] if (s["entity"], s["change"], s.get("field")) == (entity, change, field)]
+    return s
+
+
+def test_t786_the_summary_allowlist_is_pinned():
+    """FENCE. Wrong implementation: summarising a class (a balance, an import
+    state) by widening the allowlist without widening this pin."""
+    assert actions.SUMMARY_CLASSES == SUMMARY_CLASSES
+
+
+async def _many_txs(f, a, n=500):
+    await _add(f, *(_tx_row(a, description=f"SHOP {k}", amount=Decimal("2.00")) for k in range(n)))
+
+
+async def test_t786_category_delete_migrating_500_transactions(factory, w, windows):
+    """Before TBD-786 the preview (100 B a moved row) was refused as
+    payload_too_large past about 160 rows."""
+    a = w["A"]
+    await _seq(_floor, _many_txs)(factory, a)
+    await honest_run(factory, windows, a["member"], "categories_delete",
+                     {"category_id": a["c1"], "target_category_id": a["c2"]}, a["org"])
+    pv = await _done_preview(factory)
+    s = _summary(pv, "transactions", "update", "category_id")
+    assert (s["count"], s["before"], s["after"], len(s["sample"])) == (501, a["c1"], a["c2"], 5)
+    assert not any(c["entity"] == "transactions" for c in pv["changes"])
+    assert pv["changes"][0]["entity"] == "categories"  # the primary row is never summarised
+    async with factory() as db:
+        assert await db.scalar(select(func.count()).select_from(Transaction).where(
+            Transaction.category_id == a["c2"])) == 501
+
+    # rule 9 goes red for a summary that miscounts or names a class off the allowlist
+    for bad in ({**s, "count": 500}, {**s, "entity": "accounts"}, {**s, "totals": {"amount": "1.00"}}):
+        if bad["entity"] == "accounts":
+            bad = {**bad, "sample": []}
+        with pytest.raises(AssertionError, match="rule 9"):
+            check_all(windows, pv["changes"], a["org"], "sensitive", [bad])
+
+
+async def test_t786_a_drift_inside_a_summarised_group_is_stale(factory, w):
+    """The fingerprint covers every row, not the stored sample: a row of the
+    summary the person never saw changing still refuses the confirm."""
+    a = w["A"]
+    await _seq(_floor, _many_txs)(factory, a)
+    out = await _invoke(factory, a["member"], "categories_delete",
+                        {"category_id": a["c1"], "target_category_id": a["c2"]})
+    assert "summaries" in out
+    shown = {c["id"] for s in out["summaries"] for c in s["sample"]}
+    async with factory() as db:
+        last = await db.scalar(select(func.max(Transaction.id)).where(Transaction.org_id == a["org"]))
+        assert last not in shown
+        await db.execute(update(Transaction).where(Transaction.id == last).values(category_id=a["c2"]))
+        await db.commit()
+    err = await _refused(_confirm(factory, a["member"], out["action_id"]))
+    assert err.code == "preview_stale"
+    assert _summary(err.data, "transactions", "update", "category_id")["count"] == 500
+    async with factory() as db:
+        assert await db.get(Category, a["c1"]) is not None
+
+
+async def _sixty_budgets(f, a):
+    cats = await _ids(f, *(Category(org_id=a["org"], name=f"Cat {k}", type=CategoryType.EXPENSE) for k in range(60)))
+    await _add(f, *(Budget(org_id=a["org"], category_id=c, amount=Decimal("10.50"), period_start=P_START) for c in cats))
+
+
+async def test_t786_a_60_budget_copy(factory, w, windows):
+    a = w["A"]
+    await _sixty_budgets(factory, a)
+    await honest_run(factory, windows, a["member"], "budgets_copy_from_period",
+                     {"source_period_start": P_START.isoformat(), "target_period_start": NEXT.isoformat()}, a["org"])
+    pv = await _done_preview(factory)
+    s = _summary(pv, "budgets", "insert")
+    # 62 copied: the 60 and the world's two; the few stubs it adds stay in full
+    assert s["count"] == 62 and s["totals"] == {"amount": f"{60 * Decimal('10.50') + 150:.2f}", "currency": "EUR"}
+    assert pv["changes"][0]["entity"] == "billing_periods"
+
+
+async def _long_series(f, a):
+    """300 settled occurrences (they leave the series) and 40 pending ones
+    from today on (deleted)."""
+    [a["rec"]] = await _ids(f, _template(a))
+    await _add(f, *(_occurrence(a, a["rec"], P_START - k * DAY, status=TransactionStatus.SETTLED,
+                                settled_date=P_START - k * DAY) for k in range(300)))
+    await _add(f, *(_occurrence(a, a["rec"], TODAY + (k + 1) * DAY) for k in range(40)))
+
+
+async def test_t786_stopping_a_long_series(factory, w, windows):
+    a = w["A"]
+    await _long_series(factory, a)
+    await honest_run(factory, windows, a["member"], "recurring_stop", {"recurring_id": a["rec"]}, a["org"])
+    pv = await _done_preview(factory)
+    gone = _summary(pv, "transactions", "delete")
+    assert gone["count"] == 40 and gone["totals"]["amount"] == f"{40 * Decimal('9.99'):.2f}"
+    assert _summary(pv, "transactions", "update", "recurring_id")["count"] == 300
+    assert pv["changes"] == [{"entity": "recurring_transactions", "id": a["rec"], "field": "is_active",
+                              "before": True, "after": False, "currency": None}]
+    assert pv["context"]["deleted"] == []  # the summary says which rows go
+
+
+async def test_t786_rows_off_the_allowlist_are_never_summarised(factory, w, mutant):
+    """Wrong implementation: summarising whatever is bulky. Deleted SETTLED
+    transactions move a balance: listed in full, so still refused."""
+    a = w["A"]
+    many = [Change("transactions", 10_000 + k, f, v, None) for k in range(300)
+            for f, v in (("status", "settled"), ("amount", "1.00"))]
+    pv = {"summary": "s", "changes": [asdict(c) for c in many], "warnings": [],
+          "context": {"deleted": [{"entity": "transactions", "id": 10_000 + k} for k in range(300)]}}
+    assert actions._summarised(pv, "sensitive") is pv
+    balances = [Change("accounts", a["acct"], "balance_delta", None, "1.00", "EUR")] + [
+        Change("budgets", 10_000 + k, "amount", "1.00", "2.00", "EUR") for k in range(300)]
+
+    async def ex(ctx, args):
+        return None
+
+    name = mutant("m_bulky", lambda args: balances, ex, risk="sensitive")
+    err = await _refused(_invoke(factory, a["member"], name, {"budget_id": a["b1"]}))
+    assert err.code == "payload_too_large"
+    # under the cap nothing is summarised, even for an allowlisted class
+    small = {**pv, "changes": [asdict(Change("transactions", k, "category_id", 1, 2)) for k in range(20)],
+             "context": {}}
+    row = actions._new_row(SimpleNamespace(org_id=a["org"], channel="in_app", api_token_id=None),
+                           a["member"], registry.get_tool(name), {}, small, actions.ActionMode.CONFIRM)
+    assert row.preview_json is small
+
+
+async def test_t786_a_full_restore_on_an_empty_org(factory, w, windows):
+    """Pinned as payload_too_large before TBD-786."""
+    a = w["A"]
+    async with factory() as db:
+        await db.execute(update(User).where(User.id == a["member"]).values(role=Role.OWNER))
+        await db.commit()
+    await honest_run(factory, windows, a["member"], "categories_restore_recommended", {}, a["org"])
+    s = _summary(await _done_preview(factory), "categories", "insert")
+    async with factory() as db:
+        assert s["count"] + 1 == await db.scalar(select(func.count()).select_from(Category).where(
+            Category.is_system.is_(True)))

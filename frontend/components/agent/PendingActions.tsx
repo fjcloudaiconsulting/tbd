@@ -20,6 +20,7 @@ export const PENDING_KEY = "/api/v1/agent/actions?status=pending&limit=20";
 function staged(r: AgentActionRow): StagedAction {
   return {
     action_id: r.action_id, summary: r.preview.summary, changes: r.preview.changes,
+    summaries: r.preview.summaries,
     warnings: r.preview.warnings, context: r.preview.context ?? {}, expires_at: r.expires_at,
     requires_confirmation: true,
   };
