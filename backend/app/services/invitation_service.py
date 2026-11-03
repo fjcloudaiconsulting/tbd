@@ -42,7 +42,7 @@ from app.schemas.auth import (
     USERNAME_MIN_LENGTH,
     USERNAME_PATTERN,
 )
-from app.security import decode_token, hash_password
+from app.security import decode_token, hash_password, session_cutoff
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.subscription_service import enforce_user_limit
@@ -684,6 +684,7 @@ async def remove_member(
             )
 
     target.is_active = False
-    target.sessions_invalidated_at = utcnow_naive()
+    # The next whole second, as in admin_org_members_service.update_member (TBD-583).
+    target.sessions_invalidated_at = session_cutoff()
     await db.flush()
     return target
