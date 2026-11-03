@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.306.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.305.0...v0.306.0) (2026-11-03)
+
+
+### Features
+
+* **db:** make the rate-limit and state-db pool sizes settable from env (TBD-785) ([#1075](https://github.com/fjcloudaiconsulting/tbd/issues/1075)) ([58113e5](https://github.com/fjcloudaiconsulting/tbd/commit/58113e55cd0df02a47dd95ce400bc4aa59df2a1a))
+* **plans:** add the plan columns on scenarios and the plan_goals table (TBD-598) ([#1069](https://github.com/fjcloudaiconsulting/tbd/issues/1069)) ([2317cb5](https://github.com/fjcloudaiconsulting/tbd/commit/2317cb51d86326c383aef91ee0505ad40bd62fdc))
+
+
+### Bug Fixes
+
+* **auth:** run bcrypt hash and verify off the event loop (TBD-782) ([#1070](https://github.com/fjcloudaiconsulting/tbd/issues/1070)) ([8699825](https://github.com/fjcloudaiconsulting/tbd/commit/8699825625f50920392a4cdd489fc29bcdf41c5c))
+* **auth:** whole-second session cutoff for deactivations and agent token mints (TBD-583) ([#1068](https://github.com/fjcloudaiconsulting/tbd/issues/1068)) ([6f278f8](https://github.com/fjcloudaiconsulting/tbd/commit/6f278f8699cc9d19e1feded88a2c22d155525991))
+* **captcha:** fail closed on a non-object siteverify reply (TBD-783) ([#1071](https://github.com/fjcloudaiconsulting/tbd/issues/1071)) ([1302412](https://github.com/fjcloudaiconsulting/tbd/commit/13024128e270e9cc3396f8c59ae54a8c0bd58bc4))
+* **transactions:** clear committed rows after a batch submit (TBD-754) ([#1067](https://github.com/fjcloudaiconsulting/tbd/issues/1067)) ([0a0d33a](https://github.com/fjcloudaiconsulting/tbd/commit/0a0d33a243b0f5ee6d456ed5eef993ba019462a3))
+
 ## [0.305.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.304.0...v0.305.0) (2026-11-01)
 
 
