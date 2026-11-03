@@ -26,6 +26,7 @@ const TOOL_LABELS: Record<string, string> = {
   transactions_search: "Searched transactions",
   spending_by_category: "Summed spending by category",
   forecast_get: "Read the forecast",
+  load_tools: "Got the tools for a change",
   budgets_update_amount: "Change a budget amount",
   transactions_set_category: "Recategorize a transaction",
   transactions_get: "Read a transaction",

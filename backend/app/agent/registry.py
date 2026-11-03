@@ -28,6 +28,7 @@ the per-token call limit, TBD-561) runs just above every admission.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -119,6 +120,21 @@ UNTRUSTED_KEYS: frozenset[str] = frozenset(
 )
 
 _ROUTE_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+
+# A tool's domain, from its mirrored route unless it declares one. The in-app
+# chat sends every read tool but only the write and sensitive tools of the
+# domains the model loads (TBD-788), so a non-read tool without one is refused.
+_DOMAIN_ROUTES: dict[str, str] = {
+    "/api/v1/accounts": "accounts",
+    "/api/v1/account-types": "accounts",
+    "/api/v1/budgets": "budgets_and_categories",
+    "/api/v1/categories": "budgets_and_categories",
+    "/api/v1/recurring": "recurring_and_billing",
+    "/api/v1/settings/billing-cycle": "recurring_and_billing",
+    "/api/v1/settings/billing-period": "recurring_and_billing",
+    "/api/v1/settings/billing-periods": "recurring_and_billing",
+    "/api/v1/transactions": "transactions",
+}
 
 
 class ToolError(Exception):
@@ -235,9 +251,18 @@ class ToolSpec:
     inverse: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = field(
         default=None, compare=False, repr=False,
     )
+    # The group the in-app chat loads this tool with (TBD-788); ``None`` takes
+    # it from ``mirrors_route`` (``_DOMAIN_ROUTES``).
+    domain: str | None = None
 
 
 _TOOLS: dict[str, ToolSpec] = {}
+
+
+def _route_domain(path: str) -> str | None:
+    return next(
+        (d for p, d in _DOMAIN_ROUTES.items() if path == p or path.startswith(p + "/")), None,
+    )
 
 
 def _never_exposable(path: str) -> bool:
@@ -307,6 +332,10 @@ def register(spec: ToolSpec) -> ToolSpec:
             raise ToolRegistrationError(
                 f"{spec.name}: a delete is never 'write'; declare it 'sensitive'"
             )
+    if spec.domain is None:
+        spec = dataclasses.replace(spec, domain=_route_domain(path))
+    if spec.risk != "read" and spec.domain is None:
+        raise ToolRegistrationError(f"{spec.name}: a {spec.risk} tool needs a domain")
     _TOOLS[spec.name] = spec
     return spec
 
@@ -317,6 +346,11 @@ def get_tool(name: str) -> ToolSpec | None:
 
 def all_tools() -> list[ToolSpec]:
     return list(_TOOLS.values())
+
+
+def domains() -> list[str]:
+    """Every domain with a write or sensitive tool, sorted."""
+    return sorted({s.domain for s in _TOOLS.values() if s.risk != "read" and s.domain})
 
 
 async def call_mapped(fn: Callable[..., Awaitable[Any]], *a: Any) -> Any:

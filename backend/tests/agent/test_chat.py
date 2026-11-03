@@ -300,13 +300,10 @@ async def test_read_round_transcript_own_session_and_held_lock(
     assert await _turns(factory, w["org"]) == 1
 
 
-async def test_round_limit_is_six_dispatches(factory, w, client, provider, monkeypatch):
+async def test_round_limit_is_six_dispatches(factory, w, client, provider):
     """FENCE F-L1. Wrong implementation: a loop bounded by the client
     transcript, or not at all."""
     _as(factory, w["user"])
-    # Six rounds of the full tool list exceed the default turn budget: this
-    # fence is the round cap, so the budget must not end the turn first.
-    _budget(monkeypatch, 1_000_000)
     adapter = provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
     r = await client.post(URL, json=ASK)
     ev = _events(r.text)
@@ -329,14 +326,15 @@ async def test_write_call_previews_and_ends_the_turn(factory, w, client, provide
 
     monkeypatch.setitem(registry._TOOLS, "accounts_list", dataclasses.replace(spec, run=spy))
     adapter = provider([_resp([
+        _call("load_tools", {"domains": ["budgets_and_categories"]}, "L"),
         _call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"}, "c1"),
         _call("budgets_update_amount", {"budget_id": w["budget"], "amount": "130.00"}, "c2"),
         _call("accounts_list", cid="c3"),
     ])])
     r = await client.post(URL, json=ASK)
     ev = _events(r.text)
-    assert [e for e, _ in ev] == ["tool_call", "preview", "done"]
-    action = ev[1][1]["action"]
+    assert [e for e, _ in ev] == ["tool_call", "tool_result", "tool_call", "preview", "done"]
+    action = ev[3][1]["action"]
     assert action["requires_confirmation"] is True and action["changes"][0]["after"] == "120.00"
     assert len(adapter.seen) == 1
     async with factory._f() as db:
@@ -351,13 +349,114 @@ async def test_refused_write_feeds_back_and_the_turn_continues(factory, w, clien
     """A write the registry refuses (bad args) is a tool error, not a preview."""
     _as(factory, w["user"])
     adapter = provider([
-        _resp([_call("budgets_update_amount", {"budget_id": w["budget"], "amount": "-1"})]),
+        _resp([_call("load_tools", {"domains": ["budgets_and_categories"]}, "L"),
+               _call("budgets_update_amount", {"budget_id": w["budget"], "amount": "-1"})]),
         _resp(content="That amount is invalid."),
     ])
     ev = _events((await client.post(URL, json=ASK)).text)
     assert ("tool_result", {"name": "budgets_update_amount", "ok": False,
                             "code": "invalid_arguments"}) in ev
     assert len(adapter.seen) == 2 and ev[-1] == ("done", {})
+
+
+# ── tools load by domain (TBD-788) ────────────────────────────────────────
+
+def _names(tools):
+    return {t["function"]["name"] for t in tools}
+
+
+async def _set_role(factory, uid, role):
+    async with factory._f() as db:
+        (await db.get(User, uid)).role = role
+        await db.commit()
+
+
+async def test_load_tools_adds_the_domain_for_the_next_round(factory, w, client, provider):
+    """FENCE (TBD-788). Wrong implementations: every tool sent every round; a
+    load that does not reach the next round's tool list."""
+    _as(factory, w["user"])
+    adapter = provider([
+        _resp([_call("load_tools", {"domains": ["budgets_and_categories"]})]),
+        _resp(content="Ready."),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    first, second = map(_names, adapter.tools)
+    assert "load_tools" in first and "accounts_list" in first
+    assert not any(registry.get_tool(n) and registry.get_tool(n).risk != "read" for n in first)
+    assert {"budgets_update_amount", "categories_create"} <= second
+    assert "recurring_create" not in second and "load_tools" in second
+    loaded = json.loads(adapter.seen[1][-1]["content"])["loaded"]
+    assert set(loaded) == second - first and "budgets_update_amount" in loaded
+    assert ev[:2] == [("tool_call", {"name": "load_tools"}),
+                      ("tool_result", {"name": "load_tools", "ok": True, "rows": len(loaded)})]
+    assert ev[-1] == ("done", {}) and ("error", {"code": "round_limit"}) not in ev
+
+
+async def test_a_tool_of_an_unloaded_domain_is_refused(factory, w, client, provider):
+    """FENCE (TBD-788, defence in depth). Wrong implementation: staging a change
+    tool the model was never sent."""
+    _as(factory, w["user"])
+    adapter = provider([
+        _resp([_call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"})]),
+        _resp(content="ok"),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert ("tool_result", {"name": "budgets_update_amount", "ok": False,
+                            "code": "domain_not_loaded"}) in ev
+    assert "preview" not in [e for e, _ in ev]
+    msg = json.loads(adapter.seen[1][-1]["content"])
+    assert msg["error"] == "domain_not_loaded" and "budgets_and_categories" in msg["detail"]
+    async with factory._f() as db:
+        assert (await db.scalars(select(AgentPendingAction))).all() == []
+
+
+async def test_roles_still_filter_inside_a_loaded_domain(factory, w, client, provider):
+    """FENCE (TBD-788). Wrong implementation: a load that skips the role gate."""
+    _as(factory, w["user"])
+    script = lambda n: _resp(  # noqa: E731
+        [_call("load_tools", {"domains": ["recurring_and_billing"]})] if n == 1 else [],
+        content="" if n == 1 else "ok")
+    adapter = provider(script)
+    await client.post(URL, json=ASK)
+    member = _names(adapter.tools[1])
+    assert "recurring_create" in member and "billing_cycle_update" not in member
+    assert "billing_cycle_update" not in json.loads(adapter.seen[1][-1]["content"])["loaded"]
+
+    limiter.reset()
+    await _set_role(factory, w["user"], Role.ADMIN)
+    adapter = provider(script)
+    await client.post(URL, json=ASK)
+    assert "billing_cycle_update" in _names(adapter.tools[1])
+
+
+@pytest.mark.parametrize("args", [
+    {"domains": ["payroll"]}, {"domains": []}, {}, {"domains": "accounts"},
+    {"domains": ["accounts"], "extra": 1},
+])
+async def test_load_tools_refuses_an_unknown_domain(factory, w, client, provider, args):
+    """FENCE (TBD-788). Wrong implementation: loading nothing, or everything, silently."""
+    _as(factory, w["user"])
+    adapter = provider([_resp([_call("load_tools", args)]), _resp(content="ok")])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert ("tool_result", {"name": "load_tools", "ok": False, "code": "invalid_arguments"}) in ev
+    assert json.loads(adapter.seen[1][-1]["content"])["error"] == "invalid_arguments"
+    assert _names(adapter.tools[1]) == _names(adapter.tools[0])
+
+
+async def test_five_rounds_fit_the_default_budget_with_the_largest_domain(factory, w):
+    """FENCE (TBD-788). The owner (every tool) with the costliest single domain
+    loaded still gets five rounds of the base request on the default plan.
+    Fails when a domain grows past that: split it."""
+    from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS
+
+    await _set_role(factory, w["user"], Role.OWNER)
+    async with factory._f() as db:
+        user = await db.get(User, w["user"])
+        per_round = max([
+            chat._estimate(chat.opening(ASK["messages"]), await chat.tool_schemas(db, user, {d}))
+            for d in registry.domains()
+        ])
+    assert 5 * per_round <= DEFAULT_TURN_INPUT_TOKENS, per_round
 
 
 async def test_cap_reached_mid_turn_is_in_band(factory, w, client, provider):
@@ -732,7 +831,8 @@ async def test_tool_after_a_refused_write_in_the_same_round(factory, w, client, 
     (MissingGreenlet, the turn dies as ``internal_error``)."""
     _as(factory, w["user"])
     provider([
-        _resp([_call("budgets_update_amount", {"budget_id": 999999, "amount": "1.00"}, "c1"),
+        _resp([_call("load_tools", {"domains": ["budgets_and_categories"]}, "L"),
+               _call("budgets_update_amount", {"budget_id": 999999, "amount": "1.00"}, "c1"),
                _call("accounts_list", cid="c2")]),
         _resp(content="ok"),
     ])
@@ -974,8 +1074,10 @@ def test_estimate_prices_multibyte_text():
 async def test_cumulative_stop(factory, w, client, provider, monkeypatch):
     """FENCE F6. Wrong implementation: a per-round-only check (all six rounds run)."""
     _as(factory, w["user"])
+    _budget(monkeypatch, 1_000_000)  # measure three rounds whatever the tool list costs
     adapter = provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
     await client.post(URL, json=ASK)
+    assert len(adapter.seen) == chat.MAX_ROUNDS
     e = [chat._estimate(adapter.seen[i], adapter.tools[i]) for i in range(3)]
     for budget, dispatches in ((e[0] + e[1] + e[2], 3), (e[0] + e[1] + e[2] - 1, 2)):
         limiter.reset()
@@ -1350,7 +1452,8 @@ async def test_c4_the_browser_keeps_the_original_text(factory, w, client, provid
         cat = (await db.scalars(select(Category).where(Category.org_id == w["org"]))).one()
         cat.name = "Food NL91ABNA0417164300"
         await db.commit()
-    provider([_resp([_call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"})])])
+    provider([_resp([_call("load_tools", {"domains": ["budgets_and_categories"]}, "L"),
+                     _call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"})])])
     ev = _events((await client.post(URL, json=ASK)).text)
     preview = next(d for e, d in ev if e == "preview")
     assert "NL91ABNA0417164300" in json.dumps(preview)

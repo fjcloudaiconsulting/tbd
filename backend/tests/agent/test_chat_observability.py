@@ -53,7 +53,7 @@ async def test_round_events(factory, w, client, provider, log_lines):
     assert r1["tools"] == [
         {"name": "accounts_list", "ok": True, "code": None, "rows": 1},
         {"name": "unknown_tool", "ok": False, "code": "unknown_tool", "rows": None},
-        {"name": "budgets_update_amount", "ok": False, "code": "invalid_arguments", "rows": None},
+        {"name": "budgets_update_amount", "ok": False, "code": "domain_not_loaded", "rows": None},
     ]
     assert r1.get("stop") is None
     assert (r2["prompt_tokens"], r2["ledger_id"], r2["tools"], r2.get("stop")) == (222, ids[1], [], "ok")
@@ -85,7 +85,6 @@ async def test_round_events_per_dispatched_round_only(
     _as(factory, w["user"])
     spin = lambda n: _resp([_call("accounts_list", cid=f"c{n}")])  # noqa: E731
 
-    _budget(monkeypatch, 1_000_000)  # the round cap ends this turn, not the budget
     provider(spin)
     seq, done = await _run(client, logs)
     assert seq == [(i, None) for i in range(1, 7)]
@@ -102,7 +101,10 @@ async def test_round_events_per_dispatched_round_only(
     assert seq == [(1, "ok")] and done.get("sse_code") is None  # no error event was sent
 
     limiter.reset()
-    provider([_resp([_call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"})])])
+    provider([_resp([
+        _call("load_tools", {"domains": ["budgets_and_categories"]}, "L"),
+        _call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"}),
+    ])])
     seq, done = await _run(client, logs)
     assert seq == [(1, "preview")] and done.get("sse_code") is None
 

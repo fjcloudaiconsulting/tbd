@@ -4,7 +4,7 @@
  * on when a preview touches several rows of one kind (a transfer's two legs).
  */
 import {
-  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel,
+  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel, toolLabel,
 } from "@/lib/agent/present";
 import type { ActionChange } from "@/lib/agent/types";
 
@@ -43,6 +43,10 @@ describe("present (TBD-664)", () => {
     expect(changeValue(c({ field: "linked_transaction_id", before: 9 }), "before", undefined, {}))
       .toBe("transaction #9");
     expect(changeValue(c({ field: "account_id", after: 3 }), "after", undefined, {})).toBe("account #3");
+  });
+
+  it("TBD-788: loading a domain's tools reads like a lookup", () => {
+    expect(toolLabel("load_tools")).toBe("Got the tools for a change");
   });
 
   it("the four tools have headlines", () => {

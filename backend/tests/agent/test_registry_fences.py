@@ -515,6 +515,30 @@ def test_fr6_a_complete_write_tool_registers(scratch_tool):
     ))
 
 
+# ── TBD-788: domains ──────────────────────────────────────────────────────
+
+def test_every_change_tool_has_a_domain():
+    """FENCE (TBD-788). The in-app chat sends a write or sensitive tool only
+    once the model loads its domain. Wrong implementation: a change tool with
+    no domain, which no ``load_tools`` call could ever reach."""
+    assert [t.name for t in TOOLS if t.risk != "read" and not t.domain] == []
+    assert registry.domains() == [
+        "accounts", "budgets_and_categories", "recurring_and_billing", "transactions",
+    ]
+    assert registry.get_tool("billing_cycle_update").domain == "recurring_and_billing"
+    assert registry.get_tool("account_types_create").domain == "accounts"
+
+
+def test_a_change_tool_without_a_domain_is_refused(scratch_tool):
+    unmapped = ("PUT", "/api/v1/notifications/preferences")
+    with pytest.raises(ToolRegistrationError, match="needs a domain"):
+        register(_spec(name="fixture_write", risk="write", run=None, preview=_noop,
+                       execute=_noop, mirrors_route=unmapped))
+    assert registry.get_tool("fixture_write") is None
+    scratch_tool(_spec(name="fixture_write", risk="write", run=None, preview=_noop,
+                       execute=_noop, mirrors_route=unmapped, domain="accounts"))
+
+
 # ── F-A5 ──────────────────────────────────────────────────────────────────
 
 _NEVER = [
