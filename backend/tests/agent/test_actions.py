@@ -862,6 +862,12 @@ _WRITE_CASES = {
     "recurring_update": lambda a: {"recurring_id": a["rec"], "description": "Rent, flat 2"},
     "accounts_update": lambda a: {"account_id": a["acct"], "name": "Renamed"},
     "account_types_update": lambda a: {"type_id": a["type"], "name": "Renamed"},
+    # TBD-666: two primary rows (a revert swaps both back).
+    "budgets_rebalance": lambda a: {"items": [
+        {"budget_id": a["b1"], "expected_amount": "100.00", "amount": "80.00"},
+        {"budget_id": a["b2"], "expected_amount": "50.00", "amount": "70.00"},
+    ]},
+    "categories_update": lambda a: {"category_id": a["c1"], "name": "Groceries"},
 }
 
 

@@ -211,6 +211,8 @@ def inverse_args(spec: ToolSpec, args_json: dict[str, Any], preview_json: dict[s
     one_way = (preview_json.get("context") or {}).get("not_revertible")
     if one_way:
         raise ToolError("not_revertible", one_way, data={"reason": "one_way"})
+    if spec.inverse is not None:
+        return spec.inverse(args_json, preview_json)
     changes = preview_json["changes"]
     p = changes[0]
     restore = {

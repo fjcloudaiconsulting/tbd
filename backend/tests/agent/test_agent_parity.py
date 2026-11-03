@@ -34,7 +34,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 55
+MAX_GAPS = 43
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -59,19 +59,6 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # (the handler's atomic path locks the account on a second session while
     # the confirm's re-preview holds that lock) stay off the agent for now.
     ("PUT", "/api/v1/accounts/{account_id}"): "TBD-665",
-    # TBD-666
-    ("POST", "/api/v1/budgets"): "TBD-666",
-    ("POST", "/api/v1/budgets/copy-from-period"): "TBD-666",
-    ("POST", "/api/v1/budgets/draft-next"): "TBD-666",
-    ("POST", "/api/v1/budgets/from-forecast"): "TBD-666",
-    ("POST", "/api/v1/budgets/rebalance"): "TBD-666",
-    ("DELETE", "/api/v1/budgets/{budget_id}"): "TBD-666",
-    ("POST", "/api/v1/categories"): "TBD-666",
-    ("POST", "/api/v1/categories/batch-move"): "TBD-666",
-    ("POST", "/api/v1/categories/restore-recommended"): "TBD-666",
-    ("DELETE", "/api/v1/categories/{category_id}"): "TBD-666",
-    ("PUT", "/api/v1/categories/{category_id}"): "TBD-666",
-    ("PATCH", "/api/v1/categories/{category_id}/move"): "TBD-666",
     # TBD-667
     ("PUT", "/api/v1/notifications/preferences"): "TBD-667",
     # TBD-668

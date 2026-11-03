@@ -250,7 +250,7 @@ async def ensure_future_periods(
 
 
 async def plan_future_periods(
-    db: AsyncSession, org_id: int, base: datetime.date, count: int,
+    db: AsyncSession, org_id: int, base: datetime.date, count: int = FUTURE_PERIODS_DEFAULT,
 ) -> list[tuple[datetime.date, datetime.date]]:
     """The (start, end) of each stub :func:`ensure_future_periods` inserts
     after the open period starting at ``base``. Reads only, so an agent

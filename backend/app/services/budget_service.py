@@ -11,6 +11,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category
 from app.models.forecast_plan import ForecastItemType, ForecastPlan
@@ -376,29 +377,12 @@ async def _get_existing_budget_cat_ids(
     return {row[0] for row in result.all()}
 
 
-async def create_budgets_from_forecast(
-    db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
-) -> list[BudgetResponse]:
-    """Roll a period's forecast plan expense items up into one Budget row
-    per master for that same period. Masters that already have a budget
-    (on the master or on any of its subs) are skipped — calling this twice
-    is a no-op on the second call.
-
-    ``period_start`` defaults to the current open period (back-compat).
-    Pass a future period's start to seed the NEXT period from its plan;
-    the next-period BillingPeriod stub is materialized on demand so
-    ``resolve_period`` can find it.
-
-    Raises ValidationError if no plan exists for the resolved period;
-    the user is expected to create or copy one on the Forecasts page
-    first. Returns the full budget list for the period.
-    """
-    # Only touch the future-stub machinery when explicitly targeting a
-    # named period, so the current-period path stays side-effect-free.
-    if period_start is not None:
-        await ensure_future_periods(db, org_id=org_id)
-    period = await resolve_period(db, org_id, period_start)
-
+async def forecast_budget_amounts(
+    db: AsyncSession, org_id: int, period: BillingPeriod,
+) -> dict[int, Decimal]:
+    """Master category id -> the amount :func:`create_budgets_from_forecast`
+    inserts for ``period``. Read-only, shared with the agent preview (TBD-666).
+    Raises ValidationError if the period has no forecast plan."""
     plan_result = await db.execute(
         select(ForecastPlan).where(
             ForecastPlan.org_id == org_id,
@@ -436,6 +420,33 @@ async def create_budgets_from_forecast(
         m = master_of.get(item.category_id, item.category_id)
         if m not in budgeted_masters:
             amount_by_master[m] = amount_by_master.get(m, Decimal("0")) + item.planned_amount
+    return amount_by_master
+
+
+async def create_budgets_from_forecast(
+    db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+) -> list[BudgetResponse]:
+    """Roll a period's forecast plan expense items up into one Budget row
+    per master for that same period. Masters that already have a budget
+    (on the master or on any of its subs) are skipped — calling this twice
+    is a no-op on the second call.
+
+    ``period_start`` defaults to the current open period (back-compat).
+    Pass a future period's start to seed the NEXT period from its plan;
+    the next-period BillingPeriod stub is materialized on demand so
+    ``resolve_period`` can find it.
+
+    Raises ValidationError if no plan exists for the resolved period;
+    the user is expected to create or copy one on the Forecasts page
+    first. Returns the full budget list for the period.
+    """
+    # Only touch the future-stub machinery when explicitly targeting a
+    # named period, so the current-period path stays side-effect-free.
+    if period_start is not None:
+        await ensure_future_periods(db, org_id=org_id)
+    period = await resolve_period(db, org_id, period_start)
+
+    amount_by_master = await forecast_budget_amounts(db, org_id, period)
 
     # Per-row savepoint so a concurrent caller that inserted the same
     # (org, category, period) row between our existing-check and our

@@ -99,15 +99,24 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "accounts_create", "accounts_update", "accounts_delete", "accounts_adjust_balance",
         "account_types_create", "account_types_update", "account_types_delete",
         "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
+        # TBD-666
+        "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
+        "budgets_draft_next", "budgets_rebalance", "budgets_delete",
+        "categories_create", "categories_update", "categories_move", "categories_batch_move",
+        "categories_delete", "categories_restore_recommended",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
         "recurring_update",
         "accounts_update", "account_types_update",
+        "budgets_rebalance", "categories_update",
     }
     # TBD-664 B: everything that moves money, creates or deletes is sensitive
     # (never auto, never confirmed over MCP). TBD-667: so is every billing-period
     # write (it moves the boundary every budget and report counts by).
+    # TBD-666: so is every budget and category create, seed, move and delete,
+    # and the draft (it adds billing periods); a rebalance and a category
+    # edit are writes with an inverse.
     assert {t.name for t in TOOLS if t.risk == "sensitive"} == {
         "transactions_update_money", "transactions_create", "transactions_delete",
         "transactions_transfer",
@@ -118,6 +127,10 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "accounts_create", "accounts_delete", "accounts_adjust_balance",
         "account_types_create", "account_types_delete",
         "cycle_payments_create", "cycle_payments_upsert", "cycle_payments_delete",
+        "budgets_create", "budgets_from_forecast", "budgets_copy_from_period",
+        "budgets_draft_next", "budgets_delete",
+        "categories_create", "categories_move", "categories_batch_move", "categories_delete",
+        "categories_restore_recommended",
     }
 
 
@@ -247,7 +260,7 @@ def test_fr4_guards_are_a_superset_of_the_mirrored_route(tool):
     routes = _live_routes()
     assert tool.mirrors_route in routes, f"{tool.name} mirrors a route that does not exist"
     areas, role, plan_keys = _route_guards(routes[tool.mirrors_route])
-    assert areas <= ({tool.product_area} - {None}), (tool.name, areas)
+    assert areas <= ({tool.product_area, *tool.extra_areas} - {None}), (tool.name, areas)
     assert ROLE_RANK[tool.min_role] >= ROLE_RANK[role], (tool.name, role)
     # Every tool is gated on ai.agent by invoke; a route needing another plan
     # key is a guard the tool does not carry.
@@ -301,7 +314,18 @@ def _valid_base(tool) -> dict:
     if tool.name.startswith("cycle_payments_"):
         base = {"account_id": 1, "year": 2026, "month": 1}
         return base if tool.name == "cycle_payments_delete" else {**base, "amount": "1.00"}
-    return {}
+    return {
+        "budgets_create": {"category_id": 1, "amount": "10.00"},
+        "budgets_copy_from_period": {"source_period_start": "2026-01-01"},
+        "budgets_draft_next": {"period_start": "2026-02-01"},
+        "budgets_rebalance": {"items": [{"budget_id": 1, "expected_amount": "1.00", "amount": "1.00"}]},
+        "budgets_delete": {"budget_id": 1},
+        "categories_create": {"name": "x"},
+        "categories_update": {"category_id": 1},
+        "categories_move": {"category_id": 1, "target_parent_id": 2},
+        "categories_batch_move": {"moves": [{"subcategory_id": 1, "target_parent_id": 2}]},
+        "categories_delete": {"category_id": 1},
+    }.get(tool.name, {})
 
 
 # Tools whose every argument the route accepts in any form, so no vector can
