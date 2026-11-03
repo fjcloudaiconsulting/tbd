@@ -114,7 +114,7 @@ def occurrences_in_window(
     still exists afterwards, so deleting a generated row does not by itself
     resurrect its occurrence (exception 2 is the one way it does). The
     ``(recurring_id, date)`` probe -- generation's catch-up loop,
-    ``forecast_service`` and ``account_balance_forecast_service``, all three
+    ``forecast_service`` and ``projection_kernel``, all three
     with NO status term -- only matters for rows dated at or after the
     frontier. Known exceptions:
 

@@ -20,6 +20,22 @@ exploit detail into public issues, PRs or commit messages.
 
 ## Current state
 
+- **2026-11-01 (latest):**
+  - **Follow-up PRs:** all of them are merged. Eleven merged on 2026-10-25;
+    #1035, #1041, #1042 and #1043 merged on 2026-11-01.
+  - **Releases:** v0.304.0 and v0.305.0 were released on 2026-11-01.
+    **Production runs v0.305.0** (cloud-infra #321), which carries every
+    follow-up above. Neither release contains #1007, so the INF-03 secret
+    gate did not apply.
+  - **Waiting on the owner:** #1007, item 1 of the owner decision queue
+    (TBD-739).
+  - **Register response (TBD-654 item 2):** #1045 does not close the leak and
+    is replaced by an approved email-first sign-up design, tracked in
+    TBD-654. It ships in four PRs: the backend endpoints, the frontend, a
+    setup-only `/register`, and a purge of never-verified accounts. Its
+    follow-ups are TBD-778, TBD-779 and TBD-780.
+  - **New follow-ups from the reviews of today's PRs:** TBD-766, TBD-767 and
+    TBD-768.
 - **Merged to `main` on 2026-10-24:** #1006, #1009, #1005, #1008 and #1004
   (security), #1003, #978, #1002, #872 and #941 (dependencies), and #1010 (this
   file). Later the same day, the owner-decision PRs #1019, #1020 and #1021
@@ -149,7 +165,8 @@ Dependency PRs handled in the same pass:
 ## Follow-up PRs
 
 Opened on 2026-10-25 for the follow-ups listed in **Owner action** and the
-"Incoming from Jira" issues. All are open and not merged.
+"Incoming from Jira" issues. All are merged: #1035, #1041, #1042 and #1043
+on 2026-11-01, the rest on 2026-10-25.
 
 | PR | Jira | Finding | Scope |
 |---|---|---|---|
@@ -212,7 +229,7 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | BE-06 | Invitation limits and response uniformity | Medium | Fixed | #1005 | 2026-10-24 | `933b79a1` | | TBD-693 |
 | BE-07 | CSV import preview row cap | Medium | Fixed | #1006 | 2026-10-24 | `a90b05b6` | Follow-up: batch the per-row preview detectors | TBD-697, follow-up TBD-736 |
 | BE-08 | Import confirm row cap | Medium | Fixed | #1006 | 2026-10-24 | `17e3630e` | Follow-up: chunked commits and an idempotent confirm | TBD-701, follow-up TBD-737 |
-| BE-09 | Size cap on AI provider responses | Medium | Fixed | #1008 | 2026-10-24 | `c55f200a` | | TBD-705 |
+| BE-09 | Size cap on AI provider responses | Medium | Fixed | #1008, #1042 | 2026-10-24, 2026-11-01 | `c55f200a`, `f79250eb` | | TBD-705, TBD-607 |
 | BE-10 | Audit-log growth controls | Medium | Partial | #1008, #1019 | 2026-10-24 | `9db358e9`, `1fe1b17c`, `56dfe283`, `42d419f0` | Confirm the CSP drop alert (cloud-infra #281) once the release runs | TBD-709 |
 | BE-11 | Reports filter list bounds | Medium | Fixed | #1006 | 2026-10-24 | `18a5a090` | | TBD-713 |
 | INF-01 | Origin client-IP trust | Medium | Partial | #1007, #1021 | partly | `adb3004e`, `0f243931` | Release #1007 after the production secret check (owner item 1); the cloud-infra checks are done | TBD-717 |
@@ -251,11 +268,11 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | INF-10 | Dev compose network exposure | Low | Fixed | #1007 | no | `0751d31d` | | TBD-686 |
 | BE-26 | TOTP step reuse | Info | Partial | #1009 | 2026-10-24 | `82c7c52e` | Follow-up: apply the TOTP replay guard to the MFA checks on token minting | TBD-688, follow-up TBD-716 |
 | BE-27 | LIKE escaping and free-text bounds | Info | Partial | #1006 | 2026-10-24 | `331053c0` | Follow-up: escape the tag-suggestion prefix | TBD-691, follow-up TBD-718 |
-| BE-28 | Merchant dictionary vote attribution | Info | Not fixed | | – | | Follow-up: recompute votes server-side, one per org | TBD-692 |
+| BE-28 | Merchant dictionary vote attribution | Info | Fixed | #1041 | 2026-11-01 | `70209de3` | Follow-up: lock ordering between opt-out and import | TBD-692, follow-up TBD-766 |
 | BE-29 | User merge foreign-key coverage | Info | Fixed | #1008 | 2026-10-24 | `ad1a989f` | | TBD-694 |
 | BE-30 | Typed superadmin-guard errors | Info | Fixed | #1008 | 2026-10-24 | `9885ea52` | | TBD-695 |
 | BE-31 | `agent:auto` scope behaviour | Info | Accepted | | – | | By design: reversible writes without confirmation | TBD-698 |
-| DB-06 | Step-up token storage and key fingerprint | Info | Partial | #1009 | 2026-10-24 | `95d3bc67` | Follow-up: key the AI-key fingerprint with an HMAC | TBD-700, follow-up TBD-719 |
+| DB-06 | Step-up token storage and key fingerprint | Info | Partial | #1009, #1043 | 2026-10-24, 2026-11-01 | `95d3bc67`, `78e82e4b` | Follow-up: clear the fingerprints stored before the HMAC | TBD-700, TBD-719, follow-up TBD-767 |
 | INF-11 | `seed.py` in production images | Info | Fixed | #1007 | no | `412d4c33` | | TBD-703 |
 | INF-12 | Legacy encrypted secrets in history | Info | Needs owner | | – | | Confirm the secrets in the legacy app spec were rotated | TBD-704 |
 | INF-13 | Commit metadata emails | Info | Partial | | – | | Identity chosen and the assessment branches re-authored; older history keeps earlier addresses; delete the stale `chore/graphify-refresh-2026-10-15` branch | TBD-707 |
@@ -315,6 +332,30 @@ titles only; the detail is in Jira.
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-11-01, PR queue and releases: coding session (Claude Code, with Jira access)
+
+- **Did:**
+  - Rebased and gated the open PRs, with one independent review each.
+  - Fixed two review findings before merge: #1042 now refuses non-string
+    model ids, and #1048 keeps the transaction update route in the agent
+    parity gaps.
+  - Merged, in order: the Renovate bumps, #1035, #1042, #1043, #1041 and
+    #1048.
+  - Released v0.304.0 and v0.305.0. Production runs v0.305.0.
+- **Changed here:**
+  - Current state.
+  - The "Follow-up PRs" intro.
+  - Finding rows BE-09 (adds #1042), BE-28 (now Fixed) and DB-06 (stays
+    Partial until TBD-767).
+- **Not changed, for the Jira agent:** the rows for the findings closed by
+  the 2026-10-25 follow-ups (BE-02, BE-07, BE-08, BE-22, BE-23, BE-26, BE-27,
+  DB-04, FE-01, FE-03) still show their 2026-10-24 state. Reconcile each one
+  with its Jira issue before moving any of them to Fixed.
+- **Next:**
+  - TBD-654: build the email-first sign-up in four PRs (the design ruling
+    and the delivery order are on TBD-654).
+  - Owner item 1 for #1007 (TBD-739).
 
 ### 2026-10-25, follow-up PRs: sprint coordinator (Claude Code, with Jira access)
 

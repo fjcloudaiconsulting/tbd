@@ -50,7 +50,7 @@ from app.models.report import Report
 from app.models.scenario import Scenario
 from app.models.tag import Tag
 from app.models.user import Role, User
-from app.security import hash_password
+from app.security import hash_password, run_bcrypt
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -231,7 +231,7 @@ async def merge_users(
         target.email_verified = True
         # TBD-651: nobody proved the target's password belongs to the email
         # owner, so verifying the row must not keep it (same as Google link).
-        target.password_hash = hash_password(secrets.token_urlsafe(32))
+        target.password_hash = await run_bcrypt(hash_password, secrets.token_urlsafe(32))
         target.password_set = False
 
     # Finally delete the source row. With every reference reassigned or

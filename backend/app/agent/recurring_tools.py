@@ -35,6 +35,7 @@ from app.agent.sensitive_tools import (
 )
 from app.models import Organization, Transaction
 from app.models.recurring import Frequency, RecurringTransaction
+from app.models.scenario import PlanGoal
 from app.models.tag import TransactionTag
 from app.models.transaction import TransactionStatus, TransactionType
 from app.models.user import Role
@@ -326,7 +327,11 @@ register(route_tool(
 
 
 async def _delete_cascade(ctx: ToolContext, r: RecurringTransaction, args) -> list[Change]:
-    return await _removal(ctx, r)
+    goals = await ctx.db.scalars(
+        select(PlanGoal.id).where(PlanGoal.funding_recurring_id == r.id).order_by(PlanGoal.id)
+    )
+    # A plan goal funded by the series loses that link (SET NULL).
+    return await _removal(ctx, r) + [Change("plan_goals", g, "funding_recurring_id", r.id, None) for g in goals]
 
 
 async def _delete_present(ctx: ToolContext, r: RecurringTransaction, args, changes: list[Change]) -> Preview:
@@ -353,7 +358,10 @@ register(route_tool(
     entity=RecurringTransaction,
     describe=("description", "amount", "type", "frequency", "next_due_date", "account_id"),
     present=_delete_present,
-    cascade=CascadeDisclosure(covers=frozenset({"transactions.recurring_id"}), disclose=_delete_cascade),
+    cascade=CascadeDisclosure(
+        covers=frozenset({"transactions.recurring_id", "plan_goals.funding_recurring_id"}),
+        disclose=_delete_cascade,
+    ),
 ))
 
 

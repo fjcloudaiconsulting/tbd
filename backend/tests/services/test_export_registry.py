@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 61
-    assert len(EXPORT_DISPOSITION) == 61
+    assert len(Base.metadata.tables) == 62
+    assert len(EXPORT_DISPOSITION) == 62
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════
@@ -212,7 +212,7 @@ async def _seed_org(db: AsyncSession, *, marker: str) -> dict:
     from app.models.org_ai_routing import OrgAIDefaultRouting, OrgAIFeatureRouting
     from app.models.recurring import Frequency, RecurringTransaction
     from app.models.report import Report, ReportVersion, ReportVisibility
-    from app.models.scenario import Scenario, ScenarioType
+    from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
     from app.models.settings import OrgSetting
     from app.models.subscription import (
         BillingInterval,
@@ -431,14 +431,24 @@ async def _seed_org(db: AsyncSession, *, marker: str) -> dict:
             canvas_filters_json={},
         )
     )
+    scenario = Scenario(
+        org_id=oid,
+        user_id=uid,
+        name=f"SCENARIO-{marker}",
+        scenario_type=ScenarioType.CUSTOM,
+        params_json={"m": f"SCENARIOPARAM-{marker}"},
+        horizon_months=12,
+    )
+    db.add(scenario)
+    await db.flush()
     db.add(
-        Scenario(
+        PlanGoal(
             org_id=oid,
-            user_id=uid,
-            name=f"SCENARIO-{marker}",
-            scenario_type=ScenarioType.CUSTOM,
-            params_json={"m": f"SCENARIOPARAM-{marker}"},
-            horizon_months=12,
+            scenario_id=scenario.id,
+            name=f"GOAL-{marker}",
+            tier=PlanGoalTier.WANT,
+            kind=PlanGoalKind.LUMP,
+            params_json={"m": f"GOALPARAM-{marker}"},
         )
     )
 
@@ -695,6 +705,30 @@ async def test_leg4_audit_events_scoped_by_target_org_only(two_orgs):
     text = await _export_text(two_orgs["factory"], two_orgs["a"]["org_id"])
     assert "CROSSTENANT-BBB" not in text
     assert "admin.org.renamed" not in text
+
+
+@pytest.mark.asyncio
+async def test_leg4_plan_goals_scoped_by_their_plan_not_their_org_id(two_orgs):
+    """A goal whose ``org_id`` says org A but whose plan is org B's exports
+    with org B only. Wrong implementation: ``OrgColumn()`` on plan_goals."""
+    from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario
+
+    a_oid, b_oid = two_orgs["a"]["org_id"], two_orgs["b"]["org_id"]
+    async with two_orgs["factory"]() as db:
+        b_plan = await db.scalar(select(Scenario.id).where(Scenario.org_id == b_oid))
+        db.add(
+            PlanGoal(
+                org_id=a_oid,  # disagrees with its plan's org
+                scenario_id=b_plan,
+                name="MISSCOPED-GOAL",
+                tier=PlanGoalTier.DREAM,
+                kind=PlanGoalKind.LUMP,
+            )
+        )
+        await db.commit()
+
+    assert "MISSCOPED-GOAL" not in await _export_text(two_orgs["factory"], a_oid)
+    assert "MISSCOPED-GOAL" in await _export_text(two_orgs["factory"], b_oid)
 
 
 # ══ §6 — redaction ════════════════════════════════════════════════════════

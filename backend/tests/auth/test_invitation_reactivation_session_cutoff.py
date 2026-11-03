@@ -484,3 +484,50 @@ async def test_guard_reactivation_leaves_the_rest_of_the_row_alone(
         assert row.is_superadmin is False
         assert row.password_changed_at is not None
         assert row.sessions_invalidated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_fence_a_rejoin_in_the_removal_second_keeps_its_cutoff(
+    session_factory, monkeypatch
+):
+    """FENCE (TBD-583). ``remove_member`` writes the next whole second. A
+    re-join inside that same second must not floor it back down: a token from
+    before the removal (``iat`` that second) would pass ``iat < cutoff``
+    again. The credentials the accept issues must still work, so the router
+    waits the kept cutoff out before minting them."""
+    seed = await _seed_org_with_owner(session_factory)
+    user_id = await _seed_soft_deleted_member(session_factory, org_id=seed["org_id"])
+    # Two seconds back, so the advanced clock below never stamps a future
+    # ``iat`` (PyJWT refuses one).
+    frozen = _freeze(monkeypatch, _instant_with_microseconds(CUTOFF_MICROSECONDS, shift_seconds=-2))
+    removal_cutoff = frozen.replace(microsecond=0) + timedelta(seconds=1)
+    stale_access = create_access_token(user_id, seed["org_id"], Role.MEMBER.value)
+    async with session_factory() as db:
+        row = await db.get(User, user_id)
+        row.sessions_invalidated_at = removal_cutoff
+        await db.commit()
+
+    async def advance_clock(instant: datetime) -> None:
+        _freeze(monkeypatch, instant + timedelta(microseconds=CUTOFF_MICROSECONDS))
+
+    monkeypatch.setattr(security_module, "_sleep_until", advance_clock)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        accepted = await _accept_as_reactivation(
+            client, session_factory, org_id=seed["org_id"], owner_id=seed["owner_id"]
+        )
+        fresh = client.get(
+            "/api/v1/orgs/members",
+            headers={"Authorization": f"Bearer {accepted.json()['access_token']}"},
+        )
+        stale = client.get(
+            "/api/v1/orgs/members", headers={"Authorization": f"Bearer {stale_access}"}
+        )
+
+    assert stale.status_code == 401
+    assert fresh.status_code == 200, fresh.text
+    async with session_factory() as db:
+        row = (await db.execute(select(User).where(User.id == user_id))).scalar_one()
+        assert row.password_changed_at == removal_cutoff
+        assert row.sessions_invalidated_at == removal_cutoff

@@ -1,6 +1,6 @@
 import ipaddress
 
-from pydantic import ValidationError, field_validator, model_validator
+from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -35,13 +35,19 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2"
 
-    # SQLAlchemy connection pool sizing. Single-replica today: defaults
-    # are safe. Multi-replica future (HPA): each replica gets its own
-    # pool, so total concurrent DB connections = replicas * (db_pool_size
-    # + db_max_overflow). Keep the sum well under the managed DB's
-    # max_connections cap. Override via env vars when scaling horizontally.
+    # SQLAlchemy connection pool sizing. Each backend process opens three
+    # pools (the async app engine and the sync rate-limit and session-state
+    # engines), so its peak DB connections = (db_pool_size + db_max_overflow)
+    # + (rate_limit_db_pool_size + rate_limit_db_max_overflow)
+    # + (state_db_pool_size + state_db_max_overflow), 29 at the defaults,
+    # and the total is replicas times that. Keep it well under the DB
+    # user's and server's connection caps. Override via env vars.
     db_pool_size: int = 5
     db_max_overflow: int = 10
+    rate_limit_db_pool_size: int = 2
+    rate_limit_db_max_overflow: int = 5
+    state_db_pool_size: int = 2
+    state_db_max_overflow: int = 5
 
     # Pool recycle MUST stay under the App Platform → droplet VPC's
     # idle-connection drop interval. Once a pooled connection sits
@@ -457,6 +463,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SESSION_LIFETIME_DAYS must be between 1 and 365 (inclusive)."
             )
+        return v
+
+    @field_validator("rate_limit_db_pool_size", "state_db_pool_size")
+    @classmethod
+    def _validate_side_pool_size(cls, v: int, info: ValidationInfo) -> int:
+        if v < 1:
+            raise ValueError(f"{info.field_name.upper()} must be at least 1.")
+        return v
+
+    @field_validator("rate_limit_db_max_overflow", "state_db_max_overflow")
+    @classmethod
+    def _validate_side_pool_overflow(cls, v: int, info: ValidationInfo) -> int:
+        if v < 0:
+            raise ValueError(f"{info.field_name.upper()} must be at least 0.")
         return v
 
     @field_validator("broadcast_max_attempts")
