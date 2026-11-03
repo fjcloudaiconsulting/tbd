@@ -813,6 +813,22 @@ jobs:
             exit 1
           fi
 
+      # TBD-583. The users cutoff columns are DATETIME(0) on MySQL and a
+      # fraction is rounded on insert, which SQLite does not reproduce. Fences
+      # both directions of the whole-second session cutoff. A skip is red, as above.
+      - name: Run the session cutoff fences against MySQL
+        working-directory: backend
+        env:
+          SESSION_CUTOFF_MYSQL_URL: ${{ env.DATABASE_URL }}
+          SESSION_CUTOFF_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/auth/test_session_cutoff_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/session-cutoff.log
+          if grep -q '^SKIPPED' /tmp/session-cutoff.log; then
+            echo "a session cutoff fence did not run"
+            exit 1
+          fi
+
       # TBD-665. The agent's account money edit locks the account in its
       # confirm's re-preview and writes it through the handler's atomic path;
       # the fence shows the write runs under that lock without waiting on it,

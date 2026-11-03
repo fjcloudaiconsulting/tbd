@@ -30,6 +30,7 @@ from sqlalchemy.sql.expression import FunctionElement
 from sqlalchemy.types import DateTime
 
 from app import rate_limit_db
+from app.config import settings
 from app.models.session_state import AuthSessionFamily, AuthSessionMember, Lease, UsedToken
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,9 @@ _M = AuthSessionMember.__table__
 _U = UsedToken.__table__
 _L = Lease.__table__
 
-_engine: Engine = rate_limit_db._build_engine()
+_engine: Engine = rate_limit_db._build_engine(
+    pool_size=settings.state_db_pool_size, max_overflow=settings.state_db_max_overflow
+)
 
 # Rows are purged only this long after expiry, in small batches.
 _PURGE_MARGIN = 60
@@ -81,9 +84,12 @@ def _is_dup(exc: IntegrityError, pk_of: str | None = None) -> bool:
     return pk_of is None or msg.endswith(f"{pk_of}.jti")
 
 
-# Own threads, sized to the engine pool (2 + 5): a stalled database queues
-# store calls here instead of filling the loop's default executor.
-_POOL = ThreadPoolExecutor(max_workers=7, thread_name_prefix="state_db")
+# Own threads, sized to the engine pool (size + overflow): a stalled database
+# queues store calls here instead of filling the loop's default executor.
+_POOL = ThreadPoolExecutor(
+    max_workers=settings.state_db_pool_size + settings.state_db_max_overflow,
+    thread_name_prefix="state_db",
+)
 
 
 async def _aio(fn, *args):

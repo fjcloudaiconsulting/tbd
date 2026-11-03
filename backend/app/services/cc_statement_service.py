@@ -6,7 +6,7 @@ owns the query, ``cc_forecast_service`` owns the arithmetic.
 
 ``statement_outstanding`` computes a card's owed-at-close amount using the
 EXACT same ledger reconstruction the Slice 3 forecast synthesis uses
-(``account_balance_forecast_service.compute_account_balance_forecast``'s
+(``projection_kernel.baseline``'s
 credit-card block), so the close-day alert (Task 9) can never drift from
 what the forecast bills for the same card and close date.
 """
@@ -23,6 +23,7 @@ from app.services import cc_forecast_service as ccf
 from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
+    not_pending_of_series_filter,
     signed_amount_expr,
 )
 
@@ -32,6 +33,8 @@ async def load_cc_ledgers(
     org_id: int,
     account_ids: list[int],
     up_to: date | None = None,
+    *,
+    exclude_pending_recurring_ids: list[int] | None = None,
 ) -> dict[int, list[tuple[date, Decimal]]]:
     """Signed cash-basis ledger per account, batched across ``account_ids``.
 
@@ -57,6 +60,9 @@ async def load_cc_ledgers(
     dropped before ``balance_at_close`` ever sees them. ``statement_outstanding``
     satisfies this trivially: it passes its own ``close_date`` as ``up_to``.
 
+    ``exclude_pending_recurring_ids`` drops the generated PENDING charges of
+    those series (``projection_kernel``'s ``exclude_recurring_ids``).
+
     Returns ``{}`` for an empty ``account_ids`` (no accounts to batch).
     """
     if not account_ids:
@@ -71,6 +77,8 @@ async def load_cc_ledgers(
     ]
     if up_to is not None:
         conditions.append(eff_date <= up_to)
+    if exclude_pending_recurring_ids:
+        conditions.append(not_pending_of_series_filter(exclude_pending_recurring_ids))
     rows = (
         await db.execute(
             select(Transaction.account_id, eff_date.label("eff"), signed.label("signed"))

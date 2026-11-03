@@ -38,7 +38,7 @@ from app.rate_limit import get_client_ip, limiter, rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.routers.agent_tokens import _DAY, MINT_PER_USER_PER_DAY, _audit, _err
 from app.routers.api_tokens import _step_up_401, _verify_step_up
-from app.security import token_cutoff
+from app.security import token_cutoff, wait_out_cutoff_second
 from app.services import api_token_service as svc
 from app.services import notification_service, oauth_service
 from app.services.api_token_service import AGENT_SCOPE_RANK
@@ -198,6 +198,7 @@ async def authorize_decision(
     # session back, which expires every ORM attribute.
     actor = (current_user.id, current_user.email, current_user.org_id)
     cutoff_seen = token_cutoff(current_user)
+    await wait_out_cutoff_second(cutoff_seen)  # before any write (TBD-583)
     client, redirect, requested = await _validated(db, body.model_dump(), actor[0])
     cid, cname, state = client.id, client.client_name, body.state
     response.headers.update(NO_STORE)

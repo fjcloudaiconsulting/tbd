@@ -26,6 +26,7 @@ from app.agent.sensitive_tools import CONFIRM
 from app.models import Budget, Category, Transaction
 from app.models.category import CategoryType
 from app.models.recurring import RecurringTransaction
+from app.models.scenario import PlanGoal, Scenario
 from app.models.user import Role
 from app.routers import categories as categories_router
 from app.services import category_service, org_bootstrap_service
@@ -278,11 +279,16 @@ async def _delete_cascade(ctx: ToolContext, cat: Category, args) -> list[Change]
     )).all():
         out += [Change("budgets", b.id, "amount", f"{b.amount:.2f}", None),
                 Change("budgets", b.id, "period_start", b.period_start.isoformat(), None)]
+    # Plans and plan goals pointing at it lose that link (SET NULL).
+    for model in (Scenario, PlanGoal):
+        linked = await ctx.db.scalars(select(model.id).where(model.category_id == cat.id).order_by(model.id))
+        out += [Change(model.__tablename__, i, "category_id", cat.id, None) for i in linked]
     return out
 
 
 async def _delete_present(ctx: ToolContext, cat: Category, args, changes: list[Change]) -> Preview:
-    gone = {(c.entity, str(c.id)): c.id for c in changes if c.after is None and c.entity != "categories"}
+    unlinked = ("categories", "scenarios", "plan_goals")  # SET NULL: the row stays
+    gone = {(c.entity, str(c.id)): c.id for c in changes if c.after is None and c.entity not in unlinked}
     moved = sum(1 for c in changes if c.entity in ("transactions", "recurring_transactions"))
     warnings = ["A delete cannot be undone."]
     target = args.target_category_id if any(c.after is not None for c in changes) else None
@@ -321,7 +327,7 @@ register(route_tool(
         covers=frozenset({
             "budgets.category_id", "categories.parent_id", "category_rules.category_id",
             "forecast_plan_items.category_id", "recurring_transactions.category_id",
-            "transactions.category_id",
+            "transactions.category_id", "plan_goals.category_id", "scenarios.category_id",
         }),
         disclose=_delete_cascade,
     ),

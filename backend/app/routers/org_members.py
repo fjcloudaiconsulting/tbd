@@ -35,6 +35,7 @@ from app.security import (
     create_access_token,
     create_invitation_token,
     get_org_session_ttl_seconds,
+    wait_out_cutoff,
 )
 from app.services import invitation_service
 from app.services.email_service import send_invitation_email
@@ -279,6 +280,8 @@ async def accept_invitation(
     except ConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
+    # A re-join in the second of a removal keeps that removal's cutoff (TBD-583).
+    await wait_out_cutoff(user)
     access = create_access_token(user.id, user.org_id, user.role.value)
     # PR 2 (specs/2026-05-17-backend-session-model.md §5.4): write the
     # session family row BEFORE set_cookie. Fails

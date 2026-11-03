@@ -16,7 +16,15 @@ managed-DB max_connections cap can be exceeded silently. These tests pin:
 from __future__ import annotations
 
 import importlib
+import os
+import subprocess
+import sys
+from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
+BACKEND = Path(__file__).resolve().parents[1]
 
 
 def test_settings_expose_pool_defaults():
@@ -74,6 +82,9 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
     # all already-imported ``from app.config import settings`` references
     # stranded on a stale instance (causing cross-test monkeypatch pollution).
     _original_settings = app_config.settings
+    # Reloading again would swap in a new engine and new functions, which the
+    # conftest dependency overrides no longer match; restore the namespace instead.
+    _original_database = dict(vars(app_database))
 
     monkeypatch.setattr(sa_async, "create_async_engine", _fake_create_async_engine)
 
@@ -92,7 +103,7 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
         # Restore the original singleton so ``from app.config import settings``
         # references in other modules continue to see the live object.
         app_config.settings = _original_settings
-        importlib.reload(app_database)
+        vars(app_database).update(_original_database)
 
 
 def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch, log_lines):
@@ -122,6 +133,7 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch, log_lines):
 
         # Capture original singleton before reload (see test above for rationale).
         _original_settings = app_config.settings
+        _original_database = dict(vars(app_database))
 
         monkeypatch.setattr(sa_async, "create_async_engine", _fake_engine)
         importlib.reload(app_config)
@@ -142,4 +154,55 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch, log_lines):
         import app.config as app_config
         import app.database as app_database
         app_config.settings = _original_settings
-        importlib.reload(app_database)
+        vars(app_database).update(_original_database)
+
+
+# ── TBD-785: the rate-limit and state-db side pools ───────────────────────
+
+# Prints what each side engine's pool and the state_db executor were built with.
+_PROBE = (
+    "from app import rate_limit_db, state_db\n"
+    "r, s = rate_limit_db._engine.pool, state_db._engine.pool\n"
+    "print(r.size(), r._max_overflow, s.size(), s._max_overflow, state_db._POOL._max_workers)"
+)
+
+
+def _side_pools(**env: str) -> list[int]:
+    # A fresh interpreter: the engines are built at import, and conftest swaps them.
+    # A MySQL URL so the QueuePool sizing applies; nothing connects at build time.
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("RATE_LIMIT_DB_", "STATE_DB_"))}
+    full = {**base, "DATABASE_URL": "mysql+aiomysql://u:p@db.invalid:3306/x", **env}
+    r = subprocess.run([sys.executable, "-c", _PROBE], cwd=BACKEND,
+                       capture_output=True, text=True, timeout=60, env=full)
+    assert r.returncode == 0, r.stderr
+    return [int(x) for x in r.stdout.split()]
+
+
+def test_side_pool_defaults_are_unchanged():
+    """FENCE. Wrong implementation: a default drift changes the 29-connection budget."""
+    assert _side_pools() == [2, 5, 2, 5, 7]
+
+
+def test_side_pool_env_overrides_reach_the_engines_and_executor():
+    """FENCE. Wrong implementation: a hardcoded size, or one engine reading the other's vars."""
+    assert _side_pools(
+        RATE_LIMIT_DB_POOL_SIZE="3", RATE_LIMIT_DB_MAX_OVERFLOW="1",
+        STATE_DB_POOL_SIZE="4", STATE_DB_MAX_OVERFLOW="0",
+    ) == [3, 1, 4, 0, 4]
+
+
+@pytest.mark.parametrize(("var", "bad", "ok"), [
+    ("RATE_LIMIT_DB_POOL_SIZE", "0", "1"),
+    ("STATE_DB_POOL_SIZE", "0", "1"),
+    ("RATE_LIMIT_DB_MAX_OVERFLOW", "-1", "0"),
+    ("STATE_DB_MAX_OVERFLOW", "-1", "0"),
+])
+def test_side_pool_bounds(monkeypatch, var, bad, ok):
+    """FENCE. Wrong implementation: no bound, or an off-by-one refusing the minimum."""
+    from app.config import Settings
+
+    monkeypatch.setenv(var, bad)
+    with pytest.raises(ValidationError, match=var):
+        Settings()
+    monkeypatch.setenv(var, ok)
+    assert getattr(Settings(), var.lower()) == int(ok)

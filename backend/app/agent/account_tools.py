@@ -36,6 +36,7 @@ from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.category import CategoryType
 from app.models.import_batch import ImportBatch
 from app.models.recurring import RecurringTransaction
+from app.models.scenario import PlanGoal, Scenario
 from app.models.user import Organization, Role
 from app.routers import account_types as account_types_router
 from app.routers import accounts as accounts_router
@@ -366,6 +367,10 @@ async def _delete_cascade(ctx: ToolContext, acct: Account, args) -> list[Change]
         select(Account.id).where(Account.payment_source_account_id == acct.id).order_by(Account.id)
     )
     out = [Change("accounts", i, "payment_source_account_id", acct.id, None) for i in paid_from]
+    # Plan goals saving into it and plans funded from it lose that link (SET NULL).
+    for model, col in ((PlanGoal, PlanGoal.account_id), (Scenario, Scenario.funding_account_id)):
+        linked = await ctx.db.scalars(select(model.id).where(col == acct.id).order_by(model.id))
+        out += [Change(model.__tablename__, i, col.key, acct.id, None) for i in linked]
     payments = await ctx.db.scalars(
         select(CcCyclePayment).where(CcCyclePayment.account_id == acct.id).order_by(CcCyclePayment.id)
     )
@@ -408,6 +413,7 @@ register(route_tool(
         covers=frozenset({
             "accounts.payment_source_account_id", "cc_cycle_payments.account_id",
             "import_batches.account_id", "recurring_transactions.account_id", "transactions.account_id",
+            "plan_goals.account_id", "scenarios.funding_account_id",
         }),
         disclose=_delete_cascade,
     ),

@@ -284,6 +284,66 @@ async def test_invalid_json_fails_closed(monkeypatch):
     assert result.reason == REASON_PROVIDER_ERROR
 
 
+class _RawJsonResponse(_FakeResponse):
+    """``json()`` returns the payload as-is, ``None`` (JSON null) included."""
+
+    def json(self) -> Any:
+        return self._payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        "x",
+        None,
+        1,
+        {"error-codes": "x"},
+        {"success": True, "hostname": 1},
+        {"success": True, "action": ["register"]},
+    ],
+)
+async def test_non_object_json_fails_closed(monkeypatch, log_lines, payload):
+    """FENCE (TBD-783). Wrong implementation: calling ``data.get`` on any
+    valid JSON body, so a non-object reply raises and register answers 500."""
+    _patch_httpx(monkeypatch, response=_RawJsonResponse(200, payload))
+
+    result = await verify_captcha("token", None)
+
+    assert result.ok is False
+    assert result.reason == REASON_PROVIDER_ERROR
+    assert "captcha.verify.invalid_json" in [ln["msg"] for ln in log_lines()]
+
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_json_fails_closed(monkeypatch):
+    """``json.loads`` raises RecursionError, not ValueError, past its depth.
+    Raised directly: the depth that triggers it varies by Python version."""
+
+    class _DeepResponse(_FakeResponse):
+        def json(self) -> Any:
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+    _patch_httpx(monkeypatch, response=_DeepResponse(200, None))
+
+    result = await verify_captcha("token", None)
+
+    assert result.ok is False
+    assert result.reason == REASON_PROVIDER_ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("success", ["false", "0", 1, "true"])
+async def test_only_json_true_is_success(monkeypatch, success):
+    _patch_httpx(monkeypatch, response=_FakeResponse(200, {"success": success}))
+
+    result = await verify_captcha("token", None)
+
+    assert result.ok is False
+    assert result.reason == REASON_PROVIDER_REJECTED
+
 # ── secrecy ─────────────────────────────────────────────────────────────────
 
 

@@ -52,6 +52,7 @@ from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem
 from app.models.recurring import Frequency, RecurringTransaction
+from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.tag import Tag, TransactionTag
@@ -1037,6 +1038,31 @@ PLANNING_SCENARIOS = [
 ]
 
 
+def _plan(scenario: dict, goal: dict):
+    """A plan (``scenarios``) and one of its goals, linked to fixture rows by
+    the given columns (``{"funding_account_id": "old"}`` is ``a["old"]``):
+    a delete of what they point at SETs them NULL."""
+    async def setup(f, a):
+        [sid] = await _ids(f, Scenario(
+            org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
+            params_json={}, **{k: a[v] for k, v in scenario.items()}))
+        await _add(f, PlanGoal(
+            org_id=a["org"], scenario_id=sid, name="Fund", tier=PlanGoalTier.WANT,
+            kind=PlanGoalKind.SAVINGS_TARGET, **{k: a[v] for k, v in goal.items()}))
+    return setup
+
+
+# TBD-598 (main #1069): plans and plan goals point at accounts, series and categories.
+PLAN_LINK_SCENARIOS = [
+    ("account-delete-unlinks-the-plans-and-goals-it-funds", _t("accounts_delete", account_id="@old"),
+     _seq(_cc, _doomed, _plan({"funding_account_id": "old"}, {"account_id": "old"})), False),
+    ("recurring-delete-unlinks-the-goal-it-funds", _rec("recurring_delete"),
+     _seq(_series_matched, _plan({}, {"funding_recurring_id": "rec"})), False),
+    ("category-delete-unlinks-the-plans-and-goals-on-it", _tool("categories_delete", category_id="@c2"),
+     _seq(_floor, _rule_to_c2, _plan({"category_id": "c2"}, {"category_id": "c2"})), False),
+]
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -1054,6 +1080,7 @@ SCENARIOS = [
     *RECURRING_SCENARIOS,
     *ACCOUNT_SCENARIOS,
     *MONEY_ACCOUNT_SCENARIOS,
+    *PLAN_LINK_SCENARIOS,
     *PLANNING_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
@@ -1101,6 +1128,11 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
             "categories", "transactions", "recurring_transactions", "forecast_plan_items",
             "category_rules", "budgets"}
         assert any(c["after"] is None for c in changes if c["entity"] == "forecast_plan_items")
+    if "-unlinks-the-" in sid:
+        unlinked = {(c["entity"], c["field"]) for c in changes
+                    if c["entity"] in ("scenarios", "plan_goals") and c["after"] is None}
+        assert {e for e, _ in unlinked} == ({"plan_goals"} if sid.startswith("recurring") else
+                                             {"plan_goals", "scenarios"}), unlinked
     if sid.startswith("account-money-"):
         fields = {(c["entity"], c["field"]) for c in changes}
         moved = ("accounts", "balance_delta") in fields

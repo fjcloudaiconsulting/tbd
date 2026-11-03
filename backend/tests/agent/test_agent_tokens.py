@@ -11,7 +11,9 @@ implementation in each docstring). Guards: F-S1, M4.
 """
 from __future__ import annotations
 
+import asyncio
 import secrets
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
@@ -476,6 +478,21 @@ async def test_m1_five_live_tokens_max_dead_ones_do_not_count(factory, client):
     assert (r.status_code, r.json()["detail"]["code"]) == (409, "too_many_agent_tokens")
     statuses = sorted(i["status"] for i in (await client.get(BASE, headers=h)).json()["items"])
     assert statuses == ["active"] * 5 + ["expired", "invalidated", "revoked"]
+
+
+async def test_m1_a_mint_inside_the_cutoff_second_is_live(factory, client):
+    """FENCE (TBD-583). A sign-in waits out a credential change's cutoff, so a
+    mint straight after it lands inside the cutoff's own second. Wrong
+    implementation: the router mints without waiting that second out, the
+    floored ``created_at`` equals the cutoff and the token is dead on arrival."""
+    org = await _org(factory, "A")
+    uid = await _user(factory, org, "m")
+    await asyncio.sleep((1.1 - time.time() % 1) % 1)  # early in a second
+    await _set_cutoff(factory, uid, "sessions_invalidated_at", _naive_now().replace(microsecond=0))
+    h = await _jwt(factory, uid)
+    r = await client.post(BASE, json=_mint_body(), headers=h)
+    assert r.status_code == 201, r.text
+    assert [i["status"] for i in (await client.get(BASE, headers=h)).json()["items"]] == ["active"]
 
 
 async def test_m1_mint_refuses_when_the_cutoff_moved_mid_request(factory):

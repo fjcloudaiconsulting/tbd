@@ -61,12 +61,12 @@ def _safe_host(database_url: str) -> str:
 # timeouts in connect_args bound that worst case, and pool_recycle
 # brings connections back BEFORE NAT can drop them.
 #
-# Single-replica today: SQLAlchemy defaults (pool_size=5, max_overflow=10)
-# are safe. Multi-replica future (HPA): each replica gets its own
-# pool, so total concurrent DB connections = replicas * (pool_size +
-# max_overflow). Sized for the data-plane droplet's max_connections
-# cap; override DB_POOL_SIZE / DB_MAX_OVERFLOW env vars when scaling
-# horizontally.
+# This is one of three pools per process (with the sync rate-limit and
+# session-state engines), so peak DB connections per process =
+# (DB_POOL_SIZE + DB_MAX_OVERFLOW) + (RATE_LIMIT_DB_POOL_SIZE +
+# RATE_LIMIT_DB_MAX_OVERFLOW) + (STATE_DB_POOL_SIZE + STATE_DB_MAX_OVERFLOW),
+# 15 + 7 + 7 = 29 at the defaults, times the replica count. Override the env
+# vars to fit under the DB user's and server's connection caps.
 engine = create_async_engine(
     settings.database_url,
     echo=False,
