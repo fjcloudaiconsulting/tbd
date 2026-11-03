@@ -4,9 +4,10 @@
  * on when a preview touches several rows of one kind (a transfer's two legs).
  */
 import {
-  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel,
+  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel, summaryChange,
+  summaryLabel, summaryTotal,
 } from "@/lib/agent/present";
-import type { ActionChange } from "@/lib/agent/types";
+import type { ActionChange, ActionSummary } from "@/lib/agent/types";
 
 const c = (over: Partial<ActionChange>): ActionChange => ({
   entity: "transactions", id: 7, field: "amount", before: null, after: null, ...over,
@@ -86,5 +87,23 @@ describe("present (TBD-664)", () => {
       .toBe("new category 3");
     expect(changeValue(c({ entity: "categories", field: "parent_id", before: 4 }), "before", undefined, {}))
       .toBe("category #4");
+  });
+
+  it("a summarised group reads by the stated count, its one change and its total (TBD-786)", () => {
+    const s = (over: Partial<ActionSummary>): ActionSummary => ({
+      entity: "transactions", change: "update", count: 412, sample: [], totals: {}, ...over,
+    });
+    const left = s({ field: "recurring_id", before: 4, after: null });
+    expect(summaryLabel(left)).toBe("412 transactions changed");
+    const one = summaryChange(left)!;
+    expect(changeLabel(one)).toBe("Recurring series");
+    expect(changeValue(one, "before", undefined, {})).toBe("recurring transaction #4");
+    expect(summaryLabel(s({ change: "delete", count: 40 }))).toBe("40 transactions deleted");
+    expect(summaryChange(s({ change: "delete" }))).toBeNull();
+    const added = s({ entity: "categories", change: "insert", count: 80 });
+    expect(summaryLabel(added)).toBe("80 categories added");
+    expect(summaryTotal(added)).toBe("");
+    expect(summaryTotal(s({ totals: { amount: "630.00", currency: "EUR" } }))).toBe("€630.00");
+    expect(summaryTotal(s({ totals: { planned_amount: "12.00" } }))).toBe("12.00");
   });
 });

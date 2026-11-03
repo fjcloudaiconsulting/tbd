@@ -72,6 +72,29 @@ const TX_ACTION: StagedAction = {
   requires_confirmation: true,
 };
 
+// TBD-786: a category delete over the preview cap, its moved transactions summarised.
+const BULK_ACTION: StagedAction = {
+  action_id: "d1",
+  summary: "Delete category 3, moving what uses it to category 4",
+  changes: [{ entity: "categories", id: 3, field: "name", before: { untrusted: "Food" }, after: null }],
+  summaries: [
+    {
+      entity: "transactions", change: "update", field: "category_id", before: 3, after: 4, count: 412,
+      sample: [7, 8, 9, 10, 11].map((id) => ({ entity: "transactions", id, field: "category_id", before: 3, after: 4 })),
+      totals: {},
+    },
+    {
+      entity: "budgets", change: "insert", count: 60,
+      sample: [{ entity: "budgets", id: "new:2", field: "amount", before: null, after: "10.50", currency: "EUR" }],
+      totals: { amount: "630.00", currency: "EUR" },
+    },
+  ],
+  warnings: [],
+  context: { category_name: { untrusted: "Food" }, to: { category_name: { untrusted: "Dining" } } },
+  expires_at: "2026-10-09T12:10:00",
+  requires_confirmation: true,
+};
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
@@ -202,6 +225,39 @@ describe("preview card", () => {
     const confirms = fetchMock.mock.calls.filter(([u]) => String(u).includes("/confirm"));
     expect(confirms).toHaveLength(1);
     await waitFor(() => expect(screen.getByText("Applied")).toBeInTheDocument());
+  });
+
+  it("TBD-786: a summarised group reads by its count, a sample and its total, as a named group", async () => {
+    fetchMock.mockResolvedValueOnce(sse([["tool_call", { name: "categories_delete" }], ["preview", { action: BULK_ACTION }]]));
+    const { container } = render(<AssistantChat />);
+    await ask("delete food");
+
+    const moved = screen.getByRole("group", { name: "412 transactions changed" });
+    expect(moved.textContent).toContain("Showing 5 of 412");
+    expect(moved.textContent).toContain("Transaction #11");
+    expect(moved.querySelectorAll("dd")).toHaveLength(5);
+    const added = screen.getByRole("group", { name: "60 budgets added" });
+    expect(added.textContent).toMatch(/Total\s*€630\.00/);
+    expect(added.textContent).toContain("Showing 1 of 60");
+
+    let result!: axe.AxeResults;
+    await act(async () => {
+      result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
+    });
+    expect(result.violations.map((v) => v.id)).toEqual([]);
+  });
+
+  it("TBD-786: money only inside a summary still blocks Apply while balances are hidden", async () => {
+    fetchMock.mockResolvedValueOnce(sse([["tool_call", { name: "categories_delete" }], ["preview", { action: BULK_ACTION }]]));
+    render(<AssistantChat />);
+    await ask("delete food");
+    act(() => setBalancesHidden(true));
+    try {
+      expect(screen.getByTestId("preview-card").textContent).not.toMatch(/630/);
+      expect(screen.getByRole("button", { name: "Apply change" })).toHaveAttribute("aria-disabled", "true");
+    } finally {
+      act(() => setBalancesHidden(false));
+    }
   });
 
   it("F-581-BLIND: with balances hidden a money change cannot be applied unseen; showing them re-enables it", async () => {

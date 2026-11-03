@@ -222,19 +222,20 @@ async def test_delete_in_use_needs_a_target(factory, w):
     assert err.code == "invalid_arguments" and "target_category_id" in err.detail
 
 
-async def test_restore_is_owner_only_and_a_full_restore_is_too_large_to_preview(factory, w):
-    """A preview names every inserted column, so restoring the whole seed
-    (an org with none of it) exceeds the stored-preview limit: refused, the
-    person restores from Settings. Nothing is written either way."""
+async def test_restore_is_owner_only_and_a_full_restore_previews_as_a_summary(factory, w):
+    """Restoring the whole seed (an org with none of it) names more inserted
+    columns than a stored preview holds: before TBD-786 it was refused as
+    payload_too_large, now the inserted categories are summarised."""
     a = w["A"]
     err = await _refused(_invoke(factory, a["admin"], "categories_restore_recommended", {}))
     assert err.code == "insufficient_role"
     async with factory() as db:
         (await db.get(User, a["member"])).role = Role.OWNER
         await db.commit()
-    err = await _refused(_invoke(factory, a["member"], "categories_restore_recommended", {}))
-    assert err.code == "payload_too_large"
-    assert await _count(factory, Category, Category.is_system.is_(True)) == 0
+    out, _ = await _apply(factory, a, "categories_restore_recommended", {})
+    [s] = out["summaries"]
+    assert (s["entity"], s["change"], len(s["sample"]) > 0) == ("categories", "insert", True)
+    assert s["count"] + 1 == await _count(factory, Category, Category.is_system.is_(True))
 
 
 # ── route_tool ────────────────────────────────────────────────────────────
