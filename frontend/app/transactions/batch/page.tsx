@@ -145,6 +145,17 @@ export default function BatchEntryPage() {
   // Synchronous in-flight guard: `submitting` only disables the button
   // after React re-renders, so a fast double click could post twice.
   const inFlightRef = useRef(false);
+  // Row 1's first cell, focused after a full success resets the grid so
+  // focus does not fall to <body> when Submit turns disabled.
+  const firstRowFocusRef = useRef<HTMLInputElement | null>(null);
+  const focusFirstRowRef = useRef(false);
+
+  // Runs after the grid's fieldset re-enables, so the input can take focus.
+  useEffect(() => {
+    if (submitting || !focusFirstRowRef.current) return;
+    focusFirstRowRef.current = false;
+    firstRowFocusRef.current?.focus();
+  }, [submitting]);
 
   useEffect(() => {
     (async () => {
@@ -247,7 +258,8 @@ export default function BatchEntryPage() {
       );
       // Drop the rows that committed so a second submit cannot duplicate
       // them, and keep the rest with their per-row error. Rows are
-      // matched by key because the user may edit while the request runs.
+      // matched by key because blank rows between filled ones get no
+      // row_number.
       const rowNumberByKey = new Map(
         populatedRows.map((r, i) => [r.key, i + 1] as const),
       );
@@ -270,6 +282,7 @@ export default function BatchEntryPage() {
           : Array.from({ length: DEFAULT_ROW_COUNT }, blankRow);
       });
       setSummary({ imported: resp.imported_count, errored: resp.error_count });
+      focusFirstRowRef.current = resp.error_count === 0;
     } catch (err) {
       setTopError(extractErrorMessage(err, "Batch submit failed"));
     } finally {
@@ -298,7 +311,7 @@ export default function BatchEntryPage() {
           value={row.date}
           onChange={(e) => updateRow(idx, { date: e.target.value })}
           aria-label={`Row ${idx + 1} date`}
-          ref={isNewest ? newRowFocusRef : undefined}
+          ref={isNewest ? newRowFocusRef : idx === 0 ? firstRowFocusRef : undefined}
         />
       ),
       description: (
@@ -436,22 +449,30 @@ export default function BatchEntryPage() {
 
       {topError && <div className={`mb-6 ${errorCls}`}>{topError}</div>}
 
-      {summary && (
-        <div
-          className={`mb-6 ${summary.errored === 0 ? successCls : errorCls}`}
-          role="status"
-          aria-live="polite"
-        >
-          {summary.imported} row{summary.imported === 1 ? "" : "s"} imported
-          {summary.errored > 0 && (
-            <>
-              , {summary.errored} row{summary.errored === 1 ? "" : "s"}{" "}
-              failed. See the per-row messages below.
-            </>
-          )}
-          .
-        </div>
-      )}
+      {/* Always mounted so screen readers announce the text when it
+          changes; a live region that mounts with its text may stay silent. */}
+      <div
+        className={
+          summary
+            ? `mb-6 ${summary.errored === 0 ? successCls : errorCls}`
+            : undefined
+        }
+        role="status"
+        aria-live="polite"
+      >
+        {summary && (
+          <>
+            {summary.imported} row{summary.imported === 1 ? "" : "s"} imported
+            {summary.errored > 0 && (
+              <>
+                , {summary.errored} row{summary.errored === 1 ? "" : "s"}{" "}
+                failed. See the per-row messages below.
+              </>
+            )}
+            .
+          </>
+        )}
+      </div>
 
       <div className={`${card} overflow-hidden`}>
         <div className={`${cardHeader} flex items-center justify-between`}>
@@ -484,7 +505,9 @@ export default function BatchEntryPage() {
             .
           </div>
         ) : (
-          <div className="overflow-x-auto md:overflow-x-auto">
+          // Disabled while the request runs: an edit to a row the server
+          // then commits would be dropped with that row.
+          <fieldset disabled={submitting} className="min-w-0 overflow-x-auto md:overflow-x-auto">
             {/* Single `<table>` source of truth. On md+ it renders as a
                 spreadsheet. Under md it falls back to one stacked
                 labeled card per row via the `batch-grid` CSS rules in
@@ -558,12 +581,12 @@ export default function BatchEntryPage() {
                 })}
               </tbody>
             </table>
-          </div>
+          </fieldset>
         )}
       </div>
 
       <div className="mt-6 flex items-center justify-end gap-2">
-        {summary && (
+        {summary && populatedRows.length > 0 && (
           <button type="button" onClick={resetForm} className={btnSecondary}>
             Clear and start over
           </button>
