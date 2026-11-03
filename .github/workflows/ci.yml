@@ -797,22 +797,6 @@ jobs:
           fi
           python -m pytest tests/test_state_db.py tests/auth tests/routers/test_refresh_cookie_catchup.py -q -p no:cacheprovider -p no:xdist
 
-      # TBD-737. Concurrent import confirms with one idempotency key must import
-      # each row once; that rests on InnoDB row locks and the unique index on
-      # import_batches, so the fences run here. A skip is red, as above.
-      - name: Run the import confirm fences against MySQL
-        working-directory: backend
-        env:
-          IMPORT_CONFIRM_MYSQL_URL: ${{ env.DATABASE_URL }}
-          IMPORT_CONFIRM_MYSQL_REQUIRED: "1"
-        run: |
-          set -o pipefail
-          python -m pytest tests/services/test_import_confirm_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/import-confirm.log
-          if grep -q '^SKIPPED' /tmp/import-confirm.log; then
-            echo "an import confirm fence did not run"
-            exit 1
-          fi
-
       # TBD-654. Two concurrent signup completes with one link must make one
       # account; that rests on InnoDB unique-key locks, so the fence runs here.
       # A skip is red, as above.
@@ -827,6 +811,22 @@ jobs:
           python -m pytest tests/routers/test_signup_complete_mysql.py -q -rs -p no:cacheprovider -p no:xdist 2>&1 | tee /tmp/signup-complete.log
           if grep -q '^SKIPPED' /tmp/signup-complete.log; then
             echo "a signup complete fence did not run"
+            exit 1
+          fi
+
+      # TBD-737. Concurrent import confirms with one idempotency key must import
+      # each row once; that rests on InnoDB row locks and the unique index on
+      # import_batches, so the fences run here. A skip is red, as above.
+      - name: Run the import confirm fences against MySQL
+        working-directory: backend
+        env:
+          IMPORT_CONFIRM_MYSQL_URL: ${{ env.DATABASE_URL }}
+          IMPORT_CONFIRM_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/services/test_import_confirm_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/import-confirm.log
+          if grep -q '^SKIPPED' /tmp/import-confirm.log; then
+            echo "an import confirm fence did not run"
             exit 1
           fi
 
