@@ -10,6 +10,7 @@ across several months.
 import datetime
 from decimal import Decimal
 
+import pytest
 import pytest_asyncio
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import event
@@ -326,6 +327,13 @@ async def test_loan_pays_once_per_month_across_the_horizon(db_session):
     # The source pays the two synthesised payments and the booked June leg.
     src = next(a for a in kb.accounts if a.account.id == source.id)
     assert src.end_balance == src.balance - pmt - pmt - july_payment
+    # Interest is visible, and is exactly what the pair fails to conserve.
+    assert row.loan_interest == [
+        (datetime.date(2026, 6, 15), june_interest),
+        (datetime.date(2026, 7, 15), july_payment - owed_july),
+    ]
+    assert (src.end_balance - src.balance) + (row.end_balance - row.balance) == -sum(
+        amount for _, amount in row.loan_interest)
 
 
 async def test_loan_amortises_to_term_on_a_long_horizon(db_session):
@@ -348,6 +356,10 @@ async def test_loan_amortises_to_term_on_a_long_horizon(db_session):
     assert all(amount == pmt for _, amount in row.loan_payments[:-1])
     assert Decimal("0") < row.loan_payments[-1][1] <= pmt
     assert row.end_balance == Decimal("0.00")
+    src = next(a for a in kb.accounts if a.account.id == source.id)
+    assert len(row.loan_interest) == 59  # every period after the first
+    assert (src.end_balance - src.balance) + (row.end_balance - row.balance) == -sum(
+        amount for _, amount in row.loan_interest)
 
 
 async def test_fixed_amount_card_pays_every_cycle_capped_at_owed(db_session):
@@ -512,3 +524,76 @@ async def test_occurrence_count_is_respected_over_a_long_horizon(db_session):
     eur_b = next(a for a in kb.accounts if a.account.id == seed["eur_b"].id)
     assert len(eur_b.recurring_lines) == 9
     assert eur_b.recurring_lines[-1] == (datetime.date(2027, 1, 12), Decimal("-49.00"))
+
+
+@pytest.mark.parametrize("day", [29, 30, 31])
+async def test_loan_anchored_late_in_the_month_pays_every_month(db_session, day):
+    """A first period ending on the 29th-31st and a loan due on the same day:
+    every month through February and after holds exactly one due date, so
+    the loan pays (and accrues) every month instead of about half of them."""
+    org, _, source = await _org_with_source(db_session)
+    first_end = datetime.date(2027, 1, day)
+    loan = await _loan(db_session, org, source, owed=Decimal("20000.00"),
+                       principal=Decimal("20000.00"), apr=Decimal("7.00"), term=60,
+                       first_payment=first_end)
+    await db_session.commit()
+
+    kb = await projection_kernel.baseline(
+        db_session, org.id, today=datetime.date(2027, 1, 1),
+        window_start=datetime.date(2027, 1, 1), first_period_end=first_end,
+        horizon_end=datetime.date(2027, 7, 31),
+    )
+    row = next(a for a in kb.accounts if a.account.id == loan.id)
+    expected = [first_end + relativedelta(months=k) for k in range(7)]
+    assert [d for d, _ in row.loan_payments] == expected
+    assert [d for d, _ in row.loan_interest] == expected[1:]
+
+
+async def test_card_subscription_is_paid_off_every_cycle(db_session):
+    """15.00 a month charged to a card, never generated yet: each cycle due
+    after the first period bills it and the source pays it, so the card does
+    not drift into debt over twelve months."""
+    org, _, source = await _org_with_source(db_session)
+    cc = await _card(db_session, org, source, owed=Decimal("0.00"))
+    cat = Category(org_id=org.id, name="Music", slug="music", type=CategoryType.EXPENSE)
+    db_session.add(cat)
+    await db_session.flush()
+    db_session.add(RecurringTransaction(
+        org_id=org.id, account_id=cc.id, category_id=cat.id, description="music",
+        amount=Decimal("15.00"), type="expense", frequency="monthly",
+        next_due_date=datetime.date(2026, 5, 10), auto_settle=False, is_active=True,
+    ))
+    await db_session.commit()
+
+    kb = await projection_kernel.baseline(
+        db_session, org.id, today=P_START, horizon_end=datetime.date(2027, 4, 30),
+    )
+    row = next(a for a in kb.accounts if a.account.id == cc.id)
+    # May 2026 .. March 2027 charges, each paid on the 1st after its close.
+    assert row.cc_payments == [
+        (datetime.date(2026, 6, 1) + relativedelta(months=k), Decimal("15.00"))
+        for k in range(11)
+    ]
+    # Only April 2027's charge is still on the card at the horizon.
+    assert row.end_balance == Decimal("-15.00")
+
+
+async def test_default_window_without_an_open_period_matches_the_dashboard(db_session):
+    """No open period, ``billing_cycle_day=31``, today 2027-03-05: the kernel's
+    read-only default window is exactly the period the dashboard creates."""
+    org = Organization(name="Late cycle", billing_cycle_day=31)
+    db_session.add(org)
+    await db_session.commit()
+    today = datetime.date(2027, 3, 5)
+
+    window = await projection_kernel.current_window(db_session, org.id, today=today)
+    assert (await db_session.execute(
+        BillingPeriod.__table__.select().where(BillingPeriod.org_id == org.id)
+    )).first() is None  # read-only: nothing was created
+
+    fc = await compute_account_balance_forecast(db_session, org.id, today=today)
+    assert window == (
+        datetime.date.fromisoformat(fc["period_start"]),
+        datetime.date.fromisoformat(fc["period_end"]),
+    )
+    assert window == (datetime.date(2027, 2, 28), datetime.date(2027, 3, 27))

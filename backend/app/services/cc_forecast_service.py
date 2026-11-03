@@ -147,13 +147,20 @@ def synthesize_account_cc_payments(
     ledger: list[tuple[date, Decimal]],
     credits: list[tuple[int, date, Decimal]],
     per_cycle_amounts: dict[tuple[int, int, int], Decimal],
+    projected: list[tuple[date, Decimal]] = (),
+    projected_after: date | None = None,
 ) -> list[tuple[date, Decimal]]:
     """Chronological (payment_date, outflow) pairs for one CC (outflow > 0).
 
     ``credits`` is (id, eff_date, amount) for real CC payment-in legs
     (transfer income legs). Threads ``S_prev`` and a consumed-credit set
     across the horizon's cycles.
+
+    ``projected`` is (date, signed) charges that do not exist as rows yet
+    (un-generated recurring occurrences). They join the ledger only for a
+    cycle whose payment is due after ``projected_after``.
     """
+    with_projected = list(ledger) + list(projected)
     cycles = due_cycles_in_horizon(account, p_start=p_start, p_end=p_end)
     s_prev = Decimal("0")
     consumed: set[int] = set()
@@ -180,7 +187,12 @@ def synthesize_account_cc_payments(
                 },
             )
             continue
-        b_k = balance_at_close(opening_balance, ledger, cycle.period_end_inclusive)
+        b_k = balance_at_close(
+            opening_balance,
+            with_projected if projected_after is not None
+            and cycle.payment_date > projected_after else ledger,
+            cycle.period_end_inclusive,
+        )
         outstanding = outstanding_at_close(b_k)
         target = cc_target_payment(account, cycle, outstanding, per_cycle_amounts)
         # ``outstanding`` is the LEDGER's owed-at-close, blind to the payments
