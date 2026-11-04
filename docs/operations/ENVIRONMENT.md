@@ -62,7 +62,7 @@ the env-var name (uppercased).
 | Variable | Required | Default | Local | CI | Prod | Sensitive | Purpose | Failure mode if missing |
 |---|---|---|---|---|---|---|---|---|
 | `APP_NAME` | no | `"The Better Decision"` | `.env` | conftest | tbd-prod manifest | no | Display name in emails and Swagger title. | Default used. |
-| `APP_ENV` | yes | `development` | `.env` | conftest | tbd-prod manifest (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `development`. Prod-only code paths are skipped, and every process logs `config.app_env_unset` at import (`config.app_env_unrecognised` for a value other than `development`, `test` or `production`; INF-04). |
+| `APP_ENV` | yes | `production` | `.env` (`development`; dev compose also defaults the backend and mcp to it) | conftest, and `development` on the CI image smokes and migrations job | tbd-prod manifest (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `production` (INF-04, fail-safe): a workload that forgets it gets every production check, and a dev or CI run that forgets it refuses its committed dev secrets. Every process logs `config.app_env_unset` at import (`config.app_env_unrecognised` for a value other than `development`, `test` or `production`). `backend/tests/test_app_env_config.py` fails when a compose service or CI run that loads the settings does not set it. |
 | `TBD_APP_VERSION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Release version reported by `/health` (`version`). Baked into the published GHCR images at build time from the Dockerfile `ARG`; Builds without build args report `dev`. | Falls back to `dev`. |
 | `TBD_APP_REVISION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Git revision reported by `/health` (`revision`). Baked at build time like `TBD_APP_VERSION`. | Falls back to `dev`. |
 | `LOG_LEVEL` | no | `INFO` | `.env` | conftest | tbd-prod manifest | no | Log level of the `app` loggers; other libraries log at INFO or above whatever this is. JSON lines on stdout. | Defaults to `INFO`. |
@@ -274,7 +274,9 @@ commit are refused like the others.
 
 Tests run inside `backend/tests/conftest.py`, which sets `DATABASE_URL`,
 `APP_ENV=development`, and a fixture `JWT_SECRET_KEY` directly. CI does
-NOT consume `.env`.
+NOT consume `.env`. The steps that load the settings outside pytest (the
+image import smokes and the Backend Migrations job) set `APP_ENV=development`
+themselves, since unset means production (INF-04).
 
 The `release` job in `.github/workflows/ci.yml` deploys nothing (see
 [`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow uses smoke credentials and

@@ -65,7 +65,9 @@ def _parse_forwarded_allow_ips(
 class Settings(BaseSettings):
     # App
     app_name: str = "The Better Decision"
-    app_env: str = "development"
+    # INF-04: unset means production, so a workload that forgets APP_ENV gets the production checks
+    # instead of Swagger and lifespan migrations. Dev compose, CI and conftest set it explicitly.
+    app_env: str = "production"
     log_level: str = "INFO"
     # Baked at image build time (backend/Dockerfile ARGs, env TBD_APP_VERSION /
     # TBD_APP_REVISION); /health reports them. "dev" outside a published image.
@@ -603,11 +605,9 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _warn_app_env_not_chosen(self) -> "Settings":
-        # INF-04: unset, APP_ENV means development (Swagger, lifespan migrations, none of the
-        # production checks). The backend image then fails its boot on the migration branch
-        # guard, but mcp_main has no such guard. A production default waits on cloud-infra
-        # confirming every component sets APP_ENV, so for now each process only says so. At
-        # import this precedes logs.configure() and reaches stderr through logging's last resort.
+        # INF-04: unset, APP_ENV means production (the fail-safe default); every process says so,
+        # because a dev or CI run that forgot it now refuses its dev secrets. At import this
+        # precedes logs.configure() and reaches stderr through logging's last resort.
         if "app_env" not in self.model_fields_set:
             logger.warning("config.app_env_unset", extra={"default": self.app_env})
         elif self.app_env not in ("development", "test", "production"):
