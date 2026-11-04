@@ -20,7 +20,7 @@ from app.services import plan_draft_service
 from app.models.user import Role
 
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    P_START, _confirm, _invoke, _refused, engine, factory, w,
+    P_START, _confirm, _invoke, _refused, _rows, engine, factory, w,
 )
 from tests.agent.test_agent_honesty import _TRIP, _fplan, _ids, _own_plan, _resolve, _snap
 
@@ -54,23 +54,41 @@ SCENARIO_TOOLS = (
 
 
 async def test_plans_follow_the_routes_scoping(factory, w):
-    """FENCE (TBD-601 scoping, as the routes). Another org's plan is
-    ``not_found`` to every tool, before anything about it is disclosed;
-    another member of the plan's org sees it and stages edits."""
+    """FENCE (TBD-601 scoping, as the routes). A plan is seen by its org and
+    changed by its creator or an org owner or admin; another member gets
+    ``forbidden``; a legacy scenario stays its creator's; another org gets
+    ``not_found``. Nothing about a plan the caller cannot see is disclosed."""
     a, b = w["A"], w["B"]
-    await _own_plan(factory, a)
-    for tool, args in SCENARIO_TOOLS:
-        err = await _refused(_invoke(factory, b["member"], tool, {"scenario_id": a["scn"], **_resolve(a, args)}))
+    await _own_plan(factory, a)  # the member's; made a plan below
+    [legacy] = await _ids(factory, Scenario(org_id=a["org"], user_id=a["member"], name="Old",
+                                            scenario_type=ScenarioType.TRIP, params_json={}, horizon_months=24))
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(currency="EUR"))
+        await db.commit()
+
+    def call(uid, tool, args, sid=None):
+        return _invoke(factory, uid, tool, {"scenario_id": sid or a["scn"], **_resolve(a, args)})
+
+    for tool, args in SCENARIO_TOOLS:  # another org
+        err = await _refused(call(b["member"], tool, args))
         assert err.code == "not_found", tool
         assert "Trip" not in str(err.data) and "Fund" not in str(err.data)
     err = await _refused(_invoke(factory, b["member"], "scenarios_compare",
                                  {"scenario_ids": [a["scn"]], "horizon_months": 12}))
     assert err.code == "not_found"
     assert await _invoke(factory, b["member"], "scenarios_list", {}) == []
+    # another member: sees the plan, not the legacy row; changes neither
     assert [s["id"] for s in await _invoke(factory, a["other"], "scenarios_list", {})] == [a["scn"]]
+    assert (await call(a["other"], "scenarios_get", {}))["id"] == a["scn"]
     for tool, args in SCENARIO_TOOLS[2:]:
-        out = await _invoke(factory, a["other"], tool, {"scenario_id": a["scn"], **_resolve(a, args)})
-        assert out["requires_confirmation"] is True, tool
+        assert (await _refused(call(a["other"], tool, args))).code == "forbidden", tool
+    for tool, args in SCENARIO_TOOLS[:4]:
+        assert (await _refused(call(a["other"], tool, args, legacy))).code == "not_found", tool
+    # an org admin and the creator change the plan
+    for uid in (a["admin"], a["member"]):
+        for tool, args in SCENARIO_TOOLS[2:]:
+            assert (await call(uid, tool, args))["requires_confirmation"] is True, (uid, tool)
+    assert await _rows(factory)  # staged, never executed
 
 
 @pytest.mark.parametrize("tool,args", [
@@ -231,3 +249,6 @@ async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory
         assert (await _refused(_invoke(factory, a["member"], tool, args))).code == "conflict", tool
     err = await _refused(_invoke(factory, a["member"], "scenarios_create", {**create, "monthly_budget": "10.00"}))
     assert err.detail == plan_draft_service.NO_CURRENCY_SCOPE
+    # no plan fields: a legacy scenario, no currency resolved (as the route)
+    out = await _invoke(factory, a["member"], "scenarios_create", create)
+    assert "currency" not in {c["field"] for c in out["changes"]} and "currency" not in out["context"]

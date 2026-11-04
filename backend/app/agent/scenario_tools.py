@@ -43,10 +43,12 @@ R = scenarios_router  # the route's own helpers
 
 
 async def _owned(ctx: ToolContext, scenario_id: int, *, lock: bool = True) -> Scenario:
-    """The route's ownership check, then (for a preview) the row read fresh and
-    locked. A read takes no lock: its session lives on across model rounds."""
+    """The route's visibility check (``not_found``) and, for a preview, its
+    edit check (``forbidden``: the creator, or an org owner or admin), then
+    the row read fresh and locked. A read takes no lock: its session lives on
+    across model rounds."""
     with refusals():
-        row = await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=scenario_id)
+        row = await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=scenario_id, write=lock)
     if not lock:
         return row
     return await ctx.db.scalar(
@@ -166,13 +168,14 @@ async def _check_events(ctx: ToolContext, scenario_type: str, horizon: int, para
 _COLUMNS = Scenario.__table__.c
 
 
-async def _plan_fields(ctx: ToolContext, row: Scenario, sent: dict[str, Any], *, creating: bool) -> dict:
+async def _plan_fields(ctx: ToolContext, row: Scenario, sent: dict[str, Any]) -> dict:
     """The plan fields the route would store (TBD-601): its own
-    ``apply_plan_fields`` (currency scope, links in the org, a draft only) on
-    a transient copy of ``row``, so the preview writes nothing."""
+    ``apply_plan_fields`` (currency scope, links in the org) on a transient
+    copy of ``row``, so the preview writes nothing. Sending none leaves a
+    legacy row as it is; sending any makes the row a plan."""
     copy = Scenario(**{c.key: getattr(row, c.key) for c in _COLUMNS if c.key in (*PLAN_FIELDS, "org_id", "status")})
     with refusals():
-        await plan_draft_service.apply_plan_fields(ctx.db, copy, sent, creating=creating)
+        await plan_draft_service.apply_plan_fields(ctx.db, copy, sent)
     return {f: _disclose(_COLUMNS[f], getattr(copy, f)) for f in PLAN_FIELDS}
 
 
@@ -180,19 +183,21 @@ async def _create_preview(ctx: ToolContext, args) -> Preview:
     body = ScenarioCreate.model_validate(args.model_dump(exclude_unset=True))
     params = body.params.model_dump(mode="json")
     await _check_events(ctx, body.scenario_type.value, body.horizon_months, params)
-    plan = await _plan_fields(ctx, Scenario(org_id=ctx.org_id), body.plan_changes(), creating=True)
+    plan = await _plan_fields(ctx, Scenario(org_id=ctx.org_id), body.plan_changes())
     values = {"user_id": ctx.user.id, "name": body.name, "scenario_type": body.scenario_type.value,
               "params_json": params, "horizon_months": body.horizon_months, "is_active": True}
     changes = [_change("new:1", f, None, v) for f, v in values.items()]
     changes += [Change("scenarios", "new:1", f, None, v) for f, v in plan.items() if v is not None]
     return Preview(
         summary=f"Create a {body.scenario_type.value} plan over {body.horizon_months} months",
-        changes=changes, context={"currency": plan["currency"]},
+        changes=changes, context={"currency": plan["currency"]} if plan["currency"] else {},
     )
 
 
 async def _update_preview(ctx: ToolContext, args) -> Preview:
     row = await _owned(ctx, args.scenario_id)
+    with refusals(), plan_goals_router.http_errors():  # editing a started plan is the lifecycle ticket's
+        plan_draft_service.assert_draft(row)
     sent = args.model_fields_set
     horizon = row.horizon_months
     changes = []
@@ -212,7 +217,7 @@ async def _update_preview(ctx: ToolContext, args) -> Preview:
         changes.append(_change(row.id, "is_active", row.is_active, args.is_active))
     body = ScenarioUpdate.model_validate(args.model_dump(include=sent - {"scenario_id"}))
     if body.plan_changes():
-        after = await _plan_fields(ctx, row, body.plan_changes(), creating=False)
+        after = await _plan_fields(ctx, row, body.plan_changes())
         changes += [Change("scenarios", row.id, f, _disclose(_COLUMNS[f], getattr(row, f)), v)
                     for f, v in after.items()]
     changes = [c for c in changes if c.before != c.after]
@@ -244,7 +249,7 @@ register(route_tool(
 
 async def _owner_check(ctx: ToolContext, row: Scenario, args) -> None:
     with refusals():
-        await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=row.id)
+        await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=row.id, write=True)
 
 
 async def _goals(ctx: ToolContext, row: Scenario, args) -> list[Change]:
@@ -292,9 +297,11 @@ GOAL_TEXT = (
 
 
 async def _goal_plan(ctx: ToolContext, scenario_id: int, links: dict[str, Any]) -> Scenario:
-    with refusals():
-        plan = await plan_draft_service.get_plan(ctx.db, org_id=ctx.org_id, plan_id=scenario_id)
-        plan_draft_service._assert_draft(plan)
+    """As the goal routes: the plan seen (``not_found``) and changeable
+    (``forbidden``), a draft, its currency scope and every link in the org."""
+    with refusals(), plan_goals_router.http_errors():
+        plan = await plan_draft_service.get_plan(ctx.db, user=ctx.user, plan_id=scenario_id, write=True)
+        plan_draft_service.assert_draft(plan)
     currency = await plan_draft_service.plan_currency(ctx.db, org_id=plan.org_id, requested=plan.currency)
     await plan_draft_service._check_links(ctx.db, org_id=plan.org_id, currency=currency, changes=links)
     return plan
@@ -316,6 +323,9 @@ async def _goal_create_preview(ctx: ToolContext, args) -> Preview:
     plan = await _goal_plan(ctx, args.scenario_id, fields)
     changes = [Change(GOALS, "new:1", "scenario_id", None, plan.id)]
     changes += [_goal_change("new:1", f, None, v) for f, v in fields.items() if v is not None]
+    if plan.currency is None:  # a legacy row given a goal becomes a plan in the org's currency
+        currency = await plan_draft_service.plan_currency(ctx.db, org_id=plan.org_id, requested=None)
+        changes.append(Change("scenarios", plan.id, "currency", None, currency))
     return Preview(summary=f"Add a goal to plan {plan.id}", changes=changes)
 
 
