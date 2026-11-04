@@ -28,6 +28,7 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy import text
 
 from app.database import async_session, engine
+from app.config import settings
 from app.security import create_signup_token
 
 BASE = "http://localhost:8000"
@@ -525,6 +526,11 @@ async def ensure_verified(username: str) -> None:
 
 
 async def main(assume_yes: bool = False):
+    # Dev data only, and it mints signup links from the .env secret: never
+    # against a production (or unknown) environment.
+    if settings.app_env not in ("development", "test"):
+        print(f"Refusing to seed: APP_ENV={settings.app_env!r} is not development or test.")
+        sys.exit(1)
     # Resolved ONCE, before anything is posted, so the whole run shares one
     # anchor and one RNG stream. Both raise on a malformed value rather than
     # falling back, so a caller can never believe it pinned one and be wrong.

@@ -34,7 +34,7 @@ python -c "import secrets; print(secrets.token_urlsafe(64))"
 open http://localhost
 ```
 
-The first user, created on the `/setup` page, becomes the org owner and superadmin. No seed data required. Everyone after that signs up at `/register` with an emailed link. In production, `/setup` also asks for the `SETUP_TOKEN` secret (see `docs/operations/ENVIRONMENT.md`).
+The first user, created on the `/setup` page, becomes the org owner and superadmin. No seed data required. Everyone after that signs up at `/register` with an emailed link. Outside development and test, `/setup` also asks for the `SETUP_TOKEN` secret (see `docs/operations/ENVIRONMENT.md`).
 
 Want a realistic dataset (5 accounts, 100+ transactions, recurring templates, budgets)?
 
@@ -374,7 +374,7 @@ Exactly **32** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /health/dependencies` | Per-dependency readiness (TBD-413): the database (which also holds sessions), 503 when it is unusable. Anonymous because an uptime monitor holds no bearer token. Reports a closed vocabulary of coarse states and never exception text, hostnames or ports. |
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
-| `POST /api/v1/auth/register` | First-user setup only (TBD-654). Nothing to authenticate yet. Once any user exists it answers the same 403 `setup_complete` to every body; in production the first user also needs `SETUP_TOKEN` (INF-05). |
+| `POST /api/v1/auth/register` | First-user setup only (TBD-654). Nothing to authenticate yet. Once any user exists it answers the same 403 `setup_complete` to every body; outside development and test the first user also needs `SETUP_TOKEN` (INF-05). |
 | `POST /api/v1/auth/signup/start` | Email-first sign-up, step 1 (TBD-654). Nothing to authenticate yet. Answers the same 202 for every address that passes the captcha, stores nothing, and queues the email for the address's state in the background. |
 | `POST /api/v1/auth/forgot-password` | Password reset request. Answers uniformly whether or not the address exists, so it leaks no account inventory. |
 | `POST /api/v1/auth/resend-verification-public` | Targets an unverified account, which cannot hold a usable session. The non-`-public` sibling `POST /api/v1/auth/resend-verification` **is** authenticated. |

@@ -208,9 +208,9 @@ class Settings(BaseSettings):
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
     trial_duration_days: int = 14
 
-    # INF-05: the first-user bootstrap secret. With APP_ENV=production and no
-    # user yet, ``POST /auth/register`` (the /setup page) must carry it, and
-    # an empty value refuses setup outright. Other environments skip the check.
+    # INF-05: the first-user bootstrap secret. With no user yet and any APP_ENV
+    # but development or test, ``POST /auth/register`` (the /setup page) must
+    # carry it, and an empty value refuses setup outright.
     # TODO(#1007): add "setup_token" to SECRET_FIELDS once #1007 merges.
     setup_token: str = ""
 
@@ -527,6 +527,19 @@ class Settings(BaseSettings):
                 "defeats the decoupling. Generate a distinct secret via: "
                 "python -c 'import secrets; print(secrets.token_urlsafe(64))'"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_setup_token(self) -> "Settings":
+        # INF-05. Optional (empty refuses setup outside dev and test), but a set
+        # value must be strong and exactly what the operator will type: a
+        # stray newline from a secret file would make setup unreachable.
+        token = self.setup_token
+        if token:
+            if token != token.strip():
+                raise ValueError("SETUP_TOKEN must not start or end with whitespace")
+            if len(token) < 32:
+                raise ValueError("SETUP_TOKEN must be at least 32 characters")
         return self
 
     @model_validator(mode="after")

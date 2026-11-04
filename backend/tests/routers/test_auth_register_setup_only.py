@@ -411,6 +411,73 @@ async def test_production_after_setup_answers_setup_complete_not_the_token_error
     assert res.json()["detail"]["code"] == "setup_complete"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("app_env", ["staging", "Production", "prod", ""])
+async def test_any_app_env_but_development_and_test_needs_the_token(
+    session_factory, monkeypatch, app_env
+) -> None:
+    """FENCE — an allowlist, not ``== "production"``.
+
+    Wrong implementation killed: skipping the token unless APP_ENV is exactly
+    "production", which an unset, misspelled or new value walks around.
+    """
+    monkeypatch.setattr(app_settings, "app_env", app_env)
+    monkeypatch.setattr(app_settings, "setup_token", SETUP_TOKEN)
+    await _seed_default_plan(session_factory)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        assert client.get("/api/v1/auth/status").json()["setup_token_required"] is True
+        refused = client.post(REGISTER, json=_body())
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"]["code"] == "setup_token_invalid"
+        assert await _count_users(session_factory) == 0
+        ok = client.post(REGISTER, json=_body(setup_token=SETUP_TOKEN))
+    assert ok.status_code == 201, ok.text
+
+
+@pytest.mark.asyncio
+async def test_the_first_user_check_and_commit_run_under_the_bootstrap_lock(
+    session_factory, monkeypatch
+) -> None:
+    """FENCE — the count and the user's commit sit inside one lock hold.
+
+    Wrong implementations killed: counting before taking the lock, or
+    releasing it before the commit; either lets two concurrent setups both
+    count zero users and both mint a superadmin. The real lock is MySQL's
+    ``GET_LOCK``, fenced in ``test_register_bootstrap_lock_mysql.py``.
+    """
+    from contextlib import asynccontextmanager
+
+    events: list[str] = []
+    real_count = auth_module._is_first_user_setup
+
+    async def _count(db):
+        events.append("count")
+        return await real_count(db)
+
+    @asynccontextmanager
+    async def _lock(db):
+        events.append("acquire")
+        yield
+        events.append(f"release users={await _count_users(session_factory)}")
+
+    monkeypatch.setattr(auth_module, "_is_first_user_setup", _count)
+    monkeypatch.setattr(auth_module, "_bootstrap_lock", _lock)
+    await _seed_default_plan(session_factory)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(REGISTER, json=_body())
+    assert res.status_code == 201, res.text
+    assert events == ["acquire", "count", "release users=1"]
+
+
+@pytest.mark.asyncio
+async def test_the_bootstrap_lock_is_a_no_op_off_mysql(session_factory) -> None:
+    async with session_factory() as db:
+        async with auth_module._bootstrap_lock(db):
+            pass
+
+
 def test_the_token_compare_is_constant_time() -> None:
     """Structural: the compare is ``hmac.compare_digest``, never ``==``."""
     import inspect
