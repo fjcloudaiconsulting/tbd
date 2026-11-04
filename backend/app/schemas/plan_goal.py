@@ -1,6 +1,6 @@
 """Goals inside a plan (``plan_goals``, TBD-601).
 
-``tier`` and ``kind`` are VARCHAR columns (migration 100): requests are
+``tier`` and ``kind`` are VARCHAR columns (migration 101): requests are
 checked against the app's enums, responses carry the stored string.
 """
 from __future__ import annotations

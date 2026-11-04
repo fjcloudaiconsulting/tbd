@@ -1,9 +1,16 @@
 """Plan drafts: org-scoped plans and goals on the TBD-548 model (TBD-601).
 
-A plan is a ``scenarios`` row and its goals are ``plan_goals`` rows. Every
-member of the plan's org reads and edits a draft; lifecycle transitions are
-gated in the lifecycle ticket. A draft has no real-data side effects: nothing
-here writes outside ``scenarios`` and ``plan_goals``.
+A plan is a ``scenarios`` row and its goals are ``plan_goals`` rows. Who sees
+and changes what follows the reports precedent (``routers/reports.py``):
+
+- A legacy scenario (never given plan fields or goals) stays private to its
+  creator, as before TBD-601.
+- A plan is visible to every member of its org. Its creator, or an org OWNER
+  or ADMIN, edits or deletes it and writes its goals; another member gets 403.
+- Another org's row is a 404 either way, so a probe cannot tell it exists.
+
+Lifecycle transitions are the lifecycle ticket's. A draft has no real-data
+side effects: nothing here writes outside ``scenarios`` and ``plan_goals``.
 
 The schema does not stop a plan or goal pointing at another org's rows, so
 every link is checked here, and a goal's ``org_id`` is always its plan's.
@@ -12,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
@@ -20,6 +27,7 @@ from app.models.category import Category
 from app.models.recurring import RecurringTransaction
 from app.models.scenario import PlanGoal, Scenario, ScenarioStatus
 from app.models.tag import Tag
+from app.models.user import Role, User
 from app.services.currency_service import normalise_currency, resolve_currency_scope
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
@@ -35,12 +43,45 @@ _LINKS = {
 }
 
 
-async def get_plan(db: AsyncSession, *, org_id: int, plan_id: int) -> Scenario:
-    """The plan if it is in ``org_id``. Another org's plan is "not found"
-    (404, not 403), so a probe cannot tell it exists."""
+class PlanEditDenied(Exception):
+    """A member who can see a plan but may not change it (HTTP 403)."""
+
+
+def is_plan(row: Scenario) -> bool:
+    """A row with plan fields. ``currency`` is the marker: 098 left it NULL on
+    every legacy row (no backfill), and every plan-field or goal write sets it
+    to the org's currency (``plan_currency``), so it is NULL exactly on rows
+    that never became a plan."""
+    return row.currency is not None
+
+
+def visible_filter(user: User):
+    """``WHERE`` clause for the scenarios ``user`` may see."""
+    return (Scenario.org_id == user.org_id) & or_(
+        Scenario.user_id == user.id, Scenario.currency.is_not(None)
+    )
+
+
+def can_view(user: User, row: Scenario) -> bool:
+    return row.org_id == user.org_id and (row.user_id == user.id or is_plan(row))
+
+
+def can_edit(user: User, row: Scenario) -> bool:
+    return can_view(user, row) and (
+        row.user_id == user.id or user.role in (Role.OWNER, Role.ADMIN)
+    )
+
+
+async def get_plan(
+    db: AsyncSession, *, user: User, plan_id: int, write: bool = False
+) -> Scenario:
+    """The scenario if ``user`` may see it (else "not found", 404), and, with
+    ``write``, change it (else ``PlanEditDenied``, 403)."""
     row = await db.get(Scenario, plan_id)
-    if row is None or row.org_id != org_id:
+    if row is None or not can_view(user, row):
         raise NotFoundError("Scenario")
+    if write and not can_edit(user, row):
+        raise PlanEditDenied("only the plan's creator or an org owner or admin can change it")
     return row
 
 
@@ -82,29 +123,32 @@ async def _check_links(
         row = await db.get(model, ref)
         if row is None or row.org_id != org_id:
             raise ValidationError(f"{label} {ref} not found in this organization")
-        if model is Account and normalise_currency(row.currency) != currency:
-            raise ValidationError(
-                f"account {ref} is in {row.currency}, not the plan's currency {currency}"
-            )
+        accounts = []
+        if model is Account:
+            accounts = [row]
+        elif model is RecurringTransaction:
+            # Its money is in its account's currency (both legs' for a transfer).
+            accounts = [await db.get(Account, a)
+                        for a in (row.account_id, row.to_account_id) if a is not None]
+        for acc in accounts:
+            if normalise_currency(acc.currency) != currency:
+                raise ValidationError(
+                    f"{label} {ref} is in {acc.currency}, not the plan's currency {currency}"
+                )
 
 
-def _assert_draft(plan: Scenario) -> None:
+def assert_draft(plan: Scenario) -> None:
     if plan.status != ScenarioStatus.DRAFT:
         raise ConflictError("only a draft plan can be edited here")
 
 
-async def apply_plan_fields(
-    db: AsyncSession, row: Scenario, changes: dict[str, Any], *, creating: bool
-) -> None:
-    """Validate and set the plan fields a request sent (``changes``).
-
-    A new plan always takes the org's currency, so creating one in an org
-    with no currency scope is refused. An edit that sends no plan field
-    leaves a legacy row as it is."""
-    if not creating:
-        if not changes:
-            return
-        _assert_draft(row)
+async def apply_plan_fields(db: AsyncSession, row: Scenario, changes: dict[str, Any]) -> None:
+    """Validate and set the plan fields a request sent (``changes``), which
+    makes the row a plan in the org's currency; with no currency scope that
+    is refused. A request without plan fields leaves a legacy row as it is,
+    so a plain scenario still works in a multi-currency org."""
+    if not changes:
+        return
     currency = await plan_currency(
         db, org_id=row.org_id, requested=changes.get("currency", row.currency)
     )
@@ -115,9 +159,10 @@ async def apply_plan_fields(
 
 
 async def create_goal(db: AsyncSession, *, plan: Scenario, fields: dict[str, Any]) -> PlanGoal:
-    _assert_draft(plan)
+    assert_draft(plan)
     currency = await plan_currency(db, org_id=plan.org_id, requested=plan.currency)
     await _check_links(db, org_id=plan.org_id, currency=currency, changes=fields)
+    plan.currency = currency  # a legacy row with a goal is a plan
     # org_id comes from the plan, never from the request.
     goal = PlanGoal(**fields, org_id=plan.org_id, scenario_id=plan.id)
     db.add(goal)
@@ -127,7 +172,7 @@ async def create_goal(db: AsyncSession, *, plan: Scenario, fields: dict[str, Any
 async def update_goal(
     db: AsyncSession, *, plan: Scenario, goal: PlanGoal, changes: dict[str, Any]
 ) -> None:
-    _assert_draft(plan)
+    assert_draft(plan)
     currency = await plan_currency(db, org_id=plan.org_id, requested=plan.currency)
     await _check_links(db, org_id=plan.org_id, currency=currency, changes=changes)
     for key, value in changes.items():
@@ -135,5 +180,5 @@ async def update_goal(
 
 
 async def delete_goal(db: AsyncSession, *, plan: Scenario, goal: PlanGoal) -> None:
-    _assert_draft(plan)
+    assert_draft(plan)
     await db.delete(goal)

@@ -132,7 +132,7 @@ async def test_goal_round_trips_with_defaults(session_factory):
         ids = await _seed(db)
         goal = await db.get(PlanGoal, ids["goal_id"])
         assert goal.enabled is True and goal.sort_order == 0
-        # VARCHAR since migration 100: the stored string, not the enum member.
+        # VARCHAR since migration 101: the stored string, not the enum member.
         assert goal.tier == PlanGoalTier.ESSENTIAL.value
         assert goal.kind == PlanGoalKind.SAVINGS_TARGET.value
         assert goal.start_balance == Decimal("120.50")
@@ -174,7 +174,7 @@ async def test_org_delete_removes_plans_and_goals(session_factory):
 
 
 def test_goal_refuses_an_unknown_tier_or_kind():
-    """Migration 100 dropped the ENUMs, so the model is the only check."""
+    """Migration 101 dropped the ENUMs, so the model is the only check."""
     goal = PlanGoal(tier="want", kind=PlanGoalKind.LUMP)
     assert (goal.tier, goal.kind) == ("want", "lump")
     with pytest.raises(ValueError):
