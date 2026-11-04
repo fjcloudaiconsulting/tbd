@@ -1,6 +1,6 @@
 """Recurring templates: the latest occurrence spent (TBD-509).
 
-Revision ID: 100_recurring_last_spent_date
+Revision ID: 102_recurring_last_spent_date
 Revises: 099_recurring_transfers
 Create Date: 2026-11-04
 
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "100_recurring_last_spent_date"
+revision: str = "102_recurring_last_spent_date"
 down_revision: Union[str, None] = "099_recurring_transfers"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
