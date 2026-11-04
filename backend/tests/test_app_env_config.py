@@ -47,6 +47,7 @@ def test_an_unset_app_env_warns_and_means_production(monkeypatch, caplog):
 
 def test_an_unset_app_env_gets_the_production_refusals(monkeypatch):
     monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("API_TOKEN_HMAC_KEY", raising=False)  # dev compose sets a shared one
     with pytest.raises(ValidationError, match="API_TOKEN_HMAC_KEY is required in production"):
         Settings(_env_file=None, jwt_secret_key=_JWT, database_url=_DSN)
     with pytest.raises(ValidationError, match="API_TOKEN_HMAC_KEY is a value committed"):
