@@ -14,9 +14,9 @@ import logging
 
 import pytest
 
+from app import config
 from app.config import (
     TURNSTILE_TEST_SECRETS,
-    OpenProductionCaptcha,
     Settings,
     refuse_open_production_captcha,
     warn_open_production_defaults,
@@ -66,6 +66,10 @@ def test_a_closed_production_config_and_dev_and_test_stay_silent(caplog):
     assert _warned(caplog) == []
 
 
+# config.OpenProductionCaptcha, read at raise time: other tests reload app.config, which rebinds
+# the class the function raises.
+
+
 def _shipped(monkeypatch, **overrides) -> Settings:
     # The dev backend container sets BACKEND_CORS_ORIGINS and the CAPTCHA_* values from .env.
     for name in Settings.model_fields:
@@ -88,7 +92,7 @@ def test_the_captcha_is_required_by_default_in_production_only(monkeypatch):
 
 def test_the_shipped_defaults_refuse_to_boot_naming_every_open_captcha_setting(monkeypatch, caplog):
     caplog.set_level(logging.ERROR, logger="app.config")
-    with pytest.raises(OpenProductionCaptcha) as caught:
+    with pytest.raises(config.OpenProductionCaptcha) as caught:
         refuse_open_production_captcha(_shipped(monkeypatch, app_env="production"))
     assert str(caught.value).startswith(
         "CAPTCHA_SECRET, CAPTCHA_EXPECTED_HOSTNAME, CAPTCHA_EXPECTED_ACTION must hold real values"
@@ -99,14 +103,14 @@ def test_the_shipped_defaults_refuse_to_boot_naming_every_open_captcha_setting(m
 
 @pytest.mark.parametrize("secret", ["", "   ", *sorted(TURNSTILE_TEST_SECRETS)])
 def test_an_empty_or_test_secret_refuses_and_names_the_variable_only(secret):
-    with pytest.raises(OpenProductionCaptcha, match=r"^CAPTCHA_SECRET must hold") as caught:
+    with pytest.raises(config.OpenProductionCaptcha, match=r"^CAPTCHA_SECRET must hold") as caught:
         refuse_open_production_captcha(_settings(captcha_secret=secret))
     assert secret.strip() == "" or secret not in str(caught.value)
 
 
 @pytest.mark.parametrize("field", ["captcha_expected_hostname", "captcha_expected_action"])
 def test_an_unset_pin_refuses(field):
-    with pytest.raises(OpenProductionCaptcha, match=rf"^{field.upper()} must hold"):
+    with pytest.raises(config.OpenProductionCaptcha, match=rf"^{field.upper()} must hold"):
         refuse_open_production_captcha(_settings(**{field: ""}))
 
 
