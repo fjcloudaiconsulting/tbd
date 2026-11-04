@@ -1,14 +1,13 @@
 # Post-release smoke test (shared smoke workflow, RELEASE_CONTRACT.md section 7): the published images by tag, no
 # build. The workflow runs `migrations` twice (the second must be a no-op), then `up --wait`, then asserts /health
 # reports the release's version and revision. APP_ENV=production so the backend boots with production validation and
-# does NOT migrate on startup. Every credential is a throwaway literal for a database that lives for one CI run.
-# Production refuses every other committed secret; these two are its only exception (INF-03,
-# backend/tests/test_public_secret_defaults.py). Do not add a third: pass a per-run secret instead.
+# does NOT migrate on startup. The database credentials are throwaway literals for a database that lives for one CI
+# run. JWT_SECRET_KEY and API_TOKEN_HMAC_KEY are generated in each container at start, because production refuses
+# every committed secret (INF-03) and the shared smoke workflow passes none. Each command then execs the image's own
+# CMD (backend/tests/test_public_secret_defaults.py checks both).
 x-backend-env: &backend-env
   APP_ENV: production
   DATABASE_URL: mysql+aiomysql://tbd:smoke@mysql:3306/tbd
-  JWT_SECRET_KEY: smoke-jwt-key-not-a-real-secret-0000000000
-  API_TOKEN_HMAC_KEY: smoke-pat-key-not-a-real-secret-11111111111
 
 services:
   mysql:
@@ -28,6 +27,7 @@ services:
   migrations:
     image: ${IMAGE_PREFIX}/migrations:${TAG}
     profiles: [migrate]
+    command: ["sh", "-c", "export JWT_SECRET_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') API_TOKEN_HMAC_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') && exec python /app/scripts/migrate.py"]
     depends_on:
       mysql:
         condition: service_healthy
@@ -35,6 +35,7 @@ services:
 
   backend:
     image: ${IMAGE_PREFIX}/backend:${TAG}
+    command: ["sh", "-c", "export JWT_SECRET_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') API_TOKEN_HMAC_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --ws none --proxy-headers"]
     depends_on:
       mysql:
         condition: service_healthy
