@@ -108,6 +108,9 @@ const TOOL_LABELS: Record<string, string> = {
   scenarios_create: "Create a plan",
   scenarios_update: "Edit a plan",
   scenarios_delete: "Delete a plan",
+  plan_goal_create: "Add a plan goal",
+  plan_goal_update: "Edit a plan goal",
+  plan_goal_delete: "Delete a plan goal",
 };
 
 export function toolLabel(name: string): string {
@@ -146,6 +149,26 @@ const FIELD_LABELS: Record<string, string> = {
   "scenarios.is_active": "Active",
   "scenarios.user_id": "Owner",
   "plan_goals.name": "Goal",
+  "scenarios.currency": "Plan currency",
+  "scenarios.monthly_budget": "Monthly budget",
+  "scenarios.birth_year": "Birth year",
+  "scenarios.return_pct": "Yearly return (%)",
+  "scenarios.inflation_pct": "Yearly inflation (%)",
+  "scenarios.funding_account_id": "Funding account",
+  "scenarios.category_id": "Category",
+  "scenarios.tag_id": "Tag",
+  "plan_goals.scenario_id": "Plan",
+  "plan_goals.tier": "Tier",
+  "plan_goals.kind": "Kind",
+  "plan_goals.target_amount": "Target amount",
+  "plan_goals.target_date": "Target date",
+  "plan_goals.monthly_amount": "Monthly amount",
+  "plan_goals.enabled": "Enabled",
+  "plan_goals.sort_order": "Order",
+  "plan_goals.category_id": "Category",
+  "plan_goals.account_id": "Account",
+  "plan_goals.start_balance": "Starting balance",
+  "plan_goals.funding_recurring_id": "Funding recurring item",
   "transactions.category_id": "Category",
   "transactions.description": "Description",
   "transactions.date": "Date",
@@ -301,12 +324,15 @@ export function changeValue(
     return `${n < 0 ? "−" : "+"}${amount}`;
   }
   if (c.currency) return formatMoney(text(v), c.currency);
-  // A report layout or filter set is a JSON object (TBD-669): named by its size.
-  if (c.field === "layout_json") {
-    const n = ((v as unknown as { widgets?: unknown[] }).widgets ?? []).length;
+  // A report layout or filter set arrives as its JSON text, wrapped (TBD-669):
+  // named by its size, never shown raw.
+  if (c.field === "layout_json" || c.field === "canvas_filters_json") {
+    let doc: Record<string, unknown> = {};
+    try { doc = JSON.parse(text(v)) ?? {}; } catch { /* not a document: treated as empty */ }
+    if (c.field === "canvas_filters_json") return Object.keys(doc).length ? "Custom filters" : "No filters";
+    const n = Array.isArray(doc.widgets) ? doc.widgets.length : 0;
     return n === 1 ? "1 widget" : `${n} widgets`;
   }
-  if (c.field === "canvas_filters_json") return Object.keys(v as object).length ? "Custom filters" : "No filters";
   if (c.entity === "user_notification_preferences") return v === true ? "On" : "Off";
   if (c.field === "linked_transaction_id") return isNew(v) ? "the other new transaction" : `transaction #${text(v)}`;
   if (c.field === "account_id") return `account #${text(v)}`;

@@ -121,6 +121,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         # TBD-668
         "forecast_plan_get", "scenarios_list", "scenarios_get", "scenarios_simulate", "scenarios_compare",
         *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
+        "plan_goal_create", "plan_goal_update", "plan_goal_delete",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
@@ -158,6 +159,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         # TBD-668: every forecast plan change states or freezes planned amounts;
         # a plan's params carry amounts and funding accounts.
         *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
+        "plan_goal_create", "plan_goal_update", "plan_goal_delete",
     }
 
 
@@ -376,6 +378,9 @@ def _valid_base(tool) -> dict:
         "scenarios_compare": {"scenario_ids": [1], "horizon_months": 12},
         "scenarios_create": {"name": "x", "scenario_type": "custom", "params": {"scenario_type": "custom", "label": "x"}},
         "scenarios_update": {"scenario_id": 1},
+        "plan_goal_create": {"scenario_id": 1, "name": "x", "tier": "want", "kind": "lump"},
+        "plan_goal_update": {"scenario_id": 1, "goal_id": 1},
+        "plan_goal_delete": {"scenario_id": 1, "goal_id": 1},
         "scenarios_delete": {"scenario_id": 1},
     }.get(tool.name, {})
 

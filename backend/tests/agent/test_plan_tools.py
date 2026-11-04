@@ -95,6 +95,7 @@ async def test_simulate_offers_only_the_analytic_engine(factory, w):
 def test_read_posts_are_pinned_and_gate_registration():
     assert registry.READ_POSTS == {
         ("POST", "/api/v1/scenarios/compare"), ("POST", "/api/v1/scenarios/{scenario_id}/simulate"),
+        ("POST", "/api/v1/reports/query"), ("POST", "/api/v1/reports/query/sankey"),
     }, "a new read POST needs proof it writes nothing (a test like test_read_posts_write_nothing)"
     spec = registry.get_tool("scenarios_compare")
     with pytest.raises(ToolRegistrationError, match="READ_POSTS"):

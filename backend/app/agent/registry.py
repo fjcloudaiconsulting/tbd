@@ -281,6 +281,9 @@ class ToolSpec:
     # The mirrored handler, for a tool that calls helpers in place of it but
     # keeps its slowapi limit (``actions.route_gate``, TBD-669).
     route_limit: Callable[..., Any] | None = field(default=None, compare=False, repr=False)
+    # A read the in-app chat sends only while its domain is loaded, like a
+    # change tool: its schema is too large for every round (TBD-669).
+    loads_with_domain: bool = False
 
     def __post_init__(self) -> None:
         if self.domain is None:  # frozen: the documented way to set a derived field
@@ -308,6 +311,18 @@ def wrap_untrusted(value: Any) -> Any:
         }
     if isinstance(value, list):
         return [wrap_untrusted(v) for v in value]
+    return value
+
+
+def untrusted_leaves(value: Any) -> Any:
+    """``value`` with EVERY string in it wrapped, for a subtree that is user or
+    model text as a whole (a report layout, an AI provenance block)."""
+    if isinstance(value, str):
+        return {"untrusted": value}
+    if isinstance(value, list):
+        return [untrusted_leaves(v) for v in value]
+    if isinstance(value, dict):
+        return {k: untrusted_leaves(v) for k, v in value.items()}
     return value
 
 
@@ -370,6 +385,8 @@ def register(spec: ToolSpec) -> ToolSpec:
         keys += [g.key_function for g in limiter._dynamic_route_limits.get(name, ())]
         if user_rate_limit_key not in keys:
             raise ToolRegistrationError(f"{spec.name}: route_limit needs a limit keyed per user")
+    if spec.loads_with_domain and (spec.risk != "read" or spec.domain is None):
+        raise ToolRegistrationError(f"{spec.name}: loads_with_domain is for a read with a domain")
     if spec.risk != "read" and spec.domain is None:
         raise ToolRegistrationError(f"{spec.name}: a {spec.risk} tool needs a domain")
     _TOOLS[spec.name] = spec

@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register
+from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register, untrusted_leaves
 from app.agent.route_tool import CascadeDisclosure, _disclose, refusals, route_tool
 from app.agent.sensitive_tools import CONFIRM
 from app.models.report import Report, ReportVersion, ReportVisibility
@@ -68,25 +68,14 @@ def _doc(value: Any) -> Any:
     return _disclose(Report.__table__.c.layout_json, value)
 
 
-def _leaves(value: Any) -> Any:
-    """Every string in a document wrapped: a widget id, a title, a filter
-    value or a config extra the schema keeps are all user text."""
-    if isinstance(value, str):
-        return {"untrusted": value}
-    if isinstance(value, list):
-        return [_leaves(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _leaves(v) for k, v in value.items()}
-    return value
-
-
 def _documents_untrusted(spec: ToolSpec) -> ToolSpec:
     """A report read whose layout and filters arrive as untrusted subtrees."""
     async def run(ctx: ToolContext, args: Any) -> Any:
         out = await spec.run(ctx, args)
         for report in out if isinstance(out, list) else [out]:
             for f in LAYOUT:
-                report[f] = _leaves(report[f])
+                # a widget id, a title, a filter value, a config extra: user text
+                report[f] = untrusted_leaves(report[f])
         return out
 
     return dataclasses.replace(spec, run=run)
@@ -154,7 +143,7 @@ register(ToolSpec(
         "Run a report query over the organization's data: one measure (an aggregation of a "
         "field) grouped by up to the allowed dimensions, with filters, a sort and a row limit."
     ),
-    run=_query, route_limit=reports_router.run_query,
+    run=_query, route_limit=reports_router.run_query, loads_with_domain=True,
 ))
 register(ToolSpec(
     name="reports_sankey_query", risk="read", args=SankeyQuery, product_area=REPORTS,
@@ -163,7 +152,7 @@ register(ToolSpec(
         "Cash-flow (Sankey) query: income categories into income, income into spending "
         "categories, and savings when income exceeds spending. Transfers are excluded."
     ),
-    run=_sankey, route_limit=reports_router.run_sankey_query,
+    run=_sankey, route_limit=reports_router.run_sankey_query, loads_with_domain=True,
 ))
 
 

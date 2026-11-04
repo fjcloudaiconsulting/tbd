@@ -1289,8 +1289,8 @@ async def _own_plan(f, a):
     [a["scn"]] = await _ids(f, Scenario(
         org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
         params_json={}, horizon_months=24))
-    await _add(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], name="Fund", tier=PlanGoalTier.WANT,
-                           kind=PlanGoalKind.SAVINGS_TARGET))
+    [a["goal"]] = await _ids(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], name="Fund",
+                                         tier=PlanGoalTier.WANT, kind=PlanGoalKind.SAVINGS_TARGET))
 
 
 _TRIP = {"scenario_type": "trip", "destination": "Lisbon", "start_date": (P_START + relativedelta(months=2)).isoformat(),
@@ -1328,6 +1328,18 @@ FORECAST_PLAN_SCENARIOS = [
     ("scenario-update-params", lambda a: ("scenarios_update", {
         "scenario_id": a["scn"], "params": _resolve(a, _TRIP)}), _own_plan, False),
     ("scenario-delete-removes-its-goals", _tool("scenarios_delete", scenario_id="@scn"), _own_plan, False),
+    # TBD-601 plan fields and goals: the currency is the org's, every link in the org.
+    ("scenario-create-with-plan-fields", lambda a: ("scenarios_create", {
+        "name": "Lisbon", "scenario_type": "trip", "params": _resolve(a, _TRIP), "monthly_budget": "500.00",
+        "return_pct": "4.00", "funding_account_id": a["acct"]}), _none, False),
+    ("scenario-update-plan-fields", _tool("scenarios_update", scenario_id="@scn", category_id="@c1",
+                                          inflation_pct="2.50"), _own_plan, False),
+    ("plan-goal-create", _tool("plan_goal_create", scenario_id="@scn", name="Car", tier="want",
+                               kind="savings_target", target_amount="1000.00", account_id="@acct"),
+     _own_plan, False),
+    ("plan-goal-update", _tool("plan_goal_update", scenario_id="@scn", goal_id="@goal", target_amount="250.00",
+                               enabled=False), _own_plan, False),
+    ("plan-goal-delete", _tool("plan_goal_delete", scenario_id="@scn", goal_id="@goal"), _own_plan, False),
 ]
 
 
@@ -1444,6 +1456,8 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeyp
     if sid.startswith("prefs-"):
         assert [c["field"] for c in changes] == (
             ["email_org_activity"] if sid == "prefs-turn-one-off" else list(PREFS_ON))
+    if sid == "scenario-create-with-plan-fields":
+        assert named[("scenarios", "currency")] == "EUR"  # the org's scope, named though not sent
     if sid == "category-restore-recommended":
         parents = [c["after"] for c in changes if c["field"] == "parent_id"]
         assert any(isinstance(p, str) for p in parents) and any(isinstance(p, int) for p in parents)

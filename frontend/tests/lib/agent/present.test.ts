@@ -48,17 +48,25 @@ describe("present (TBD-664)", () => {
   });
 
   it("TBD-669: report layouts read by their size, the tools have headlines", () => {
-    const layout = { version: 1, widgets: [{ id: "k1" }, { id: "k2" }] } as unknown as ActionChange["after"];
-    const ch = c({ entity: "reports", id: 4, field: "layout_json", before: {} as never, after: layout });
+    const layout = { untrusted: JSON.stringify({ version: 1, widgets: [{ id: "k1" }, { id: "k2" }] }) };
+    const ch = c({ entity: "reports", id: 4, field: "layout_json", before: { untrusted: "{}" }, after: layout });
     expect(changeLabel(ch)).toBe("Layout");
     expect(changeValue(ch, "after", undefined, {})).toBe("2 widgets");
     expect(changeValue(ch, "before", undefined, {})).toBe("0 widgets");
-    expect(changeValue(c({ field: "canvas_filters_json", after: {} as never }), "after", undefined, {}))
+    expect(changeValue(c({ field: "canvas_filters_json", after: { untrusted: "{}" } }), "after", undefined, {}))
       .toBe("No filters");
+    expect(changeValue(c({ field: "canvas_filters_json", after: { untrusted: '{"date_range": {}}' } }),
+      "after", undefined, {})).toBe("Custom filters");
     expect(rowLabel(c({ entity: "report_versions", id: "new:1" }))).toBe("New saved version 1");
     expect(drillDown(ch)).toEqual({ href: "/reports/4", label: "Open the report" });
     expect(actionHeadline("reports_update_layout", "s", [])).toBe("Change a report's layout or sharing");
     expect(toolLabel("reports_query")).toBe("Ran a report query");
+  });
+
+  it("TBD-601: plan fields and goals have labels and headlines", () => {
+    expect(changeLabel(c({ entity: "scenarios", field: "funding_account_id" }))).toBe("Funding account");
+    expect(changeLabel(c({ entity: "plan_goals", field: "target_amount" }))).toBe("Target amount");
+    expect(actionHeadline("plan_goal_create", "s", [])).toBe("Add a plan goal");
   });
 
   it("TBD-787: a notification toggle reads On or Off", () => {

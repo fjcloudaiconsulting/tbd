@@ -131,7 +131,10 @@ async def _org(
     db.add(TransactionTag(transaction_id=tx.id, tag_id=t.id))
     db.add(Scenario(  # TBD-668: a plan's name and the text in its params
         org_id=org.id, user_id=user.id, name=f"Trip {MARK}", scenario_type=ScenarioType.TRIP,
-        horizon_months=12, params_json={
+        horizon_months=12, projection_json={"ai_assumptions": {  # a model's provenance block
+            "summary": f"s {MARK}", "adjustments": [
+                {"field": "daily_budget", "old_value": f"o {MARK}", "new_value": f"n {MARK}", "reason": f"r {MARK}"}],
+        }}, params_json={
             "scenario_type": "trip", "destination": f"Lisbon {MARK}", "start_date": P_START.isoformat(),
             "duration_days": 3, "currency": "EUR", "transport_cost": "100.00",
             "accommodation_per_night": "50.00", "daily_budget": "40.00", "source_account_id": acct.id,
@@ -148,11 +151,13 @@ async def _org(
     # whose name, description and widget title carry the marker.
     db.add(OrgSetting(org_id=org.id, key="feature.reports", value="on"))
     layout = {"version": 1, "widgets": [{
-        "id": "k1", "type": "kpi", "title": f"Net {MARK}", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
-        "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"}},
+        "id": f"k1 {MARK}", "type": "kpi", "title": f"Net {MARK}", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+        "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"},
+                   "note": f"extra {MARK}"},  # a config extra the schema keeps (extra="ignore")
     }]}
     report = Report(org_id=org.id, owner_user_id=user.id, visibility="private", name=f"R {MARK}",
-                    description=f"d {MARK}", layout_json=layout, canvas_filters_json={})
+                    description=f"d {MARK}", layout_json=layout,
+                    canvas_filters_json={"tags": [f"tg {MARK}"]})
     db.add(report)
     await db.flush()
     db.add(ReportVersion(report_id=report.id, is_original=True, layout_json=layout, canvas_filters_json={}))
