@@ -22,7 +22,6 @@ untrusted. Each preview names every row the confirm writes
 """
 from __future__ import annotations
 
-import dataclasses
 
 from typing import Any
 
@@ -68,17 +67,13 @@ def _doc(value: Any) -> Any:
     return _disclose(Report.__table__.c.layout_json, value)
 
 
-def _documents_untrusted(spec: ToolSpec) -> ToolSpec:
-    """A report read whose layout and filters arrive as untrusted subtrees."""
-    async def run(ctx: ToolContext, args: Any) -> Any:
-        out = await spec.run(ctx, args)
-        for report in out if isinstance(out, list) else [out]:
-            for f in LAYOUT:
-                # a widget id, a title, a filter value, a config extra: user text
-                report[f] = untrusted_leaves(report[f])
-        return out
-
-    return dataclasses.replace(spec, run=run)
+def _documents_untrusted(out: Any) -> Any:
+    """A report read's layout and filters as untrusted subtrees: a widget id,
+    a title, a filter value or a config extra is user text."""
+    for report in out if isinstance(out, list) else [out]:
+        for f in LAYOUT:
+            report[f] = untrusted_leaves(report[f])
+    return out
 
 
 def _new_report(owner_id: int, version_group: str, **values: Any) -> list[Change]:
@@ -95,18 +90,18 @@ def _new_report(owner_id: int, version_group: str, **values: Any) -> list[Change
 
 # ── reads ─────────────────────────────────────────────────────────────────
 
-register(_documents_untrusted(route_tool(
-    name="reports_list", risk="read",
+register(route_tool(
+    name="reports_list", risk="read", result=_documents_untrusted,
     router=ROUTER, method="GET", path="/api/v1/reports",
     fields=(), product_area=REPORTS, min_role=Role.MEMBER,
     description="List the saved reports this user can see (their own and the org-shared ones), newest first.",
-)))
-register(_documents_untrusted(route_tool(
-    name="reports_get", risk="read",
+))
+register(route_tool(
+    name="reports_get", risk="read", result=_documents_untrusted,
     router=ROUTER, method="GET", path="/api/v1/reports/{report_id}",
     fields=(), product_area=REPORTS, min_role=Role.MEMBER,
     description="Read one saved report: name, visibility, widget layout and canvas filters.",
-)))
+))
 register(route_tool(
     name="report_versions_list", risk="read",
     router=ROUTER, method="GET", path="/api/v1/reports/{report_id}/versions",

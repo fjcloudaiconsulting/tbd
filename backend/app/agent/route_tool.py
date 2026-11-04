@@ -318,6 +318,7 @@ def route_tool(
     extra_areas: Sequence[Feature] = (),
     inverse: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     lean: Sequence[str] = (),
+    result: Callable[[Any], Any] | None = None,
 ) -> ToolSpec:
     """A ``ToolSpec`` for ``method path`` on ``router`` (see the module doc)."""
     route = _find_route(router, method, path)
@@ -388,9 +389,13 @@ def route_tool(
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")
 
     if risk == "read":
+        async def _read(ctx: ToolContext, a: Any) -> Any:
+            out = await _call_handler(ctx, a)
+            return out if result is None else result(out)
+
         return ToolSpec(
             name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
-            mirrors_route=(method, path), description=description, run=_call_handler,
+            mirrors_route=(method, path), description=description, run=_read,
             route=route, extra_areas=tuple(extra_areas),
         )
 

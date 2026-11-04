@@ -16,7 +16,6 @@ provider, which no agent tool reaches.
 """
 from __future__ import annotations
 
-import dataclasses
 import json
 from typing import Any, Literal
 
@@ -58,29 +57,26 @@ async def _owned(ctx: ToolContext, scenario_id: int, *, lock: bool = True) -> Sc
 
 # ── reads ─────────────────────────────────────────────────────────────────
 
-def _ai_untrusted(spec: ToolSpec) -> ToolSpec:
+def _ai_untrusted(out: Any) -> Any:
     """A plan read whose cached ``projection_json.ai_assumptions`` (a model's
     summary and reasons, and the values it proposed) arrives as untrusted."""
-    async def run(ctx: ToolContext, args: Any) -> Any:
-        out = await spec.run(ctx, args)
-        for plan in out if isinstance(out, list) else [out]:
-            projection = plan.get("projection_json")
-            if isinstance(projection, dict) and "ai_assumptions" in projection:
-                projection["ai_assumptions"] = untrusted_leaves(projection["ai_assumptions"])
-        return out
-
-    return dataclasses.replace(spec, run=run)
+    for plan in out if isinstance(out, list) else [out]:
+        projection = plan.get("projection_json")
+        if isinstance(projection, dict) and "ai_assumptions" in projection:
+            projection["ai_assumptions"] = untrusted_leaves(projection["ai_assumptions"])
+    return out
 
 
-register(_ai_untrusted(route_tool(
+register(route_tool(
     name="scenarios_list", risk="read", router=ROUTER, method="GET", path="/api/v1/scenarios",
-    fields=("include_archived",), product_area=PLANS, min_role=Role.MEMBER,
+    fields=("include_archived",), product_area=PLANS, min_role=Role.MEMBER, result=_ai_untrusted,
     description="The organization's plans (what-if scenarios) with params and last projection.",
-)))
-register(_ai_untrusted(route_tool(
+))
+register(route_tool(
     name="scenarios_get", risk="read", router=ROUTER, method="GET", path="/api/v1/scenarios/{scenario_id}",
-    fields=(), product_area=PLANS, min_role=Role.MEMBER, description="One of the organization's plans.",
-)))
+    fields=(), product_area=PLANS, min_role=Role.MEMBER, result=_ai_untrusted,
+    description="One of the organization's plans.",
+))
 
 
 class SimulateArgs(SimulateRequest):
