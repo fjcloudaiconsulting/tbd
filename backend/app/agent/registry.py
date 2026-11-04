@@ -115,6 +115,8 @@ UNTRUSTED_KEYS: frozenset[str] = frozenset(
         "name", "name_normalized", "description", "notes", "memo", "payee",
         "account_name", "account_type_name", "category_name", "parent_name",
         "linked_account_name",
+        # TBD-668: the free text in a plan's params
+        "destination", "label", "subtype",
     }
 )
 
@@ -128,12 +130,23 @@ _DOMAIN_ROUTES: dict[str, str] = {
     "/api/v1/account-types": "accounts",
     "/api/v1/budgets": "budgets_and_categories",
     "/api/v1/categories": "budgets_and_categories",
+    "/api/v1/forecast-plans": "forecasts_and_plans",
+    "/api/v1/scenarios": "forecasts_and_plans",
     "/api/v1/recurring": "recurring_and_billing",
     "/api/v1/settings/billing-cycle": "recurring_and_billing",
     "/api/v1/settings/billing-period": "recurring_and_billing",
     "/api/v1/settings/billing-periods": "recurring_and_billing",
     "/api/v1/transactions": "transactions",
 }
+
+
+# POST routes a read tool may mirror (TBD-668): each computes and returns, and
+# its tool writes nothing (the simulate route caches its projection on the row;
+# the tool does not). Proven write-free by tests/agent/test_plan_tools.py.
+READ_POSTS: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/api/v1/scenarios/compare"),
+    ("POST", "/api/v1/scenarios/{scenario_id}/simulate"),
+})
 
 
 def _route_domain(path: str) -> str | None:
@@ -322,8 +335,8 @@ def register(spec: ToolSpec) -> ToolSpec:
     if spec.risk == "read":
         if spec.run is None or spec.preview is not None or spec.execute is not None:
             raise ToolRegistrationError(f"{spec.name}: a read tool declares run only")
-        if method != "GET":
-            raise ToolRegistrationError(f"{spec.name}: a read tool must mirror a GET")
+        if method != "GET" and spec.mirrors_route not in READ_POSTS:
+            raise ToolRegistrationError(f"{spec.name}: a read tool must mirror a GET or a READ_POSTS route")
     else:
         if spec.run is not None or spec.preview is None or spec.execute is None:
             raise ToolRegistrationError(
