@@ -248,7 +248,7 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | INF-01 | Origin client-IP trust | Medium | Partial | #1007, #1021 | partly | `adb3004e`, `0f243931` | Release #1007 after the production secret check (owner item 1); the cloud-infra checks are done | TBD-717 |
 | FE-01 | CORS origin list for the apex and www hosts | Low | Fixed | #1004 | 2026-10-24 | `d4b157be` | | TBD-720 |
 | FE-02 | Google SSO callback token binding | Low | Fixed | #1009 | 2026-10-24 | `ff722648` | Deploy the backend before or with the frontend | TBD-728 |
-| FE-03 | One-time tokens in URLs | Low | Partial | #1004, #1008, #1009 | 2026-10-24 | `33543891`, `3f00189c`, `582f71f9` | Delete existing stored CSP report rows; follow-up: send the invitation preview token in a request body | TBD-729, follow-up TBD-738 |
+| FE-03 | One-time tokens in URLs | Low | Partial | #1004, #1008, #1009 | 2026-10-24 | `33543891`, `3f00189c`, `582f71f9` | Delete existing stored CSP report rows. Follow-ups: the invitation preview token moved to a request body (#1038), and the GET form that took it in the URL is removed (TBD-751) | TBD-729, follow-ups TBD-738, TBD-751 |
 | FE-04 | CSV export formula neutralisation | Low | Fixed | #1004 | 2026-10-24 | `3385f921` | | TBD-730 |
 | BE-12 | Secret fields in validation error bodies | Low | Fixed | #1008 | 2026-10-24 | `1254d326` | | TBD-731 |
 | BE-13 | Upload size enforcement while reading | Low | Fixed | #1006 | 2026-10-24 | `cf41e6e8` | | TBD-732 |
