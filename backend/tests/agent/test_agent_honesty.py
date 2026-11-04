@@ -476,7 +476,8 @@ def _tx_dates(a):
 
 
 def _tx_clear_expected(a):
-    return "transactions_update", {"transaction_id": a["tx"], "settled_date": None}
+    # TBD-791: a pending row's expected settlement is the sensitive tool's.
+    return "transactions_update_money", {"transaction_id": a["tx"], "settled_date": None}
 
 
 async def _pending(f, a):
@@ -894,6 +895,11 @@ SENSITIVE_SCENARIOS = [
     ("money-settled-to-pending", _money(status="pending"), _none, False),
     ("money-pending-to-settled-with-a-new-amount", _money(status="settled", amount="12.00"), _pending, False),
     ("money-account-move", _money(account_id="@savings"), _savings, False),
+    ("money-moves-a-pending-expected-date",
+     _money(settled_date=(P_START + datetime.timedelta(days=9)).isoformat()), _pending, False),
+    ("money-settles-a-pending-row-on-a-chosen-date",
+     _money(status="settled", settled_date=(P_START + datetime.timedelta(days=2)).isoformat()),
+     _pending, False),
     ("money-on-a-skipped-import-row-moves-no-money", _money(amount="30.00"), _skipped_import, False),
     ("create-settled-learns-a-new-rule", _create(), _none, False),
     ("create-pending-onto-an-existing-rule",
@@ -1205,7 +1211,7 @@ SCENARIOS = [
     ("tx-update-description", _tx_description, _none, False),
     ("tx-update-description-auto", _tx_description, _none, True),
     ("tx-update-dates-of-a-settled-row", _tx_dates, _none, False),
-    ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
+    ("money-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
     *SENSITIVE_SCENARIOS,
     *RECURRING_SCENARIOS,

@@ -94,19 +94,25 @@ async def test_batch_with_both_dates_sets_both_on_a_pending_row(db_session):
     )
 
 
-async def test_batch_refuses_an_expected_date_before_the_transaction_date(db_session):
+async def test_batch_drops_an_expected_date_before_the_transaction_date(db_session):
+    """Only the settlement date is dropped, with a note; the row's other
+    fields still land, and a row with nothing else is skipped with it."""
     seed = await _seed(db_session)
     early = await _pending(db_session, seed, tx_date=date(2026, 5, 1), settled=date(2026, 5, 3))
     late = await _pending(db_session, seed, tx_date=date(2026, 5, 10), settled=date(2026, 5, 12))
+    note = "settlement date not applied: before the unchanged date 2026-05-10"
 
-    updated, skipped, notes = await _bulk(
-        db_session, seed, [early, late], settled_date=date(2026, 5, 5),
+    assert await _bulk(db_session, seed, [early, late], settled_date=date(2026, 5, 5)) == (
+        1, [(late, note)], [],
     )
-
-    assert (updated, notes) == (1, [])
-    assert skipped == [(late, "settled_date must be on or after date")]
     assert (await _get(db_session, early)).settled_date == date(2026, 5, 5)
     assert (await _get(db_session, late)).settled_date == date(2026, 5, 12)
+
+    assert await _bulk(
+        db_session, seed, [late], settled_date=date(2026, 5, 5), category_id=seed["dining_id"],
+    ) == (1, [], [(late, note)])
+    row = await _get(db_session, late)
+    assert (row.category_id, row.settled_date) == (seed["dining_id"], date(2026, 5, 12))
 
 
 async def test_batch_moves_both_legs_of_a_pending_transfer(db_session):
@@ -122,6 +128,38 @@ async def test_batch_moves_both_legs_of_a_pending_transfer(db_session):
         assert (row.status, row.settled_date) == (TransactionStatus.PENDING, date(2026, 5, 6))
     after = (await _balance(db_session, seed["src_id"]), await _balance(db_session, seed["dst_id"]))
     assert after == before
+
+
+async def test_batch_with_both_legs_counts_the_transfer_once(db_session):
+    seed = await _seed(db_session)
+    exp_id, inc_id = await _pending_transfer(db_session, seed)
+
+    result = await _bulk(db_session, seed, [exp_id, inc_id], settled_date=date(2026, 5, 6))
+
+    assert result == (1, [(
+        inc_id, "settlement date already moved with the other leg of this transfer",
+    )], [])
+    for leg in (exp_id, inc_id):
+        assert (await _get(db_session, leg)).settled_date == date(2026, 5, 6)
+
+
+async def test_batch_drops_a_transfer_date_before_the_other_legs_date(db_session):
+    seed = await _seed(db_session)
+    exp_id, inc_id = await _pending_transfer(db_session, seed)
+    inc = await _get(db_session, inc_id)
+    inc.date = date(2026, 5, 4)
+    await db_session.commit()
+
+    result = await _bulk(
+        db_session, seed, [exp_id], settled_date=date(2026, 5, 2), category_id=seed["internal_id"],
+    )
+
+    assert result == (1, [], [(
+        exp_id, "settlement date not applied: before the other leg's date 2026-05-04",
+    )])
+    for leg in (exp_id, inc_id):
+        row = await _get(db_session, leg)
+        assert (row.category_id, row.settled_date) == (seed["internal_id"], None)
 
 
 async def test_batch_leaves_a_transfer_with_a_settled_leg_alone(db_session):

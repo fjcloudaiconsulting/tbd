@@ -49,9 +49,7 @@ from app.services import (
 from app.services.category_rules_service import normalize_description
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.feature_gate import Feature
-from app.services.transaction_filters import (
-    REVERTED_RECONCILIATION_STATES, is_reciprocal_pair, is_reportable_transaction,
-)
+from app.services.transaction_filters import REVERTED_RECONCILIATION_STATES, is_reportable_transaction
 
 MAX_SEARCH_DAYS = 366
 MAX_PAGE = 50
@@ -398,8 +396,9 @@ register(route_tool(
 # pending sibling), clearing a SETTLED row's settlement date (the service keeps
 # it), and a date pair out of order or a skipped occurrence's date (which the
 # service refuses only at execute). A transfer leg is fine: none of these fields is mirrored to the
-# partner, and the balance revert/apply on its own account nets to zero. Except (TBD-791) the
-# expected settlement of a pending transfer, which moves both pending legs: refused.
+# partner, and the balance revert/apply on its own account nets to zero. A pending row's
+# expected settlement is refused (TBD-791): it schedules auto-settle, and on a pending
+# transfer it moves both legs. It is ``transactions_update_money``'s.
 
 async def _tx_update_check(ctx: ToolContext, tx: Transaction, args) -> None:
     sent = args.model_fields_set
@@ -419,20 +418,15 @@ async def _tx_update_check(ctx: ToolContext, tx: Transaction, args) -> None:
     settled = args.settled_date if "settled_date" in sent else tx.settled_date
     if "settled_date" in sent and settled is None and tx.status == TransactionStatus.SETTLED:
         raise ValidationError("A settled transaction keeps its settlement date")
-    # TBD-791: the service moves a pending transfer's partner leg with it,
-    # a write this preview does not list.
-    if (
-        "settled_date" in sent and settled != tx.settled_date
-        and tx.status == TransactionStatus.PENDING and tx.linked_transaction_id is not None
-    ):
-        partner = await ctx.db.get(Transaction, tx.linked_transaction_id)
-        if is_reciprocal_pair(tx, partner) and partner.status == TransactionStatus.PENDING:
-            raise ToolError(
-                "unsupported_in_v1",
-                "the expected settlement date of a pending transfer moves both legs; "
-                "change it in the app",
-                data={"reason": "transfer_leg"},
-            )
+    # TBD-791: a pending row's expected settlement is when auto-settle moves
+    # the balance, so moving it is scheduling: the sensitive tool.
+    if "settled_date" in sent and settled != tx.settled_date and tx.status == TransactionStatus.PENDING:
+        raise ToolError(
+            "unsupported_in_v1",
+            "a pending transaction's expected settlement date is changed with "
+            "transactions_update_money",
+            data={"reason": "pending_settlement"},
+        )
     if settled is not None and settled < date:
         raise ValidationError("settled_date must be on or after date")
 
@@ -443,8 +437,8 @@ register(route_tool(
     fields=("description", "date", "settled_date"), nullable=("settled_date",),
     product_area=None, min_role=Role.MEMBER,
     description=(
-        "Edit the description, date or settlement date of one transaction (for a pending "
-        "transaction the settlement date is the expected one; null clears it). Use "
+        "Edit the description, date or settlement date of one transaction. A pending "
+        "transaction's expected settlement date is changed with transactions_update_money. Use "
         "transactions_set_category for the category. Returns a preview to confirm; nothing "
         "changes until it is confirmed."
     ),

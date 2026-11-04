@@ -566,7 +566,8 @@ register(route_tool(
 # ── recurring_generate ────────────────────────────────────────────────────
 #
 # ``generate_due_transactions``, read-only: first the PENDING rows of
-# auto-settle templates whose date has passed settle (``_settle_due_auto``),
+# auto-settle templates whose expected settlement has come settle
+# (``recurring_service.due_auto_settle_units``, the sweep's own selection),
 # then every active, unfinished template due by the end of the current cycle
 # walks its schedule, writing each occurrence that has no row yet (settled,
 # with its balance, when auto-settle and due) and spending each one.
@@ -577,25 +578,13 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
     _, period_end = current_cycle_window(cycle_day or 1, today)
     changes: list[Change] = []
     deltas: dict[int, Decimal] = {}
-    due_rows = (await db.scalars(
-        select(Transaction)
-        .join(RecurringTransaction, Transaction.recurring_id == RecurringTransaction.id)
-        .where(
-            Transaction.org_id == org_id, Transaction.status == TransactionStatus.PENDING,
-            Transaction.recurring_id.is_not(None), Transaction.date <= today,
-            RecurringTransaction.auto_settle == True,  # noqa: E712
-            non_reverted_transaction_filter(),
-        ).order_by(Transaction.id).execution_options(populate_existing=True)
-    )).all()
-    by_id = {tx.id: tx for tx in due_rows}
-    settling = 0  # occurrences: both legs of a due transfer pair count once
-    for tx in due_rows:
+    units = await recurring_service.due_auto_settle_units(db, org_id, today, lock=False)
+    settling = len(units)  # occurrences: both legs of a due transfer pair count once
+    for tx in (tx for unit in units for tx in unit):
         changes.append(Change("transactions", tx.id, "status", PENDING, "settled"))
-        if tx.settled_date != tx.date:
-            changes.append(Change("transactions", tx.id, "settled_date", _iso(tx.settled_date), _iso(tx.date)))
+        if tx.settled_date is None:  # settles on its expected date, else its date
+            changes.append(Change("transactions", tx.id, "settled_date", None, _iso(tx.date)))
         _add(deltas, tx.account_id, _signed(tx.amount, tx.type))
-        pair = is_reciprocal_pair(tx, by_id.get(tx.linked_transaction_id))
-        settling += 0 if pair and tx.type != TransactionType.EXPENSE else 1
 
     templates = (await db.scalars(
         select(RecurringTransaction).where(

@@ -26,6 +26,7 @@ from app.services.recurring_filters import (
 )
 from app.services.transaction_filters import (
     REVERTED_RECONCILIATION_STATES,
+    effective_period_date_expr,
     is_reciprocal_pair,
     non_reverted_transaction_filter,
 )
@@ -1216,26 +1217,68 @@ async def skip_occurrence(db: AsyncSession, org_id: int, transaction_id: int) ->
     return await _load_transaction(db, tx.id)
 
 
-async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) -> int:
-    """Promote PENDING transactions that originated from an auto_settle template
-    and whose date has now passed (date <= today) to SETTLED, adjusting balance.
-    Non-auto_settle pending items are never touched."""
-    result = await db.execute(
+async def due_auto_settle_units(
+    db: AsyncSession, org_id: int, today: datetime.date, *, lock: bool,
+) -> list[list[Transaction]]:
+    """The PENDING rows of auto_settle templates that settle today, grouped
+    into units: one row, or both legs of a transfer pair (TBD-600).
+
+    TBD-791: a row is due on its expected settlement, ``coalesce(settled_date,
+    date)``, so a user who pushed it out is not settled (nor the balance moved)
+    early. A pair settles both legs together, once both are due. Generation
+    writes pending occurrences with ``settled_date`` NULL, so an unmoved row is
+    due on its date, as before. ``lock`` takes the sweep's row locks; the agent
+    preview reads the same set unlocked."""
+    q = (
         select(Transaction)
         .join(RecurringTransaction, Transaction.recurring_id == RecurringTransaction.id)
         .where(
             Transaction.org_id == org_id,
             Transaction.status == TransactionStatus.PENDING,
             Transaction.recurring_id.is_not(None),
-            Transaction.date <= today,
+            effective_period_date_expr() <= today,
             RecurringTransaction.auto_settle == True,  # noqa: E712
             # TBD-272: a skipped occurrence is PENDING forever and was never
             # paid. Settling it would put a cancelled charge into the balance.
             non_reverted_transaction_filter(),
         )
-        .with_for_update(of=Transaction)
+        .order_by(Transaction.id)
     )
-    rows = list(result.scalars().all())
+    q = (
+        q.with_for_update(of=Transaction) if lock
+        else q.execution_options(populate_existing=True)
+    )
+    rows = list((await db.execute(q)).scalars().all())
+    by_id = {tx.id: tx for tx in rows}
+    units = []
+    for tx in rows:
+        partner = by_id.get(tx.linked_transaction_id)
+        if is_reciprocal_pair(tx, partner):
+            if tx.type == TransactionType.EXPENSE:
+                units.append([tx, partner])
+            continue
+        if tx.linked_transaction_id is not None:
+            # The other leg is not due yet: the pair waits for it.
+            other = (await db.execute(
+                select(Transaction)
+                .where(Transaction.id == tx.linked_transaction_id)
+                .execution_options(populate_existing=True)
+            )).scalar_one_or_none()
+            if (
+                is_reciprocal_pair(tx, other)
+                and other.status == TransactionStatus.PENDING
+                and other.reconciliation_state not in REVERTED_RECONCILIATION_STATES
+            ):
+                continue
+        units.append([tx])
+    return units
+
+
+async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) -> int:
+    """Promote the due PENDING transactions of auto_settle templates
+    (``due_auto_settle_units``) to SETTLED on their expected settlement,
+    adjusting balance. Non-auto_settle pending items are never touched."""
+    units = await due_auto_settle_units(db, org_id, today, lock=True)
     # Lock order: transaction rows first (the SELECT ... FOR UPDATE above),
     # then every account the sweep touches, ONCE, up front, in ascending id
     # order (TBD-600), so two sweeps never take account locks in opposite
@@ -1246,22 +1289,13 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
     # pair counts once), as generation's ``created_settled`` is.
     accounts = {
         aid: await get_account_for_update(db, aid, org_id)
-        for aid in sorted({tx.account_id for tx in rows})
+        for aid in sorted({tx.account_id for unit in units for tx in unit})
     }
-    by_id = {tx.id: tx for tx in rows}
-    units = []
-    for tx in rows:
-        partner = by_id.get(tx.linked_transaction_id)
-        if is_reciprocal_pair(tx, partner):
-            if tx.type == TransactionType.EXPENSE:
-                units.append([tx, partner])
-        else:
-            units.append([tx])
     for unit in units:
         async with db.begin_nested():
             for tx in unit:
                 tx.status = TransactionStatus.SETTLED
-                tx.settled_date = tx.date
+                tx.settled_date = tx.settled_date or tx.date
                 apply_balance(accounts[tx.account_id], tx.amount, tx.type)
     return len(units)
 

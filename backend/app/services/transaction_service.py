@@ -2208,6 +2208,8 @@ async def bulk_update_transactions(
     updated = 0
     skipped: list[tuple[int, str]] = []
     notes: list[tuple[int, str]] = []
+    # TBD-791: transfer legs whose settled_date a partner's update moved.
+    moved_with_partner: set[int] = set()
 
     def _reason(exc: Exception) -> str:
         return getattr(exc, "detail", None) or str(exc)
@@ -2314,17 +2316,31 @@ async def bulk_update_transactions(
                 row_notes.append(
                     "settlement date not applied to rows being set to pending"
                 )
+            elif is_transfer and tx_id in moved_with_partner:
+                # Its leg earlier in this batch already moved it; not a second
+                # update.
+                row_notes.append(
+                    "settlement date already moved with the other leg of this "
+                    "transfer"
+                )
             elif (
-                date is not None
+                (date is not None or stays_pending)
                 and "date" not in update_kwargs
                 and settled_date < row.date
             ):
-                # Chosen for the new date, but this row keeps its old one: it
-                # would fail the ordering check and take the rest of the row
-                # down with it. Drop it so category/status/... still land.
+                # Before the date this row keeps (chosen for a new date it
+                # does not take, or a pending row's own date): it would fail
+                # the ordering check and take the rest of the row down with
+                # it. Drop it so category/status/... still land.
                 row_notes.append(
                     "settlement date not applied: before the unchanged date "
                     f"{row.date.isoformat()}"
+                )
+            elif is_transfer and settled_date < linked_row.date:
+                # TBD-791: update_transaction refuses it for the partner.
+                row_notes.append(
+                    "settlement date not applied: before the other leg's date "
+                    f"{linked_row.date.isoformat()}"
                 )
             else:
                 update_kwargs["settled_date"] = settled_date
@@ -2357,6 +2373,8 @@ async def bulk_update_transactions(
                     db, org_id, tx_id, TransactionUpdate(**update_kwargs)
                 )
                 applied = True
+                if is_transfer and "settled_date" in update_kwargs:
+                    moved_with_partner.add(linked_row.id)
             except (
                 ValidationError,
                 ConflictError,
