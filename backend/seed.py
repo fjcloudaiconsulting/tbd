@@ -28,6 +28,7 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy import text
 
 from app.database import async_session, engine
+from app.security import create_signup_token
 
 BASE = "http://localhost:8000"
 
@@ -470,13 +471,11 @@ async def ensure_verified(username: str) -> None:
     ``POST /auth/login`` 403s any user with ``email_verified = 0`` and there
     is no mailbox in a dev stack to click the link in. TBD-344 makes
     ``/register`` verify the FIRST user on an empty ``users`` table, which
-    covers the common case, but not the two this script still hits:
-
-    * A machine that has already run ``./tbd seed`` once, from before that
-      fix, is WEDGED — the demo user exists and is unverified, so login 403s,
-      register 409s, and the script dies at its ``!= 201`` guard.
-    * ``SEED_USERNAME=alice`` (CONTRIBUTING, "Seeding mock data") registers a
-      SECOND user, where ``user_count > 0`` and no bypass applies.
+    covers the common case, and since TBD-654 a second user (``SEED_USERNAME=alice``)
+    comes from ``/signup/complete``, verified at creation. One case is left:
+    a machine that has already run ``./tbd seed`` once, from before that fix,
+    is WEDGED — the demo user exists and is unverified, so login 403s and
+    nothing can create it again.
 
     ⚠ Direct DB write, deliberately, and NOT an HTTP token redemption: on a
     wedged DB no HTTP response yields a ``user_id`` to mint a token for (the
@@ -544,7 +543,7 @@ async def main(assume_yes: bool = False):
 
         # Auth
         print("1. Authenticating...")
-        # TBD-344, call 1 of 2 — MUST precede the first login. A machine that
+        # TBD-344 — MUST precede the first login. A machine that
         # already ran ./tbd seed before the register fix has the demo user
         # sitting unverified: login 403s, the register below 409s, and the
         # `!= 201` guard returns before any data is seeded. Anything placed
@@ -553,23 +552,31 @@ async def main(assume_yes: bool = False):
         r = await c.post("/api/v1/auth/login", json={"login": USER["username"], "password": USER["password"]})
         if r.status_code != 200:
             print("   User not found, registering...")
-            r = await c.post("/api/v1/auth/register", json={
+            account = {
                 "username": USER["username"],
-                "email": USER["email"],
                 "password": USER["password"],
                 "first_name": USER["first_name"],
                 "last_name": USER["last_name"],
                 "org_name": USER["org_name"],
-            })
-            if r.status_code != 201:
+            }
+            # TBD-654: /register is first-user setup only (a verified
+            # superadmin, as before). Any later user, e.g. SEED_USERNAME=alice,
+            # signs up the way everyone else does: with a signup link, which
+            # this script mints from the same .env secret the backend reads,
+            # standing in for the inbox. It answers with a session directly.
+            r = await c.post("/api/v1/auth/register", json={**account, "email": USER["email"]})
+            if r.status_code == 403 and r.json().get("detail", {}).get("code") == "setup_complete":
+                r = await c.post("/api/v1/auth/signup/complete", json={
+                    **account, "token": create_signup_token(USER["email"]),
+                })
+                if r.status_code != 200:
+                    print(f"   Sign-up failed: {r.text}")
+                    return
+            elif r.status_code != 201:
                 print(f"   Registration failed: {r.text}")
                 return
-            # TBD-344, call 2 of 2 — the SEED_USERNAME=alice case. That is a
-            # second user, so `user_count > 0` and /register's bootstrap
-            # verification does not apply. Unconditional: on the cold-start
-            # path the row is already verified and this is a no-op write.
-            await ensure_verified(USER["username"])
-            r = await c.post("/api/v1/auth/login", json={"login": USER["username"], "password": USER["password"]})
+            else:
+                r = await c.post("/api/v1/auth/login", json={"login": USER["username"], "password": USER["password"]})
 
         token = r.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

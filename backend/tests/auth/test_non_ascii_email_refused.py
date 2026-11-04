@@ -237,13 +237,13 @@ async def test_register_refuses_non_ascii(session_factory, address):
     assert await _user_count(session_factory) == before
 
 
-async def test_register_accepts_ascii(session_factory):
+async def test_signup_start_accepts_ascii(session_factory):
+    # TBD-654: public sign-up starts at /signup/start; /register is setup only.
     with TestClient(_make_app(session_factory)) as client:
-        res = client.post("/api/v1/auth/register", json={
-            "username": "jose", "email": "jose@example.com", "password": PASSWORD,
-            "captcha_token": "ok",
+        res = client.post("/api/v1/auth/signup/start", json={
+            "email": "jose@example.com", "captcha_token": "ok",
         })
-    assert res.status_code == 201, res.text
+    assert res.status_code == 202, res.text
 
 
 async def test_existing_non_ascii_account_still_signs_in(session_factory):

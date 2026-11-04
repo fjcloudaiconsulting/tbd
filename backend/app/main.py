@@ -492,6 +492,8 @@ _SENSITIVE_FIELD_NAMES = frozenset({
     # is still bearer-shaped data that should never round-trip into a
     # 422 response body.
     "captcha_token",
+    # INF-05: the first-user bootstrap secret on /auth/register.
+    "setup_token",
     # Step-up proofs on the token mint bodies (TBD-578): a body-level 422
     # (e.g. agent:auto without its acknowledgment) echoes the whole body, and
     # an unspent SSO proof stays valid for 5 minutes.

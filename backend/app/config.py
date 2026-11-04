@@ -208,8 +208,14 @@ class Settings(BaseSettings):
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
     trial_duration_days: int = 14
 
+    # INF-05: the first-user bootstrap secret. With APP_ENV=production and no
+    # user yet, ``POST /auth/register`` (the /setup page) must carry it, and
+    # an empty value refuses setup outright. Other environments skip the check.
+    # TODO(#1007): add "setup_token" to SECRET_FIELDS once #1007 merges.
+    setup_token: str = ""
+
     # CAPTCHA (registration bot gate)
-    # When ``captcha_required`` is True the ``/api/v1/auth/register`` handler
+    # When ``captcha_required`` is True the ``/api/v1/auth/signup/start`` handler
     # calls ``app.captcha.verify_captcha`` BEFORE any DB work or email send,
     # and refuses registration on any non-OK result (rejection, timeout,
     # mismatch). When False the verify call short-circuits to ok=disabled and
@@ -239,7 +245,7 @@ class Settings(BaseSettings):
     # verified against a real drip-feed server on the Google OAuth
     # exchange and TBD-266 closed on the Mailgun sends. This site is
     # worse than either: the verify is inline on the synchronous, public,
-    # pre-auth ``POST /api/v1/auth/register``, so an unbounded call parks
+    # pre-auth ``POST /api/v1/auth/signup/start``, so an unbounded call parks
     # a worker per registration attempt on an unauthenticated endpoint.
     #
     # A *setting* rather than the module constant TBD-179 and TBD-266
