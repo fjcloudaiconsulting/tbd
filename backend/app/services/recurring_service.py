@@ -621,6 +621,8 @@ async def _check_frontier_clears_series(
     re-creating it once the row is deleted or unlinked by a stop. A template
     that spent before the column existed (NULL with ``occurrences_elapsed``)
     is bounded by the day before the frontier it replaces: no move earlier.
+    That lifts only when a generation run spends an occurrence and sets the
+    column, so a paused or exhausted legacy template keeps it.
 
     Runs only when the frontier MOVES. A frequency change that keeps it, e.g.
     monthly -> yearly with Nov 1 materialised and Dec 1 next, is accepted

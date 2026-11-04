@@ -15,8 +15,9 @@ deleted or unlinked by a stop.
 
 Live-safe: a nullable column is ``ALGORITHM=INSTANT`` on MySQL 8. No backfill:
 a template that spent occurrences before this column existed keeps NULL, and
-the guard then refuses any move earlier than its current frontier until the
-next generation run sets the column.
+the guard then refuses any move earlier than its current frontier. Only a
+generation run that spends an occurrence sets the column and lifts that, so a
+paused or exhausted legacy template keeps the restriction.
 """
 from __future__ import annotations
 

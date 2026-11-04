@@ -925,3 +925,58 @@ async def test_x7_a_single_row_date_edit_cannot_reach_the_frontier(db_session):
         db_session, seed["org_id"], row_id, TransactionUpdate(date=ok),
     )
     assert await _row_keys(db_session, seed["org_id"]) == {(tid, ok)}
+
+
+async def _row_of(db_session, seed, tid, dt):
+    row = Transaction(
+        org_id=seed["org_id"], account_id=seed["account_a"], category_id=seed["cat_id"],
+        description="rent", amount=Decimal("10.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.PENDING, date=dt, recurring_id=tid,
+    )
+    db_session.add(row)
+    await db_session.commit()
+    return row.id
+
+
+async def test_x8_a_paused_template_bounds_row_dates_at_the_cycle_start(db_session):
+    """GUARD. Paused behind ``p_start``, the frontier is re-anchored onto the
+    cycle on resume, so a row may move up to, not onto, ``p_start``."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    frozen = p_start - relativedelta(months=2)
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=frozen, is_active=False,
+        occurrences_elapsed=1, last_spent_date=frozen - relativedelta(months=1),
+    ))).id
+    row_id = await _row_of(db_session, seed, tid, frozen - relativedelta(months=1))
+
+    with pytest.raises(ConflictError, match=f"due {p_start.isoformat()}"):
+        await transaction_service.update_transaction(
+            db_session, seed["org_id"], row_id, TransactionUpdate(date=p_start),
+        )
+    await db_session.rollback()
+    ok = p_start - DAY
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], row_id, TransactionUpdate(date=ok),
+    )
+    assert await _row_keys(db_session, seed["org_id"]) == {(tid, ok)}
+
+
+async def test_x9_an_exhausted_plan_does_not_bound_row_dates(db_session):
+    """GUARD. A finished plan generates nothing more, so no run can spend
+    an occurrence through a moved row."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    frontier = p_start + relativedelta(months=1)
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=frontier, occurrence_count=1,
+        occurrences_elapsed=1, last_spent_date=p_start,
+    ))).id
+    row_id = await _row_of(db_session, seed, tid, p_start)
+
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], row_id, TransactionUpdate(date=frontier),
+    )
+    assert await _row_keys(db_session, seed["org_id"]) == {(tid, frontier)}

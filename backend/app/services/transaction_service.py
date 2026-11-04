@@ -38,6 +38,7 @@ from app.services.category_rules_service import learn_from_choice
 from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
+from app.services.recurring_filters import has_remaining_occurrences
 from app.services.transaction_filters import (
     REVERTED_RECONCILIATION_STATES,
     balance_contribution_filter,
@@ -812,6 +813,37 @@ async def _propagate_fields_to_series(
             )
 
 
+async def refuse_row_date_at_frontier(
+    db: AsyncSession, org_id: int, recurring_id: int, new_date: datetime.date,
+) -> None:
+    """Refuse moving one series row onto or past where generation will probe
+    next (TBD-509): its ``exists`` branch would find the row and spend that
+    occurrence without writing one. Shared by ``update_transaction`` and the
+    import inbox's edits (``reconciliation_service._apply_edits``).
+
+    A paused template resumes on a frontier re-anchored to at least ``p_start``,
+    so its bound is the later of the two. An exhausted plan generates nothing
+    more, so nothing is refused.
+    """
+    # Local import: recurring_service imports this module at load.
+    from app.services.recurring_service import frontier_lower_bound
+
+    r = await db.scalar(select(RecurringTransaction).where(
+        RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id,
+    ))
+    if r is None or not has_remaining_occurrences(r):
+        return
+    bound = r.next_due_date
+    if not r.is_active:
+        bound = max(bound, await frontier_lower_bound(db, org_id))
+    if new_date >= bound:
+        raise ConflictError(
+            f"The series' next occurrence is due {bound.isoformat()}, so this "
+            f"transaction's date must be before it. Choose an earlier date, or "
+            f"change the series' next due date first."
+        )
+
+
 async def update_transaction(
     db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate,
     *, learn: bool = True,
@@ -873,28 +905,14 @@ async def update_transaction(
             f"The date of a {tx.reconciliation_state} transaction cannot be changed"
         )
 
-    # TBD-509: a single-row date edit onto or past the series' frontier puts a
-    # row where generation's ``exists`` probe finds it, so the next run spends
-    # that occurrence without writing its row. "This and future" re-keys the
-    # frontier with the row (``_plan_series_date_move``), so it is not refused here.
+    # "This and future" re-keys the frontier with the row (``_plan_series_date_move``).
     if (
         body.date is not None
         and body.date != tx.date
         and tx.recurring_id is not None
         and body.series_scope != "future"
     ):
-        frontier = await db.scalar(
-            select(RecurringTransaction.next_due_date).where(
-                RecurringTransaction.id == tx.recurring_id,
-                RecurringTransaction.org_id == org_id,
-            )
-        )
-        if frontier is not None and body.date >= frontier:
-            raise ConflictError(
-                f"The series' next occurrence is due {frontier.isoformat()}, so this "
-                f"transaction's date must be before it. Choose an earlier date, or "
-                f"change the series' next due date first."
-            )
+        await refuse_row_date_at_frontier(db, org_id, tx.recurring_id, body.date)
 
     # Race detection: the unlocked preview saw an unlinked row, but a concurrent
     # pair_existing_transactions may have linked it. If the locked tx now has a
