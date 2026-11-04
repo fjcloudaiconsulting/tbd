@@ -224,8 +224,7 @@ _UNSUPPORTED_TRANSFER_SOURCE_SLUGS = {"credit_card", "loan"}
 def _refuse_card_or_loan_source(slug) -> None:
     if slug in _UNSUPPORTED_TRANSFER_SOURCE_SLUGS:
         raise ValidationError(
-            "A recurring transfer cannot use a credit card or loan account yet. "
-            "Choose two other accounts."
+            "A recurring transfer cannot come from a credit card or loan account."
         )
 
 
@@ -1066,6 +1065,7 @@ async def _create_occurrence(
                 date=due,
                 settled_date=due if tx_status == TransactionStatus.SETTLED else None,
                 recurring_id=r.id,
+                recurring_origin_id=r.id if r.type == "transfer" else None,
             )
             if skipped:
                 tx.reconciliation_state = "skipped"

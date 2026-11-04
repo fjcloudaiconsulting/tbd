@@ -123,8 +123,10 @@ register(route_tool(
         "occurrence from next_due_date on (settled ones move the balance when auto_settle is "
         "on); occurrence_count limits how many. A transfer moves money from account_id to "
         "to_account_id (another account in the same currency; a credit card or loan only as "
-        "to_account_id, as a card payment or extra loan principal) as a linked expense and "
-        "income pair, and needs a category of type both. "
+        "to_account_id, as a payment toward it) as a linked expense and "
+        "income pair, and needs a category of type both. Into a loan, a transfer of at least the "
+        "monthly payment is that payment (the excess is extra principal); a smaller one is extra "
+        "principal on top of it. "
         f"{CONFIRM}"
     ),
     entity=RecurringTransaction, check=_create_check, present=_create_present,
@@ -501,7 +503,8 @@ def _occurrence(
             "description": {"untrusted": r.description}, "amount": f"{r.amount:.2f}", "type": leg_type,
             "status": status, "date": _iso(due),
             "settled_date": _iso(due) if status == TransactionStatus.SETTLED.value else None,
-            "recurring_id": r.id, "linked_transaction_id": other if len(legs) == 2 else None, **extra,
+            "recurring_id": r.id, "linked_transaction_id": other if len(legs) == 2 else None,
+            "recurring_origin_id": r.id if len(legs) == 2 else None, **extra,
         }
         out += [Change("transactions", gid, f, None, v, cur.get(account_id) if f == "amount" else None)
                 for f, v in cols.items() if v is not None]

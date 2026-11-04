@@ -943,33 +943,57 @@ async def test_transfer_into_a_card_lowers_its_payment_and_never_jumps(db_sessio
         Decimal("100.00") if fixed is None else Decimal("0.00"))
 
 
-async def test_transfer_into_a_loan_is_extra_principal(db_session):
-    """100.00 a month from Main into a loan Main also pays. The scheduled
-    payment is never cancelled by the transfer leg, before or after
-    generation; the projected and the generated legs lower the interest basis
-    the same way; and only interest leaves the EUR total (conservation)."""
+@pytest.mark.parametrize("size", ["below", "equal", "above"])
+async def test_transfer_into_a_loan_is_the_payment_or_extra_principal(db_session, size):
+    """A monthly transfer from Main into a loan Main also pays. Below the PMT
+    it is extra principal on top of the scheduled payment; at or above the PMT
+    it IS the scheduled payment (the excess is extra principal), so nothing
+    else is paid. The forecast is the same before generation, after it, after
+    a stop and after a delete (``recurring_id`` is cleared by both); the legs
+    lower the interest basis; and only interest leaves the EUR total."""
     seed = await _two_accounts(db_session)
     owed = Decimal("10000.00")
     await _amortise_loan(db_session, seed, owed=owed)
-    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"])
+    pmt = compute_pmt(Decimal("10000.00"), Decimal("6.00"), 60)
+    amount = {"below": Decimal("100.00"), "equal": pmt, "above": pmt + Decimal("100.00")}[size]
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                                 amount=amount)
     before, after, without = await _before_after_without(
         db_session, seed, rid, datetime.date(2026, 8, 31))
 
-    pmt = compute_pmt(Decimal("10000.00"), Decimal("6.00"), 60)
     scheduled = [(datetime.date(2026, m, 15), pmt) for m in (5, 6, 7, 8)]
-    for kb in (before, after, without):
-        assert _row(kb, seed["loan"]).loan_payments == scheduled
+    assert _row(without, seed["loan"]).loan_payments == scheduled
+    expected = scheduled if size == "below" else []
+    assert _row(before, seed["loan"]).loan_payments == expected
+    assert _row(after, seed["loan"]).loan_payments == expected
     assert _points_by_account(before) == _points_by_account(after)
     assert _row(before, seed["loan"]).loan_interest == _row(after, seed["loan"]).loan_interest
-    # June accrues on what is owed after May's payment AND May's extra 100.
+    # June accrues on what is owed after everything May paid in.
+    paid_in_may = pmt + amount if size == "below" else amount
     rate = Decimal("6.00") / Decimal("100") / Decimal("12")
-    june = ((owed - pmt - Decimal("100.00")) * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    june = ((owed - paid_in_may) * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     assert _row(before, seed["loan"]).loan_interest[0] == (datetime.date(2026, 6, 15), june)
     interest = {id(kb): sum(i for _, i in _row(kb, seed["loan"]).loan_interest)
                 for kb in (before, without)}
-    assert interest[id(before)] < interest[id(without)]
     assert before.currencies["EUR"][-1][1] - without.currencies["EUR"][-1][1] == (
         interest[id(without)] - interest[id(before)])
+
+    # The May pair outlives a stop and a delete (it is dated before the wall
+    # clock, so neither removes it) and keeps reading the same way.
+    async def may():
+        kb = await projection_kernel.baseline(
+            db_session, seed["org_id"], today=TODAY, horizon_end=P_END, window_start=P_START)
+        return _points_by_account(kb), _row(kb, seed["loan"]).loan_payments
+
+    generated = await may()
+    assert generated[1] == expected[:1]
+    await recurring_service.stop_recurring(db_session, seed["org_id"], rid)
+    legs = (await db_session.scalars(select(Transaction).where(
+        Transaction.recurring_origin_id == rid).execution_options(populate_existing=True))).all()
+    assert len(legs) == 2 and all(t.recurring_id is None for t in legs)  # anti-vacuity
+    assert await may() == generated
+    await recurring_service.delete_recurring(db_session, seed["org_id"], rid)
+    assert await may() == generated
 
 
 async def test_extra_principal_never_pays_a_loan_past_zero(db_session):

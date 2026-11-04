@@ -379,26 +379,29 @@ async def baseline(
         periods = _loan_periods(window_start, first_period_end, horizon_end)
 
         # Already-paid signal: any linked INCOME (payment-in) leg on the loan
-        # whose effective date falls in the period, except a recurring
-        # transfer's leg (TBD-789): that is extra principal on top of the
-        # scheduled payment, never the payment. balance_contribution_filter()
+        # whose effective date falls in the period. A recurring transfer's leg
+        # (TBD-789, ``recurring_origin_id``, which survives a stop or delete)
+        # counts only when it is at least the PMT: it IS the scheduled payment,
+        # its excess extra principal. A smaller one is extra principal on top
+        # of the scheduled payment. balance_contribution_filter()
         # carries NO status filter, so this catches BOTH settled legs (already
         # in loan.balance) and pending legs (already in pending_delta) -- DO NOT
         # add a status filter here or a pending loan payment double-counts
         # against pending_delta (regression-tested). Disbursement legs are an
         # EXPENSE on the loan and never match; manual adjustments are unlinked.
         loan_paid_rows = (await db.execute(
-            select(Transaction.account_id, eff_date.label("eff")).distinct()
+            select(Transaction.account_id, eff_date.label("eff"),
+                   Transaction.recurring_origin_id, Transaction.amount)
             .where(Transaction.org_id == org_id,
                    Transaction.account_id.in_(loan_ids),
                    Transaction.linked_transaction_id.is_not(None),
                    Transaction.type == TransactionType.INCOME,
-                   Transaction.recurring_id.is_(None),
                    balance_contribution_filter(),
                    and_(eff_date >= window_start, eff_date <= horizon_end),
                    *([not_pending_of_series_filter(excluded)] if excluded else []))
         )).all()
-        loan_paid = {(aid, _as_date(eff)) for aid, eff in loan_paid_rows}
+        loan_paid = [(aid, _as_date(eff), origin, Decimal(str(amt)))
+                     for aid, eff, origin, amt in loan_paid_rows]
 
         for loan in loan_accounts:
             source_entry = accounts_by_id.get(loan.payment_source_account_id)
@@ -413,6 +416,11 @@ async def baseline(
                 int(loan.term_months),
             )
             rate = Decimal(str(loan.interest_rate_apr)) / Decimal("100") / Decimal("12")
+            # Dates of the legs that are a scheduled payment: manual ones, and
+            # recurring ones (generated or projected) of at least the PMT.
+            paid_on = [d for aid, d, origin, amt in loan_paid
+                       if aid == loan.id and (origin is None or amt >= pmt)]
+            paid_on += [d for _, d, amt in transfer_in_by_account.get(loan.id, []) if amt >= pmt]
             # Running owed balance (stored NEGATIVE). Period 0 is the
             # dashboard's: the CURRENT balance, interest-blind. Each later
             # period first takes in the loan legs dated in the period before
@@ -453,10 +461,7 @@ async def baseline(
                     pmt=pmt,
                     p_start=seg_start,
                     p_end=seg_end,
-                    already_paid=any(
-                        aid == loan.id and seg_start <= d <= seg_end
-                        for aid, d in loan_paid
-                    ),
+                    already_paid=any(seg_start <= d <= seg_end for d in paid_on),
                     account_id=loan.id,
                 )
                 for pay_date, applied in payments:
