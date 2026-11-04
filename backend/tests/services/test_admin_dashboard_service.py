@@ -55,7 +55,7 @@ async def test_probe_db_reports_timeout(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_build_dashboard_payload_collects_kpis_and_health(monkeypatch) -> None:
-    db = FakeAsyncSession([17, 42, 12, 3])
+    db = FakeAsyncSession([17, 42, 12, 3, 2])
 
     async def fake_probe_db(_db):
         return {"ok": True, "latency_ms": 4.2}
@@ -70,12 +70,13 @@ async def test_build_dashboard_payload_collects_kpis_and_health(monkeypatch) -> 
             "total_users": 42,
             "active_subscriptions": 12,
             "signups_last_7d": 3,
+            "active_superadmins": 2,
         },
         "health": {
             "db": {"ok": True, "latency_ms": 4.2},
         },
     }
-    assert db.scalar_calls == 4
+    assert db.scalar_calls == 5
     assert db.max_active_scalars == 1
 
 
@@ -83,7 +84,7 @@ async def test_build_dashboard_payload_collects_kpis_and_health(monkeypatch) -> 
 async def test_build_dashboard_payload_coerces_missing_scalar_results_to_zero(
     monkeypatch,
 ) -> None:
-    db = FakeAsyncSession([None, None, None, None])
+    db = FakeAsyncSession([None, None, None, None, None])
 
     async def fake_probe_db(_db):
         return {"ok": True, "latency_ms": 1.1}
@@ -97,4 +98,5 @@ async def test_build_dashboard_payload_coerces_missing_scalar_results_to_zero(
         "total_users": 0,
         "active_subscriptions": 0,
         "signups_last_7d": 0,
+        "active_superadmins": 0,
     }

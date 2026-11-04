@@ -51,9 +51,9 @@ async def build_dashboard_payload(db: AsyncSession) -> dict[str, Any]:
 
     # KPI reads are sequential, not gathered: SQLAlchemy's AsyncSession
     # is explicitly NOT safe for concurrent use across tasks, so firing
-    # four db.scalar() calls on the same session via asyncio.gather can
+    # several db.scalar() calls on the same session via asyncio.gather can
     # corrupt session/connection state under load. The counts are trivial
-    # (four indexed COUNTs); four sequential round-trips is still
+    # (five indexed COUNTs); five sequential round-trips is still
     # sub-millisecond territory on this dataset. If this ever grows to
     # matter, collapse into a single SELECT with scalar subqueries rather
     # than reintroducing concurrent session access.
@@ -74,6 +74,15 @@ async def build_dashboard_payload(db: AsyncSession) -> dict[str, Any]:
         .where(User.created_at >= seven_days_ago)
     )
 
+    # TBD-443: one active superadmin is a single point of failure, and zero
+    # can never render here (/admin 403s everyone), so the tile warns at <= 1.
+    # The zero case is the scheduler's superadmin_floor probe.
+    active_superadmins = await db.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(User.is_superadmin.is_(True), User.is_active.is_(True))
+    )
+
     # The probe catches its own exceptions, so a hanging database renders
     # `ok: false` instead of failing the whole response.
     db_health = await _probe_db(db)
@@ -84,6 +93,7 @@ async def build_dashboard_payload(db: AsyncSession) -> dict[str, Any]:
             "total_users": total_users or 0,
             "active_subscriptions": active_subs or 0,
             "signups_last_7d": signups_7d or 0,
+            "active_superadmins": active_superadmins or 0,
         },
         "health": {
             "db": db_health,

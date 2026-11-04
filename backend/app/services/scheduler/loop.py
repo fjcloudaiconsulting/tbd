@@ -13,6 +13,7 @@ from app.services.scheduler.jobs.csp_audit_purge import run_csp_audit_purge
 from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
 from app.services.scheduler.jobs.platform_ai_catalog import run_platform_ai_catalog_sync
 from app.services.scheduler.jobs.platform_ai_spend_watch import run_platform_ai_spend_watch
+from app.services.scheduler.jobs.superadmin_floor import run_superadmin_floor_probe
 from app.services.scheduler.runner import run_all_due
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # TBD-633: OpenRouter spend reconciliation and spike alarm. Never raises.
     with tracing.span("job platform_ai_spend_watch", SpanKind.INTERNAL, {"job.kind": "platform_ai_spend_watch"}):
         await run_platform_ai_spend_watch()
+    # TBD-443: zero (or one) active platform superadmin. Never raises.
+    with tracing.span("job superadmin_floor", SpanKind.INTERNAL, {"job.kind": "superadmin_floor"}):
+        await run_superadmin_floor_probe()
     logger.info("scheduler.tick.complete")
     return True
 

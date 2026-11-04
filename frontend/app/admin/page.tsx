@@ -23,6 +23,7 @@ import {
   card,
   cardTitle,
   error as errorCls,
+  warning as warningCls,
 } from "@/lib/styles";
 import type { AuditEvent, AuditEventListResponse } from "@/lib/types";
 
@@ -34,6 +35,7 @@ type DashboardPayload = {
     total_users: number;
     active_subscriptions: number;
     signups_last_7d: number;
+    active_superadmins: number;
   };
   health: {
     db: HealthCell;
@@ -419,8 +421,27 @@ export default function AdminDashboardPage() {
                     Signups (7d)
                   </dt>
                 </div>
+                <div className="flex items-baseline gap-2">
+                  <dd className="text-xl font-semibold tabular-nums text-text-primary">
+                    {nf.format(data.kpis.active_superadmins)}
+                  </dd>
+                  <dt className="text-xs uppercase tracking-[0.08em] text-text-muted">
+                    Superadmins
+                  </dt>
+                </div>
               </dl>
             </section>
+
+            {/* TBD-443: zero never renders here (/admin 403s everyone), so
+                one is the last state this page can warn about. */}
+            {data.kpis.active_superadmins <= 1 && (
+              <p role="status" className={warningCls}>
+                Only one active platform superadmin. If that account is
+                lost, nobody can reach the admin area. Promote a second one
+                with the operator recovery CLI (see the superadmin recovery
+                runbook).
+              </p>
+            )}
 
             {/* Hub-first nav. The primary affordance on this page is
                 navigating to admin sub-areas — make it the largest,

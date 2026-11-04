@@ -158,6 +158,14 @@ even before the emitting code arrives.
   ended because the actor lost ``is_superadmin`` mid-session (Q6
   lock, §5.7). actor=ex-superadmin, target_org_id from session
   blob. ``detail.reason="actor_superadmin_revoked"``.
+* ``admin.superadmin.promoted`` — operator break-glass grant of
+  ``is_superadmin`` via ``scripts/promote_superadmin.py`` (TBD-443).
+  ``actor_user_id=NULL``, ``actor_email=<--operator>``,
+  target_org_id=target.org_id. ``outcome="success"`` commits in the
+  grant's own transaction; every refusal writes ``outcome="failure"``
+  with ``detail.code``. ``detail`` carries ids and counts only:
+  ``target_user_id``, ``via="operator_cli"``, ``additional``,
+  ``prior_active_superadmin_count`` and ``reason``, never the email.
 
 The existing ``org.invitation.sent`` / ``org.invitation.accepted``
 event types gain a ``detail.via_platform_admin: true`` flag when
