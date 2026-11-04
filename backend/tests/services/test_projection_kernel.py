@@ -881,27 +881,27 @@ async def _bill_card(db, seed, *, fixed=None):
     await db.commit()
 
 
-async def _amortise_loan(db, seed, *, owed):
-    """Seed's loan: 10,000.00 at 6% over 60 months, due on the 15th from May,
-    paid from Main, ``owed`` still owed."""
+async def _amortise_loan(db, seed, *, owed, principal=Decimal("10000.00")):
+    """Seed's loan: ``principal`` at 6% over 60 months, due on the 15th from
+    May, paid from Main, ``owed`` still owed."""
     loan = await db.get(Account, seed["loan"])
     loan.balance = loan.opening_balance = -owed
     loan.payment_source_account_id = seed["main"]
     loan.principal_amount, loan.interest_rate_apr, loan.term_months = (
-        Decimal("10000.00"), Decimal("6.00"), 60)
+        principal, Decimal("6.00"), 60)
     loan.origination_date = datetime.date(2026, 4, 15)
     loan.first_payment_date = datetime.date(2026, 5, 15)
     await db.commit()
 
 
-async def _before_after_without(db, seed, rid, horizon_end):
+async def _before_after_without(db, seed, rid, horizon_end, *, legs=2):
     """The kernel before generation, after it, and without the series."""
     kw = dict(today=TODAY, horizon_end=horizon_end, window_start=P_START)
     before = await projection_kernel.baseline(db, seed["org_id"], **kw)
     without = await projection_kernel.baseline(db, seed["org_id"], exclude_recurring_ids=[rid], **kw)
     await recurring_service.generate_due_transactions(db, seed["org_id"], today=TODAY)
-    legs = (await db.scalars(select(Transaction).where(Transaction.recurring_id == rid))).all()
-    assert len(legs) == 2  # anti-vacuity: the May pair is generated
+    rows = (await db.scalars(select(Transaction).where(Transaction.recurring_id == rid))).all()
+    assert len(rows) == legs  # anti-vacuity: May's occurrences are generated
     after = await projection_kernel.baseline(db, seed["org_id"], **kw)
     return before, after, without
 
@@ -1009,3 +1009,76 @@ async def test_extra_principal_never_pays_a_loan_past_zero(db_session):
     loan = _row(kb, seed["loan"])
     assert loan.loan_payments == [(datetime.date(2026, 5, 15), pmt - Decimal("50.00"))]
     assert loan.end_balance == Decimal("0.00")
+
+
+# 20,000.00 at 6% over 60 months: a PMT of 386.66, two legs of 193.33.
+_BIG = Decimal("20000.00")
+
+
+@pytest.mark.parametrize("delta, paid_by_legs", [
+    (Decimal("0.00"), True), (Decimal("10.00"), True), (Decimal("-10.00"), False),
+])
+async def test_biweekly_legs_into_a_loan_are_summed_against_the_pmt(db_session, delta, paid_by_legs):
+    """Two biweekly legs a month (May 12 and 26, ...). Summed, at or above the
+    PMT they are the scheduled payment; below it they are extra principal on
+    top of it. Judged one by one, every case would also book the PMT. The
+    forecast is the same before and after generation."""
+    seed = await _two_accounts(db_session)
+    await _amortise_loan(db_session, seed, owed=_BIG, principal=_BIG)
+    pmt = compute_pmt(_BIG, Decimal("6.00"), 60)
+    assert pmt == Decimal("386.66")
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                                 amount=pmt / 2 + delta / 2, frequency="biweekly",
+                                 next_due_date=datetime.date(2026, 5, 12))
+    before, after, without = await _before_after_without(
+        db_session, seed, rid, datetime.date(2026, 8, 31), legs=4)
+    scheduled = _row(without, seed["loan"]).loan_payments
+    assert len(scheduled) == 4
+    expected = [] if paid_by_legs else scheduled
+    assert _row(before, seed["loan"]).loan_payments == expected
+    assert _row(after, seed["loan"]).loan_payments == expected
+    assert _points_by_account(before) == _points_by_account(after)
+
+
+async def test_a_generated_and_a_projected_leg_are_summed_together(db_session):
+    """Two monthly series of 200.00 into a loan with a 386.66 PMT. With one
+    May occurrence generated and the other still projected, May is paid by
+    the two (no PMT booked), exactly as with both projected."""
+    seed = await _two_accounts(db_session)
+    await _amortise_loan(db_session, seed, owed=_BIG, principal=_BIG)
+    one = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                                 amount=Decimal("200.00"))
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                           amount=Decimal("200.00"), next_due_date=datetime.date(2026, 5, 25))
+    kw = dict(today=TODAY, horizon_end=P_END, window_start=P_START)
+    projected = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    await recurring_service.materialise_next(
+        db_session, seed["org_id"], one, occurrence_date=datetime.date(2026, 5, 20),
+        skipped=False, today=TODAY)
+    assert len((await db_session.scalars(select(Transaction).where(
+        Transaction.recurring_id == one))).all()) == 2  # anti-vacuity
+    mixed = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    assert _row(projected, seed["loan"]).loan_payments == []
+    assert _row(mixed, seed["loan"]).loan_payments == []
+    assert _points_by_account(mixed) == _points_by_account(projected)
+
+
+async def test_a_leg_without_an_origin_still_counts_as_recurring(db_session):
+    """A leg written before ``recurring_origin_id`` existed (an old pod during
+    the rollout, or a row the backfill missed) is still read through
+    ``recurring_id``: a 100.00 leg stays extra principal and the PMT is still
+    booked, rather than reading as a manual payment."""
+    seed = await _two_accounts(db_session)
+    await _amortise_loan(db_session, seed, owed=Decimal("10000.00"))
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"])
+    kw = dict(today=TODAY, horizon_end=P_END, window_start=P_START)
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=TODAY)
+    with_origin = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    legs = (await db_session.scalars(select(Transaction).where(Transaction.recurring_id == rid))).all()
+    assert len(legs) == 2
+    for t in legs:
+        t.recurring_origin_id = None
+    await db_session.commit()
+    without_origin = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    assert len(_row(with_origin, seed["loan"]).loan_payments) == 1
+    assert _points_by_account(without_origin) == _points_by_account(with_origin)

@@ -124,9 +124,9 @@ register(route_tool(
         "on); occurrence_count limits how many. A transfer moves money from account_id to "
         "to_account_id (another account in the same currency; a credit card or loan only as "
         "to_account_id, as a payment toward it) as a linked expense and "
-        "income pair, and needs a category of type both. Into a loan, a transfer of at least the "
-        "monthly payment is that payment (the excess is extra principal); a smaller one is extra "
-        "principal on top of it. "
+        "income pair, and needs a category of type both. Recurring transfers into a loan that add "
+        "up to at least its monthly payment in a month are that payment (the excess is extra "
+        "principal); less is extra principal on top of it. "
         f"{CONFIRM}"
     ),
     entity=RecurringTransaction, check=_create_check, present=_create_present,

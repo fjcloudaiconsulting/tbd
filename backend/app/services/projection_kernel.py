@@ -379,11 +379,13 @@ async def baseline(
         periods = _loan_periods(window_start, first_period_end, horizon_end)
 
         # Already-paid signal: any linked INCOME (payment-in) leg on the loan
-        # whose effective date falls in the period. A recurring transfer's leg
-        # (TBD-789, ``recurring_origin_id``, which survives a stop or delete)
-        # counts only when it is at least the PMT: it IS the scheduled payment,
-        # its excess extra principal. A smaller one is extra principal on top
-        # of the scheduled payment. balance_contribution_filter()
+        # whose effective date falls in the period. Recurring transfer legs
+        # (TBD-789: ``recurring_origin_id``, which survives a stop or delete,
+        # else ``recurring_id`` for legs written before it existed) count
+        # together: when the period's recurring legs, generated and projected,
+        # sum to at least the PMT they ARE the scheduled payment and the excess
+        # is extra principal; below it they are all extra principal on top of
+        # the scheduled payment. balance_contribution_filter()
         # carries NO status filter, so this catches BOTH settled legs (already
         # in loan.balance) and pending legs (already in pending_delta) -- DO NOT
         # add a status filter here or a pending loan payment double-counts
@@ -391,7 +393,8 @@ async def baseline(
         # EXPENSE on the loan and never match; manual adjustments are unlinked.
         loan_paid_rows = (await db.execute(
             select(Transaction.account_id, eff_date.label("eff"),
-                   Transaction.recurring_origin_id, Transaction.amount)
+                   func.coalesce(Transaction.recurring_origin_id, Transaction.recurring_id),
+                   Transaction.amount)
             .where(Transaction.org_id == org_id,
                    Transaction.account_id.in_(loan_ids),
                    Transaction.linked_transaction_id.is_not(None),
@@ -416,11 +419,16 @@ async def baseline(
                 int(loan.term_months),
             )
             rate = Decimal(str(loan.interest_rate_apr)) / Decimal("100") / Decimal("12")
-            # Dates of the legs that are a scheduled payment: manual ones, and
-            # recurring ones (generated or projected) of at least the PMT.
-            paid_on = [d for aid, d, origin, amt in loan_paid
-                       if aid == loan.id and (origin is None or amt >= pmt)]
-            paid_on += [d for _, d, amt in transfer_in_by_account.get(loan.id, []) if amt >= pmt]
+            # Manual payment-in legs, each one the payment; recurring legs,
+            # generated and projected, summed per period against the PMT.
+            manual_on = [d for aid, d, origin, _ in loan_paid if aid == loan.id and origin is None]
+            recurring_on = [(d, amt) for aid, d, origin, amt in loan_paid
+                            if aid == loan.id and origin is not None]
+            recurring_on += [(d, amt) for _, d, amt in transfer_in_by_account.get(loan.id, [])]
+
+            def paid_in(start, end):
+                return any(start <= d <= end for d in manual_on) or sum(
+                    (amt for d, amt in recurring_on if start <= d <= end), Decimal("0")) >= pmt
             # Running owed balance (stored NEGATIVE). Period 0 is the
             # dashboard's: the CURRENT balance, interest-blind. Each later
             # period first takes in the loan legs dated in the period before
@@ -455,13 +463,14 @@ async def baseline(
                 payments = loan_forecast_service.synthesize_account_loan_payment(
                     first_payment_date=loan.first_payment_date,
                     term_months=int(loan.term_months),
-                    # Capped at what is owed after this period's own legs, so
-                    # extra principal never pays the loan past zero.
+                    # Capped at what is owed after this period's own legs, so the
+                    # scheduled payment never adds to an overpayment. The legs
+                    # themselves are the user's transfers and are not capped.
                     balance=balance + legs_in(seg_start, seg_end + datetime.timedelta(days=1)),
                     pmt=pmt,
                     p_start=seg_start,
                     p_end=seg_end,
-                    already_paid=any(seg_start <= d <= seg_end for d in paid_on),
+                    already_paid=paid_in(seg_start, seg_end),
                     account_id=loan.id,
                 )
                 for pay_date, applied in payments:
