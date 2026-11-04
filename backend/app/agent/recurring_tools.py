@@ -122,8 +122,9 @@ register(route_tool(
         "Create a recurring income, expense or transfer template. Generation then writes each "
         "occurrence from next_due_date on (settled ones move the balance when auto_settle is "
         "on); occurrence_count limits how many. A transfer moves money from account_id to "
-        "to_account_id (another account in the same currency, not a credit card or loan) as a "
-        "linked expense and income pair, and needs a category of type both. "
+        "to_account_id (another account in the same currency; a credit card or loan only as "
+        "to_account_id, as a card payment or extra loan principal) as a linked expense and "
+        "income pair, and needs a category of type both. "
         f"{CONFIRM}"
     ),
     entity=RecurringTransaction, check=_create_check, present=_create_present,

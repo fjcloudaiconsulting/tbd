@@ -210,21 +210,19 @@ async def _validate_transfer_accounts(
     # leg is still generated, and the projections show only the active leg.
     if not all(active for _, _, active in rows.values()):
         raise ValidationError("A recurring transfer needs two active accounts")
-    _refuse_card_or_loan(slug for _, slug, _ in rows.values())
+    _refuse_card_or_loan_source(rows[account_id][1])
     if rows[account_id][0] != rows[to_account_id][0]:
         raise ValidationError("Transfer accounts must have the same currency")
 
 
-# Not yet supported on either side of a recurring transfer (ticketed
-# separately). As a destination the projection would pay a card twice (its
-# generated legs and ``synthesize_account_cc_payments``) and read a loan leg as
-# that month's payment; as a source a card is a cash advance with the same
-# first-period gap.
-_UNSUPPORTED_TRANSFER_SLUGS = {"credit_card", "loan"}
+# TBD-789: a card or a loan may be the DESTINATION (a payment toward the card,
+# extra principal on the loan; ``projection_kernel`` models both), never the
+# source: a card as source is a cash advance, which is not supported.
+_UNSUPPORTED_TRANSFER_SOURCE_SLUGS = {"credit_card", "loan"}
 
 
-def _refuse_card_or_loan(slugs) -> None:
-    if _UNSUPPORTED_TRANSFER_SLUGS & set(slugs):
+def _refuse_card_or_loan_source(slug) -> None:
+    if slug in _UNSUPPORTED_TRANSFER_SOURCE_SLUGS:
         raise ValidationError(
             "A recurring transfer cannot use a credit card or loan account yet. "
             "Choose two other accounts."
@@ -557,11 +555,11 @@ async def _sync_pending_transfer_pairs(
     """
     # The template's accounts were validated by ``update_recurring``; checked
     # again here because this is what moves legs onto them.
-    _refuse_card_or_loan((await db.scalars(
+    _refuse_card_or_loan_source(await db.scalar(
         select(AccountType.slug)
         .join(Account, Account.account_type_id == AccountType.id)
-        .where(Account.id.in_([r.account_id, r.to_account_id]), Account.org_id == org_id)
-    )).all())
+        .where(Account.id == r.account_id, Account.org_id == org_id)
+    ))
     referrer = aliased(Transaction)
     legs = (await db.execute(
         select(Transaction)

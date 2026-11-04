@@ -1282,7 +1282,7 @@ def test_update_cc_with_close_day_31_accepted(session_factory, seeded):
     assert res.json()["close_day"] == 31
 
 
-# ── TBD-600: an account a recurring transfer uses cannot become a card/loan ──
+# ── TBD-600/789: a recurring transfer source cannot become a card/loan ──
 
 
 async def _transfer_between(session_factory, seeded, *, is_active: bool) -> dict:
@@ -1315,23 +1315,28 @@ async def _transfer_between(session_factory, seeded, *, is_active: bool) -> dict
 def test_change_type_refused_while_a_recurring_transfer_uses_the_account(
     session_factory, seeded, is_active
 ):
-    """Source -> credit card and destination -> loan are both refused, for a
-    paused series too (a resume does not re-check its accounts). The type is
-    left unchanged."""
+    """Source -> credit card and source -> loan are refused, for a paused
+    series too (a resume does not re-check its accounts), and the type is left
+    unchanged. The destination may become a card (TBD-789)."""
     extra = _run(_transfer_between(session_factory, seeded, is_active=is_active))
     app = _make_app(session_factory)
     with TestClient(app) as client:
-        for account_id, body in (
-            (seeded["checking_acct_id"], {"account_type_id": seeded["cc_type_id"], "close_day": 20}),
-            (extra["savings_id"], {"account_type_id": extra["loan_type_id"]}),
+        for body in (
+            {"account_type_id": seeded["cc_type_id"], "close_day": 20},
+            {"account_type_id": extra["loan_type_id"]},
         ):
-            res = client.put(f"/api/v1/accounts/{account_id}", json=body)
+            res = client.put(f"/api/v1/accounts/{seeded['checking_acct_id']}", json=body)
             assert res.status_code == 400, res.text
-            assert "recurring transfer" in res.json()["detail"]
+            assert "source of a recurring transfer" in res.json()["detail"]
         # A type change that stays outside card/loan is still allowed.
         ok = client.put(
             f"/api/v1/accounts/{extra['savings_id']}",
             json={"account_type_id": seeded["checking_type_id"]},
+        )
+        assert ok.status_code == 200, ok.text
+        ok = client.put(
+            f"/api/v1/accounts/{extra['savings_id']}",
+            json={"account_type_id": seeded["cc_type_id"], "close_day": 20},
         )
         assert ok.status_code == 200, ok.text
 
