@@ -193,7 +193,7 @@ class PlanGoal(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    # VARCHAR, validated on write (migration 101): a new tier or kind needs no
+    # VARCHAR, validated on write (migration 104): a new tier or kind needs no
     # DDL, and a row with a value this release does not know still loads.
     tier: Mapped[str] = mapped_column(String(PLAN_GOAL_VALUE_MAX_LENGTH), nullable=False)
     kind: Mapped[str] = mapped_column(String(PLAN_GOAL_VALUE_MAX_LENGTH), nullable=False)
