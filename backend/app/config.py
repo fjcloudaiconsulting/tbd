@@ -1,5 +1,7 @@
 import ipaddress
 import logging
+import os
+import urllib.parse
 
 from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -42,6 +44,11 @@ _PUBLIC_SECRET_VALUES = frozenset(
         "smoke-pat-key-not-a-real-secret-11111111111",  # compose.smoke.yaml before per-run keys
     }
 )
+
+# Database passwords committed for the dev compose stack (.env.example, the database_url default)
+# and CI's service container. Production refuses a DSN that uses one. The release smoke's
+# throwaway pair (compose.smoke.yaml) is left out: the smoke runs production on purpose.
+_PUBLIC_DB_PASSWORDS = frozenset({"pfv2_secret", "root_secret", "ci_root_secret"})
 
 
 def _parse_forwarded_allow_ips(
@@ -627,6 +634,29 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"{name.upper()} is a value committed to this public repository; "
                     "set a real secret"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_production_db_password_not_public(self) -> "Settings":
+        # The dev compose password is public, so a production DSN that still uses it is open to
+        # anyone who can reach the database. MIGRATIONS_DATABASE_URL is read where the migrate
+        # job reads it (app.migration_url). The message names the variable, never the value.
+        if self.app_env != "production":
+            return self
+        dsns = {
+            "DATABASE_URL": self.database_url,
+            "MIGRATIONS_DATABASE_URL": os.getenv("MIGRATIONS_DATABASE_URL", ""),
+        }
+        for name, dsn in dsns.items():
+            try:
+                password = urllib.parse.unquote(urllib.parse.urlsplit(dsn.strip()).password or "")
+            except ValueError:
+                continue  # not a URL; the connection fails on its own
+            if password in _PUBLIC_DB_PASSWORDS:
+                raise ValueError(
+                    f"{name} uses a database password committed to this public repository; "
+                    "set a real one"
                 )
         return self
 

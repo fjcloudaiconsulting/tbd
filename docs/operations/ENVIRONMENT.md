@@ -66,8 +66,8 @@ the env-var name (uppercased).
 | `TBD_APP_VERSION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Release version reported by `/health` (`version`). Baked into the published GHCR images at build time from the Dockerfile `ARG`; Builds without build args report `dev`. | Falls back to `dev`. |
 | `TBD_APP_REVISION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Git revision reported by `/health` (`revision`). Baked at build time like `TBD_APP_VERSION`. | Falls back to `dev`. |
 | `LOG_LEVEL` | no | `INFO` | `.env` | conftest | tbd-prod manifest | no | Log level of the `app` loggers; other libraries log at INFO or above whatever this is. JSON lines on stdout. | Defaults to `INFO`. |
-| `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | tbd-prod secret (also on the migrate init container) | yes (prod) | Async SQLAlchemy DSN of the app. Migrations use it too unless `MIGRATIONS_DATABASE_URL` is set. | Backend cannot reach MySQL; lifespan and Alembic fail. |
-| `MIGRATIONS_DATABASE_URL` | no | unset (falls back to `DATABASE_URL`) | unset (one local user) | unset | not yet; the migrate init container once the `tbd_migrate` user exists (TBD-655) | yes (prod) | Async SQLAlchemy DSN for migrations, so they can run as a user with DDL rights while the app's `DATABASE_URL` user keeps data rights only. Read by `alembic/env.py`, by `scripts/migrate.py` (the migrations image) and so by the dev lifespan's `alembic upgrade head`. Resolved in `backend/app/migration_url.py`. | Unset or blank: migrations use `DATABASE_URL`, as before. |
+| `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | tbd-prod secret (also on the migrate init container) | yes (prod) | Async SQLAlchemy DSN of the app. Migrations use it too unless `MIGRATIONS_DATABASE_URL` is set. With `APP_ENV=production` every process refuses to boot when its password is one committed here (`pfv2_secret`, `root_secret`, `ci_root_secret`), and so on the default; the message names the variable only. | Backend cannot reach MySQL; lifespan and Alembic fail. |
+| `MIGRATIONS_DATABASE_URL` | no | unset (falls back to `DATABASE_URL`) | unset (one local user) | unset | not yet; the migrate init container once the `tbd_migrate` user exists (TBD-655) | yes (prod) | Async SQLAlchemy DSN for migrations, so they can run as a user with DDL rights while the app's `DATABASE_URL` user keeps data rights only. Read by `alembic/env.py`, by `scripts/migrate.py` (the migrations image) and so by the dev lifespan's `alembic upgrade head`. Resolved in `backend/app/migration_url.py`. Refused in production with a committed dev or CI password, like `DATABASE_URL`. | Unset or blank: migrations use `DATABASE_URL`, as before. |
 | `DB_POOL_SIZE` | no | `5` | `.env` | unset | tbd-prod manifest (optional override) | no | SQLAlchemy pool size per replica. See K8S-3 (PR #251). | Default 5 used. |
 | `DB_MAX_OVERFLOW` | no | `10` | `.env` | unset | tbd-prod manifest (optional override) | no | SQLAlchemy max overflow per replica. See K8S-3 (PR #251). | Default 10 used. |
 | `RATE_LIMIT_DB_POOL_SIZE` | no | `2` | unset | unset | unset (optional override) | no | Pool size of the sync rate-limit engine (`backend/app/rate_limit_db.py`), one per process. Must be at least 1. | Default 2 used; below 1 refuses to boot. |
@@ -252,6 +252,13 @@ secret setting holds a value committed to this public repository (the dev compos
 boots the published images in production mode, generates its `JWT_SECRET_KEY` and
 `API_TOKEN_HMAC_KEY` in each container at start (`compose.smoke.yaml`), and the values it used to
 commit are refused like the others.
+
+The same processes refuse a `DATABASE_URL` or `MIGRATIONS_DATABASE_URL` whose password is a dev or
+CI database password committed here (`_PUBLIC_DB_PASSWORDS`, fenced by
+`backend/tests/test_public_db_password.py`). The release smoke's throwaway database password is
+not on that list. `./tbd prod` rehearses production, so it needs a `.env` whose `MYSQL_PASSWORD`,
+`MYSQL_ROOT_PASSWORD` and `DATABASE_URL` are not the `.env.example` values (on an existing volume,
+change the MySQL users' passwords too, or start from `./tbd reset`).
 
 ---
 

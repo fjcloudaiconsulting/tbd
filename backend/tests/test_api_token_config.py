@@ -11,12 +11,15 @@ from app.config import Settings
 _VALID_JWT = "jwt-secret-key-at-least-32-characters-long-000"
 _VALID_PAT_KEY = "dedicated-pat-hmac-key-distinct-and-32plus-chars"
 _VALID_PAT_KEY_PREV = "previous-rotation-pat-hmac-key-distinct-32plus"
+# Production refuses the dev compose DSN (the field default), so give it a real one.
+_DSN = "mysql+aiomysql://tbd_app:a-real-generated-password@db.internal:3306/tbd"
 
 
 def _settings(**overrides) -> Settings:
     base = {
         "_env_file": None,
         "jwt_secret_key": _VALID_JWT,
+        "database_url": _DSN,
     }
     base.update(overrides)
     return Settings(**base)

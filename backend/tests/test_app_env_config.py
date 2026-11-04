@@ -23,6 +23,8 @@ from app.config import Settings
 BACKEND = Path(__file__).resolve().parents[1]
 _JWT = "jwt-secret-key-at-least-32-characters-long-000"
 _PAT = "dedicated-pat-hmac-key-distinct-and-32plus-chars"
+# Production refuses the dev compose DSN (the field default), so give it a real one.
+_DSN = "mysql+aiomysql://tbd_app:a-real-generated-password@db.internal:3306/tbd"
 
 
 def _events(caplog) -> list[tuple[str, dict]]:
@@ -36,7 +38,9 @@ def _events(caplog) -> list[tuple[str, dict]]:
 def test_an_unset_app_env_warns_and_means_production(monkeypatch, caplog):
     monkeypatch.delenv("APP_ENV", raising=False)
     caplog.set_level(logging.WARNING, logger="app.config")
-    settings = Settings(_env_file=None, jwt_secret_key=_JWT, api_token_hmac_key=_PAT)
+    settings = Settings(
+        _env_file=None, jwt_secret_key=_JWT, api_token_hmac_key=_PAT, database_url=_DSN
+    )
     assert settings.app_env == "production"
     assert _events(caplog) == [("config.app_env_unset", {"default": "production"})]
 
@@ -44,12 +48,13 @@ def test_an_unset_app_env_warns_and_means_production(monkeypatch, caplog):
 def test_an_unset_app_env_gets_the_production_refusals(monkeypatch):
     monkeypatch.delenv("APP_ENV", raising=False)
     with pytest.raises(ValidationError, match="API_TOKEN_HMAC_KEY is required in production"):
-        Settings(_env_file=None, jwt_secret_key=_JWT)
+        Settings(_env_file=None, jwt_secret_key=_JWT, database_url=_DSN)
     with pytest.raises(ValidationError, match="API_TOKEN_HMAC_KEY is a value committed"):
         Settings(
             _env_file=None,
             jwt_secret_key=_JWT,
             api_token_hmac_key="ci-migration-smoke-pat-key-distinct-02",
+            database_url=_DSN,
         )
 
 
@@ -57,7 +62,9 @@ def test_a_chosen_app_env_is_silent_and_an_unrecognised_one_warns(monkeypatch, c
     caplog.set_level(logging.WARNING, logger="app.config")
     for env in ("development", "test", "production"):
         monkeypatch.setenv("APP_ENV", env)
-        Settings(_env_file=None, jwt_secret_key=_JWT, api_token_hmac_key="p" * 40)
+        Settings(
+            _env_file=None, jwt_secret_key=_JWT, api_token_hmac_key="p" * 40, database_url=_DSN
+        )
     assert _events(caplog) == []
 
     monkeypatch.setenv("APP_ENV", "prod")
@@ -70,7 +77,12 @@ def test_the_warning_reaches_stderr_before_logging_is_configured():
     done = subprocess.run(
         [sys.executable, "-c", "import app.config"],
         cwd=BACKEND,
-        env={"PATH": "/usr/bin:/bin", "JWT_SECRET_KEY": _JWT, "API_TOKEN_HMAC_KEY": _PAT},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "JWT_SECRET_KEY": _JWT,
+            "API_TOKEN_HMAC_KEY": _PAT,
+            "DATABASE_URL": _DSN,
+        },
         capture_output=True,
         text=True,
         timeout=60,

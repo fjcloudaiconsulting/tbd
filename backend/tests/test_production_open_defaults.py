@@ -15,6 +15,8 @@ from app.config import Settings, TURNSTILE_ALWAYS_PASS_SECRET, warn_open_product
 
 _JWT = "jwt-secret-key-at-least-32-characters-long-000"
 _PAT = "dedicated-pat-hmac-key-distinct-and-32plus-chars"
+# Production refuses the dev compose DSN (the field default), so give it a real one.
+_DSN = "mysql+aiomysql://tbd_app:a-real-generated-password@db.internal:3306/tbd"
 _CLOSED = {
     "captcha_required": True,
     "captcha_secret": "real-siteverify-secret-from-the-environment",
@@ -30,6 +32,7 @@ def _settings(**overrides) -> Settings:
         "jwt_secret_key": _JWT,
         "api_token_hmac_key": _PAT,
         "app_env": "production",
+        "database_url": _DSN,
         **_CLOSED,
     }
     base.update(overrides)
@@ -61,7 +64,13 @@ def test_the_shipped_defaults_warn_once_for_the_captcha_and_once_per_bad_origin(
         monkeypatch.delenv(name.upper(), raising=False)
     caplog.set_level(logging.WARNING, logger="app.config")
     reasons = warn_open_production_defaults(
-        Settings(_env_file=None, jwt_secret_key=_JWT, api_token_hmac_key=_PAT, app_env="production")
+        Settings(
+            _env_file=None,
+            jwt_secret_key=_JWT,
+            api_token_hmac_key=_PAT,
+            app_env="production",
+            database_url=_DSN,
+        )
     )
     assert reasons == ["captcha_not_required", "cors_origin_insecure"]
     assert _warned(caplog) == [
