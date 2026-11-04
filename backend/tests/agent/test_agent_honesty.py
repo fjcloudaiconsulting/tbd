@@ -38,9 +38,10 @@ from pydantic import BaseModel, ConfigDict
 from dateutil.relativedelta import relativedelta
 from types import SimpleNamespace
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import JSON, delete, func, select, update
 
 from app.agent import actions, registry
+from app.config import settings as app_settings
 from app.agent.registry import Change, Preview, ToolSpec
 from app.models import Account, AccountType, Organization
 from app.models.cc_cycle_payment import CcCyclePayment
@@ -50,7 +51,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem
+from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem, ItemSource, PlanStatus
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
@@ -164,6 +165,8 @@ def windows(monkeypatch):
 def _norm(col, v):
     if v is None:
         return None
+    if isinstance(col.type, JSON):  # a JSON document is named as its canonical text (TBD-668)
+        return json.dumps(v, sort_keys=True)
     if isinstance(v, enum.Enum):
         return v.value
     if isinstance(v, Decimal):
@@ -1194,6 +1197,75 @@ PLAN_LINK_SCENARIOS = [
 ]
 
 
+# ── the forecast plan and Plans tools (TBD-668) ───────────────────────────
+
+async def _fplan(f, a, status=PlanStatus.DRAFT):
+    """A plan for the open period with one generated item (Fun, 50.00)."""
+    async with f() as db:
+        pid = await db.scalar(select(BillingPeriod.id).where(BillingPeriod.org_id == a["org"]))
+    [a["plan"]] = await _ids(f, ForecastPlan(org_id=a["org"], billing_period_id=pid, status=status))
+    [a["item"]] = await _ids(f, ForecastPlanItem(
+        plan_id=a["plan"], org_id=a["org"], category_id=a["c2"], type=ForecastItemType.EXPENSE,
+        planned_amount=Decimal("50.00"), source=ItemSource.HISTORY))
+
+
+async def _fplan_with_manual(f, a):
+    """Plus a hand-set Rent item after it (a refresh keeps it)."""
+    await _seq(_fplan, _rent)(f, a)
+    await _add(f, ForecastPlanItem(plan_id=a["plan"], org_id=a["org"], category_id=a["rent"],
+                                   type=ForecastItemType.EXPENSE, planned_amount=Decimal("800.00")))
+
+
+async def _fplan_active(f, a):
+    await _fplan(f, a, PlanStatus.ACTIVE)
+
+
+async def _own_plan(f, a):
+    [a["scn"]] = await _ids(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
+        params_json={}, horizon_months=24))
+    await _add(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], name="Fund", tier=PlanGoalTier.WANT,
+                           kind=PlanGoalKind.SAVINGS_TARGET))
+
+
+_TRIP = {"scenario_type": "trip", "destination": "Lisbon", "start_date": (P_START + relativedelta(months=2)).isoformat(),
+         "duration_days": 5, "currency": "EUR", "transport_cost": "200.00", "accommodation_per_night": "90.00",
+         "daily_budget": "60.00", "source_account_id": "@acct"}
+
+FORECAST_PLAN_SCENARIOS = [
+    ("forecast-plan-populate-creates-the-plan", _tool("forecast_plan_populate"), _none, False),
+    ("forecast-plan-populate-adds-to-a-draft", _tool("forecast_plan_populate", period_start=P_START.isoformat()),
+     _fplan, False),
+    ("forecast-plan-refresh-replaces-generated-items", _tool("forecast_plan_refresh"), _fplan_with_manual, False),
+    ("forecast-plan-copy-into-a-new-plan", _tool("forecast_plan_copy", source_period_start=P_START.isoformat(),
+                                                 target_period_start=NEXT.isoformat()),
+     _seq(_fplan, _next_period), False),
+    ("forecast-plan-item-add-inserts", _tool("forecast_plan_item_add", plan_id="@plan", category_id="@c1",
+                                             type="expense", planned_amount="120.00"), _fplan, False),
+    ("forecast-plan-item-add-replaces", _tool("forecast_plan_item_add", plan_id="@plan", category_id="@c2",
+                                              type="expense", planned_amount="70.00"), _fplan, False),
+    ("forecast-plan-items-bulk", lambda a: ("forecast_plan_items_bulk", {"plan_id": a["plan"], "items": [
+        {"category_id": a["c1"], "type": "expense", "planned_amount": "10.00"},
+        {"category_id": a["c2"], "type": "expense", "planned_amount": "60.00"},
+        {"category_id": a["c1"], "type": "expense", "planned_amount": "15.00"},
+    ]}), _fplan, False),
+    ("forecast-plan-item-update", _tool("forecast_plan_item_update", plan_id="@plan", item_id="@item",
+                                        planned_amount="55.00"), _fplan, False),
+    ("forecast-plan-item-delete", _tool("forecast_plan_item_delete", plan_id="@plan", item_id="@item"),
+     _fplan, False),
+    ("forecast-plan-activate", _tool("forecast_plan_activate", plan_id="@plan"), _fplan, False),
+    ("forecast-plan-revert", _tool("forecast_plan_revert", plan_id="@plan"), _fplan_active, False),
+    ("forecast-plan-discard", _tool("forecast_plan_discard", plan_id="@plan"), _fplan, False),
+    ("scenario-create-a-trip", lambda a: ("scenarios_create", {
+        "name": "  Lisbon ", "scenario_type": "trip", "params": _resolve(a, _TRIP)}), _none, False),
+    ("scenario-update-name-and-horizon", _tool("scenarios_update", scenario_id="@scn", name="Porto",
+                                               horizon_months=36, is_active=False), _own_plan, False),
+    ("scenario-update-params", lambda a: ("scenarios_update", {
+        "scenario_id": a["scn"], "params": _resolve(a, _TRIP)}), _own_plan, False),
+    ("scenario-delete-removes-its-goals", _tool("scenarios_delete", scenario_id="@scn"), _own_plan, False),
+]
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -1213,15 +1285,17 @@ SCENARIOS = [
     *MONEY_ACCOUNT_SCENARIOS,
     *PLAN_LINK_SCENARIOS,
     *PLANNING_SCENARIOS,
+    *FORECAST_PLAN_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
 
 @pytest.mark.parametrize("sid,build,setup,auto", SCENARIOS, ids=[s[0] for s in SCENARIOS])
-async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, build, setup, auto):
+async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeypatch, sid, build, setup, auto):
     """FENCE T-A9 / GUARD T-A9c. Wrong implementation: any preview whose
     Changes differ from what execute writes (see the T-A10 mutants), or this
     fence going vacuous (window counts are asserted)."""
+    monkeypatch.setattr(app_settings, "feature_plans", True)  # Plans is off by default
     a = w["A"]
     await setup(factory, a)
     tool, args = build(a)

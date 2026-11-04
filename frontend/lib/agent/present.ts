@@ -76,6 +76,24 @@ const TOOL_LABELS: Record<string, string> = {
   categories_batch_move: "Move subcategories",
   categories_delete: "Delete a category",
   categories_restore_recommended: "Restore recommended categories",
+  forecast_plan_get: "Read the forecast plan",
+  forecast_plan_populate: "Fill the forecast plan from your history",
+  forecast_plan_refresh: "Refresh the forecast plan",
+  forecast_plan_copy: "Copy a forecast plan",
+  forecast_plan_item_add: "Set a forecast item",
+  forecast_plan_items_bulk: "Set forecast items",
+  forecast_plan_item_update: "Change a forecast item",
+  forecast_plan_item_delete: "Delete a forecast item",
+  forecast_plan_activate: "Finalise the forecast plan",
+  forecast_plan_revert: "Reopen the forecast plan",
+  forecast_plan_discard: "Clear the forecast plan",
+  scenarios_list: "Looked up plans",
+  scenarios_get: "Read a plan",
+  scenarios_simulate: "Projected a plan",
+  scenarios_compare: "Compared plans",
+  scenarios_create: "Create a plan",
+  scenarios_update: "Edit a plan",
+  scenarios_delete: "Delete a plan",
 };
 
 export function toolLabel(name: string): string {
@@ -102,6 +120,18 @@ const FIELD_LABELS: Record<string, string> = {
   "recurring_transactions.category_id": "Category",
   "forecast_plan_items.category_id": "Category",
   "forecast_plan_items.planned_amount": "Planned amount",
+  "forecast_plan_items.type": "Type",
+  "forecast_plan_items.source": "Set by",
+  "forecast_plan_items.plan_id": "Forecast plan",
+  "forecast_plans.status": "Plan status",
+  "forecast_plans.billing_period_id": "Billing period",
+  "scenarios.name": "Plan name",
+  "scenarios.scenario_type": "Plan type",
+  "scenarios.params_json": "Plan details",
+  "scenarios.horizon_months": "Horizon (months)",
+  "scenarios.is_active": "Active",
+  "scenarios.user_id": "Owner",
+  "plan_goals.name": "Goal",
   "transactions.category_id": "Category",
   "transactions.description": "Description",
   "transactions.date": "Date",
@@ -175,7 +205,8 @@ const ROW_NOUN: Record<string, string> = {
   transactions: "Transaction", accounts: "Account", import_batches: "Import",
   recurring_transactions: "Recurring transaction", billing_periods: "Billing period", budgets: "Budget",
   account_types: "Account type", cc_cycle_payments: "Card payment", categories: "Category",
-  forecast_plan_items: "Forecast item",
+  forecast_plan_items: "Forecast item", forecast_plans: "Forecast plan", scenarios: "Plan",
+  plan_goals: "Plan goal",
 };
 
 // Which row a change is on, for a preview that touches several rows of one
@@ -239,6 +270,7 @@ export function changeValue(
   if (c.field === "account_id") return `account #${text(v)}`;
   if (c.field === "recurring_id") return `recurring transaction #${text(v)}`;
   if (c.field === "tag_id") return `tag #${text(v)}`;
+  if (c.field === "plan_id") return isNew(v) ? "the new forecast plan" : `forecast plan #${text(v)}`;
   if (c.field === "parent_id") return isNew(v) ? `new category ${text(v).slice(4)}` : `category #${text(v)}`;
   if (c.field === "category_id") {
     const named = (k: "from" | "to") =>
