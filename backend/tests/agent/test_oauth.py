@@ -95,7 +95,7 @@ def _env(monkeypatch):
     limiter.reset()
     monkeypatch.setattr(settings, "mcp_oauth_enabled", True)
     monkeypatch.setattr(settings, "app_url", APP + "/")
-    monkeypatch.setenv("PFV_RUNTIME", "app_platform")  # trust do-connecting-ip
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")  # the test picks the client IP
     monkeypatch.setattr(
         notification_service, "send_notification_email", AsyncMock(return_value=None)
     )
@@ -120,7 +120,7 @@ async def client(factory):
 
 
 def _ip(ip: str | None) -> dict:
-    return {"do-connecting-ip": ip} if ip else {}
+    return {"cf-connecting-ip": ip} if ip else {}
 
 
 async def _register(client, uris=(CB,), name: str | None = "Claude", ip=None, **extra):

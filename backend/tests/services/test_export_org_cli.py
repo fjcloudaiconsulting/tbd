@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 
 import pytest
 
@@ -175,3 +177,53 @@ def test_out_and_stdout_are_mutually_exclusive():
 def test_a_destination_is_required():
     with pytest.raises(SystemExit):
         export_org.main(["--org-id", "1"])
+
+
+# ══ The artifact is PII (DB-05) ═══════════════════════════════════════════
+
+
+@pytest.fixture
+def default_umask():
+    """The usual 022: without an explicit mode the artifact came out world-readable."""
+    previous = os.umask(0o022)
+    yield
+    os.umask(previous)
+
+
+@pytest.mark.asyncio
+async def test_the_artifact_is_owner_only(cli, tmp_path, default_umask):
+    out = tmp_path / "org.ndjson"
+    assert await export_org._run(_args(org_id=cli["a"]["org_id"], out=str(out))) == 0
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_anything_already_at_the_part_path_is_refused_not_followed_or_reused(cli, tmp_path):
+    """A symlink planted there is not followed, and a crashed run's leftover is not reused."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched")
+    planted = tmp_path / "planted.ndjson"
+    (tmp_path / "planted.ndjson.part").symlink_to(victim)
+    leftover = tmp_path / "leftover.ndjson"
+    (tmp_path / "leftover.ndjson.part").write_text("from a crashed run")
+
+    for out in (planted, leftover):
+        assert await export_org._run(_args(org_id=cli["a"]["org_id"], out=str(out))) == 5
+        assert not out.exists()
+    assert victim.read_text() == "untouched"
+    assert (tmp_path / "leftover.ndjson.part").read_text() == "from a crashed run"
+
+
+@pytest.mark.asyncio
+async def test_an_existing_destination_file_or_symlink_is_refused(cli, tmp_path):
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("previous export")
+    as_file = tmp_path / "file.ndjson"
+    as_file.write_text("previous export")
+    as_link = tmp_path / "link.ndjson"
+    as_link.symlink_to(target)
+
+    for out in (as_file, as_link):
+        assert await export_org._run(_args(org_id=cli["a"]["org_id"], out=str(out))) == 5
+        assert out.read_text() == "previous export"
+        assert not (tmp_path / f"{out.name}.part").exists()

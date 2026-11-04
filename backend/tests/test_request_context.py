@@ -147,11 +147,11 @@ def test_middleware_never_puts_the_client_ip_in_the_context(monkeypatch):
     """Telemetry standard: no client address in logs. A positive control
     (``request_id`` is there) keeps the absence from being vacuous, with and
     without a forwarding header."""
-    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
     captured: list[dict] = []
     with TestClient(_build_app(captured)) as client:
         client.get("/echo")
-        client.get("/echo", headers={"do-connecting-ip": "203.0.113.7"})
+        client.get("/echo", headers={"cf-connecting-ip": "203.0.113.7"})
     assert [bool(c.get("request_id")) for c in captured] == [True, True]
     assert all("client_ip" not in c for c in captured)
     assert "203.0.113.7" not in str(captured)

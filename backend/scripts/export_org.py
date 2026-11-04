@@ -4,9 +4,14 @@ Usage
 -----
 ::
 
-    python -m scripts.export_org --org-id 42 --out /tmp/org-42.ndjson
+    python -m scripts.export_org --org-id 42 --out ~/exports/org-42.ndjson
     python -m scripts.export_org --org-id 42 --stdout > org-42.ndjson
     python -m scripts.export_org --org-id 42 --dry-run
+
+The artifact is PII. ``--out`` creates it owner-only (0600) and refuses a
+destination, or a ``.part`` beside it, that already exists or is a symlink
+(DB-05). Prefer a private directory over a shared one such as ``/tmp``, and
+redirect ``--stdout`` into one too: its permissions are your shell's.
 
 ⚠ Per ``reference_prod_db_readonly_access.md`` prod reads are
 operator-authorized and an agent cannot ``doctl compute ssh``. ``--stdout``
@@ -20,7 +25,8 @@ File mode writes ``<out>.part`` and ``os.rename``s to ``<out>`` only after
 the trailer has flushed. A crashed or killed run therefore never leaves a
 file under the final name, and the ``.part`` it does leave has no terminal
 trailer — so ``verify_export`` rejects it. Two independent signals of the
-same truncation.
+same truncation. The next run refuses that leftover rather than reusing it:
+delete it first.
 
 Audit
 -----
@@ -57,6 +63,14 @@ def _log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
+def _create_part(part_path: str):
+    """Create ``<out>.part`` owner-only, failing if anything (a symlink
+    included) is already there, so the PII never lands in a file someone else
+    created or can read (DB-05)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    return os.fdopen(os.open(part_path, flags, 0o600), "wb")
+
+
 async def _org_name(org_id: int) -> Optional[str]:
     async with async_session() as db:
         return (
@@ -82,7 +96,18 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     part_path = f"{args.out}.part" if args.out else None
-    sink = sys.stdout.buffer if part_path is None else open(part_path, "wb")
+    if part_path is None:
+        sink = sys.stdout.buffer
+    else:
+        # The rename at the end would replace whatever sits at the destination.
+        if os.path.lexists(args.out):
+            _log(f"refused: {args.out} already exists; move it away or choose another --out")
+            return 5
+        try:
+            sink = _create_part(part_path)
+        except FileExistsError:
+            _log(f"refused: {part_path} already exists; delete it (a crashed run's leftover?)")
+            return 5
 
     byte_size = 0
     # Only the LAST line is retained, and only to read its counts. The point
