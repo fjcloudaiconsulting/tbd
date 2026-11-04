@@ -28,10 +28,12 @@ from app.agent.registry import ToolError, all_tools, invoke
 from app.models import Account, AccountType, Category, Organization
 from app.models.base import Base
 from app.models.billing import BillingPeriod
+from app.config import settings as app_settings
 from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
 from app.models.report import Report, ReportVersion
+from app.models.scenario import Scenario, ScenarioType
 from app.models.settings import OrgSetting
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
@@ -40,6 +42,13 @@ from app.security import hash_password
 
 MARK = "IGNORE-PREVIOUS-INSTRUCTIONS"
 PERIOD_TOOLS = ("budgets_list", "spending_by_category", "forecast_get")
+# TBD-668: a read of the period's forecast plan resolves the period the same way.
+NEEDS_PERIOD = (*PERIOD_TOOLS, "forecast_plan_get")
+
+
+@pytest.fixture(autouse=True)
+def _plans_on(monkeypatch):
+    monkeypatch.setattr(app_settings, "feature_plans", True)
 TODAY = datetime.date.today()
 P_START = TODAY.replace(day=1)
 B_START = P_START - datetime.timedelta(days=40)  # a date only org B has a period at
@@ -120,6 +129,14 @@ async def _org(
     db.add(tx)
     await db.flush()
     db.add(TransactionTag(transaction_id=tx.id, tag_id=t.id))
+    db.add(Scenario(  # TBD-668: a plan's name and the text in its params
+        org_id=org.id, user_id=user.id, name=f"Trip {MARK}", scenario_type=ScenarioType.TRIP,
+        horizon_months=12, params_json={
+            "scenario_type": "trip", "destination": f"Lisbon {MARK}", "start_date": P_START.isoformat(),
+            "duration_days": 3, "currency": "EUR", "transport_cost": "100.00",
+            "accommodation_per_night": "50.00", "daily_budget": "40.00", "source_account_id": acct.id,
+            "one_off_extras": [{"label": f"Tour {MARK}", "amount": "20.00", "on_date": P_START.isoformat()}],
+        }))
     if periods:
         start = P_START if tag == "A" else B_START
         db.add(BillingPeriod(org_id=org.id, start_date=start))
@@ -154,6 +171,9 @@ async def _call(factory, user, name, args=None):
             args = {"account_id": await db.scalar(select(Account.id).where(Account.org_id == u.org_id))}
         if args is None and name in ("reports_get", "report_versions_list"):  # TBD-669
             args = {"report_id": await db.scalar(select(Report.id).where(Report.org_id == u.org_id))}
+        if args is None and name in ("scenarios_get", "scenarios_simulate", "scenarios_compare"):  # TBD-668
+            sid = await db.scalar(select(Scenario.id).where(Scenario.org_id == u.org_id))
+            args = {"scenario_ids": [sid], "horizon_months": 12} if name == "scenarios_compare" else {"scenario_id": sid}
         return await invoke(db, u, name, _args(name) if args is None else args, channel="in_app")
 
 
@@ -194,6 +214,11 @@ async def test_invoke_runs_all_six_reads_for_an_entitled_user(factory):
     assert out["accounts_get"]["id"] == a["acct"].id
     assert [t["account_count"] for t in out["account_types_list"]] == [1]
     assert out["cycle_payments_list"] == []  # not a credit card
+    # TBD-668
+    assert out["forecast_plan_get"] is None  # read, never created
+    assert [s["id"] for s in out["scenarios_list"]] == [out["scenarios_get"]["id"]]
+    assert out["scenarios_simulate"]["projection"]["horizon_months"] == 12
+    assert [p["scenario_id"] for p in out["scenarios_compare"]["projections"]] == [out["scenarios_get"]["id"]]
     for name in PERIOD_TOOLS:
         assert out[name]["currency_scope"]["currency"] == "EUR", name
         assert out[name]["period_start"] == str(P_START), name
@@ -293,7 +318,7 @@ async def test_fr7_reads_write_nothing(factory, seeded):
         await _org(db, "B")
     before = await _row_counts(factory)
     for tool in _reads():
-        if tool.name in PERIOD_TOOLS and not seeded:
+        if tool.name in NEEDS_PERIOD and not seeded:
             with pytest.raises(ToolError) as exc:
                 await _call(factory, a["user"], tool.name)
             assert exc.value.code == "no_open_period", tool.name

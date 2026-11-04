@@ -27,6 +27,7 @@ from fastapi.routing import APIRoute
 import app.agent.registry as registry
 import app.agent.tools  # noqa: F401  (registers the tools)
 from app.agent.registry import ROLE_RANK
+from app.agent.route_tool import _without_none
 from app.models.user import Role
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -34,7 +35,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 33
+MAX_GAPS = 18
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -54,22 +55,6 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("PUT", "/api/v1/transactions/{transaction_id}/tags"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/unpair"): "TBD-664",
-    # TBD-668
-    ("POST", "/api/v1/forecast-plans/copy"): "TBD-668",
-    ("POST", "/api/v1/forecast-plans/populate"): "TBD-668",
-    ("POST", "/api/v1/forecast-plans/refresh-from-sources"): "TBD-668",
-    ("POST", "/api/v1/forecast-plans/{plan_id}/activate"): "TBD-668",
-    ("POST", "/api/v1/forecast-plans/{plan_id}/discard"): "TBD-668",
-    ("POST", "/api/v1/forecast-plans/{plan_id}/items"): "TBD-668",
-    ("POST", "/api/v1/forecast-plans/{plan_id}/items/bulk"): "TBD-668",
-    ("DELETE", "/api/v1/forecast-plans/{plan_id}/items/{item_id}"): "TBD-668",
-    ("PUT", "/api/v1/forecast-plans/{plan_id}/items/{item_id}"): "TBD-668",
-    ("POST", "/api/v1/forecast-plans/{plan_id}/revert"): "TBD-668",
-    ("POST", "/api/v1/scenarios"): "TBD-668",
-    ("POST", "/api/v1/scenarios/compare"): "TBD-668",
-    ("DELETE", "/api/v1/scenarios/{scenario_id}"): "TBD-668",
-    ("PATCH", "/api/v1/scenarios/{scenario_id}"): "TBD-668",
-    ("POST", "/api/v1/scenarios/{scenario_id}/simulate"): "TBD-668",
     # TBD-670
     ("POST", "/api/v1/import/confirm"): "TBD-670",
     ("POST", "/api/v1/import/ofx/preview"): "TBD-670",
@@ -105,7 +90,7 @@ def _body_fields(route) -> set[str]:
         deps.extend(d.dependencies)
     out: set[str] = {f.alias for d in deps for f in d.query_params}
     for f in (f for d in deps for f in d.body_params):
-        model = f.field_info.annotation
+        model = _without_none(f.field_info.annotation)  # an optional body (simulate) is still a model
         out |= set(getattr(model, "model_fields", None) or {f.alias})
     return out
 

@@ -120,6 +120,20 @@ describe("present (TBD-664)", () => {
       .toBe("category #4");
   });
 
+  it("TBD-668: forecast plan and Plans rows read by their kind, a new plan by name", () => {
+    expect(actionHeadline("forecast_plan_populate", "s", [])).toBe("Fill the forecast plan from your history");
+    expect(actionHeadline("scenarios_delete", "s", [])).toBe("Delete a plan");
+    expect(toolLabel("scenarios_simulate")).toBe("Projected a plan");
+    const item = c({ entity: "forecast_plan_items", id: "new:2", field: "plan_id", after: "new:1" });
+    expect(rowLabel(item)).toBe("New forecast item 2");
+    expect(changeValue(item, "after", undefined, {})).toBe("the new forecast plan");
+    expect(changeValue(c({ entity: "forecast_plan_items", field: "plan_id", after: 7 }), "after", undefined, {}))
+      .toBe("forecast plan #7");
+    expect(changeLabel(c({ entity: "forecast_plans", field: "status" }))).toBe("Plan status");
+    expect(rowLabel(c({ entity: "scenarios", id: 3 }))).toBe("Plan #3");
+    expect(changeLabel(c({ entity: "plan_goals", field: "name" }))).toBe("Goal");
+  });
+
   it("a summarised group reads by the stated count, its one change and its total (TBD-786)", () => {
     const s = (over: Partial<ActionSummary>): ActionSummary => ({
       entity: "transactions", change: "update", count: 412, sample: [], totals: {}, ...over,

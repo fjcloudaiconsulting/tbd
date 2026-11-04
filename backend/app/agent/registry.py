@@ -115,17 +115,24 @@ UNTRUSTED_KEYS: frozenset[str] = frozenset(
         "name", "name_normalized", "description", "notes", "memo", "payee",
         "account_name", "account_type_name", "category_name", "parent_name",
         "linked_account_name",
-        "title", "label",  # a report widget's title and a series label (TBD-669)
+        "title", "label",  # a report widget's title, a series label (TBD-669)
+        # TBD-668: the free text in a plan's params
+        "destination", "subtype",
     }
 )
 
 _ROUTE_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
 
-# POST routes that only read (TBD-669): a query AST is too large for a query
-# string. A read tool may mirror one of these as well as a GET.
+# POST routes a read tool may mirror, as well as a GET: each computes and
+# returns, and its tool writes nothing. A report query AST is too large for a
+# query string (TBD-669); the simulate route caches its projection on the row,
+# and its tool does not (TBD-668). Proven write-free by the F-R7 read fence and
+# tests/agent/test_plan_tools.py.
 READ_POSTS: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/api/v1/reports/query"),
     ("POST", "/api/v1/reports/query/sankey"),
+    ("POST", "/api/v1/scenarios/compare"),
+    ("POST", "/api/v1/scenarios/{scenario_id}/simulate"),
 })
 
 # A tool's domain, from its mirrored route unless it declares one. The in-app
@@ -137,6 +144,8 @@ _DOMAIN_ROUTES: dict[str, str] = {
     "/api/v1/budgets": "budgets_and_categories",
     "/api/v1/categories": "budgets_and_categories",
     "/api/v1/notifications": "notifications",
+    "/api/v1/forecast-plans": "forecasts_and_plans",
+    "/api/v1/scenarios": "forecasts_and_plans",
     "/api/v1/recurring": "recurring_and_billing",
     "/api/v1/reports": "reports",
     "/api/v1/settings/billing-cycle": "recurring_and_billing",
@@ -144,6 +153,7 @@ _DOMAIN_ROUTES: dict[str, str] = {
     "/api/v1/settings/billing-periods": "recurring_and_billing",
     "/api/v1/transactions": "transactions",
 }
+
 
 
 def _route_domain(path: str) -> str | None:
@@ -336,7 +346,7 @@ def register(spec: ToolSpec) -> ToolSpec:
         if spec.run is None or spec.preview is not None or spec.execute is not None:
             raise ToolRegistrationError(f"{spec.name}: a read tool declares run only")
         if method != "GET" and spec.mirrors_route not in READ_POSTS:
-            raise ToolRegistrationError(f"{spec.name}: a read tool must mirror a GET")
+            raise ToolRegistrationError(f"{spec.name}: a read tool must mirror a GET or a READ_POSTS route")
     else:
         if spec.run is not None or spec.preview is None or spec.execute is None:
             raise ToolRegistrationError(

@@ -983,7 +983,7 @@ def test_fg_every_recurring_read_site_carries_the_series_filter():
     assert filtered == {
         ("forecast_service", "compute_forecast"),
         ("recurring_service", "generate_due_transactions"),
-        ("forecast_plan_service", "populate_from_sources"),
+        ("forecast_plan_service", "plan_populate"),
         ("scenario_engine", "build_world_state"),
         ("recurring_generation", "is_due"),
         ("projection_kernel", "baseline"),

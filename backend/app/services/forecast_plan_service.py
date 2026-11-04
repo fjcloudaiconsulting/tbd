@@ -552,8 +552,33 @@ async def populate_from_sources(
     _require_draft(plan)
     await db.refresh(plan, ["billing_period", "items"])
 
+    rows, currency_scope = await plan_populate(
+        db, org_id, period, plan.items, pre_existing_sub_pairs=pre_existing_sub_pairs,
+    )
+    for category_id, item_type, planned, source in rows:
+        db.add(ForecastPlanItem(
+            plan_id=plan.id, org_id=org_id, category_id=category_id, type=item_type,
+            planned_amount=planned, source=source,
+        ))
+
+    await db.commit()
+    await db.refresh(plan, ["billing_period", "items"])
+    return await _build_response(
+        db, org_id, plan, today=today, currency_scope=currency_scope
+    )
+
+
+async def plan_populate(
+    db: AsyncSession, org_id: int, period: BillingPeriod, items: list[ForecastPlanItem],
+    *, pre_existing_sub_pairs: frozenset[tuple[int, str]] | None = None,
+) -> tuple[list[tuple[int, ForecastItemType, Decimal, ItemSource]], dict]:
+    """The read-only decision half of :func:`populate_from_sources` (TBD-668):
+    the ``(category_id, type, planned_amount, source)`` rows populate would add
+    to a plan holding ``items`` in ``period``, and the currency scope it used.
+    Writes nothing; the agent's preview names exactly these rows."""
+    out: list[tuple[int, ForecastItemType, Decimal, ItemSource]] = []
     # Existing (category_id, type_str) combos — always use strings for consistency
-    existing_keys: set[tuple[int, str]] = {(i.category_id, i.type.value) for i in plan.items}
+    existing_keys: set[tuple[int, str]] = {(i.category_id, i.type.value) for i in items}
 
     p_start = period.start_date
     p_end = period.end_date or (p_start + relativedelta(months=1) - datetime.timedelta(days=1))
@@ -623,7 +648,7 @@ async def populate_from_sources(
     #     the user can see it.
     claimed_master: set[tuple[int, str]] = set()
     claimed_sub: set[tuple[int, str]] = set()
-    for i in plan.items:
+    for i in items:
         m = cat_to_master.get(i.category_id, i.category_id)
         if i.category_id == m:
             claimed_master.add((m, i.type.value))
@@ -990,23 +1015,14 @@ async def populate_from_sources(
         if planned <= 0:
             continue
 
-        item = ForecastPlanItem(
-            plan_id=plan.id,
-            org_id=org_id,
-            category_id=grp_id,
-            type=ForecastItemType(tx_type),
-            planned_amount=planned,
-            source=ItemSource.RECURRING if r_total > 0 else ItemSource.HISTORY,
-        )
-        db.add(item)
+        out.append((
+            grp_id, ForecastItemType(tx_type), planned,
+            ItemSource.RECURRING if r_total > 0 else ItemSource.HISTORY,
+        ))
         existing_keys.add(key)
         claim(grp_id, tx_type)
 
-    await db.commit()
-    await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(
-        db, org_id, plan, today=today, currency_scope=currency_scope
-    )
+    return out, currency_scope
 
 
 async def refresh_from_sources(
@@ -1034,18 +1050,7 @@ async def refresh_from_sources(
     # TBD-466 review: the (master, type) pairs that had a sub item BEFORE the
     # delete. Taken after it, deleting a HISTORY sub would let a surviving
     # master claim the subtree and silently drop that sub for good.
-    item_cat_ids = {i.category_id for i in plan.items}
-    parent_of = dict((await db.execute(
-        select(Category.id, Category.parent_id).where(
-            Category.id.in_(item_cat_ids),
-            Category.org_id == org_id,
-            Category.parent_id.is_not(None),
-        )
-    )).all()) if item_cat_ids else {}
-    pre_existing_sub_pairs = frozenset(
-        (parent_of[i.category_id], i.type.value)
-        for i in plan.items if i.category_id in parent_of
-    )
+    pre_existing_sub_pairs = await sub_pairs(db, org_id, plan.items)
 
     for item in list(plan.items):
         if item.source != ItemSource.MANUAL:
@@ -1059,6 +1064,24 @@ async def refresh_from_sources(
     return await populate_from_sources(
         db, org_id, period_start=period_start, today=today,
         pre_existing_sub_pairs=pre_existing_sub_pairs,
+    )
+
+
+async def sub_pairs(
+    db: AsyncSession, org_id: int, items: list[ForecastPlanItem],
+) -> frozenset[tuple[int, str]]:
+    """The ``(master_id, type)`` pairs that have a sub item among ``items``."""
+    item_cat_ids = {i.category_id for i in items}
+    parent_of = dict((await db.execute(
+        select(Category.id, Category.parent_id).where(
+            Category.id.in_(item_cat_ids),
+            Category.org_id == org_id,
+            Category.parent_id.is_not(None),
+        )
+    )).all()) if item_cat_ids else {}
+    return frozenset(
+        (parent_of[i.category_id], i.type.value)
+        for i in items if i.category_id in parent_of
     )
 
 
@@ -1319,46 +1342,7 @@ async def copy_from_period(
     await db.refresh(target_plan, ["billing_period", "items"])
     _require_draft(target_plan)
 
-    existing_keys: set[tuple[int, str]] = set()
-    if target_plan.items:
-        existing_keys = {(i.category_id, i.type.value) for i in target_plan.items}
-
-    # Double-planning guard (TBD-466 review), seeded ONLY from the target as
-    # it was before this copy, in both directions: a target master item may
-    # be a rollup that already carries its subs, and a source master item may
-    # be one. Deliberately no claims inside the loop, so a source holding a
-    # master item AND its sub items still copies all of them into an empty
-    # target (there they are the summing kind, built side by side).
-    ids = {i.category_id for i in source_plan.items} | {
-        i.category_id for i in target_plan.items
-    }
-    master_of = {
-        cid: pid if pid is not None else cid
-        for cid, pid in (await db.execute(
-            select(Category.id, Category.parent_id).where(
-                Category.id.in_(ids), Category.org_id == org_id
-            )
-        )).all()
-    }
-    target_master: set[tuple[int, str]] = set()
-    target_sub: set[tuple[int, str]] = set()
-    for i in target_plan.items:
-        m = master_of.get(i.category_id, i.category_id)
-        (target_master if i.category_id == m else target_sub).add((m, i.type.value))
-
-    for src_item in source_plan.items:
-        key = (src_item.category_id, src_item.type.value)
-        if key in existing_keys:
-            continue
-        m = master_of.get(src_item.category_id, src_item.category_id)
-        gkey = (m, src_item.type.value)
-        if src_item.category_id == m:
-            if gkey in target_sub:
-                continue
-        # Same claim rule as populate: a target master next to target subs is
-        # the summing kind and claims nothing, so a source sub still copies.
-        elif gkey in target_master and gkey not in target_sub:
-            continue
+    for src_item in await plan_copy(db, org_id, source_plan.items, target_plan.items):
         # L3.11 residual cleanup (PR #294, 2026-05-16): copied items
         # are always MANUAL on the target plan, regardless of the
         # source-period item's ``source``. ``copy_from_period`` is a
@@ -1378,11 +1362,63 @@ async def copy_from_period(
             source=ItemSource.MANUAL,
         )
         db.add(new_item)
-        existing_keys.add(key)
 
     await db.commit()
     await db.refresh(target_plan, ["billing_period", "items"])
     return await _build_response(db, org_id, target_plan, today=today)
+
+
+async def plan_copy(
+    db: AsyncSession, org_id: int, source_items: list[ForecastPlanItem],
+    target_items: list[ForecastPlanItem],
+) -> list[ForecastPlanItem]:
+    """The read-only decision half of :func:`copy_from_period` (TBD-668): the
+    source items a copy adds to a target plan holding ``target_items``.
+    Writes nothing; the agent's preview names exactly these rows."""
+    out: list[ForecastPlanItem] = []
+    existing_keys: set[tuple[int, str]] = set()
+    if target_items:
+        existing_keys = {(i.category_id, i.type.value) for i in target_items}
+
+    # Double-planning guard (TBD-466 review), seeded ONLY from the target as
+    # it was before this copy, in both directions: a target master item may
+    # be a rollup that already carries its subs, and a source master item may
+    # be one. Deliberately no claims inside the loop, so a source holding a
+    # master item AND its sub items still copies all of them into an empty
+    # target (there they are the summing kind, built side by side).
+    ids = {i.category_id for i in source_items} | {
+        i.category_id for i in target_items
+    }
+    master_of = {
+        cid: pid if pid is not None else cid
+        for cid, pid in (await db.execute(
+            select(Category.id, Category.parent_id).where(
+                Category.id.in_(ids), Category.org_id == org_id
+            )
+        )).all()
+    }
+    target_master: set[tuple[int, str]] = set()
+    target_sub: set[tuple[int, str]] = set()
+    for i in target_items:
+        m = master_of.get(i.category_id, i.category_id)
+        (target_master if i.category_id == m else target_sub).add((m, i.type.value))
+
+    for src_item in source_items:
+        key = (src_item.category_id, src_item.type.value)
+        if key in existing_keys:
+            continue
+        m = master_of.get(src_item.category_id, src_item.category_id)
+        gkey = (m, src_item.type.value)
+        if src_item.category_id == m:
+            if gkey in target_sub:
+                continue
+        # Same claim rule as populate: a target master next to target subs is
+        # the summing kind and claims nothing, so a source sub still copies.
+        elif gkey in target_master and gkey not in target_sub:
+            continue
+        out.append(src_item)
+        existing_keys.add(key)
+    return out
 
 
 # ── Internal ─────────────────────────────────────────────────────────────────

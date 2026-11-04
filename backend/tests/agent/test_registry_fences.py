@@ -21,6 +21,7 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.datastructures import QueryParams
 
 import app.agent.registry as registry
+from app.agent.route_tool import _without_none
 from app.agent.registry import (
     ROLE_RANK,
     ToolError,
@@ -82,6 +83,13 @@ def scratch_tool():
         registry._TOOLS.pop(name, None)
 
 
+FORECAST_PLAN_CHANGES = (
+    "forecast_plan_populate", "forecast_plan_refresh", "forecast_plan_copy", "forecast_plan_item_add",
+    "forecast_plan_items_bulk", "forecast_plan_item_update", "forecast_plan_item_delete",
+    "forecast_plan_activate", "forecast_plan_revert", "forecast_plan_discard",
+)
+
+
 def test_registry_ships_the_six_v1_reads_and_the_writes():
     assert sorted(t.name for t in TOOLS) == sorted([
         "accounts_list", "categories_list", "budgets_list",
@@ -110,6 +118,9 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "report_version_restore", "reports_delete",
         # TBD-787
         "notification_preferences_get", "notification_preferences_update",
+        # TBD-668
+        "forecast_plan_get", "scenarios_list", "scenarios_get", "scenarios_simulate", "scenarios_compare",
+        *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
@@ -142,6 +153,9 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         # restore has no inverse its own args could stage.
         "reports_update_layout", "reports_create", "reports_duplicate", "reports_reset",
         "report_version_restore", "reports_delete",
+        # TBD-668: every forecast plan change states or freezes planned amounts;
+        # a plan's params carry amounts and funding accounts.
+        *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
     }
 
 
@@ -346,6 +360,21 @@ def _valid_base(tool) -> dict:
         "categories_move": {"category_id": 1, "target_parent_id": 2},
         "categories_batch_move": {"moves": [{"subcategory_id": 1, "target_parent_id": 2}]},
         "categories_delete": {"category_id": 1},
+        # TBD-668
+        "forecast_plan_copy": {"source_period_start": "2026-01-01"},
+        "forecast_plan_item_add": {"plan_id": 1, "category_id": 1, "type": "expense", "planned_amount": "1.00"},
+        "forecast_plan_items_bulk": {"plan_id": 1, "items": []},
+        "forecast_plan_item_update": {"plan_id": 1, "item_id": 1, "planned_amount": "1.00"},
+        "forecast_plan_item_delete": {"plan_id": 1, "item_id": 1},
+        "forecast_plan_activate": {"plan_id": 1},
+        "forecast_plan_revert": {"plan_id": 1},
+        "forecast_plan_discard": {"plan_id": 1},
+        "scenarios_get": {"scenario_id": 1},
+        "scenarios_simulate": {"scenario_id": 1},
+        "scenarios_compare": {"scenario_ids": [1], "horizon_months": 12},
+        "scenarios_create": {"name": "x", "scenario_type": "custom", "params": {"scenario_type": "custom", "label": "x"}},
+        "scenarios_update": {"scenario_id": 1},
+        "scenarios_delete": {"scenario_id": 1},
     }.get(tool.name, {})
 
 
@@ -365,7 +394,7 @@ def _route_params(route) -> dict[str, object]:
     out: dict[str, object] = {}
     for f in route.dependant.query_params + route.dependant.path_params:
         out[f.alias] = f
-    models = [f.field_info.annotation for f in route.dependant.body_params]
+    models = [_without_none(f.field_info.annotation) for f in route.dependant.body_params]
     models += [m for (verb, path), m in _MANUAL_BODY.items() if path == route.path and verb in route.methods]
     for model in models:
         for n in getattr(model, "model_fields", {}):
@@ -554,8 +583,8 @@ def test_every_change_tool_has_a_domain():
     no domain, which no ``load_tools`` call could ever reach."""
     assert [t.name for t in TOOLS if t.risk != "read" and not t.domain] == []
     assert registry.domains() == [
-        "accounts", "budgets_and_categories", "notifications", "recurring_and_billing", "reports",
-        "transactions",
+        "accounts", "budgets_and_categories", "forecasts_and_plans", "notifications",
+        "recurring_and_billing", "reports", "transactions",
     ]
     assert registry.get_tool("billing_cycle_update").domain == "recurring_and_billing"
     assert registry.get_tool("account_types_create").domain == "accounts"
