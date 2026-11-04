@@ -1,4 +1,4 @@
-"""Migration 101 (TBD-601): plan_goals.tier and kind become VARCHAR(32).
+"""Migration 104 (TBD-601): plan_goals.tier and kind become VARCHAR(32).
 
 Renders the real upgrade as MySQL SQL (alembic offline mode), and runs the
 downgrade's refusal on SQLite. The live up/down run on MySQL 8.4 is a merge gate.
@@ -14,10 +14,10 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 
-_PATH = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "101_plan_goal_varchar.py"
-_spec = importlib.util.spec_from_file_location("_m101", _PATH)
-m101 = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(m101)
+_PATH = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "104_plan_goal_varchar.py"
+_spec = importlib.util.spec_from_file_location("_m104", _PATH)
+m104 = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(m104)
 
 
 def _render(fn) -> list[str]:
@@ -31,7 +31,7 @@ def _render(fn) -> list[str]:
 
 
 def test_upgrade_makes_both_columns_varchar():
-    stmts = _render(m101.upgrade)
+    stmts = _render(m104.upgrade)
     assert stmts == [
         "ALTER TABLE plan_goals MODIFY tier VARCHAR(32) NOT NULL",
         "ALTER TABLE plan_goals MODIFY kind VARCHAR(32) NOT NULL",
@@ -49,5 +49,5 @@ def test_downgrade_refuses_a_value_the_enum_cannot_hold(column, value):
         conn.execute(text("INSERT INTO plan_goals (id, tier, kind) VALUES (1, :tier, :kind)"), row)
         ctx = MigrationContext.configure(conn)
         with Operations.context(ctx), pytest.raises(RuntimeError, match=f"plan_goals.{column}"):
-            m101.downgrade()
+            m104.downgrade()
         assert conn.execute(text(f"SELECT {column} FROM plan_goals")).scalar() == value
