@@ -12,8 +12,9 @@ Architect-locked invariants pinned here:
     * trip with horizon_months = 121 → 422 (one over the cap)
 - ``POST /simulate`` writes ``projection_json`` and
   ``projection_computed_at`` and returns a populated projection.
-- Cross-user isolation: user B cannot read / patch / delete /
-  simulate user A's scenarios (404 on every path).
+- Org scope (TBD-601): user B, in user A's org, reads, simulates and
+  compares user A's scenarios; another org's member gets 404 on every
+  path (``test_plan_drafts.py``).
 - Empty body to ``POST /simulate`` defaults to engine=analytic.
 """
 from __future__ import annotations
@@ -103,7 +104,7 @@ def _make_app(session_factory, current_user_resolver):
 
 async def _seed_users_and_account(factory) -> dict:
     async with factory() as db:
-        org = Organization(name="Acme", billing_cycle_day=1)
+        org = Organization(name="Acme", billing_cycle_day=1, primary_currency="EUR")
         db.add(org)
         await db.commit()
         u_a = User(
@@ -570,11 +571,11 @@ async def test_simulate_smooth_with_regression_defaults_false(session_factory):
     assert projection["smoothed_with_regression"] is False
 
 
-# ── Cross-user isolation (per-user scoping) ─────────────────────────────
+# ── Org scope (TBD-601; cross-org isolation is in test_plan_drafts.py) ──
 
 
 @pytest.mark.asyncio
-async def test_user_b_cannot_read_user_a_scenario(session_factory):
+async def test_user_b_in_the_same_org_reads_user_a_scenario(session_factory):
     seeds = await _seed_users_and_account(session_factory)
     app_a = _make_app(session_factory, _resolver_for("alice@acme.io"))
     app_b = _make_app(session_factory, _resolver_for("bob@acme.io"))
@@ -583,19 +584,16 @@ async def test_user_b_cannot_read_user_a_scenario(session_factory):
             "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
         ).json()
     with TestClient(app_b) as cb:
-        # Get one: 404.
-        assert cb.get(f"/api/v1/scenarios/{created['id']}").status_code == 404
-        # List for Bob: empty (Alice owns the only row).
-        assert cb.get("/api/v1/scenarios").json() == []
-        # Patch / delete / simulate also 404 for Bob.
-        assert cb.patch(
-            f"/api/v1/scenarios/{created['id']}",
-            json={"name": "stolen"},
-        ).status_code == 404
-        assert cb.delete(f"/api/v1/scenarios/{created['id']}").status_code == 404
+        got = cb.get(f"/api/v1/scenarios/{created['id']}")
+        assert got.status_code == 200 and got.json()["user_id"] == seeds["alice_id"]
+        assert [r["id"] for r in cb.get("/api/v1/scenarios").json()] == [created["id"]]
         assert cb.post(
             f"/api/v1/scenarios/{created['id']}/simulate"
-        ).status_code == 404
+        ).json()["projection_json"] is not None
+        assert cb.patch(
+            f"/api/v1/scenarios/{created['id']}", json={"name": "Shared trip"},
+        ).json()["name"] == "Shared trip"
+        assert cb.delete(f"/api/v1/scenarios/{created['id']}").status_code == 204
 
 
 # ── PR3: comparison endpoint ────────────────────────────────────────────
@@ -708,9 +706,9 @@ async def test_compare_one_scenario_allowed(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_compare_cross_user_scenario_id_404(session_factory):
-    """A scenario_id that belongs to a different user → 404 (the same
-    bystander-safe behavior the rest of the router uses).
+async def test_compare_another_members_scenario_in_the_same_org(session_factory):
+    """TBD-601: plans are org-scoped, so a member compares another
+    member's scenario (another org's is a 404, test_plan_drafts.py).
     """
     seeds = await _seed_users_and_account(session_factory)
     app_a = _make_app(session_factory, _resolver_for("alice@acme.io"))
@@ -724,7 +722,7 @@ async def test_compare_cross_user_scenario_id_404(session_factory):
             "/api/v1/scenarios/compare",
             json={"scenario_ids": [alice_scen["id"]], "horizon_months": 24},
         )
-    assert res.status_code == 404, res.text
+    assert res.status_code == 200, res.text
 
 
 @pytest.mark.asyncio

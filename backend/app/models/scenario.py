@@ -48,7 +48,7 @@ from sqlalchemy import (
     String,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.models.base import Base
 
@@ -77,6 +77,9 @@ class PlanGoalKind(str, enum.Enum):
     MONTHLY_SPEND = "monthly_spend"
     SAVINGS_TARGET = "savings_target"
     RETIREMENT = "retirement"
+
+
+PLAN_GOAL_VALUE_MAX_LENGTH = 32
 
 
 class Scenario(Base):
@@ -190,22 +193,10 @@ class PlanGoal(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    tier: Mapped[PlanGoalTier] = mapped_column(
-        Enum(
-            PlanGoalTier,
-            name="plan_goal_tier",
-            values_callable=lambda x: [e.value for e in x],
-        ),
-        nullable=False,
-    )
-    kind: Mapped[PlanGoalKind] = mapped_column(
-        Enum(
-            PlanGoalKind,
-            name="plan_goal_kind",
-            values_callable=lambda x: [e.value for e in x],
-        ),
-        nullable=False,
-    )
+    # VARCHAR, validated on write (migration 100): a new tier or kind needs no
+    # DDL, and a row with a value this release does not know still loads.
+    tier: Mapped[str] = mapped_column(String(PLAN_GOAL_VALUE_MAX_LENGTH), nullable=False)
+    kind: Mapped[str] = mapped_column(String(PLAN_GOAL_VALUE_MAX_LENGTH), nullable=False)
     target_amount: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(12, 2), nullable=True
     )
@@ -250,3 +241,8 @@ class PlanGoal(Base):
         Index("ix_plan_goals_org_id", "org_id"),
         Index("ix_plan_goals_scenario_sort", "scenario_id", "sort_order"),
     )
+
+    @validates("tier", "kind")
+    def _check_values(self, key: str, value: Any) -> str:
+        # Only writes pass here (a load does not): an unknown value is refused.
+        return (PlanGoalTier if key == "tier" else PlanGoalKind)(value).value

@@ -1194,7 +1194,9 @@ PLAN_LINK_SCENARIOS = [
      _seq(_cc, _doomed, _plan({"funding_account_id": "old"}, {"account_id": "old"})), False),
     ("recurring-delete-unlinks-the-goal-it-funds", _rec("recurring_delete"),
      _seq(_series_matched, _plan({}, {"funding_recurring_id": "rec"})), False),
-    ("category-delete-unlinks-the-plans-and-goals-on-it", _tool("categories_delete", category_id="@c2"),
+    # TBD-601: they follow a deleted category to its target, as transactions do.
+    ("category-delete-carries-the-plans-and-goals-on-it",
+     _tool("categories_delete", category_id="@c2", target_category_id="@c1"),
      _seq(_floor, _rule_to_c2, _plan({"category_id": "c2"}, {"category_id": "c2"})), False),
 ]
 
@@ -1419,6 +1421,9 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeyp
                     if c["entity"] in ("scenarios", "plan_goals") and c["after"] is None}
         assert {e for e, _ in unlinked} == ({"plan_goals"} if sid.startswith("recurring") else
                                              {"plan_goals", "scenarios"}), unlinked
+    if sid == "category-delete-carries-the-plans-and-goals-on-it":
+        carried = {c["entity"]: c["after"] for c in changes if c["entity"] in ("scenarios", "plan_goals")}
+        assert carried == {"scenarios": a["c1"], "plan_goals": a["c1"]}, carried
     if sid.startswith("account-money-"):
         fields = {(c["entity"], c["field"]) for c in changes}
         moved = ("accounts", "balance_delta") in fields
