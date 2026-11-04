@@ -269,9 +269,9 @@ class ToolSpec:
     # The group the in-app chat loads this tool with (TBD-788); ``None`` takes
     # it from ``mirrors_route`` (``_DOMAIN_ROUTES``).
     domain: str | None = None
-    # ``(bucket, amount, window_seconds)``: the mirrored route's own slowapi
-    # limit, drawn per agent token by ``actions.call_gate`` (TBD-669).
-    rate_limit: tuple[str, int, int] | None = None
+    # The mirrored handler, for a tool that calls helpers in place of it but
+    # keeps its slowapi limit (``actions.route_gate``, TBD-669).
+    route_limit: Callable[..., Any] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.domain is None:  # frozen: the documented way to set a derived field
@@ -348,6 +348,15 @@ def register(spec: ToolSpec) -> ToolSpec:
             raise ToolRegistrationError(
                 f"{spec.name}: a delete is never 'write'; declare it 'sensitive'"
             )
+    if spec.route_limit is not None:
+        # ``actions.route_gate`` draws REST's bucket under the per-user key:
+        # a route keyed otherwise would leave the agent a second allowance.
+        from app.rate_limit import limiter, user_rate_limit_key
+
+        fn = spec.route_limit
+        groups = limiter._dynamic_route_limits.get(f"{fn.__module__}.{fn.__name__}")
+        if not groups or any(g.key_function is not user_rate_limit_key for g in groups):
+            raise ToolRegistrationError(f"{spec.name}: route_limit needs a dynamic limit keyed per user")
     if spec.risk != "read" and spec.domain is None:
         raise ToolRegistrationError(f"{spec.name}: a {spec.risk} tool needs a domain")
     _TOOLS[spec.name] = spec
@@ -503,7 +512,9 @@ async def _gate_and_run(
     # not spend the plan's meter.
     from app.agent import actions  # deferred: actions imports this module
 
-    await actions.call_gate(channel, api_token_id, spec.risk, spec.rate_limit)
+    await actions.call_gate(channel, api_token_id, spec.risk)
+    if spec.route_limit is not None:
+        await actions.route_gate(db, user, spec)
     await _admit_mcp_call(db, user, channel)
 
     await check_gates(db, user, spec, channel, scope)

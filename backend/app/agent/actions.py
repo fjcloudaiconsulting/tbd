@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import json
 import secrets
 from dataclasses import asdict
@@ -39,7 +40,7 @@ from typing import Any
 import logging
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import rate_limit_db
 from app._time import utcnow_naive
@@ -50,6 +51,9 @@ from app.agent.registry import (
 from app.models.agent_pending_action import (
     ActionChannel, ActionMode, ActionRisk, ActionStatus, AgentPendingAction as Action,
 )
+from app.models.user import User
+from app.rate_limit import limiter
+from app.rate_limit_overrides import load_rate_limit_overrides
 from app.services import audit_service
 from app import logs
 
@@ -134,24 +138,35 @@ async def _hit(key: str, limit: int, window: int, code: str) -> None:
 CALLS_PER_MIN, CALLS_PER_DAY = 120, 2000
 
 
-async def call_gate(
-    channel: str, api_token_id: int | None, risk: str,
-    route_limit: tuple[str, int, int] | None = None,
-) -> None:
+async def call_gate(channel: str, api_token_id: int | None, risk: str) -> None:
     """Gate 6. A no-op in-app (its bounds are the turn meter and the chat
-    limits). Fails CLOSED for every risk when the limits DB is unavailable.
-    ``route_limit`` (``ToolSpec.rate_limit``) is the mirrored route's slowapi
-    limit, which an in-process call does not pass through: it is drawn from
-    the token's own bucket for that route."""
+    limits). Fails CLOSED for every risk when the limits DB is unavailable."""
     if channel != "mcp":
         return
     if api_token_id is None:
         raise ToolError("scope_denied", "agent token required")
     await _hit(f"agent:tok:{api_token_id}:calls:min", CALLS_PER_MIN, MINUTE, "token_rate_limited")
     await _hit(f"agent:tok:{api_token_id}:calls:day", CALLS_PER_DAY, DAY, "token_rate_limited")
-    if route_limit is not None:
-        bucket, amount, window = route_limit
-        await _hit(f"agent:tok:{api_token_id}:route:{bucket}", amount, window, "token_rate_limited")
+
+
+async def route_gate(db: AsyncSession, user: User, spec: ToolSpec) -> None:
+    """The mirrored route's own slowapi limit (``ToolSpec.route_limit``,
+    TBD-669), which an in-process call never meets: drawn from the very bucket
+    REST draws, so the agent is not a second allowance. As slowapi does it:
+    the caller's overrides loaded now (``dynamic_limit`` then reads them), the
+    route's key (per user) and its scope (the path). Every channel. Fails
+    CLOSED when the limits store is unavailable."""
+    endpoint = spec.route_limit
+    groups = limiter._dynamic_route_limits[f"{endpoint.__module__}.{endpoint.__name__}"]
+    await load_rate_limit_overrides(user, async_sessionmaker(db.bind, expire_on_commit=False))
+    for lim in itertools.chain(*groups):  # iterating resolves the provider
+        args = [*filter(None, [limiter._key_prefix]), f"user:{user.id}", lim.scope or spec.mirrors_route[1]]
+        try:
+            ok = await asyncio.to_thread(limiter.limiter.hit, lim.limit, *args)
+        except Exception:  # noqa: BLE001  (any storage failure: refuse, never skip)
+            raise ToolError("limits_unavailable", "rate limiting is unavailable") from None
+        if not ok:
+            raise ToolError("route_rate_limited", f"limit reached ({lim.limit}), try again later")
 
 
 def _preview_dict(pv: Preview) -> dict[str, Any]:

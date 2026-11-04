@@ -9,11 +9,11 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
-from app import rate_limit_db
 from app.agent import registry
 from app.agent.registry import ToolRegistrationError, ToolSpec
 from app.models.report import ReportVersion
 from app.models.user import Role
+from app.routers import reports as reports_router
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
     _a_report, _invoke, _refused, _rows, engine, factory, reports_on, w,
 )
@@ -42,26 +42,30 @@ def test_a_read_tool_mirrors_a_get_or_a_listed_read_post():
         registry._TOOLS.pop("fixture_post_read", None)
 
 
-def test_the_query_tools_carry_their_routes_limits():
-    assert registry.get_tool("reports_query").rate_limit == ("reports.query", 60, 60)
-    assert registry.get_tool("reports_sankey_query").rate_limit == ("reports.sankey_query", 60, 60)
+def test_a_route_limit_must_be_keyed_like_rest():
+    """FENCE. Wrong implementation: a tool drawing a bucket REST never reads
+    (the route keyed per address), a second allowance for the agent. The
+    shared bucket itself: tests/routers/test_reports_rate_limit.py."""
+    from app.routers import accounts as accounts_router
+
+    assert registry.get_tool("reports_query").route_limit is reports_router.run_query
+    assert registry.get_tool("reports_sankey_query").route_limit is reports_router.run_sankey_query
+    base = dict(risk="read", args=_NoArgs, product_area=None, min_role=Role.MEMBER, description="t",
+                run=_run, mirrors_route=("POST", "/api/v1/reports/query"))
+    for fn in (accounts_router.adjust_balance, _run):  # keyed per address; no limit at all
+        with pytest.raises(ToolRegistrationError, match="keyed per user"):
+            registry.register(ToolSpec(name="fixture_limited", route_limit=fn, **base))
+    assert registry.get_tool("fixture_limited") is None
 
 
-async def test_query_answers_and_the_route_limit_is_drawn_per_token(factory, w):
-    """FENCE. Wrong implementation: the query tool escaping the REST route's
-    60/minute because an in-process call never meets slowapi."""
+async def test_query_answers_with_names_wrapped(factory, w):
     a = w["A"]
     await reports_on(factory, a)
     out = await _invoke(factory, a["member"], "reports_query", QUERY, api_token_id=a["t1"], **READ)
     assert out["meta"]["row_count"] == len(out["rows"]) == 1
     assert out["rows"][0]["category"] == {"untrusted": "Food A"}
-    rate_limit_db.hit(f"agent:tok:{a['t1']}:route:reports.query", 60, amount=59)
-    err = await _refused(_invoke(factory, a["member"], "reports_query", QUERY, api_token_id=a["t1"], **READ))
-    assert err.code == "token_rate_limited"
-    # another token, the sankey bucket and the in-app channel are unaffected
-    await _invoke(factory, a["member"], "reports_query", QUERY, api_token_id=a["t2"], **READ)
-    await _invoke(factory, a["member"], "reports_sankey_query", {}, api_token_id=a["t1"], **READ)
-    await _invoke(factory, a["member"], "reports_query", QUERY)
+    out = await _invoke(factory, a["member"], "reports_sankey_query", {})
+    assert all(isinstance(link["source"], dict) for link in out["links"])
 
 
 async def test_query_refusals(factory, w):
