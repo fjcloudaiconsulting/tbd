@@ -1,8 +1,11 @@
 """plan_goals.tier and plan_goals.kind to VARCHAR(32) (TBD-601).
 
-Revision ID: 100_plan_goal_varchar
+Revision ID: 101_plan_goal_varchar
 Revises: 099_recurring_transfers
 Create Date: 2026-11-04
+
+Chained on 099 on this branch; at merge it goes after
+``100_transaction_batch_keys`` (the lead re-points ``down_revision``).
 
 Migration 098 created both columns as native ENUMs. Goal kinds are expected
 to grow, and with an ENUM every new value needs DDL and a pod still on the
@@ -30,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "100_plan_goal_varchar"
+revision: str = "101_plan_goal_varchar"
 down_revision: Union[str, None] = "099_recurring_transfers"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
