@@ -21,8 +21,8 @@ from typing import Annotated, Any, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.scenario import ScenarioType
-from app.schemas.common import BoundedDecimal
+from app.models.scenario import ScenarioStatus, ScenarioType
+from app.schemas.common import BoundedDecimal, Money
 
 
 # Horizon caps per scenario type. Architect-locked 2026-05-22:
@@ -353,7 +353,44 @@ ScenarioParams = Annotated[
 # ── Top-level Scenario shapes ───────────────────────────────────────────
 
 
-class ScenarioCreate(BaseModel):
+# NUMERIC(5,2) on the row; a yearly rate.
+PlanPct = Annotated[Decimal, Field(ge=-100, le=100, max_digits=5, decimal_places=2)]
+
+PLAN_FIELDS = (
+    "currency", "monthly_budget", "birth_year", "return_pct", "inflation_pct",
+    "funding_account_id", "category_id", "tag_id",
+)
+
+
+class _PlanFields(BaseModel):
+    """Plan-level settings of the TBD-548 model, all optional. The org-scoped
+    checks (currency scope, links in the org) are in ``plan_draft_service``.
+    On PATCH an explicit ``null`` clears a field."""
+
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    monthly_budget: Optional[Money] = Field(default=None, ge=0)
+    birth_year: Optional[int] = Field(default=None, ge=1900)
+    return_pct: Optional[PlanPct] = None
+    inflation_pct: Optional[PlanPct] = None
+    funding_account_id: Optional[int] = None
+    category_id: Optional[int] = None
+    tag_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _check_plan_fields(self):
+        if self.birth_year is not None and self.birth_year > date.today().year:
+            raise ValueError("birth_year cannot be in the future")
+        for name in ("return_pct", "inflation_pct"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null")
+        return self
+
+    def plan_changes(self) -> dict[str, Any]:
+        """The plan fields the request sent, explicit nulls included."""
+        return {k: getattr(self, k) for k in PLAN_FIELDS if k in self.model_fields_set}
+
+
+class ScenarioCreate(_PlanFields):
     """Create payload for ``POST /api/v1/scenarios``.
 
     The discriminated union pins ``params`` to exactly the shape that
@@ -381,10 +418,11 @@ class ScenarioCreate(BaseModel):
         return self
 
 
-class ScenarioUpdate(BaseModel):
+class ScenarioUpdate(_PlanFields):
     """Partial update payload for ``PATCH /api/v1/scenarios/{id}``.
 
-    Allowed mutations: name, params, horizon_months, is_active. The
+    Allowed mutations: name, params, horizon_months, is_active and the plan
+    fields (draft only). The
     scenario_type is immutable post-create (changing it would invalidate
     the params blob's shape).
     """
@@ -417,6 +455,16 @@ class ScenarioResponse(BaseModel):
     projection_computed_at: Optional[datetime] = None
     horizon_months: int
     is_active: bool
+    # TBD-601: the plan fields. ``currency`` NULL means the org's currency.
+    status: ScenarioStatus = ScenarioStatus.DRAFT
+    currency: Optional[str] = None
+    monthly_budget: Optional[Decimal] = None
+    birth_year: Optional[int] = None
+    return_pct: Decimal = Decimal("0")
+    inflation_pct: Decimal = Decimal("0")
+    funding_account_id: Optional[int] = None
+    category_id: Optional[int] = None
+    tag_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
