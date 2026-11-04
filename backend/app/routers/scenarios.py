@@ -5,11 +5,13 @@ Mounted at ``/api/v1/scenarios``. Architect-locked:
 - Internal name = ``scenarios``; user-facing label = "Plans". The
   router prefix uses the internal name. The UI never says
   "scenario".
-- Org-scoped (TBD-601). A plan is visible to, and a draft editable by,
-  every member of its org; ``user_id`` records the creator only. Every
-  query filters by ``org_id``, and another org's plan is a 404. Plan
-  fields and goals (``plan_goals.py``) are checked in
-  ``plan_draft_service``.
+- Visibility (TBD-601, the reports precedent): a legacy scenario stays
+  private to its creator (``user_id``); a plan (a row with plan fields)
+  is visible to every member of its org, and its creator or an org
+  OWNER / ADMIN changes it (else 403). Another org's row, or another
+  member's legacy one, is a 404. Simulate and compare follow
+  visibility. The rules and the plan-field and goal checks
+  (``plan_goals.py``) are in ``plan_draft_service``.
 - Horizon caps (120 for trip/purchase/custom, 480 for retirement)
   are enforced via ``schemas/scenario.py::validate_horizon`` on
   create, patch, and simulate paths.
@@ -86,16 +88,15 @@ def _validate_horizon_or_422(scenario_type: str, horizon_months: int) -> None:
 
 
 async def _get_owned_scenario(
-    db: AsyncSession, *, user: User, scenario_id: int
+    db: AsyncSession, *, user: User, scenario_id: int, write: bool = False
 ) -> Scenario:
-    """Fetch a scenario of the current user's org (TBD-601: org-scoped).
-
-    Another org's scenario is a 404 (NOT 403) so a probing client cannot
-    enumerate existence across the org boundary.
+    """Fetch a scenario the current user may see (404 otherwise, NOT 403,
+    so a probing client cannot enumerate existence) and, with ``write``,
+    change (403: the plan is already visible to them).
     """
     with http_errors():
         return await plan_draft_service.get_plan(
-            db, org_id=user.org_id, plan_id=scenario_id
+            db, user=user, plan_id=scenario_id, write=write
         )
 
 
@@ -105,12 +106,13 @@ async def list_scenarios(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List the org's scenarios, every member's.
+    """List the scenarios the current user may see: the org's plans and
+    their own legacy scenarios.
 
     By default, archived (is_active=false) rows are hidden. Pass
     ``include_archived=true`` to include them.
     """
-    stmt = select(Scenario).where(Scenario.org_id == current_user.org_id)
+    stmt = select(Scenario).where(plan_draft_service.visible_filter(current_user))
     if not include_archived:
         stmt = stmt.where(Scenario.is_active.is_(True))
     stmt = stmt.order_by(Scenario.created_at.desc())
@@ -147,9 +149,7 @@ async def create_scenario(
         is_active=True,
     )
     with http_errors():
-        await plan_draft_service.apply_plan_fields(
-            db, row, body.plan_changes(), creating=True
-        )
+        await plan_draft_service.apply_plan_fields(db, row, body.plan_changes())
     db.add(row)
     await db.commit()
     await db.refresh(row)
@@ -177,7 +177,12 @@ async def update_scenario(
     scenario_type is immutable post-create (the params blob's
     discriminator pins it).
     """
-    row = await _get_owned_scenario(db, user=current_user, scenario_id=scenario_id)
+    row = await _get_owned_scenario(
+        db, user=current_user, scenario_id=scenario_id, write=True
+    )
+    # Editing a started plan is the lifecycle ticket's (TBD-602).
+    with http_errors():
+        plan_draft_service.assert_draft(row)
 
     # Re-check horizon cap against the EXISTING row's scenario_type.
     if body.horizon_months is not None:
@@ -213,9 +218,7 @@ async def update_scenario(
         row.is_active = body.is_active
 
     with http_errors():
-        await plan_draft_service.apply_plan_fields(
-            db, row, body.plan_changes(), creating=False
-        )
+        await plan_draft_service.apply_plan_fields(db, row, body.plan_changes())
 
     await db.commit()
     await db.refresh(row)
@@ -232,9 +235,13 @@ async def delete_scenario(
     db: AsyncSession = Depends(get_db),
 ):
     """Hard delete a scenario row. (Soft-delete is the ``is_active``
-    flag set via PATCH; this endpoint is the hard remove.)
+    flag set via PATCH; this endpoint is the hard remove.) No draft check:
+    the lifecycle allows Delete in any state (TBD-548), and what deleting a
+    started plan also removes is the lifecycle ticket's (TBD-602).
     """
-    row = await _get_owned_scenario(db, user=current_user, scenario_id=scenario_id)
+    row = await _get_owned_scenario(
+        db, user=current_user, scenario_id=scenario_id, write=True
+    )
     await db.delete(row)
     await db.commit()
 
@@ -374,8 +381,8 @@ async def compare_scenarios(
     Architect-locked rules:
 
     - Max 3 scenarios (enforced by ``CompareRequest`` Field constraint).
-    - Each scenario must belong to the current user's org; 404 on
-      cross-org (matches the rest of the router).
+    - Each scenario must be visible to the current user; 404 otherwise
+      (matches the rest of the router).
     - The request's horizon is validated against EACH scenario's
       ``scenario_type`` cap. If any scenario rejects it, the whole
       compare 422s with the offending scenario id in the message.
@@ -391,7 +398,7 @@ async def compare_scenarios(
     rows: list[Scenario] = []
     for sid in body.scenario_ids:
         row = await db.get(Scenario, sid)
-        if row is None or row.org_id != current_user.org_id:
+        if row is None or not plan_draft_service.can_view(current_user, row):
             raise HTTPException(
                 status_code=404,
                 detail=f"Scenario not found: {sid}",

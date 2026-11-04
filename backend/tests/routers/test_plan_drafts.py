@@ -1,7 +1,10 @@
 """Plan drafts (TBD-601): org-scoped plans and goals behind the paid gate.
 
-- A second member of the org sees, edits and projects a plan and its goals;
-  a member of another org gets 404 on every route.
+- A second member of the org sees and projects a plan and its goals; a member
+  of another org gets 404 on every route.
+- Rights (the reports precedent): a legacy scenario is its creator's only; a
+  plan is visible org-wide and changed by its creator or an org owner or admin
+  (another member gets 403). The matrix test covers every cell.
 - The paid gate (``Feature.PLANS``) answers 404 on every scenarios and goals route.
 - A plan's currency is the org's currency scope; no scope is refused.
 - Every link on a plan or goal must belong to the plan's org; a goal's
@@ -57,14 +60,14 @@ async def factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     await engine.dispose()
 
 
-async def _org(db, name: str, currency: str | None, users: list[str]) -> dict:
+async def _org(db, name: str, currency: str | None, users: dict[str, Role]) -> dict:
     org = Organization(name=name, billing_cycle_day=1, primary_currency=currency)
     db.add(org)
     await db.flush()
-    for i, u in enumerate(users):
+    for u, role in users.items():
         db.add(User(
             org_id=org.id, username=u, email=f"{u}@{name}.test", password_hash="x",
-            role=Role.OWNER if i == 0 else Role.MEMBER, is_active=True, email_verified=True,
+            role=role, is_active=True, email_verified=True,
         ))
     at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
     db.add(at)
@@ -92,9 +95,11 @@ async def _org(db, name: str, currency: str | None, users: list[str]) -> dict:
 async def w(factory) -> dict:
     async with factory() as db:
         out = {
-            "A": await _org(db, "acme", "EUR", ["alice", "bob"]),
-            "B": await _org(db, "other", "EUR", ["carol"]),
-            "legacy": await _org(db, "multi", None, ["dave"]),
+            # alice creates; bob is another plain member.
+            "A": await _org(db, "acme", "EUR", {"olivia": Role.OWNER, "adam": Role.ADMIN,
+                                                "alice": Role.MEMBER, "bob": Role.MEMBER}),
+            "B": await _org(db, "other", "EUR", {"carol": Role.OWNER}),
+            "legacy": await _org(db, "multi", None, {"dave": Role.OWNER}),
         }
         await db.commit()
     return out
@@ -156,10 +161,11 @@ async def test_second_member_sees_edits_and_projects_the_plan_and_its_goals(fact
         assert bob.post(f"/api/v1/scenarios/{pid}/simulate").json()["projection_json"]
         assert bob.post("/api/v1/scenarios/compare",
                         json={"scenario_ids": [pid], "horizon_months": 24}).status_code == 200
-        edited = bob.patch(f"/api/v1/scenarios/{pid}/goals/{goal['id']}",
-                           json={"enabled": False, "tier": "dream", "account_id": None}).json()
+    with _client(factory, "alice") as alice:
+        edited = alice.patch(f"/api/v1/scenarios/{pid}/goals/{goal['id']}",
+                             json={"enabled": False, "tier": "dream", "account_id": None}).json()
         assert (edited["enabled"], edited["tier"], edited["account_id"]) == (False, "dream", None)
-        assert bob.patch(f"/api/v1/scenarios/{pid}", json={"tag_id": None}).json()["tag_id"] is None
+        assert alice.patch(f"/api/v1/scenarios/{pid}", json={"tag_id": None}).json()["tag_id"] is None
 
 
 def _every_route_call(pid: int, gid: int) -> list[tuple[str, str, dict | None]]:
@@ -189,18 +195,62 @@ def test_the_call_table_covers_every_route():
     assert called == routes
 
 
-async def _seed_plan(factory, a: dict, user: str) -> tuple[int, int]:
+async def _seed_plan(factory, a: dict, user: str, *, legacy: bool = False) -> tuple[int, int | None]:
+    """A plan (currency set) with one goal, or a legacy scenario (no plan
+    fields, so no currency and no goal)."""
     async with factory() as db:
         uid = (await db.execute(select(User.id).where(User.username == user))).scalar_one()
         plan = Scenario(org_id=a["org"], user_id=uid, name="P", scenario_type=ScenarioType.CUSTOM,
                         params_json={"scenario_type": "custom", "label": "x", "events": []},
-                        currency="EUR")
+                        currency=None if legacy else "EUR")
         db.add(plan)
         await db.flush()
-        goal = PlanGoal(org_id=a["org"], scenario_id=plan.id, name="G", tier="want", kind="lump")
-        db.add(goal)
+        goal = None
+        if not legacy:
+            goal = PlanGoal(org_id=a["org"], scenario_id=plan.id, name="G", tier="want", kind="lump")
+            db.add(goal)
         await db.commit()
-        return plan.id, goal.id
+        return plan.id, goal and goal.id
+
+
+OK = "ok"
+# who -> (legacy (read, write, delete), plan (read, write, delete)).
+RIGHTS = {
+    "alice": ((OK, OK, OK), (OK, OK, OK)),        # the creator, a plain member
+    "bob": ((404, 404, 404), (OK, 403, 403)),     # another member
+    "adam": ((404, 404, 404), (OK, OK, OK)),      # org admin
+    "olivia": ((404, 404, 404), (OK, OK, OK)),    # org owner
+    "carol": ((404, 404, 404), (404, 404, 404)),  # another org
+}
+
+
+@pytest.mark.parametrize("legacy", [True, False], ids=["legacy", "plan"])
+@pytest.mark.parametrize("who", list(RIGHTS))
+async def test_who_reads_writes_and_deletes_what(factory, w, who, legacy):
+    """FENCE (review of #1090). Wrong implementations: org-wide access to a
+    legacy scenario (a privacy regression), or any member editing a plan."""
+    pid, gid = await _seed_plan(factory, w["A"], "alice", legacy=legacy)
+    read, write, delete = RIGHTS[who][0 if legacy else 1]
+    base = f"/api/v1/scenarios/{pid}"
+    reads = [("GET", base, None), ("GET", f"{base}/goals", None), ("POST", f"{base}/simulate", None),
+             ("POST", "/api/v1/scenarios/compare", {"scenario_ids": [pid], "horizon_months": 12})]
+    writes = [("PATCH", base, {"name": "Changed"}), ("POST", f"{base}/goals", _GOAL)]
+    if gid:
+        writes += [("PATCH", f"{base}/goals/{gid}", {"enabled": False}),
+                   ("DELETE", f"{base}/goals/{gid}", None)]
+    with _client(factory, who) as c:
+        listed = pid in [r["id"] for r in c.get("/api/v1/scenarios").json()]
+        assert listed == (read == OK)
+        for expected, calls in ((read, reads), (write, writes), (delete, [("DELETE", base, None)])):
+            for method, path, body in calls:
+                res = c.request(method, path, json=body)
+                assert (res.status_code < 300 if expected == OK else res.status_code == expected), (
+                    method, path, res.status_code, res.text)
+    async with factory() as db:
+        row = await db.get(Scenario, pid)
+        assert (row is None) == (delete == OK)
+        if row is not None:
+            assert (row.name == "Changed") == (write == OK)
 
 
 async def test_a_member_of_another_org_gets_404_on_every_route(factory, w):
@@ -234,7 +284,9 @@ async def test_a_plan_takes_the_org_currency_and_refuses_another(factory, w):
         res = alice.post("/api/v1/scenarios", json=_plan(a["account"], currency="USD"))
         assert res.status_code == 422 and "EUR" in res.json()["detail"]
         assert _create(alice, a, currency="eur")["currency"] == "EUR"
-        assert _create(alice, a)["currency"] == "EUR"
+        assert _create(alice, a, birth_year=1990)["currency"] == "EUR"
+        # No plan field: a legacy scenario, which takes no currency.
+        assert _create(alice, a)["currency"] is None
         res = alice.post("/api/v1/scenarios", json=_plan(a["account"], funding_account_id=a["usd"]))
         assert res.status_code == 422 and "USD" in res.json()["detail"]
 
@@ -242,9 +294,11 @@ async def test_a_plan_takes_the_org_currency_and_refuses_another(factory, w):
 async def test_an_org_without_a_currency_scope_is_refused(factory, w):
     lg = w["legacy"]
     with _client(factory, "dave") as dave:
-        res = dave.post("/api/v1/scenarios", json=_plan(lg["account"]))
+        res = dave.post("/api/v1/scenarios", json=_plan(lg["account"], monthly_budget="100.00"))
         assert res.status_code == 422 and res.json()["detail"] == NO_CURRENCY_SCOPE
-    pid, gid = await _seed_plan(factory, lg, "dave")
+        # A plain scenario still works in a multi-currency org.
+        assert dave.post("/api/v1/scenarios", json=_plan(lg["account"])).status_code == 201
+    pid, _ = await _seed_plan(factory, lg, "dave", legacy=True)
     with _client(factory, "dave") as dave:
         # A legacy row still reads and renames; plan fields and goals are refused.
         assert dave.get(f"/api/v1/scenarios/{pid}").status_code == 200
@@ -310,20 +364,22 @@ async def test_a_goal_of_another_plan_is_not_found_through_this_one(factory, w):
 
 
 async def test_only_a_draft_is_edited_here(factory, w):
-    """Lifecycle transitions belong to TBD-602; until then a started plan's
-    plan fields and goals are not editable through the draft routes."""
+    """Editing a started plan belongs to TBD-602; until then no field of a
+    started plan, nor its goals, is editable here. Delete works in any state."""
     pid, gid = await _seed_plan(factory, w["A"], "alice")
     async with factory() as db:
         (await db.get(Scenario, pid)).status = ScenarioStatus.ACTIVE
         await db.commit()
-    with _client(factory, "bob") as bob:
+    with _client(factory, "alice") as alice:
         for res in (
-            bob.patch(f"/api/v1/scenarios/{pid}", json={"monthly_budget": "10.00"}),
-            bob.post(f"/api/v1/scenarios/{pid}/goals", json=_GOAL),
-            bob.patch(f"/api/v1/scenarios/{pid}/goals/{gid}", json={"enabled": False}),
-            bob.delete(f"/api/v1/scenarios/{pid}/goals/{gid}"),
+            alice.patch(f"/api/v1/scenarios/{pid}", json={"monthly_budget": "10.00"}),
+            alice.patch(f"/api/v1/scenarios/{pid}", json={"name": "Renamed"}),
+            alice.post(f"/api/v1/scenarios/{pid}/goals", json=_GOAL),
+            alice.patch(f"/api/v1/scenarios/{pid}/goals/{gid}", json={"enabled": False}),
+            alice.delete(f"/api/v1/scenarios/{pid}/goals/{gid}"),
         ):
             assert res.status_code == 409, res.text
+        assert alice.delete(f"/api/v1/scenarios/{pid}").status_code == 204
 
 
 async def test_plan_field_validation(factory, w):
@@ -334,3 +390,34 @@ async def test_plan_field_validation(factory, w):
             assert alice.post("/api/v1/scenarios", json=_plan(a["account"], **bad)).status_code == 422
         pid = _create(alice, a)["id"]
         assert alice.patch(f"/api/v1/scenarios/{pid}", json={"inflation_pct": None}).status_code == 422
+
+
+async def test_a_goal_makes_a_legacy_scenario_a_plan(factory, w):
+    """The visibility marker (``currency``) is set by a goal write too, so a
+    legacy row with goals is never private to its creator alone by accident."""
+    pid, _ = await _seed_plan(factory, w["A"], "alice", legacy=True)
+    with _client(factory, "bob") as bob:
+        assert bob.get(f"/api/v1/scenarios/{pid}").status_code == 404
+    with _client(factory, "alice") as alice:
+        assert alice.post(f"/api/v1/scenarios/{pid}/goals", json=_GOAL).status_code == 201
+    with _client(factory, "bob") as bob:
+        assert bob.get(f"/api/v1/scenarios/{pid}").json()["currency"] == "EUR"
+
+
+async def test_a_goal_funding_series_must_be_in_the_plan_currency(factory, w):
+    a = w["A"]
+    async with factory() as db:
+        rec = RecurringTransaction(
+            org_id=a["org"], account_id=a["usd"], category_id=a["category"], description="USD",
+            amount=Decimal("5"), type="expense", frequency=Frequency.MONTHLY,
+            next_due_date=date(2026, 12, 1),
+        )
+        db.add(rec)
+        await db.commit()
+        usd_rec = rec.id
+    with _client(factory, "alice") as alice:
+        pid = _create(alice, a)["id"]
+        res = alice.post(f"/api/v1/scenarios/{pid}/goals", json={**_GOAL, "funding_recurring_id": usd_rec})
+        assert res.status_code == 422 and "USD" in res.json()["detail"]
+        res = alice.post(f"/api/v1/scenarios/{pid}/goals", json={**_GOAL, "funding_recurring_id": a["recurring"]})
+        assert res.status_code == 201

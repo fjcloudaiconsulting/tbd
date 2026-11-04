@@ -1,7 +1,8 @@
 """Goals inside a plan (TBD-601), mounted at ``/api/v1/scenarios/{scenario_id}/goals``.
 
-Org-scoped like the plans themselves: every member of the plan's org reads and
-edits a draft's goals, and another org's plan is a 404. Behind the same paid
+Same rights as the plan (``plan_draft_service``): whoever sees the plan reads
+its goals; its creator or an org owner or admin writes them (else 403); another
+org's plan is a 404. Behind the same paid
 gate as ``/api/v1/scenarios``. The checks live in ``plan_draft_service``.
 """
 from __future__ import annotations
@@ -30,11 +31,13 @@ router = APIRouter(
 @contextmanager
 def http_errors() -> Iterator[None]:
     """The plan service's domain errors as the HTTP codes the scenarios
-    router already uses (404, 422, 409)."""
+    router already uses (404, 403, 422, 409)."""
     try:
         yield
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except plan_draft_service.PlanEditDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.detail) from None
     except ConflictError as exc:
@@ -48,7 +51,7 @@ async def list_goals(
     db: AsyncSession = Depends(get_db),
 ):
     with http_errors():
-        plan = await plan_draft_service.get_plan(db, org_id=current_user.org_id, plan_id=scenario_id)
+        plan = await plan_draft_service.get_plan(db, user=current_user, plan_id=scenario_id)
     return await plan_draft_service.list_goals(db, plan=plan)
 
 
@@ -60,7 +63,8 @@ async def create_goal(
     db: AsyncSession = Depends(get_db),
 ):
     with http_errors():
-        plan = await plan_draft_service.get_plan(db, org_id=current_user.org_id, plan_id=scenario_id)
+        plan = await plan_draft_service.get_plan(
+            db, user=current_user, plan_id=scenario_id, write=True)
         goal = await plan_draft_service.create_goal(db, plan=plan, fields=body.model_dump())
     await db.commit()
     await db.refresh(goal)
@@ -76,7 +80,8 @@ async def update_goal(
     db: AsyncSession = Depends(get_db),
 ):
     with http_errors():
-        plan = await plan_draft_service.get_plan(db, org_id=current_user.org_id, plan_id=scenario_id)
+        plan = await plan_draft_service.get_plan(
+            db, user=current_user, plan_id=scenario_id, write=True)
         goal = await plan_draft_service.get_goal(db, plan=plan, goal_id=goal_id)
         await plan_draft_service.update_goal(db, plan=plan, goal=goal, changes=body.changes())
     await db.commit()
@@ -92,7 +97,8 @@ async def delete_goal(
     db: AsyncSession = Depends(get_db),
 ):
     with http_errors():
-        plan = await plan_draft_service.get_plan(db, org_id=current_user.org_id, plan_id=scenario_id)
+        plan = await plan_draft_service.get_plan(
+            db, user=current_user, plan_id=scenario_id, write=True)
         goal = await plan_draft_service.get_goal(db, plan=plan, goal_id=goal_id)
         await plan_draft_service.delete_goal(db, plan=plan, goal=goal)
     await db.commit()

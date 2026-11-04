@@ -187,8 +187,8 @@ export default function SingleDeleteModal({
               data-testid="single-delete-reassign-hint"
               className="mt-1 text-sm text-text-secondary"
             >
-              This category has transactions, recurring templates, or forecast
-              plan items. Pick a category to reassign them to.
+              This category has transactions, recurring templates, forecast
+              plan items or plans. Pick a category to reassign them to.
             </p>
             {noTargetAvailable ? (
               <p
