@@ -276,8 +276,9 @@ export default function BatchEditModal({
               id="batch-edit-settled-date-hint"
               className="mt-1 text-xs text-text-muted"
             >
-              Applied only to settled transactions, or ones you set to settled
-              above (they settle on this date). Not applied to transfers.
+              Settled transactions, or ones you set to settled above, settle on
+              this date. Pending ones stay pending and expect to settle on it
+              (a transfer only while both legs are pending).
             </p>
           </div>
 

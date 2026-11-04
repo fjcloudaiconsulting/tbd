@@ -154,6 +154,23 @@ async def test_a_transfer_leg_description_edit_touches_only_that_leg(factory, w)
     assert (await _tx(factory, partner)).description == "FROM MAIN"
 
 
+async def test_a_pending_transfers_expected_date_is_refused(factory, w):
+    """FENCE (TBD-791). Wrong implementation: staging a settlement move that
+    the service mirrors onto the partner leg the preview never listed. A
+    settled partner keeps its date, so that leg's move stays allowed."""
+    a = w["A"]
+    partner, _ = await _make_pair(factory, a)
+    pending = {"status": TransactionStatus.PENDING, "settled_date": None}
+    await _set(factory, Transaction, a["tx"], **pending)
+    await _set(factory, Transaction, partner, **pending)
+    later = (P_START + datetime.timedelta(days=4)).isoformat()
+    err = await _refused(_stage(factory, a, settled_date=later))
+    assert (err.code, err.data.get("reason")) == ("unsupported_in_v1", "transfer_leg")
+    await _set(factory, Transaction, partner, status=TransactionStatus.SETTLED, settled_date=P_START)
+    await _apply(factory, a, settled_date=later)
+    assert (await _tx(factory, partner)).settled_date == P_START
+
+
 async def test_no_rule_is_learned(factory, w):
     a = w["A"]
     await _apply(factory, a, description="Renamed")
