@@ -107,7 +107,7 @@ jobs:
       # Here because both aggregate gates require this job. Anonymous Docker Hub
       # pulls from shared runner IPs hit 429s and auth outages (INFRA-152).
       - name: No Docker Hub images
-        uses: fjcloudaiconsulting/.github/actions/no-docker-hub@v1
+        uses: fjcloudaiconsulting/.github/actions/no-docker-hub@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
 
   # Backend pytest is sharded across N parallel groups via pytest-split.
   # Each shard runs a deterministic, duration-balanced slice of the suite
@@ -172,7 +172,7 @@ jobs:
           persist-credentials: false
 
       - name: Install backend dependencies
-        uses: fjcloudaiconsulting/.github/actions/uv-sync@v1
+        uses: fjcloudaiconsulting/.github/actions/uv-sync@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
 
       - name: Run backend tests (shard ${{ matrix.group }}/${{ strategy.job-total }})
         working-directory: backend
@@ -306,7 +306,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
+    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
     with:
       image: ${{ matrix.image }}
       context: backend
@@ -322,7 +322,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
+    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
     with:
       image: frontend
       context: frontend
@@ -630,7 +630,7 @@ jobs:
           persist-credentials: false
 
       - name: Install backend dependencies
-        uses: fjcloudaiconsulting/.github/actions/uv-sync@v1
+        uses: fjcloudaiconsulting/.github/actions/uv-sync@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
 
       # Guards the "from empty" claim. If a future change seeds the database
       # before this point, `upgrade head` would be exercising a partial path
@@ -926,7 +926,7 @@ jobs:
           persist-credentials: false
 
       - name: Install frontend dependencies
-        uses: fjcloudaiconsulting/.github/actions/pnpm-install@v1
+        uses: fjcloudaiconsulting/.github/actions/pnpm-install@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
 
       # INFRA-54: coverage is main-only, like the backend (INFRA-53). PRs run
       # `test:nocov` (same act-guard reporter and judge, no --coverage); nothing
@@ -962,7 +962,7 @@ jobs:
           persist-credentials: false
 
       - name: Install frontend dependencies
-        uses: fjcloudaiconsulting/.github/actions/pnpm-install@v1
+        uses: fjcloudaiconsulting/.github/actions/pnpm-install@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
 
       - name: Check design tokens
         working-directory: frontend
@@ -1051,7 +1051,7 @@ jobs:
       pull-requests: read
       packages: write
       attestations: read
-    uses: fjcloudaiconsulting/.github/.github/workflows/release.yml@v1
+    uses: fjcloudaiconsulting/.github/.github/workflows/release.yml@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
     with:
       images: backend frontend migrations mcp
       health-url: http://localhost:8000/health
