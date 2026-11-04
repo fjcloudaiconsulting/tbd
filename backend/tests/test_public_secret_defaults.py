@@ -9,7 +9,9 @@ keep accepting them. In the backend container the scanned repo-root files are re
 from __future__ import annotations
 
 import ast
+import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -40,14 +42,6 @@ ALIASES = {
     "MCP_MFA_RECOVERY_HMAC_KEY": "mfa_recovery_hmac_key",
 }
 ENV_TO_FIELD = {name.upper(): name for name in SECRET_FIELDS} | ALIASES
-
-# The release smoke's throwaway values (compose.smoke.yaml). It boots the published images with
-# APP_ENV=production and the shared smoke workflow injects no secret, so production must accept
-# these two until that workflow passes per-run values. Nothing else may join them.
-RELEASE_SMOKE_EXCEPTIONS = {
-    ("JWT_SECRET_KEY", "smoke-jwt-key-not-a-real-secret-0000000000"),
-    ("API_TOKEN_HMAC_KEY", "smoke-pat-key-not-a-real-secret-11111111111"),
-}
 
 _VALID_JWT = "jwt-secret-key-at-least-32-characters-long-000"
 _VALID_PAT = "dedicated-pat-hmac-key-distinct-and-32plus-chars"
@@ -157,6 +151,7 @@ def _conftest_literals(path: Path) -> set[tuple[str, str]]:
 SOURCES = {
     "docker-compose.yml": lambda: _compose_literals(REPO_ROOT / "docker-compose.yml"),
     "docker-compose.prod.yml": lambda: _compose_literals(REPO_ROOT / "docker-compose.prod.yml"),
+    "compose.smoke.yaml": lambda: _compose_literals(REPO_ROOT / "compose.smoke.yaml"),
     ".env.example": lambda: _env_example_literals(REPO_ROOT / ".env.example"),
     ".github/workflows": lambda: set().union(
         *(_workflow_literals(p) for p in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")))
@@ -233,15 +228,25 @@ def test_production_refuses_a_dev_only_value_in_any_secret_field():
             _production(**{field: "dev-only-" + "x" * 40})
 
 
-def test_the_release_smoke_values_are_the_only_exception():
-    smoke = _compose_literals(REPO_ROOT / "compose.smoke.yaml")
-    assert smoke == RELEASE_SMOKE_EXCEPTIONS, (
-        "compose.smoke.yaml changed its committed secrets. Production must refuse every committed "
-        "value: add new ones to _PUBLIC_SECRET_VALUES and have the shared smoke workflow pass a "
-        "per-run secret instead of widening this exception."
-    )
-    # The smoke boots the published images in production mode, so it must still pass.
-    _production(**{ENV_TO_FIELD[name]: value for name, value in smoke})
+def test_the_release_smoke_commits_no_secret_and_makes_its_own_per_run():
+    """The release smoke boots the published images with APP_ENV=production and the shared smoke
+    workflow passes no secret, so each container generates the two production requires, then
+    execs the image's own CMD: the smoke still tests the command production runs."""
+    smoke_file = REPO_ROOT / "compose.smoke.yaml"
+    assert _compose_literals(smoke_file) == set()
+    services = yaml.load(smoke_file.read_text(encoding="utf-8"), Loader=_ComposeLoader)["services"]
+    dockerfile = (BACKEND / "Dockerfile").read_text(encoding="utf-8")
+    for service, target in (("migrations", "migrations"), ("backend", "prod")):
+        stage = dockerfile.split(f" AS {target}\n", 1)[1].split("\nFROM ", 1)[0]
+        image_cmd = json.loads(re.search(r"^CMD (\[.*\])$", stage, re.M).group(1))
+        sh, flag, script = services[service]["command"]
+        assert (sh, flag) == ("sh", "-c"), service
+        exports, _, rest = script.partition(" && exec ")
+        assert shlex.split(rest) == image_cmd, f"{service} no longer runs the image's CMD"
+        for name in ("JWT_SECRET_KEY", "API_TOKEN_HMAC_KEY"):
+            # $$ is compose's escape for a literal $: the shell substitutes it at start.
+            assert f"{name}=$$(python -c 'import secrets; print(secrets.token_hex(32))')" in exports
+        assert not {"JWT_SECRET_KEY", "API_TOKEN_HMAC_KEY"} & set(services[service]["environment"])
 
 
 def test_the_refusal_names_the_field_and_not_the_value():

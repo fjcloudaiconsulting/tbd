@@ -5,6 +5,7 @@ the vX.Y.Z image tag). What this repo owns, and these fences pin, is that a
 release is cut only on a push to main, after both gates, through the shared
 release workflow (release-please, GHCR promote and smoke of that version).
 """
+import re
 from pathlib import Path
 
 
@@ -43,10 +44,13 @@ def _yaml(path: Path) -> dict:
 
 def test_release_job_calls_the_shared_workflow_after_both_gates_on_main_only():
     """INFRA-159. release-please, the release-commit gate, promote and smoke
-    all live in the shared release.yml@v1; this job only wires it in. Running
+    all live in the shared release.yml; this job only wires it in. Running
     it on a PR would try to tag and needs the `release` environment."""
     job = _yaml(CI_WORKFLOW)["jobs"]["release"]
-    assert job["uses"] == "fjcloudaiconsulting/.github/.github/workflows/release.yml@v1"
+    # INF-06: pinned to a commit SHA (test_workflow_action_pins.py), not the movable @v1 tag.
+    assert re.fullmatch(
+        r"fjcloudaiconsulting/\.github/\.github/workflows/release\.yml@[0-9a-f]{40}", job["uses"]
+    )
     assert job["secrets"] == "inherit", "the App secrets live in environment `release`"
     assert _normalise_expr(job["if"]) == (
         "github.event_name == 'push' && github.ref == 'refs/heads/main'"
@@ -110,11 +114,13 @@ def test_apex_gates_its_deploy_but_never_the_manual_recovery():
     assert "workflow_dispatch" in (jobs["await-tests"].get("if") or ""), (
         "the gate must skip on manual dispatch, which is the recovery path"
     )
-    guard = jobs["deploy-worker"].get("if") or ""
-    assert "workflow_dispatch" in guard, (
-        "deploy-worker needs an explicit dispatch arm: `needs:` on a "
-        "SKIPPED gate would otherwise skip the manual recovery deploy too."
-    )
+    for name in ("build-apex", "deploy-worker"):
+        assert "await-tests" in (jobs[name].get("needs") or []), name
+        guard = jobs[name].get("if") or ""
+        assert "workflow_dispatch" in guard, (
+            f"{name} needs an explicit dispatch arm: `needs:` on a "
+            "SKIPPED gate would otherwise skip the manual recovery deploy too."
+        )
 
 
 def _normalise_expr(raw) -> str:

@@ -26,12 +26,8 @@ SECRET_FIELDS = (
 )
 # Secret values committed to this public repository for dev, CI and tests. Anyone can read them,
 # so production refuses them. tests/test_public_secret_defaults.py scans docker-compose*.yml,
-# .env.example, the workflows and tests/conftest.py and fails on a literal missing here. Never
-# remove an entry when its source changes: git history keeps the value public.
-#
-# ⚠ compose.smoke.yaml's two values are deliberately absent. The release smoke boots the
-# published images with APP_ENV=production, and the shared smoke workflow passes it no secret,
-# so refusing them would fail every release. That fence pins them as the only exception.
+# .env.example, compose.smoke.yaml, the workflows and tests/conftest.py and fails on a literal
+# missing here. Never remove an entry when its source changes: git history keeps the value public.
 _PUBLIC_SECRET_VALUES = frozenset(
     {
         "change-me-generate-a-real-secret",  # .env.example, the field default
@@ -42,6 +38,8 @@ _PUBLIC_SECRET_VALUES = frozenset(
         "ci-migration-smoke-mfa-key-distinct-01",  # ci.yml, Backend Migrations
         "ci-migration-smoke-pat-key-distinct-02",  # ci.yml, Backend Migrations
         "test-jwt-secret-that-is-long-enough-for-pytest-1234567890",  # tests/conftest.py
+        "smoke-jwt-key-not-a-real-secret-0000000000",  # compose.smoke.yaml before per-run keys
+        "smoke-pat-key-not-a-real-secret-11111111111",  # compose.smoke.yaml before per-run keys
     }
 )
 

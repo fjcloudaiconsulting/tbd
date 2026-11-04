@@ -248,9 +248,10 @@ With `APP_ENV=production`, `Settings()` (backend, mcp and the migrate job) refus
 secret setting holds a value committed to this public repository (the dev compose defaults, the
 `.env.example` placeholder, the CI and test fixtures) or one starting `dev-only` (INF-03,
 `_PUBLIC_SECRET_VALUES` in `backend/app/config.py`, fenced by
-`backend/tests/test_public_secret_defaults.py`). The release smoke's two throwaway values in
-`compose.smoke.yaml` are the one exception, because that smoke boots the published images in
-production mode.
+`backend/tests/test_public_secret_defaults.py`). There is no exception: the release smoke, which
+boots the published images in production mode, generates its `JWT_SECRET_KEY` and
+`API_TOKEN_HMAC_KEY` in each container at start (`compose.smoke.yaml`), and the values it used to
+commit are refused like the others.
 
 ---
 
