@@ -1,6 +1,6 @@
 """Recurring transfer legs remember their template (TBD-789).
 
-Revision ID: 100_recurring_origin
+Revision ID: 103_recurring_origin
 Revises: 099_recurring_transfers
 Create Date: 2026-11-04
 
@@ -26,7 +26,7 @@ from alembic import op
 from sqlalchemy.sql import column, table
 
 
-revision: str = "100_recurring_origin"
+revision: str = "103_recurring_origin"
 down_revision: Union[str, None] = "099_recurring_transfers"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
