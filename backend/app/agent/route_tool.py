@@ -388,14 +388,16 @@ def route_tool(
             return jsonable_encoder(out)
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")
 
-    if risk == "read":
-        async def _read(ctx: ToolContext, a: Any) -> Any:
-            out = await _call_handler(ctx, a)
-            return out if result is None else result(out)
+    async def _run(ctx: ToolContext, a: Any) -> Any:
+        # ``result`` shapes what the model reads back: a read's answer, and a
+        # change's result (stored as ``result_json``, replayed over MCP).
+        out = await _call_handler(ctx, a)
+        return out if result is None or out is None else result(out)
 
+    if risk == "read":
         return ToolSpec(
             name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
-            mirrors_route=(method, path), description=description, run=_read,
+            mirrors_route=(method, path), description=description, run=_run,
             route=route, extra_areas=tuple(extra_areas),
         )
 
@@ -410,7 +412,7 @@ def route_tool(
     return ToolSpec(
         name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
         mirrors_route=(method, path), description=description, preview=preview,
-        execute=_call_handler, route=route, extra_areas=tuple(extra_areas), inverse=inverse,
+        execute=_run, route=route, extra_areas=tuple(extra_areas), inverse=inverse,
     )
 
 

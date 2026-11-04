@@ -227,7 +227,7 @@ async def _update_preview(ctx: ToolContext, args) -> Preview:
 
 
 register(route_tool(
-    name="scenarios_create", risk="sensitive", router=ROUTER, method="POST", path="/api/v1/scenarios",
+    name="scenarios_create", risk="sensitive", result=_ai_untrusted, router=ROUTER, method="POST", path="/api/v1/scenarios",
     fields=("name", "scenario_type", "params", "horizon_months", *PLAN_FIELDS),
     required=("name", "scenario_type", "params"),
     lean=("params",), product_area=PLANS, min_role=Role.MEMBER,
@@ -235,7 +235,7 @@ register(route_tool(
     preview=_create_preview,
 ))
 register(route_tool(
-    name="scenarios_update", risk="sensitive", router=ROUTER, method="PATCH",
+    name="scenarios_update", risk="sensitive", result=_ai_untrusted, router=ROUTER, method="PATCH",
     path="/api/v1/scenarios/{scenario_id}",
     fields=("name", "params", "horizon_months", "is_active", *PLAN_FIELDS), lean=("params",),
     nullable=("currency", "monthly_budget", "birth_year", "funding_account_id", "category_id", "tag_id"),
@@ -296,12 +296,15 @@ GOAL_TEXT = (
 )
 
 
-async def _goal_plan(ctx: ToolContext, scenario_id: int, links: dict[str, Any]) -> Scenario:
+async def _goal_plan(ctx: ToolContext, scenario_id: int, links: dict[str, Any] | None) -> Scenario:
     """As the goal routes: the plan seen (``not_found``) and changeable
-    (``forbidden``), a draft, its currency scope and every link in the org."""
+    (``forbidden``), a draft, and (a create or update; ``links`` not None)
+    its currency scope and every link in the org."""
     with refusals(), plan_goals_router.http_errors():
         plan = await plan_draft_service.get_plan(ctx.db, user=ctx.user, plan_id=scenario_id, write=True)
         plan_draft_service.assert_draft(plan)
+    if links is None:  # ``delete_goal`` checks the draft only
+        return plan
     currency = await plan_draft_service.plan_currency(ctx.db, org_id=plan.org_id, requested=plan.currency)
     await plan_draft_service._check_links(ctx.db, org_id=plan.org_id, currency=currency, changes=links)
     return plan
@@ -342,7 +345,7 @@ async def _goal_update_preview(ctx: ToolContext, args) -> Preview:
 
 
 async def _goal_delete_preview(ctx: ToolContext, args) -> Preview:
-    plan = await _goal_plan(ctx, args.scenario_id, {})
+    plan = await _goal_plan(ctx, args.scenario_id, None)
     goal = await _goal(ctx, plan, args.goal_id)  # nothing references a goal
     return Preview(
         summary=f"Delete goal {goal.id} of plan {plan.id}",

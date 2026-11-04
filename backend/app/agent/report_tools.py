@@ -154,7 +154,7 @@ register(ToolSpec(
 # ── reports_update (write) ────────────────────────────────────────────────
 
 register(route_tool(
-    name="reports_update", risk="sensitive",
+    name="reports_update", risk="sensitive", result=_documents_untrusted,
     router=ROUTER, method="PATCH", path="/api/v1/reports/{report_id}",
     fields=("name", "description"), nullable=("description",),
     product_area=REPORTS, min_role=Role.MEMBER,
@@ -204,7 +204,7 @@ async def _layout_present(ctx: ToolContext, row: Report, args, changes: list[Cha
 
 
 register(route_tool(
-    name="reports_update_layout", risk="sensitive",
+    name="reports_update_layout", risk="sensitive", result=_documents_untrusted,
     router=ROUTER, method="PATCH", path="/api/v1/reports/{report_id}",
     fields=("visibility", "layout_json", "canvas_filters_json"),
     args_name="ReportsUpdateLayoutArgs",
@@ -230,7 +230,7 @@ async def _create_present(ctx: ToolContext, _row, args, changes: list[Change]) -
 
 
 register(route_tool(
-    name="reports_create", risk="sensitive",
+    name="reports_create", risk="sensitive", result=_documents_untrusted,
     router=ROUTER, method="POST", path="/api/v1/reports",
     fields=("name", "description", "visibility", "layout_json", "canvas_filters_json"),
     required=("name",), product_area=REPORTS, min_role=Role.MEMBER,
@@ -264,7 +264,7 @@ async def _duplicate_preview(ctx: ToolContext, args) -> Preview:
 
 
 register(route_tool(
-    name="reports_duplicate", risk="sensitive",
+    name="reports_duplicate", risk="sensitive", result=_documents_untrusted,
     router=ROUTER, method="POST", path="/api/v1/reports/{report_id}/duplicate",
     fields=(), product_area=REPORTS, min_role=Role.MEMBER,
     description=f"Copy a report the user can see into a new private report named '<name> (copy)'. {CONFIRM}",
@@ -311,14 +311,14 @@ async def _version_preview(ctx: ToolContext, args) -> Preview:
 
 
 register(route_tool(
-    name="reports_reset", risk="sensitive",
+    name="reports_reset", risk="sensitive", result=_documents_untrusted,
     router=ROUTER, method="POST", path="/api/v1/reports/{report_id}/reset",
     fields=(), product_area=REPORTS, min_role=Role.MEMBER,
     description=f"Put a report's layout and canvas filters back to how it was created. {CONFIRM}",
     preview=_reset_preview,
 ))
 register(route_tool(
-    name="report_version_restore", risk="sensitive",
+    name="report_version_restore", risk="sensitive", result=_documents_untrusted,
     router=ROUTER, method="POST", path="/api/v1/reports/{report_id}/versions/{version_id}/restore",
     fields=(), product_area=REPORTS, min_role=Role.MEMBER,
     description=(

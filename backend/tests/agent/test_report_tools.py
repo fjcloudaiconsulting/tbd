@@ -15,7 +15,7 @@ from app.models.report import ReportVersion
 from app.models.user import Role
 from app.routers import reports as reports_router
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    _a_report, _invoke, _refused, _rows, engine, factory, reports_on, w,
+    _a_report, _confirm, _invoke, _refused, _rows, engine, factory, reports_on, w,
 )
 
 QUERY = {"dataset": "transactions", "measure": {"agg": "sum", "field": "amount"}, "dimensions": ["category"]}
@@ -117,3 +117,47 @@ async def test_reset_and_restore_refuse_what_would_change_nothing(factory, w):
     err = await _refused(_invoke(factory, a["member"], "report_version_restore",
                                  {"report_id": rid, "version_id": foreign}))
     assert err.code == "not_found"
+
+
+MARK = "IGNORE-PREVIOUS-INSTRUCTIONS"
+
+
+def _bare(value, parent=None):
+    """Every marked string not directly under an ``untrusted`` key."""
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in _bare(v, k)]
+    if isinstance(value, list):
+        return [s for v in value for s in _bare(v, parent)]
+    return [value] if isinstance(value, str) and MARK in value and parent != "untrusted" else []
+
+
+async def test_a_change_result_wraps_report_documents_now_and_on_replay(factory, w):
+    """FENCE (review M1 on writes). Wrong implementation: wrapping only the
+    reads, so a layout change's result, stored and replayed over MCP as
+    ``action_already_decided``, hands a widget title or a filter to the model raw."""
+    a = w["A"]
+    rid = await _a_report(factory, a)
+    layout = {"version": 1, "widgets": [{
+        "id": f"k1 {MARK}", "type": "kpi", "title": f"Net {MARK}", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+        "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"}},
+    }]}
+    mcp = {"channel": "mcp", "scope": "agent:write", "api_token_id": a["t1"]}
+    out = await _invoke(factory, a["member"], "reports_update_layout", {"report_id": rid, "layout_json": layout}, **mcp)
+    done = await _confirm(factory, a["member"], out["action_id"])  # in the app: the tool is sensitive
+    assert done["status"] == "done" and done["result"]["layout_json"]["widgets"][0]["title"] == {"untrusted": f"Net {MARK}"}
+    assert _bare(done) == []
+    err = await _refused(_confirm(factory, a["member"], out["action_id"], **mcp))
+    assert err.code == "action_already_decided" and err.data["result"]["layout_json"]
+    assert _bare(err.data) == []
+
+
+def test_a_document_key_that_is_not_an_identifier_is_wrapped_too():
+    """FENCE (review: keys of user dicts are free text). Wrong implementation:
+    wrapping only the values of a layout or filter document."""
+    out = registry.untrusted_leaves({"plain_key": "v", f"{MARK} key": {"x y": 1}, "n": 2})
+    assert out == {
+        "plain_key": {"untrusted": "v"}, "n": 2,
+        "untrusted_entries": [{"key": {"untrusted": f"{MARK} key"}, "value": {
+            "untrusted_entries": [{"key": {"untrusted": "x y"}, "value": 1}]}}],
+    }
+    assert registry.untrusted_leaves({"tags": ["a"]}) == {"tags": [{"untrusted": "a"}]}

@@ -117,6 +117,7 @@ UNTRUSTED_KEYS: frozenset[str] = frozenset(
         "linked_account_name",
         # TBD-668: the free text in a plan's params
         "destination", "label", "subtype",
+        "title",  # a report widget's (TBD-669; its whole document is wrapped too)
     }
 )
 
@@ -314,15 +315,23 @@ def wrap_untrusted(value: Any) -> Any:
     return value
 
 
+_PLAIN_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+
 def untrusted_leaves(value: Any) -> Any:
     """``value`` with EVERY string in it wrapped, for a subtree that is user or
-    model text as a whole (a report layout, an AI provenance block)."""
+    model text as a whole (a report layout, an AI provenance block). A key
+    that is not a plain identifier is user text too: its entry moves to
+    ``untrusted_entries`` as ``{"key": {"untrusted": k}, "value": ...}``."""
     if isinstance(value, str):
         return {"untrusted": value}
     if isinstance(value, list):
         return [untrusted_leaves(v) for v in value]
     if isinstance(value, dict):
-        return {k: untrusted_leaves(v) for k, v in value.items()}
+        out = {k: untrusted_leaves(v) for k, v in value.items() if _PLAIN_KEY.fullmatch(k)}
+        odd = [{"key": {"untrusted": k}, "value": untrusted_leaves(v)}
+               for k, v in value.items() if not _PLAIN_KEY.fullmatch(k)]
+        return {**out, "untrusted_entries": odd} if odd else out
     return value
 
 

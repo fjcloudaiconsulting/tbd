@@ -252,3 +252,18 @@ async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory
     # no plan fields: a legacy scenario, no currency resolved (as the route)
     out = await _invoke(factory, a["member"], "scenarios_create", create)
     assert "currency" not in {c["field"] for c in out["changes"]} and "currency" not in out["context"]
+
+
+async def test_a_goal_delete_checks_only_the_draft_as_the_route_does(factory, w):
+    """GUARD (review L3). ``delete_goal`` checks the draft only: with no
+    currency scope a delete still stages, while a create is refused."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    async with factory() as db:
+        await db.execute(update(Organization).where(Organization.id == a["org"]).values(primary_currency=None))
+        await db.commit()
+    out = await _invoke(factory, a["member"], "plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]})
+    assert out["requires_confirmation"] is True
+    err = await _refused(_invoke(factory, a["member"], "plan_goal_create",
+                                 {"scenario_id": a["scn"], "name": "G", "tier": "want", "kind": "lump"}))
+    assert err.detail == plan_draft_service.NO_CURRENCY_SCOPE
