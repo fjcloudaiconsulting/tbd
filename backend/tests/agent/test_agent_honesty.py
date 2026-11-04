@@ -60,8 +60,9 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Role, User
 from app.services import org_bootstrap_service
 from app.services.category_rules_service import normalize_description
+from app.models.report import Report, ReportVersion
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    P_START, _confirm, _invoke, _refused, engine, factory, w,
+    P_START, PREFS_ON, _a_report, _confirm, _invoke, _prefs, _refused, engine, factory, reports_on, w,
 )
 
 # Counters are named only as signed nonzero deltas, never as absolutes.
@@ -233,8 +234,9 @@ def _locate(table, id_, pre, post, org_id):
 
 
 def _unwrap(v):
-    """Rule 6: user text is disclosed wrapped (F-R10); the row holds the string."""
-    if isinstance(v, dict):
+    """Rule 6: user text is disclosed wrapped (F-R10); the row holds the string.
+    Any other dict is a JSON column's value (a report layout, TBD-669)."""
+    if isinstance(v, dict) and "untrusted" in v:
         assert set(v) == {"untrusted"} and isinstance(v["untrusted"], str), f"rule 6: value {v!r}"
         return v["untrusted"]
     return v
@@ -1193,6 +1195,68 @@ PLAN_LINK_SCENARIOS = [
      _seq(_floor, _rule_to_c2, _plan({"category_id": "c2"}, {"category_id": "c2"})), False),
 ]
 
+# ── the report and notification-preference tools (TBD-669, TBD-787) ─────
+
+KPI = {"version": 1, "widgets": [{
+    "id": "k1", "type": "kpi", "title": "Net", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+    "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"}},
+}]}
+THIS_MONTH = {"date_range": {"preset": "this_month"}}
+
+
+async def _report(f, a):
+    await _a_report(f, a)
+
+
+async def _versions(f, a, n, **live):
+    """``n`` saved (non-original) versions on the report, then ``live`` on it."""
+    await _a_report(f, a)
+    async with f() as db:
+        db.add_all([ReportVersion(report_id=a["report"], is_original=False, canvas_filters_json={},
+                                  layout_json={"version": 1, "widgets": [], "n": k}) for k in range(n)])
+        await db.flush()
+        a["version"] = (await db.scalars(select(ReportVersion.id).where(
+            ReportVersion.report_id == a["report"], ReportVersion.is_original.is_(False),
+        ).order_by(ReportVersion.id))).first()
+        if live:
+            await db.execute(update(Report).where(Report.id == a["report"]).values(**live))
+        await db.commit()
+
+
+async def _full_history(f, a):
+    await _versions(f, a, 4)
+
+
+async def _edited(f, a):
+    await _versions(f, a, 1, layout_json=KPI, canvas_filters_json=THIS_MONTH)
+
+
+REPORT_SCENARIOS = [
+    ("report-rename", _t("reports_update", report_id="@report", name="Monthly spend"), _report, False),
+    ("report-rename-auto", _t("reports_update", report_id="@report", name="Monthly spend"), _report, True),
+    ("report-clear-description", _t("reports_update", report_id="@report", description=None), _report, False),
+    ("report-layout-saves-a-version",
+     _t("reports_update_layout", report_id="@report", layout_json=KPI, canvas_filters_json=THIS_MONTH),
+     _report, False),
+    ("report-layout-evicts-the-oldest-version",
+     _t("reports_update_layout", report_id="@report", layout_json=KPI), _full_history, False),
+    ("report-share-with-the-org", _t("reports_update_layout", report_id="@report", visibility="org"),
+     _report, False),
+    ("report-create-blank", _t("reports_create", name="  Blank "), reports_on, False),
+    ("report-create-with-a-layout",
+     _t("reports_create", name="KPIs", description="Net", visibility="org", layout_json=KPI,
+        canvas_filters_json=THIS_MONTH), reports_on, False),
+    ("report-duplicate", _t("reports_duplicate", report_id="@report"), _edited, False),
+    ("report-reset-to-the-original", _t("reports_reset", report_id="@report"), _edited, False),
+    ("report-restore-a-version", _t("report_version_restore", report_id="@report", version_id="@version"),
+     _edited, False),
+    ("report-delete-takes-its-versions", _t("reports_delete", report_id="@report"), _edited, False),
+    ("prefs-turn-one-off", _t("notification_preferences_update", **{**PREFS_ON, "email_org_activity": False}),
+     _prefs, False),
+    ("prefs-first-save-inserts-the-row",
+     _t("notification_preferences_update", **{**PREFS_ON, "in_app_cc_statement": False}), _none, False),
+]
+
 
 # id, tool args builder, setup, auto
 SCENARIOS = [
@@ -1213,6 +1277,7 @@ SCENARIOS = [
     *MONEY_ACCOUNT_SCENARIOS,
     *PLAN_LINK_SCENARIOS,
     *PLANNING_SCENARIOS,
+    *REPORT_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
@@ -1291,6 +1356,16 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
     if sid == "account-money-card-to-loan-with-an-opening-balance":
         assert named[("accounts", "balance_delta")] == "-300.00"
         assert ("accounts", "payment_source_account_id") not in named  # a loan keeps it
+    if sid == "report-layout-evicts-the-oldest-version":
+        gone = [c["id"] for c in changes if c["entity"] == "report_versions" and c["after"] is None]
+        assert gone == [a["version"]], gone
+    if sid in ("report-reset-to-the-original", "report-restore-a-version", "report-share-with-the-org"):
+        assert {c["entity"] for c in changes} == {"reports"}  # no version is saved
+    if sid == "report-delete-takes-its-versions":
+        assert sum(c["entity"] == "report_versions" for c in changes) == 2
+    if sid.startswith("prefs-"):
+        assert [c["field"] for c in changes] == (
+            ["email_org_activity"] if sid == "prefs-turn-one-off" else list(PREFS_ON))
     if sid == "category-restore-recommended":
         parents = [c["after"] for c in changes if c["field"] == "parent_id"]
         assert any(isinstance(p, str) for p in parents) and any(isinstance(p, int) for p in parents)

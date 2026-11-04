@@ -34,7 +34,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 42
+MAX_GAPS = 33
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -54,8 +54,6 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("PUT", "/api/v1/transactions/{transaction_id}/tags"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/unpair"): "TBD-664",
-    # TBD-667
-    ("PUT", "/api/v1/notifications/preferences"): "TBD-667",
     # TBD-668
     ("POST", "/api/v1/forecast-plans/copy"): "TBD-668",
     ("POST", "/api/v1/forecast-plans/populate"): "TBD-668",
@@ -72,15 +70,6 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("DELETE", "/api/v1/scenarios/{scenario_id}"): "TBD-668",
     ("PATCH", "/api/v1/scenarios/{scenario_id}"): "TBD-668",
     ("POST", "/api/v1/scenarios/{scenario_id}/simulate"): "TBD-668",
-    # TBD-669
-    ("POST", "/api/v1/reports"): "TBD-669",
-    ("POST", "/api/v1/reports/query"): "TBD-669",
-    ("POST", "/api/v1/reports/query/sankey"): "TBD-669",
-    ("DELETE", "/api/v1/reports/{report_id}"): "TBD-669",
-    ("PATCH", "/api/v1/reports/{report_id}"): "TBD-669",
-    ("POST", "/api/v1/reports/{report_id}/duplicate"): "TBD-669",
-    ("POST", "/api/v1/reports/{report_id}/reset"): "TBD-669",
-    ("POST", "/api/v1/reports/{report_id}/versions/{version_id}/restore"): "TBD-669",
     # TBD-670
     ("POST", "/api/v1/import/confirm"): "TBD-670",
     ("POST", "/api/v1/import/ofx/preview"): "TBD-670",

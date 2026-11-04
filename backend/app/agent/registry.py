@@ -115,10 +115,18 @@ UNTRUSTED_KEYS: frozenset[str] = frozenset(
         "name", "name_normalized", "description", "notes", "memo", "payee",
         "account_name", "account_type_name", "category_name", "parent_name",
         "linked_account_name",
+        "title", "label",  # a report widget's title and a series label (TBD-669)
     }
 )
 
 _ROUTE_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+
+# POST routes that only read (TBD-669): a query AST is too large for a query
+# string. A read tool may mirror one of these as well as a GET.
+READ_POSTS: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/api/v1/reports/query"),
+    ("POST", "/api/v1/reports/query/sankey"),
+})
 
 # A tool's domain, from its mirrored route unless it declares one. The in-app
 # chat sends every read tool but only the write and sensitive tools of the
@@ -128,7 +136,9 @@ _DOMAIN_ROUTES: dict[str, str] = {
     "/api/v1/account-types": "accounts",
     "/api/v1/budgets": "budgets_and_categories",
     "/api/v1/categories": "budgets_and_categories",
+    "/api/v1/notifications": "notifications",
     "/api/v1/recurring": "recurring_and_billing",
+    "/api/v1/reports": "reports",
     "/api/v1/settings/billing-cycle": "recurring_and_billing",
     "/api/v1/settings/billing-period": "recurring_and_billing",
     "/api/v1/settings/billing-periods": "recurring_and_billing",
@@ -259,6 +269,9 @@ class ToolSpec:
     # The group the in-app chat loads this tool with (TBD-788); ``None`` takes
     # it from ``mirrors_route`` (``_DOMAIN_ROUTES``).
     domain: str | None = None
+    # ``(bucket, amount, window_seconds)``: the mirrored route's own slowapi
+    # limit, drawn per agent token by ``actions.call_gate`` (TBD-669).
+    rate_limit: tuple[str, int, int] | None = None
 
     def __post_init__(self) -> None:
         if self.domain is None:  # frozen: the documented way to set a derived field
@@ -322,7 +335,7 @@ def register(spec: ToolSpec) -> ToolSpec:
     if spec.risk == "read":
         if spec.run is None or spec.preview is not None or spec.execute is not None:
             raise ToolRegistrationError(f"{spec.name}: a read tool declares run only")
-        if method != "GET":
+        if method != "GET" and spec.mirrors_route not in READ_POSTS:
             raise ToolRegistrationError(f"{spec.name}: a read tool must mirror a GET")
     else:
         if spec.run is not None or spec.preview is None or spec.execute is None:
@@ -490,7 +503,7 @@ async def _gate_and_run(
     # not spend the plan's meter.
     from app.agent import actions  # deferred: actions imports this module
 
-    await actions.call_gate(channel, api_token_id, spec.risk)
+    await actions.call_gate(channel, api_token_id, spec.risk, spec.rate_limit)
     await _admit_mcp_call(db, user, channel)
 
     await check_gates(db, user, spec, channel, scope)

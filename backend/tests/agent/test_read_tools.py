@@ -31,6 +31,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
+from app.models.report import Report, ReportVersion
 from app.models.settings import OrgSetting
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
@@ -54,6 +55,9 @@ def _reads():
 def _args(name: str) -> dict:
     if name == "transactions_search":
         return {"date_from": str(P_START), "date_to": str(TODAY), "category_match": "subtree"}
+    if name == "reports_query":  # TBD-669: grouped by the marked category
+        return {"dataset": "transactions", "measure": {"agg": "sum", "field": "amount"},
+                "dimensions": ["category"]}
     return {}
 
 
@@ -123,6 +127,18 @@ async def _org(
                       period_start=start))
     if entitled:
         db.add(OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True))
+    # TBD-669: Reports v2 on (off by default outside production) and a report
+    # whose name, description and widget title carry the marker.
+    db.add(OrgSetting(org_id=org.id, key="feature.reports", value="on"))
+    layout = {"version": 1, "widgets": [{
+        "id": "k1", "type": "kpi", "title": f"Net {MARK}", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+        "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"}},
+    }]}
+    report = Report(org_id=org.id, owner_user_id=user.id, visibility="private", name=f"R {MARK}",
+                    description=f"d {MARK}", layout_json=layout, canvas_filters_json={})
+    db.add(report)
+    await db.flush()
+    db.add(ReportVersion(report_id=report.id, is_original=True, layout_json=layout, canvas_filters_json={}))
     await db.commit()
     return {"org": org, "user": user, "acct": acct, "master": master, "sub": sub, "tx": tx}
 
@@ -136,6 +152,8 @@ async def _call(factory, user, name, args=None):
             )}
         if args is None and name in ("accounts_get", "cycle_payments_list"):  # TBD-665
             args = {"account_id": await db.scalar(select(Account.id).where(Account.org_id == u.org_id))}
+        if args is None and name in ("reports_get", "report_versions_list"):  # TBD-669
+            args = {"report_id": await db.scalar(select(Report.id).where(Report.org_id == u.org_id))}
         return await invoke(db, u, name, _args(name) if args is None else args, channel="in_app")
 
 

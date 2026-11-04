@@ -134,15 +134,24 @@ async def _hit(key: str, limit: int, window: int, code: str) -> None:
 CALLS_PER_MIN, CALLS_PER_DAY = 120, 2000
 
 
-async def call_gate(channel: str, api_token_id: int | None, risk: str) -> None:
+async def call_gate(
+    channel: str, api_token_id: int | None, risk: str,
+    route_limit: tuple[str, int, int] | None = None,
+) -> None:
     """Gate 6. A no-op in-app (its bounds are the turn meter and the chat
-    limits). Fails CLOSED for every risk when the limits DB is unavailable."""
+    limits). Fails CLOSED for every risk when the limits DB is unavailable.
+    ``route_limit`` (``ToolSpec.rate_limit``) is the mirrored route's slowapi
+    limit, which an in-process call does not pass through: it is drawn from
+    the token's own bucket for that route."""
     if channel != "mcp":
         return
     if api_token_id is None:
         raise ToolError("scope_denied", "agent token required")
     await _hit(f"agent:tok:{api_token_id}:calls:min", CALLS_PER_MIN, MINUTE, "token_rate_limited")
     await _hit(f"agent:tok:{api_token_id}:calls:day", CALLS_PER_DAY, DAY, "token_rate_limited")
+    if route_limit is not None:
+        bucket, amount, window = route_limit
+        await _hit(f"agent:tok:{api_token_id}:route:{bucket}", amount, window, "token_rate_limited")
 
 
 def _preview_dict(pv: Preview) -> dict[str, Any]:

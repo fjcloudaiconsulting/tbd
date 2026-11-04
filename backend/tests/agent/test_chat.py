@@ -509,14 +509,18 @@ async def test_five_rounds_fit_the_default_budget_with_the_largest_domain(factor
     (every tool). Five rounds of the base request must fit the default plan.
     Fails when a domain grows past that: split it."""
     from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS
+    from app.models.settings import OrgSetting
 
     await _set_role(factory, w["user"], Role.OWNER)
+    # Reports v2 is on in production (off by default elsewhere): its reads count.
+    await _add(factory, OrgSetting(org_id=w["org"], key="feature.reports", value="on"))
     async with factory._f() as db:
         user = await db.get(User, w["user"])
         per_round = max([
             chat._estimate(chat.opening(ASK["messages"]), await chat.tool_schemas(db, user, {d}))
             for d in registry.domains()
         ])
+        assert "reports_query" in {t["function"]["name"] for t in await chat.tool_schemas(db, user)}
     assert 5 * per_round <= DEFAULT_TURN_INPUT_TOKENS, per_round
 
 

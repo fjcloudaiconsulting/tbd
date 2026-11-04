@@ -47,6 +47,29 @@ describe("present (TBD-664)", () => {
     expect(changeValue(c({ field: "account_id", after: 3 }), "after", undefined, {})).toBe("account #3");
   });
 
+  it("TBD-669: report layouts read by their size, the tools have headlines", () => {
+    const layout = { version: 1, widgets: [{ id: "k1" }, { id: "k2" }] } as unknown as ActionChange["after"];
+    const ch = c({ entity: "reports", id: 4, field: "layout_json", before: {} as never, after: layout });
+    expect(changeLabel(ch)).toBe("Layout");
+    expect(changeValue(ch, "after", undefined, {})).toBe("2 widgets");
+    expect(changeValue(ch, "before", undefined, {})).toBe("0 widgets");
+    expect(changeValue(c({ field: "canvas_filters_json", after: {} as never }), "after", undefined, {}))
+      .toBe("No filters");
+    expect(rowLabel(c({ entity: "report_versions", id: "new:1" }))).toBe("New saved version 1");
+    expect(drillDown(ch)).toEqual({ href: "/reports/4", label: "Open the report" });
+    expect(actionHeadline("reports_update_layout", "s", [])).toBe("Change a report's layout or sharing");
+    expect(toolLabel("reports_query")).toBe("Ran a report query");
+  });
+
+  it("TBD-787: a notification toggle reads On or Off", () => {
+    const ch = c({ entity: "user_notification_preferences", id: 2, field: "email_org_activity",
+      before: true, after: false });
+    expect(changeLabel(ch)).toBe("Organization activity emails");
+    expect([changeValue(ch, "before", undefined, {}), changeValue(ch, "after", undefined, {})])
+      .toEqual(["On", "Off"]);
+    expect(actionHeadline("notification_preferences_update", "s", [])).toBe("Change notification preferences");
+  });
+
   it("TBD-788: loading a domain's tools reads like a lookup", () => {
     expect(toolLabel("load_tools")).toBe("Got the tools for a change");
   });

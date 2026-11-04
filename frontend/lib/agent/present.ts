@@ -76,6 +76,20 @@ const TOOL_LABELS: Record<string, string> = {
   categories_batch_move: "Move subcategories",
   categories_delete: "Delete a category",
   categories_restore_recommended: "Restore recommended categories",
+  reports_list: "Looked up reports",
+  reports_get: "Read a report",
+  report_versions_list: "Looked up a report's saved versions",
+  reports_query: "Ran a report query",
+  reports_sankey_query: "Ran a cash-flow query",
+  reports_update: "Rename a report",
+  reports_update_layout: "Change a report's layout or sharing",
+  reports_create: "Create a report",
+  reports_duplicate: "Copy a report",
+  reports_reset: "Reset a report to its original layout",
+  report_version_restore: "Restore a saved report version",
+  reports_delete: "Delete a report",
+  notification_preferences_get: "Read notification preferences",
+  notification_preferences_update: "Change notification preferences",
 };
 
 export function toolLabel(name: string): string {
@@ -160,6 +174,26 @@ const FIELD_LABELS: Record<string, string> = {
   "recurring_transactions.occurrences_elapsed": "Occurrences so far",
   "budgets.period_end": "Budget period end",
   "organizations.billing_cycle_day": "Billing cycle day",
+  "reports.name": "Report name",
+  "reports.description": "Description",
+  "reports.visibility": "Shared with",
+  "reports.layout_json": "Layout",
+  "reports.canvas_filters_json": "Canvas filters",
+  "reports.owner_user_id": "Owner",
+  "report_versions.report_id": "Report",
+  "report_versions.is_original": "Original version",
+  "report_versions.layout_json": "Saved layout",
+  "report_versions.canvas_filters_json": "Saved canvas filters",
+  "user_notification_preferences.email_security": "Security emails",
+  "user_notification_preferences.email_account": "Account emails",
+  "user_notification_preferences.email_org_admin": "Organization admin emails",
+  "user_notification_preferences.email_org_activity": "Organization activity emails",
+  "user_notification_preferences.email_cc_statement": "Card statement emails",
+  "user_notification_preferences.in_app_security": "Security alerts in the app",
+  "user_notification_preferences.in_app_account": "Account alerts in the app",
+  "user_notification_preferences.in_app_org_admin": "Organization admin alerts in the app",
+  "user_notification_preferences.in_app_org_activity": "Organization activity in the app",
+  "user_notification_preferences.in_app_cc_statement": "Card statement alerts in the app",
 };
 
 export function changeLabel(c: ActionChange): string {
@@ -176,6 +210,7 @@ const ROW_NOUN: Record<string, string> = {
   recurring_transactions: "Recurring transaction", billing_periods: "Billing period", budgets: "Budget",
   account_types: "Account type", cc_cycle_payments: "Card payment", categories: "Category",
   forecast_plan_items: "Forecast item",
+  reports: "Report", report_versions: "Saved version", user_notification_preferences: "Notification preferences",
 };
 
 // Which row a change is on, for a preview that touches several rows of one
@@ -235,6 +270,13 @@ export function changeValue(
     return `${n < 0 ? "−" : "+"}${amount}`;
   }
   if (c.currency) return formatMoney(text(v), c.currency);
+  // A report layout or filter set is a JSON object (TBD-669): named by its size.
+  if (c.field === "layout_json") {
+    const n = ((v as unknown as { widgets?: unknown[] }).widgets ?? []).length;
+    return n === 1 ? "1 widget" : `${n} widgets`;
+  }
+  if (c.field === "canvas_filters_json") return Object.keys(v as object).length ? "Custom filters" : "No filters";
+  if (c.entity === "user_notification_preferences") return v === true ? "On" : "Off";
   if (c.field === "linked_transaction_id") return isNew(v) ? "the other new transaction" : `transaction #${text(v)}`;
   if (c.field === "account_id") return `account #${text(v)}`;
   if (c.field === "recurring_id") return `recurring transaction #${text(v)}`;
@@ -259,6 +301,10 @@ export function drillDown(c: ActionChange | undefined): { href: string; label: s
   if (c.entity === "budgets") return { href: "/budgets", label: "Open budgets" };
   if (c.entity === "recurring_transactions") return { href: "/recurring", label: "Open recurring" };
   if (c.entity === "billing_periods") return { href: "/settings/billing", label: "Open billing periods" };
+  if (c.entity === "reports") return { href: `/reports/${encodeURIComponent(text(c.id))}`, label: "Open the report" };
+  if (c.entity === "user_notification_preferences") {
+    return { href: "/settings/notifications", label: "Open notification settings" };
+  }
   return null;
 }
 
