@@ -356,6 +356,12 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         "other orgs' contributions"
     ),
     "tags": Include(OrgColumn(), "tags the subject created"),
+    # ``request_hash`` fingerprints a request body the subject already has as
+    # rows; it tells them nothing.
+    "transaction_batch_keys": Include(
+        OrgColumn(), "the subject's recent batch submits, kept 24 hours for replay",
+        redact=frozenset({"request_hash"}),
+    ),
     # ⚠ No org_id. The lazy fix for that is to skip the filter, which would
     # emit every tag link on the platform.
     "transaction_tags": Include(
