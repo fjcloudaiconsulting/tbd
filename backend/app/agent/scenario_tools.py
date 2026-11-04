@@ -39,10 +39,13 @@ PLANS = Feature.PLANS
 R = scenarios_router  # the route's own helpers
 
 
-async def _owned(ctx: ToolContext, scenario_id: int) -> Scenario:
-    """The route's ownership check, then the row read fresh and locked."""
+async def _owned(ctx: ToolContext, scenario_id: int, *, lock: bool = True) -> Scenario:
+    """The route's ownership check, then (for a preview) the row read fresh and
+    locked. A read takes no lock: its session lives on across model rounds."""
     with refusals():
-        await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=scenario_id)
+        row = await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=scenario_id)
+    if not lock:
+        return row
     return await ctx.db.scalar(
         select(Scenario).where(Scenario.id == scenario_id, Scenario.org_id == ctx.org_id)
         .with_for_update().execution_options(populate_existing=True)
@@ -69,7 +72,7 @@ class SimulateArgs(SimulateRequest):
 
 
 async def _simulate(ctx: ToolContext, args: SimulateArgs) -> dict:
-    row = await _owned(ctx, args.scenario_id)
+    row = await _owned(ctx, args.scenario_id, lock=False)
     horizon = args.horizon_months if args.horizon_months is not None else row.horizon_months
     with refusals():
         R._validate_horizon_or_422(row.scenario_type.value, horizon)
