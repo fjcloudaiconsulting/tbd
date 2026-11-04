@@ -1,4 +1,5 @@
-"""INF-04: APP_ENV fails safe. Unset, it means production, and the process says so.
+"""INF-04: APP_ENV fails safe. Unset, it means production, and the process says so; a value other
+than production, development or test refuses to boot.
 
 Production gets its checks (committed-secret refusals, the PAT key requirement, no Swagger, no
 lifespan migrations) even when a manifest forgets APP_ENV. Dev compose, CI and conftest set it
@@ -59,7 +60,7 @@ def test_an_unset_app_env_gets_the_production_refusals(monkeypatch):
         )
 
 
-def test_a_chosen_app_env_is_silent_and_an_unrecognised_one_warns(monkeypatch, caplog):
+def test_an_accepted_app_env_is_silent(monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="app.config")
     for env in ("development", "test", "production"):
         monkeypatch.setenv("APP_ENV", env)
@@ -68,9 +69,28 @@ def test_a_chosen_app_env_is_silent_and_an_unrecognised_one_warns(monkeypatch, c
         )
     assert _events(caplog) == []
 
-    monkeypatch.setenv("APP_ENV", "prod")
-    Settings(_env_file=None, jwt_secret_key=_JWT)
-    assert _events(caplog) == [("config.app_env_unrecognised", {"app_env": "prod"})]
+
+@pytest.mark.parametrize("env", ["prod", "Production", "PRODUCTION", "production ", "staging", "dev", ""])
+def test_an_unrecognised_app_env_refuses_to_boot(monkeypatch, env):
+    """Any other value would skip every production check, so it is not a quiet development."""
+    monkeypatch.setenv("APP_ENV", env)
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None, jwt_secret_key=_JWT, api_token_hmac_key=_PAT, database_url=_DSN)
+    (error,) = caught.value.errors()
+    assert error["msg"] == "Value error, APP_ENV must be one of: production, development, test"
+
+
+def test_the_boot_refusal_names_the_variable_and_the_accepted_values():
+    done = subprocess.run(
+        [sys.executable, "-c", "import app.config"],
+        cwd=BACKEND,
+        env={"PATH": "/usr/bin:/bin", "APP_ENV": "staging", "JWT_SECRET_KEY": _JWT},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode != 0
+    assert "invalid settings: Value error, APP_ENV must be one of: production, development, test" in done.stderr
 
 
 def test_the_warning_reaches_stderr_before_logging_is_configured():

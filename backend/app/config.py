@@ -19,6 +19,9 @@ TURNSTILE_TEST_SECRETS = frozenset(
     }
 )
 
+# INF-04: the only APP_ENV values the settings accept; unset means production.
+APP_ENVS = ("production", "development", "test")
+
 # INF-03: every secret-bearing setting. In production none may hold a value from
 # ``_PUBLIC_SECRET_VALUES`` or one starting "dev-only".
 SECRET_FIELDS = (
@@ -619,14 +622,15 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _warn_app_env_not_chosen(self) -> "Settings":
+    def _check_app_env(self) -> "Settings":
         # INF-04: unset, APP_ENV means production (the fail-safe default); every process says so,
         # because a dev or CI run that forgot it now refuses its dev secrets. At import this
-        # precedes logs.configure() and reaches stderr through logging's last resort.
+        # precedes logs.configure() and reaches stderr through logging's last resort. Any other
+        # value ("prod", "Production", "staging") would skip every production check, so it refuses.
         if "app_env" not in self.model_fields_set:
             logger.warning("config.app_env_unset", extra={"default": self.app_env})
-        elif self.app_env not in ("development", "test", "production"):
-            logger.warning("config.app_env_unrecognised", extra={"app_env": self.app_env})
+        elif self.app_env not in APP_ENVS:
+            raise ValueError(f"APP_ENV must be one of: {', '.join(APP_ENVS)}")
         return self
 
     @model_validator(mode="after")

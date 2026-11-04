@@ -274,7 +274,7 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | DB-05 | Export CLI file permissions | Low | Fixed | #1007 | no | `d803ce12` | | TBD-722 |
 | INF-02 | MCP failed-auth ceiling keying | Low | Fixed | #1021 | 2026-10-24 | `e06d770a` | Carry the same setting to the production MCP when it deploys (TBD-610) | TBD-723 |
 | INF-03 | Production secret validation coverage | Low | Fixed | #1007 | no | `f5d32fec` | Deploy gate: check production secrets before releasing #1007 | TBD-724 |
-| INF-04 | `APP_ENV` default | Low | Fixed | #1007, #1096 | no | `6c668014`, `21476d7d` | | TBD-725 |
+| INF-04 | `APP_ENV` default | Low | Fixed | #1007, #1096 | no | `6c668014`, `21476d7d` and its follow-up | Unset means production; an unrecognised value refuses to boot | TBD-725 |
 | INF-05 | Captcha and first-user bootstrap defaults | Low | Partial | #1007, #1096 | no | `588344e3`, `2e0ce55b` | Captcha fails closed in production (#1096); before it ships, `CAPTCHA_SECRET` must be a real secret on every backend and scheduler (prod-secrets check). Bootstrap token: TBD-654 PR 3 | TBD-673 |
 | INF-06 | Reusable workflow pinning and secret inheritance | Low | Partial | #1089 | no | `2301e541` | Known gap: nested org-workflow calls are still at `@v1`; pin them in `fjcloudaiconsulting/.github`, then bump tbd's pin to that release; drop `secrets: inherit` and confirm with one release run | TBD-675 |
 | INF-07 | Deploy secret isolation and wrangler pinning | Low | Fixed | #1007, #1089 | no | `700aa0f3`, `79984cdd` | Watch the first apex deploy after merge: `build-apex` uploads and `deploy-worker` serves the commit | TBD-679 |
