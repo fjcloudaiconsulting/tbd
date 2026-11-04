@@ -614,6 +614,10 @@ async def _check_frontier_clears_series(
     the latest one, or no earlier than the frontier it replaces: a later move
     adds no occurrence to a period that did not already have one coming.
 
+    "Strictly after every row" is also what closes TBD-509: a frontier moved
+    back onto a generated date would make generation's ``exists`` branch spend
+    that occurrence's instalment a second time.
+
     Runs only when the frontier MOVES. A frequency change that keeps it, e.g.
     monthly -> yearly with Nov 1 materialised and Dec 1 next, is accepted
     although Nov 1 and Dec 1 then share a yearly period: the user means "yearly

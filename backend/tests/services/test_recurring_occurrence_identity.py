@@ -32,8 +32,8 @@ fenced on both axes, by name:
     why an ORDINAL key was rejected: ordinals shift under a resume.
 
 Each test is labelled ``fence`` (goes RED under a named wrong implementation,
-injected and confirmed) or ``guard``. ``X1`` is a strict xfail reproducing
-TBD-509 and turns into an XPASS failure the day that ticket lands.
+injected and confirmed) or ``guard``. ``X1`` fences TBD-509: the rewind that
+used to re-spend an instalment is refused at the write.
 
 Clocks are injected everywhere. Fixtures anchor to ``date.today() - n`` via
 ``_safe_month_anchor`` (``reference_wall_clock_date_bomb_tests``); F4 uses
@@ -68,6 +68,7 @@ from app.services.account_balance_forecast_service import (
 )
 from app.services.billing_service import current_cycle_window
 from app.services.date_utils import occurrences_in_window
+from app.services.exceptions import ConflictError
 
 DAY = datetime.timedelta(days=1)
 WEEK = datetime.timedelta(weeks=1)
@@ -168,8 +169,8 @@ async def _seed_on_grid(db: AsyncSession, today: datetime.date) -> dict:
     """
     p_start = _safe_month_anchor(today - datetime.timedelta(days=10))
     seed = await _seed(db, open_start=p_start)
-    # ``pytest.fail``, not ``assert``: X1 is ``xfail(raises=AssertionError)``,
-    # and a broken fixture must FAIL it, never satisfy it.
+    # ``pytest.fail``, not ``assert``: a broken fixture must read as a broken
+    # fixture, not as the assertion under test.
     if current_cycle_window(p_start.day, today) != seed["p1"]:
         pytest.fail(f"cycle window drifted from P1 {seed['p1']}")
     return seed
@@ -737,54 +738,49 @@ async def test_f5_linked_row_at_the_frontier_is_neither_duplicated_nor_projected
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# X1 — TBD-509, reproduced. Known exception #2 of the definition.
+# X1 — TBD-509. Known exception #2 of the definition, closed at the write.
 # ─────────────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    # Only the assertion may xfail. Without ``raises`` a fixture or setup
-    # error is swallowed as an "expected failure" too.
-    raises=AssertionError,
-    reason="TBD-509: rewinding the frontier onto an already-generated date "
-    "re-spends occurrences_elapsed through the exists branch",
-)
-async def test_x1_rewind_onto_generated_date_double_spends_elapsed(db_session):
-    """GUARD (strict xfail). One occurrence, one row, one instalment spent.
+@pytest.mark.parametrize("frequency", ["monthly", "weekly"])
+async def test_x1_rewind_onto_generated_date_is_refused_and_spends_nothing(
+    db_session, frequency,
+):
+    """GUARD. One occurrence, one row, one instalment spent (TBD-509).
 
-    Monthly, 12 instalments, frontier on ``p_start``. Generate (1 row, elapsed
-    1), rewind ``next_due_date`` back onto ``p_start``, generate again. The
-    rewind is written directly: since TBD-762 ``update_recurring`` refuses a
-    MOVED next due date that does not clear the series' rows (a locking read of
-    them). The shape stays reachable from frontiers stored before that guard and
-    from any writer that does not go through it, so the probe stays.
-    The ``exists`` branch finds the row and ``_advance_frontier`` spends a
-    second instalment for the same key. Flips to XPASS -> FAIL when TBD-509
-    lands, which is the prompt to delete this marker.
+    12 instalments, frontier on ``p_start``. Generate, then move
+    ``next_due_date`` back onto ``p_start``, already generated. Accepted, the
+    next run's ``exists`` branch would find the row and ``_advance_frontier``
+    would spend a second instalment for the same key: 11 payments for 12
+    (weekly: one per week moved back). ``update_recurring`` refuses it
+    (``_check_frontier_clears_series``) and writes nothing, so the next run
+    spends nothing either.
     """
     today = datetime.date.today()
     seed = await _seed_on_grid(db_session, today)
     p_start, _ = seed["p1"]
-    t = await _add(db_session, _template(
-        seed, frequency="monthly", next_due_date=p_start, occurrence_count=12,
-    ))
-
-    # Every precondition is ``pytest.fail``, never ``assert``: under
-    # ``raises=AssertionError`` a broken precondition would otherwise XFAIL
-    # for the wrong reason. The LAST line is the only ``assert`` in this test.
+    tid = (await _add(db_session, _template(
+        seed, frequency=frequency, next_due_date=p_start, occurrence_count=12,
+    ))).id
     await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=today
     )
-    if (await _reload(db_session, t.id)).occurrences_elapsed != 1:
-        pytest.fail("precondition: first run must spend exactly one instalment")
+    after_first = await _reload(db_session, tid)
+    elapsed, frontier = after_first.occurrences_elapsed, after_first.next_due_date
+    rows = await _row_keys(db_session, seed["org_id"])
+    assert (tid, p_start) in rows
+    assert elapsed == len(rows)
 
-    rewound = await _reload(db_session, t.id)
-    rewound.next_due_date = p_start
-    await db_session.commit()
-    if (await _reload(db_session, t.id)).next_due_date != p_start:
-        pytest.fail("precondition: the rewind must land on p_start")
+    with pytest.raises(ConflictError, match=p_start.isoformat()):
+        await recurring_service.update_recurring(
+            db_session, seed["org_id"], tid,
+            RecurringUpdate(next_due_date=p_start), today=today,
+        )
+    # The request's session is rolled back on the error, as the router's is.
+    await db_session.rollback()
+    assert (await _reload(db_session, tid)).next_due_date == frontier
+
     await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=today
     )
-    if await _row_keys(db_session, seed["org_id"]) != {(t.id, p_start)}:
-        pytest.fail("precondition: still exactly one row for the one key")
-    assert (await _reload(db_session, t.id)).occurrences_elapsed == 1
+    assert await _row_keys(db_session, seed["org_id"]) == rows
+    assert (await _reload(db_session, tid)).occurrences_elapsed == elapsed
