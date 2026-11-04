@@ -54,8 +54,11 @@ def test_a_closed_production_config_and_dev_and_test_stay_silent(caplog):
     assert _warned(caplog) == []
 
 
-def test_the_shipped_defaults_warn_once_for_the_captcha_and_once_per_bad_origin(caplog):
+def test_the_shipped_defaults_warn_once_for_the_captcha_and_once_per_bad_origin(caplog, monkeypatch):
     """Defaults as shipped: captcha off makes its pins moot, so one captcha warning, plus CORS."""
+    # The dev backend container sets BACKEND_CORS_ORIGINS and the CAPTCHA_* values from .env.
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name.upper(), raising=False)
     caplog.set_level(logging.WARNING, logger="app.config")
     reasons = warn_open_production_defaults(
         Settings(_env_file=None, jwt_secret_key=_JWT, api_token_hmac_key=_PAT, app_env="production")
