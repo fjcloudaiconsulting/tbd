@@ -12,9 +12,10 @@ The fix is an operator CLI that runs inside the backend container. Being able to
 
 | Signal | Where | Meaning |
 |---|---|---|
-| `platform.superadmin.none` (ERROR log) | scheduler tick, `superadmin_floor` job | Zero active superadmins on a populated install. **Page.** |
-| `platform.superadmin.single` (WARNING log) | same job, every tick | Exactly one. A single point of failure, not an outage. Low priority. |
-| `tbd.platform.active_superadmins` (gauge) | same job | The count. Alert at 0; also alert when the series goes stale (the ticker stopped). |
+| `platform.superadmin.none` (ERROR log) | scheduler tick, `superadmin_floor` job, every tick | Zero active superadmins on a populated install. **Page.** |
+| `platform.superadmin.single` (WARNING log) | same job, when the count changes to one | Exactly one. A single point of failure, not an outage. Low priority. |
+| `tbd.platform.active_superadmins` (gauge) | same job | The count. Alert at 0. |
+| `tbd.platform.active_superadmins.probed_at` (gauge, epoch seconds) | same job | Time of the last successful read. **Alert on its age**: an observable gauge keeps re-exporting its last value when the ticker stalls, so the count alone looks fresh. |
 | Amber notice on `/admin` | admin dashboard | Exactly one. The dashboard can never show zero: nobody can open it then. |
 
 The count is `is_superadmin AND is_active`: a deactivated superadmin cannot sign in, so it does not count. An install with no users at all stays quiet (that is a fresh install).
@@ -68,14 +69,15 @@ In one transaction, under a row lock on the target:
 
 - sets `is_superadmin = True`;
 - sets `sessions_invalidated_at`, so every session the target already had (a stolen one included) is ended and the person signs in again before acting as superadmin;
-- writes an `admin.superadmin.promoted` audit row with `outcome="success"`, `actor_email=<--operator>`, `target_org_id` of the target, and `detail` holding `target_user_id`, `via="operator_cli"`, `additional`, `prior_active_superadmin_count` and `reason` (no email).
+- revokes every live API token the target owns (personal access tokens and agent tokens). PATs skip the session cutoff and re-check the flag live, so a former superadmin's old token would otherwise work again;
+- writes an `admin.superadmin.promoted` audit row with `outcome="success"`, `actor_email=<--operator>`, `target_org_id` of the target, and `detail` holding `target_user_id`, `via="operator_cli"`, `additional`, `prior_active_superadmin_count`, `reason` and `revoked_api_tokens` (a count; no email).
 
 ## 6. Verify
 
 1. The person signs in and opens `/admin`.
 2. `/admin/audit` shows the `admin.superadmin.promoted` row.
-3. On the next scheduler tick the gauge moves and the `platform.superadmin.none` / `.single` log stops (if the count reached two).
+3. On the next scheduler tick the count gauge moves, `probed_at` advances, and the `platform.superadmin.none` ERROR stops.
 
 ## 7. After a recovery
 
-Get to **two** active superadmins as soon as possible (`--additional`), so the next lost account is not an outage. There is no demote tool: removing the flag is still a direct database change, deliberately, because a demote path is what would make zero reachable.
+Get to **two** active superadmins as soon as possible (`--additional`), so the next lost account is not an outage. There is no demote tool: removing the flag is still a direct database change, deliberately, because a demote path is what would make zero reachable. When you do demote someone that way, also revoke the user's PATs (set `revoked_at` on their unrevoked `api_tokens` rows), or promote them back only through this CLI, which revokes them.

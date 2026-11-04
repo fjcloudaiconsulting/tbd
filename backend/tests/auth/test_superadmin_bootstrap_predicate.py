@@ -427,30 +427,57 @@ def test_no_demote_path_and_promote_is_operator_only() -> None:
     assert {(s.file, s.function) for s in assigns} == set(PROMOTION_SITES), assigns
 
 
+def _imported_modules(rel: str, node: ast.AST) -> set[str]:
+    """Absolute dotted names an import statement in ``app/<rel>`` reaches.
+
+    Relative imports resolve against the file's package, so
+    ``from . import superadmin_recovery_service`` inside ``app/services/``
+    names the module exactly as the absolute form does.
+    """
+    if isinstance(node, ast.Import):
+        return {a.name for a in node.names}
+    if not isinstance(node, ast.ImportFrom):
+        return set()
+    base = node.module or ""
+    if node.level:
+        package = ["app", *Path(rel).parts[:-1]]  # __init__.py: its own dir
+        anchor = package[: len(package) - (node.level - 1)]
+        base = ".".join([*anchor, *([node.module] if node.module else [])])
+    return {base} | {f"{base}.{a.name}" for a in node.names}
+
+
 def test_recovery_writer_is_not_reachable_from_app_code() -> None:
     """FENCE — TBD-443. The promote writer is reachable from the operator
-    CLI only. Wrong implementation killed: a router, scheduler job or
-    dependency importing ``superadmin_recovery_service``, which is how an
-    HTTP promote path (rejected: a stolen superadmin session could mint a
-    persistent backdoor account) would arrive.
+    CLI only. Wrong implementations killed: a router, scheduler job or
+    dependency importing ``superadmin_recovery_service`` (absolute or
+    relative), which is how an HTTP promote path (rejected: a stolen
+    superadmin session could mint a persistent backdoor account) would
+    arrive; and any ``app/`` module importing from ``scripts``, the CLI side
+    of that same boundary.
     """
-    importers: list[str] = []
+    offenders: list[str] = []
     for rel, tree in _parsed():
         if rel == "services/superadmin_recovery_service.py":
             continue
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                names = {node.module} | {f"{node.module}.{a.name}" for a in node.names}
-            elif isinstance(node, ast.Import):
-                names = {a.name for a in node.names}
-            else:
-                continue
-            if RECOVERY_MODULE in names:
-                importers.append(f"{rel}:{node.lineno}")
-    assert not importers, (
-        f"{RECOVERY_MODULE} is imported by app code: {importers}. It must be "
-        "reachable only from scripts/promote_superadmin.py."
+            names = _imported_modules(rel, node)
+            if RECOVERY_MODULE in names or any(
+                n == "scripts" or n.startswith("scripts.") for n in names
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert not offenders, (
+        f"app code imports {RECOVERY_MODULE} or scripts: {offenders}. The "
+        "recovery writer must be reachable only from "
+        "scripts/promote_superadmin.py."
     )
+
+
+def test_relative_import_resolution_control() -> None:
+    """CONTROL — the resolver above is what makes the relative form visible."""
+    tree = ast.parse("from . import superadmin_recovery_service\nfrom ..services import x")
+    first, second = tree.body
+    assert RECOVERY_MODULE in _imported_modules("services/foo.py", first)
+    assert "app.services.x" in _imported_modules("routers/foo.py", second)
 
 
 def test_audit_outcomes_read_the_row_not_the_local() -> None:

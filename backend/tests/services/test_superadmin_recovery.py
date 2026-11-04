@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import time
 from collections.abc import AsyncIterator
 
 import pytest
@@ -22,10 +24,12 @@ from sqlalchemy.pool import StaticPool
 
 import app.models.audit_event as audit_event_module
 from app.models import Base
+from app.models.api_token import ApiToken
 from app.models.audit_event import AuditEvent
 from app.models.user import Organization, Role, User
 from app.services import superadmin_recovery_service as svc
 from app.services.admin_dashboard_service import build_dashboard_payload
+from app.services.scheduler.jobs import superadmin_floor
 from app.services.scheduler.jobs.superadmin_floor import run_superadmin_floor_probe
 from scripts import promote_superadmin as cli
 
@@ -103,8 +107,55 @@ async def test_promotes_on_a_zero_superadmin_install_with_one_success_row(factor
         "additional": False,
         "prior_active_superadmin_count": 0,
         "reason": "INC-1",
+        "revoked_api_tokens": 0,
     }
     assert EMAIL not in str(event.detail)
+
+
+async def _token(factory, user_id: int, *, revoked=False) -> int:
+    async with factory() as db:
+        row = ApiToken(
+            token_hash=f"h{time.monotonic_ns()}", token_prefix="tbd_x", name="t",
+            scope="read", created_by_user_id=user_id, created_by_email="x",
+            expires_at=datetime.datetime(2099, 1, 1),
+            revoked_at=datetime.datetime(2026, 1, 1) if revoked else None,
+        )
+        db.add(row)
+        await db.commit()
+        return row.id
+
+
+@pytest.mark.asyncio
+async def test_grant_revokes_the_targets_live_api_tokens(factory):
+    """A former superadmin's unrevoked PAT must not come back to life:
+    ``pat.py`` skips the session cutoff and re-checks the flag live."""
+    uid = await _user(factory)
+    other = await _user(factory, email="other@example.test")
+    live = await _token(factory, uid)
+    old = await _token(factory, uid, revoked=True)
+    bystander = await _token(factory, other)
+
+    result = await _promote(factory, uid)
+
+    async with factory() as db:
+        rows = {t.id: t for t in (await db.execute(select(ApiToken))).scalars()}
+    assert rows[live].revoked_at is not None
+    assert rows[old].revoked_at == datetime.datetime(2026, 1, 1), "already-revoked is not re-stamped"
+    assert rows[bystander].revoked_at is None
+    assert result["revoked_api_tokens"] == 1
+    (event,) = await _events(factory)
+    assert event.detail["revoked_api_tokens"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_leaves_api_tokens_alone(factory):
+    uid = await _user(factory, mfa=False)
+    tid = await _token(factory, uid)
+
+    with pytest.raises(svc.PromotionRefused):
+        await _promote(factory, uid)
+    async with factory() as db:
+        assert (await db.get(ApiToken, tid)).revoked_at is None
 
 
 @pytest.mark.parametrize(
@@ -262,6 +313,11 @@ def test_cli_argument_validation(argv):
 # ══ Detection ══════════════════════════════════════════════════════════════
 
 
+@pytest.fixture(autouse=True)
+def _fresh_probe_state(monkeypatch):
+    monkeypatch.setattr(superadmin_floor, "_gauges", {})
+
+
 def _points(reader, name):
     data = reader.get_metrics_data()
     return [p.value for rm in (data.resource_metrics if data else []) for sm in rm.scope_metrics
@@ -289,11 +345,38 @@ async def test_probe_warns_at_one_and_is_quiet_at_two(factory, log_lines, metric
     await _user(factory, superadmin=True)
     assert await run_superadmin_floor_probe(factory) == 1
     assert [e["msg"] for e in _events_logged(log_lines)] == ["platform.superadmin.single"]
+    # Logged on the change only, not every tick.
+    assert await run_superadmin_floor_probe(factory) == 1
+    assert len(_events_logged(log_lines)) == 1
 
     await _user(factory, email="second@example.test", superadmin=True)
     assert await run_superadmin_floor_probe(factory) == 2
     assert len(_events_logged(log_lines)) == 1
     assert _points(metric_reader, "tbd.platform.active_superadmins") == [2]
+
+
+@pytest.mark.asyncio
+async def test_zero_alarm_repeats_every_tick(factory, log_lines):
+    await _user(factory)
+    await run_superadmin_floor_probe(factory)
+    await run_superadmin_floor_probe(factory)
+    assert [e["msg"] for e in _events_logged(log_lines)] == ["platform.superadmin.none"] * 2
+
+
+@pytest.mark.asyncio
+async def test_probed_at_advances_only_on_a_successful_read(factory, metric_reader, monkeypatch):
+    """The count gauge re-exports its cached value after the ticker stalls;
+    the probed_at age is what an alert can read."""
+    monkeypatch.setattr(superadmin_floor.time, "time", lambda: 1_000.0)
+    await run_superadmin_floor_probe(factory)
+    assert _points(metric_reader, "tbd.platform.active_superadmins.probed_at") == [1_000.0]
+
+    def broken():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(superadmin_floor.time, "time", lambda: 2_000.0)
+    assert await run_superadmin_floor_probe(broken) is None
+    assert _points(metric_reader, "tbd.platform.active_superadmins.probed_at") == [1_000.0]
 
 
 @pytest.mark.asyncio

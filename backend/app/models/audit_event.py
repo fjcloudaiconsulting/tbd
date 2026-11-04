@@ -165,7 +165,8 @@ even before the emitting code arrives.
   grant's own transaction; every refusal writes ``outcome="failure"``
   with ``detail.code``. ``detail`` carries ids and counts only:
   ``target_user_id``, ``via="operator_cli"``, ``additional``,
-  ``prior_active_superadmin_count`` and ``reason``, never the email.
+  ``prior_active_superadmin_count``, ``reason`` and (on success)
+  ``revoked_api_tokens``, never the email.
 
 The existing ``org.invitation.sent`` / ``org.invitation.accepted``
 event types gain a ``detail.via_platform_admin: true`` flag when

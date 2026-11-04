@@ -4,15 +4,21 @@ Runs once per tick from ``run_one_tick`` under the tick lock. At zero active
 superadmins on a populated install ``/admin`` 403s everyone, so the dashboard
 cannot show it: this probe is the detector. It logs
 ``platform.superadmin.none`` (error) at zero and ``platform.superadmin.single``
-(warning) at one, and publishes ``tbd.platform.active_superadmins`` as an
-observable gauge, re-reported on every export so a stalled ticker shows as a
-stale series. An empty install (no users) is a normal first run and stays
+(warning) when the count changes to one, and publishes two observable
+gauges: ``tbd.platform.active_superadmins`` (the count) and
+``tbd.platform.active_superadmins.probed_at`` (epoch seconds of the last
+successful read). An observable gauge re-exports its last value forever, so a
+stalled ticker keeps reporting a fresh-looking count: alert on the AGE of
+``probed_at``, not on the count's series going missing. The zero ERROR repeats
+every tick; the single WARNING is logged once per change (process-local, so
+once more after a restart). An empty install (no users) is a normal first run and stays
 quiet. Recovery: ``docs/operations/SUPERADMIN_RECOVERY.md``. Errors are
 logged, never raised (the ticker must not die).
 """
 from __future__ import annotations
 
 import logging
+import time
 
 from opentelemetry import metrics, trace
 from sqlalchemy import func, select
@@ -24,9 +30,16 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 _gauges: dict[str, float] = {}
-metrics.get_meter(__name__).create_observable_gauge(
-    "tbd.platform.active_superadmins",
-    [lambda _options: [metrics.Observation(_gauges["n"])] if "n" in _gauges else []],
+
+
+def _observe(name: str):
+    return lambda _options: [metrics.Observation(_gauges[name])] if name in _gauges else []
+
+
+_meter = metrics.get_meter(__name__)
+_meter.create_observable_gauge("tbd.platform.active_superadmins", [_observe("n")])
+_meter.create_observable_gauge(
+    "tbd.platform.active_superadmins.probed_at", [_observe("probed_at")], unit="s"
 )
 
 
@@ -44,9 +57,11 @@ async def run_superadmin_floor_probe(session_factory=async_session) -> int | Non
         tracing.mark_error(trace.get_current_span(), exc)
         logger.error("scheduler.superadmin_floor.failed", extra={"error": type(exc).__name__})
         return None
+    previous = _gauges.get("n")
     _gauges["n"] = active
+    _gauges["probed_at"] = time.time()
     if users and active == 0:
         logger.error("platform.superadmin.none", extra={"active_superadmins": 0, "users": users})
-    elif active == 1:
+    elif active == 1 and previous != 1:
         logger.warning("platform.superadmin.single", extra={"active_superadmins": 1})
     return active

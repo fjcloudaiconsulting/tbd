@@ -17,9 +17,12 @@ soft-deleted or merged), has an unverified email, has no MFA enrolled, or an
 active superadmin already exists and the operator did not pass
 ``additional=True``. A target that already holds the flag is a no-op.
 
-The grant also writes ``sessions_invalidated_at``: ``is_superadmin`` is read
-live from the row on every request, so without it any session the target
-already had (a stolen one included) would gain the platform flag at once.
+The grant also writes ``sessions_invalidated_at`` and revokes every live
+API token the target owns: ``is_superadmin`` is read live from the row on
+every request, so without them any session the target already had (a stolen
+one included) would gain the platform flag at once. Tokens need their own
+revoke because ``pat.py`` deliberately skips the session cutoff, so a former
+superadmin's unrevoked PAT would otherwise come back to life on re-promotion.
 
 The audit row records ids and counts only, never the email.
 """
@@ -27,11 +30,14 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app._time import utcnow_naive
+from app.models.api_token import ApiToken
 from app.models.user import User
 from app.security import session_cutoff
+from app.services.api_token_service import cancel_staged_actions
 from app.services.audit_service import add_audit_event_to_session, record_audit_event
 from app.services.user_service import normalize_email
 
@@ -101,6 +107,10 @@ async def promote_superadmin(
     confirmed is re-validated at write time.
     """
     async with session_factory() as db:
+        # Only the target row is locked, not the superadmin set. Two
+        # concurrent first recoveries can both see a count of zero and both
+        # grant; that is acceptable because this path only ever RAISES the
+        # count, and each grant still passes every per-target check.
         user = await db.scalar(select(User).where(User.id == user_id).with_for_update())
         if user is None:
             raise LookupError(user_id)
@@ -135,6 +145,12 @@ async def promote_superadmin(
 
         user.is_superadmin = True
         user.sessions_invalidated_at = session_cutoff()
+        live = (ApiToken.created_by_user_id == user.id, ApiToken.revoked_at.is_(None))
+        await cancel_staged_actions(db, select(ApiToken.id).where(*live))
+        revoked = await db.execute(
+            update(ApiToken).where(*live).values(revoked_at=utcnow_naive())
+        )
+        detail["revoked_api_tokens"] = revoked.rowcount or 0
         add_audit_event_to_session(
             db,
             event_type=PROMOTED_EVENT_TYPE,
