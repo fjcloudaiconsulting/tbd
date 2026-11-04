@@ -34,10 +34,10 @@
 # AND still rebuild the DO app: a brand or token change legitimately affects
 # both surfaces.
 #
-# The deploy-worker job needs one secret, CLOUDFLARE_API_TOKEN, in the `landing`
-# environment (deployment branches: main only): an account-owned token with the
-# Editor role scoped to the tbd-landing Worker alone. It skips with a notice
-# while that secret is unset.
+# build-apex builds with no secret (INF-07). deploy-worker needs one secret,
+# CLOUDFLARE_API_TOKEN, in the `landing` environment (deployment branches: main
+# only): an account-owned token with the Editor role scoped to the tbd-landing
+# Worker alone. It skips with a notice while that secret is unset.
 
 name: Deploy Apex Landing
 
@@ -168,19 +168,70 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: ./scripts/ci/await-test-run.sh "${{ github.sha }}"
 
+  # INF-07: the build runs every frontend dependency's code, so it gets its own runner and no
+  # secret. Only the static export crosses over, as an artifact; the deploy job's fresh runner
+  # installs nothing but the locked wrangler before the token reaches one step.
+  build-apex:
+    name: Build apex static export
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: await-tests
+    # Same guard as deploy-worker below, which explains it.
+    if: >-
+      ${{ !cancelled()
+          && github.ref == 'refs/heads/main'
+          && (needs.await-tests.result == 'success'
+              || github.event_name == 'workflow_dispatch') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: Build apex static export
+        working-directory: frontend
+        env:
+          TBD_BUILD_TARGET: apex
+          TBD_SITE_URL: https://thebetterdecision.com
+          TBD_APP_URL: https://app.thebetterdecision.com
+        run: pnpm build:apex && cp apex-worker/_headers out-apex/_headers
+
+      # include-hidden-files: the export holds .well-known/security.txt, which upload-artifact
+      # drops by default.
+      - name: Upload the export
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apex-export
+          path: frontend/out-apex
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
   # INFRA-60/61. The export on the tbd-landing Worker, the apex's only origin. The smoke
   # test below reads the workers.dev name, which serves the same deploy.
   deploy-worker:
     name: Deploy tbd-landing Worker
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: await-tests
+    needs: [await-tests, build-apex]
     # `needs:` on a SKIPPED job (await-tests skips on dispatch) skips the dependent by default, so
     # `!cancelled()` and the explicit dispatch arm keep the manual recovery deploy working; a real
     # cancellation still propagates. Only from main: nothing else pins this job to main.
     if: >-
       ${{ !cancelled()
           && github.ref == 'refs/heads/main'
+          && needs.build-apex.result == 'success'
           && (needs.await-tests.result == 'success'
               || github.event_name == 'workflow_dispatch') }}
     permissions:
@@ -199,6 +250,7 @@ jobs:
         if: env.HAS_CF_TOKEN != 'true'
         run: echo "::notice::CLOUDFLARE_API_TOKEN is not set in the landing environment, skipping the tbd-landing Worker deploy"
 
+      # For frontend/apex-worker: wrangler.jsonc, worker.js and the lockfile.
       - name: Checkout
         if: env.HAS_CF_TOKEN == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,19 +263,13 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      - name: Install frontend dependencies
+      # Where wrangler.jsonc's assets.directory (../out-apex) expects it.
+      - name: Download the export
         if: env.HAS_CF_TOKEN == 'true'
-        working-directory: frontend
-        run: corepack enable && pnpm install --frozen-lockfile
-
-      - name: Build apex static export
-        if: env.HAS_CF_TOKEN == 'true'
-        working-directory: frontend
-        env:
-          TBD_BUILD_TARGET: apex
-          TBD_SITE_URL: https://thebetterdecision.com
-          TBD_APP_URL: https://app.thebetterdecision.com
-        run: pnpm build:apex && cp apex-worker/_headers out-apex/_headers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apex-export
+          path: frontend/out-apex
 
       # INF-07: wrangler and its whole dependency tree come from apex-worker/package-lock.json
       # (exact versions, integrity hashes) with no install scripts. wrangler-action installed it

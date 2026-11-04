@@ -114,11 +114,13 @@ def test_apex_gates_its_deploy_but_never_the_manual_recovery():
     assert "workflow_dispatch" in (jobs["await-tests"].get("if") or ""), (
         "the gate must skip on manual dispatch, which is the recovery path"
     )
-    guard = jobs["deploy-worker"].get("if") or ""
-    assert "workflow_dispatch" in guard, (
-        "deploy-worker needs an explicit dispatch arm: `needs:` on a "
-        "SKIPPED gate would otherwise skip the manual recovery deploy too."
-    )
+    for name in ("build-apex", "deploy-worker"):
+        assert "await-tests" in (jobs[name].get("needs") or []), name
+        guard = jobs[name].get("if") or ""
+        assert "workflow_dispatch" in guard, (
+            f"{name} needs an explicit dispatch arm: `needs:` on a "
+            "SKIPPED gate would otherwise skip the manual recovery deploy too."
+        )
 
 
 def _normalise_expr(raw) -> str:
