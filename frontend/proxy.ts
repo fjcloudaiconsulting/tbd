@@ -85,6 +85,7 @@ const ONE_TIME_TOKEN_PATHS = new Set([
   "/verify-email",
   "/accept-invite",
   "/mfa-verify",
+  "/signup/complete",
   "/settings/ai-providers/openrouter/callback",
 ]);
 
