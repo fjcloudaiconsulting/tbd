@@ -127,7 +127,6 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "recurring_update",
         "accounts_update", "account_types_update",
         "budgets_rebalance", "categories_update",
-        "reports_update", "notification_preferences_update",
     }
     # TBD-664 B: everything that moves money, creates or deletes is sensitive
     # (never auto, never confirmed over MCP). TBD-667: so is every billing-period
@@ -151,6 +150,9 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "categories_restore_recommended",
         # TBD-669: a layout edit saves a version and may evict one; a reset or
         # restore has no inverse its own args could stage.
+        # TBD-669, TBD-787: a rename of a colleague's shared report and a
+        # silenced alert both need the person.
+        "reports_update", "notification_preferences_update",
         "reports_update_layout", "reports_create", "reports_duplicate", "reports_reset",
         "report_version_restore", "reports_delete",
         # TBD-668: every forecast plan change states or freezes planned amounts;
@@ -492,13 +494,21 @@ def _agent_tool_modules() -> list[pathlib.Path]:
     return sorted((APP_DIR / "agent").rglob("*.py"))
 
 
-# Reviewed matches (TBD-787): the preference toggles' router and model. The
-# route the tool runs writes the caller's preference row and sends nothing.
-_EGRESS_REVIEWED = {
-    ("preference_tools.py", "app.models.notification"),
-    ("preference_tools.py", "app.models.notification.UserNotificationPreferences"),
-    ("preference_tools.py", "app.routers.notifications"),
-}
+# Reviewed (TBD-787): the preference route's ``router`` and nothing else of
+# its module (``test_preference_tools`` pins the use). The route the tool runs
+# writes the caller's preference row and sends nothing.
+_EGRESS_REVIEWED = {("preference_tools.py", "app.routers.notifications", ("router",))}
+
+
+def _reviewed(path: pathlib.Path) -> set[str]:
+    """The modules of ``path``'s reviewed ``from X import names`` statements."""
+    out = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.ImportFrom):
+            names = tuple(a.name for a in node.names)
+            if (path.name, node.module, names) in _EGRESS_REVIEWED:
+                out |= {node.module, *(f"{node.module}.{n}" for n in names)}
+    return out
 
 
 def test_fr5_no_tool_module_imports_an_egress_path():
@@ -510,7 +520,7 @@ def test_fr5_no_tool_module_imports_an_egress_path():
     assert any(p.name == "tools.py" for p in modules)
     offenders = {
         (p.name, m) for p in modules for m in _imported_modules(p)
-        if _EGRESS.search(m) and (p.name, m) not in _EGRESS_REVIEWED
+        if _EGRESS.search(m) and m not in _reviewed(p)
     }
     assert not offenders, offenders
 

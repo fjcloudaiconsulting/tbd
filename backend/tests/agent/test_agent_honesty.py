@@ -1238,7 +1238,6 @@ async def _edited(f, a):
 
 REPORT_SCENARIOS = [
     ("report-rename", _t("reports_update", report_id="@report", name="Monthly spend"), _report, False),
-    ("report-rename-auto", _t("reports_update", report_id="@report", name="Monthly spend"), _report, True),
     ("report-clear-description", _t("reports_update", report_id="@report", description=None), _report, False),
     ("report-layout-saves-a-version",
      _t("reports_update_layout", report_id="@report", layout_json=KPI, canvas_filters_json=THIS_MONTH),

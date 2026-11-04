@@ -89,7 +89,7 @@ register(ToolSpec(
     name="scenarios_simulate", risk="read", args=SimulateArgs, product_area=PLANS, min_role=Role.MEMBER,
     mirrors_route=("POST", "/api/v1/scenarios/{scenario_id}/simulate"),
     description="Project a plan's account balances month by month (saves nothing).",
-    run=_simulate,
+    run=_simulate, route_limit=R.simulate_scenario,
 ))
 
 
@@ -108,7 +108,7 @@ register(ToolSpec(
     name="scenarios_compare", risk="read", args=CompareArgs, product_area=PLANS, min_role=Role.MEMBER,
     mirrors_route=("POST", "/api/v1/scenarios/compare"),
     description="Project 1 to 3 plans at one horizon, side by side.",
-    run=_compare,
+    run=_compare, route_limit=R.compare_scenarios,
 ))
 
 

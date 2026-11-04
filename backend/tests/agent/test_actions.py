@@ -870,9 +870,6 @@ _WRITE_CASES = {
         {"budget_id": a["b2"], "expected_amount": "50.00", "amount": "70.00"},
     ]},
     "categories_update": lambda a: {"category_id": a["c1"], "name": "Groceries"},
-    # TBD-669, TBD-787
-    "reports_update": lambda a: {"report_id": a["report"], "name": "Monthly spend"},
-    "notification_preferences_update": lambda a: {**PREFS_ON, "email_org_activity": False},
 }
 
 PREFS_ON = dict.fromkeys((
@@ -922,10 +919,7 @@ async def _a_template(f, a):
 
 
 # Rows a case needs beyond the shared world ``w`` (TBD-667).
-_WRITE_SETUP = {
-    "recurring_update": _a_template, "reports_update": _a_report,
-    "notification_preferences_update": _prefs,
-}
+_WRITE_SETUP = {"recurring_update": _a_template}
 
 
 async def write_setup(f, a, tool):

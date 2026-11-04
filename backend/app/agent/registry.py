@@ -115,9 +115,8 @@ UNTRUSTED_KEYS: frozenset[str] = frozenset(
         "name", "name_normalized", "description", "notes", "memo", "payee",
         "account_name", "account_type_name", "category_name", "parent_name",
         "linked_account_name",
-        "title", "label",  # a report widget's title, a series label (TBD-669)
         # TBD-668: the free text in a plan's params
-        "destination", "subtype",
+        "destination", "label", "subtype",
     }
 )
 
@@ -359,14 +358,18 @@ def register(spec: ToolSpec) -> ToolSpec:
                 f"{spec.name}: a delete is never 'write'; declare it 'sensitive'"
             )
     if spec.route_limit is not None:
-        # ``actions.route_gate`` draws REST's bucket under the per-user key:
-        # a route keyed otherwise would leave the agent a second allowance.
+        # ``actions.route_gate`` draws REST's per-user buckets: a route with
+        # none would leave the agent a second allowance. Static limits count
+        # too, so one is never silently skipped; a per-address one is only a
+        # backstop the agent (no address) does not draw.
         from app.rate_limit import limiter, user_rate_limit_key
 
         fn = spec.route_limit
-        groups = limiter._dynamic_route_limits.get(f"{fn.__module__}.{fn.__name__}")
-        if not groups or any(g.key_function is not user_rate_limit_key for g in groups):
-            raise ToolRegistrationError(f"{spec.name}: route_limit needs a dynamic limit keyed per user")
+        name = f"{fn.__module__}.{fn.__name__}"
+        keys = [lim.key_func for lim in limiter._route_limits.get(name, ())]
+        keys += [g.key_function for g in limiter._dynamic_route_limits.get(name, ())]
+        if user_rate_limit_key not in keys:
+            raise ToolRegistrationError(f"{spec.name}: route_limit needs a limit keyed per user")
     if spec.risk != "read" and spec.domain is None:
         raise ToolRegistrationError(f"{spec.name}: a {spec.risk} tool needs a domain")
     _TOOLS[spec.name] = spec
@@ -524,6 +527,9 @@ async def _gate_and_run(
 
     await actions.call_gate(channel, api_token_id, spec.risk)
     if spec.route_limit is not None:
+        # A call the gates refuse must not spend the user's REST budget; the
+        # route's limit still runs before the plan's meter is admitted.
+        await check_gates(db, user, spec, channel, scope)
         await actions.route_gate(db, user, spec)
     await _admit_mcp_call(db, user, channel)
 

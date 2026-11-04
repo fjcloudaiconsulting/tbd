@@ -75,7 +75,7 @@ from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic.fields import FieldInfo
-from sqlalchemy import select
+from sqlalchemy import JSON, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agent.registry import (
@@ -259,9 +259,12 @@ def _arg(info: Any, *, required: bool, nullable: bool) -> tuple[Any, Any]:
 
 
 def _disclose(column: Any, value: Any) -> Any:
-    """A column value as a preview states it (the honesty fence's normal form)."""
+    """A column value as a preview states it (the honesty fence's normal form).
+    A JSON document is user-shaped: its canonical text, wrapped (TBD-669)."""
     if value is None:
         return None
+    if isinstance(column.type, JSON):
+        return {"untrusted": json.dumps(value, sort_keys=True)}
     if isinstance(value, enum.Enum):
         value = value.value
     if isinstance(value, Decimal):

@@ -1,5 +1,6 @@
-"""TBD-669: the report queries are limited per user, and the agent's query
-tools draw the same bucket.
+"""TBD-669: the report queries and the Plans simulate and compare (TBD-668)
+are limited per user, and the agent's read tools over them draw the same
+bucket (``app.agent.actions.route_gate``).
 
 Real ``app.main`` app (the limiter, its 429 handler and the override loader
 are wired there), sqlite for ``get_db`` / ``get_session_factory``, real
@@ -19,6 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import rate_limit_db
 from app.agent.registry import ToolError, invoke
+from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
 from app.main import app
@@ -38,7 +40,8 @@ ROUTES = [("/api/v1/reports/query", "reports_query", QUERY),
 
 
 @pytest.fixture(autouse=True)
-def _fresh_limits():
+def _fresh_limits(monkeypatch):
+    monkeypatch.setattr(app_settings, "feature_plans", True)
     limiter.reset()
     rate_limit_db.reset()
     yield
@@ -67,7 +70,7 @@ async def factory():
     await eng.dispose()
 
 
-async def _world(f, *, override=True) -> dict:
+async def _world(f, *, override=True, patterns=("reports.query", "reports.sankey_query")) -> dict:
     async with f() as s:
         org = Organization(name=f"org-{uuid4().hex[:8]}", billing_cycle_day=1, primary_currency="EUR")
         s.add(org)
@@ -80,14 +83,14 @@ async def _world(f, *, override=True) -> dict:
         if override:
             s.add_all([RateLimitOverride(org_id=org.id, endpoint_pattern=p, max_requests=LIMIT,
                                          period_seconds=60)
-                       for p in ("reports.query", "reports.sankey_query")])
+                       for p in patterns])
         await s.flush()
         tokens = [ApiToken(token_hash=secrets.token_hex(32), token_prefix=f"pat_{n}", name=f"t{n}",
                            scope="agent:read", created_by_user_id=users[0].id, created_by_email="a@x.example",
                            expires_at=datetime.utcnow() + timedelta(days=30)) for n in (1, 2)]
         s.add_all(tokens)
         await s.commit()
-        return {"alice": users[0], "bob": users[1], "t1": tokens[0].id, "t2": tokens[1].id}
+        return {"alice": users[0], "bob": users[1], "t1": tokens[0].id, "t2": tokens[1].id, "org": org.id}
 
 
 def _jwt(u: User) -> dict:
@@ -157,3 +160,52 @@ async def test_without_an_override_the_default_applies(factory):
     w = await _world(factory, override=False)
     codes = {await _agent(factory, w["alice"], "reports_query", QUERY) for _ in range(LIMIT + 1)}
     assert codes == {"ok"}
+
+
+async def test_a_call_the_gates_refuse_spends_no_budget(factory):
+    """FENCE. Wrong implementation: the route's bucket drawn before the role,
+    product-area and scope gates, so refused calls drain the user's budget."""
+    w = await _world(factory)
+    async with factory() as s:
+        s.add(OrgSetting(org_id=w["org"], key="orgpref.reports", value="off"))
+        await s.commit()
+    codes = {await _agent(factory, w["alice"], "reports_query", QUERY) for _ in range(LIMIT + 1)}
+    assert codes == {"feature_disabled"}
+    async with factory() as s:
+        await s.execute(OrgSetting.__table__.delete().where(OrgSetting.key == "orgpref.reports"))
+        await s.commit()
+    assert [await _agent(factory, w["alice"], "reports_query", QUERY) for _ in range(LIMIT)] == ["ok"] * LIMIT
+
+
+# ── Plans: simulate and compare (TBD-668) ─────────────────────────────────
+# The ids do not exist, so an admitted call answers not_found (404 over
+# REST); the bucket counts it all the same, as it does over REST.
+
+COMPARE = ("/api/v1/scenarios/compare", "scenarios_compare", {"scenario_ids": [999999], "horizon_months": 12})
+SIMULATE = ("/api/v1/scenarios/999999/simulate", "scenarios_simulate", {"scenario_id": 999999})
+
+
+def _rest_admitted(client: TestClient, u: User, url: str, body: dict, *, cap: int) -> int:
+    for n in range(cap):
+        r = client.post(url, headers=_jwt(u), json=body)
+        if r.status_code == 429:
+            return n
+        assert r.status_code == 404, (r.status_code, r.text)
+    return cap
+
+
+async def test_the_31st_compare_in_a_minute_is_refused(factory):
+    """FENCE (#1086 H1). Wrong implementation: the compare tool calling the
+    handler past its limit decorator, unlimited."""
+    w = await _world(factory, override=False)
+    codes = [await _agent(factory, w["alice"], "scenarios_compare", COMPARE[2]) for _ in range(31)]
+    assert codes == ["not_found"] * 30 + ["route_rate_limited"]
+
+
+@pytest.mark.parametrize("url,tool,body", [COMPARE, SIMULATE], ids=["compare", "simulate"])
+async def test_an_override_tightens_the_plans_limits_and_rest_shares_the_bucket(factory, url, tool, body):
+    w = await _world(factory, patterns=("scenarios.compare", "scenarios.simulate"))
+    a = w["alice"]
+    assert await _agent(factory, a, tool, body, w["t1"]) == "not_found"
+    assert _rest_admitted(TestClient(app), a, url, {} if tool == "scenarios_simulate" else body, cap=4) == LIMIT - 1
+    assert await _agent(factory, a, tool, body, w["t2"]) == "route_rate_limited"

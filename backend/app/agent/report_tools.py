@@ -11,21 +11,25 @@ Visibility follows the router: a report is seen by its owner, or by the org
 when it is org-shared; it is edited by its owner, or an org owner or admin
 when it is org-shared. A report the caller cannot see is ``not_found``.
 
-``reports_update`` (name, description) is the one ``write``: it creates no
-version row and its inverse is the old values. A layout, filter or visibility
-change snapshots a version and may evict the oldest, so it is the
-``sensitive`` ``reports_update_layout``; so is everything that creates,
-deletes, resets or restores. Each preview names every row the confirm writes
+Every change is ``sensitive`` (browser-only confirm, never auto). Renaming a
+colleague's org-shared report always needs the person; a layout, filter or
+visibility change snapshots a version and may evict the oldest
+(``reports_update_layout``); the rest create, delete, reset or restore.
+Layouts and filters are user-shaped documents: a preview discloses one as its
+canonical JSON text and a read returns every string in it, wrapped as
+untrusted. Each preview names every row the confirm writes
 (fenced by ``tests/agent/test_agent_honesty.py``).
 """
 from __future__ import annotations
+
+import dataclasses
 
 from typing import Any
 
 from sqlalchemy import select
 
 from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register
-from app.agent.route_tool import CascadeDisclosure, refusals, route_tool
+from app.agent.route_tool import CascadeDisclosure, _disclose, refusals, route_tool
 from app.agent.sensitive_tools import CONFIRM
 from app.models.report import Report, ReportVersion, ReportVisibility
 from app.models.user import Role
@@ -37,7 +41,6 @@ from app.services.sankey_service import build_sankey
 
 ROUTER = reports_router.router
 REPORTS = Feature.REPORTS
-WRITE_CONFIRM = "Returns a preview to confirm; nothing changes until it is confirmed."
 VERSIONS = "report_versions"
 LAYOUT = ("layout_json", "canvas_filters_json")
 
@@ -59,6 +62,36 @@ async def _locked(ctx: ToolContext, report_id: int) -> Report:
     return row
 
 
+def _doc(value: Any) -> Any:
+    """A layout or filter document as a preview discloses it: canonical JSON
+    text, wrapped as user text (``route_tool._disclose``)."""
+    return _disclose(Report.__table__.c.layout_json, value)
+
+
+def _leaves(value: Any) -> Any:
+    """Every string in a document wrapped: a widget id, a title, a filter
+    value or a config extra the schema keeps are all user text."""
+    if isinstance(value, str):
+        return {"untrusted": value}
+    if isinstance(value, list):
+        return [_leaves(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _leaves(v) for k, v in value.items()}
+    return value
+
+
+def _documents_untrusted(spec: ToolSpec) -> ToolSpec:
+    """A report read whose layout and filters arrive as untrusted subtrees."""
+    async def run(ctx: ToolContext, args: Any) -> Any:
+        out = await spec.run(ctx, args)
+        for report in out if isinstance(out, list) else [out]:
+            for f in LAYOUT:
+                report[f] = _leaves(report[f])
+        return out
+
+    return dataclasses.replace(spec, run=run)
+
+
 def _new_report(owner_id: int, version_group: str, **values: Any) -> list[Change]:
     """A report insert (``new:1``) and its original version (``version_group``)."""
     out = [Change("reports", "new:1", "owner_user_id", None, owner_id)]
@@ -73,18 +106,18 @@ def _new_report(owner_id: int, version_group: str, **values: Any) -> list[Change
 
 # ── reads ─────────────────────────────────────────────────────────────────
 
-register(route_tool(
+register(_documents_untrusted(route_tool(
     name="reports_list", risk="read",
     router=ROUTER, method="GET", path="/api/v1/reports",
     fields=(), product_area=REPORTS, min_role=Role.MEMBER,
     description="List the saved reports this user can see (their own and the org-shared ones), newest first.",
-))
-register(route_tool(
+)))
+register(_documents_untrusted(route_tool(
     name="reports_get", risk="read",
     router=ROUTER, method="GET", path="/api/v1/reports/{report_id}",
     fields=(), product_area=REPORTS, min_role=Role.MEMBER,
     description="Read one saved report: name, visibility, widget layout and canvas filters.",
-))
+)))
 register(route_tool(
     name="report_versions_list", risk="read",
     router=ROUTER, method="GET", path="/api/v1/reports/{report_id}/versions",
@@ -137,11 +170,11 @@ register(ToolSpec(
 # ── reports_update (write) ────────────────────────────────────────────────
 
 register(route_tool(
-    name="reports_update", risk="write",
+    name="reports_update", risk="sensitive",
     router=ROUTER, method="PATCH", path="/api/v1/reports/{report_id}",
     fields=("name", "description"), nullable=("description",),
     product_area=REPORTS, min_role=Role.MEMBER,
-    description=f"Rename a report or change its description (null clears it). {WRITE_CONFIRM}",
+    description=f"Rename a report or change its description (null clears it). {CONFIRM}",
     entity=Report, check=_editable,
     no_change="the report already has these values",
 ))
@@ -161,7 +194,7 @@ async def _snapshot(ctx: ToolContext, row: Report, layout: dict[str, Any]) -> tu
     changes = [
         Change(VERSIONS, "new:1", "report_id", None, row.id),
         Change(VERSIONS, "new:1", "is_original", None, False),
-        *(Change(VERSIONS, "new:1", f, None, layout[f]) for f in LAYOUT),
+        *(Change(VERSIONS, "new:1", f, None, _doc(layout[f])) for f in LAYOUT),
     ]
     evicted = kept[:max(len(kept) + 1 - reports_router.MAX_NON_ORIGINAL_VERSIONS, 0)]
     changes += [Change(VERSIONS, v.id, "report_id", v.report_id, None) for v in evicted]
@@ -171,7 +204,8 @@ async def _snapshot(ctx: ToolContext, row: Report, layout: dict[str, Any]) -> tu
 async def _layout_present(ctx: ToolContext, row: Report, args, changes: list[Change]) -> Preview:
     warnings, context = [], {"name": row.name}
     if any(c.field in LAYOUT for c in changes):
-        layout = {f: next((c.after for c in changes if c.field == f), getattr(row, f)) for f in LAYOUT}
+        sent = {c.field for c in changes}
+        layout = {f: getattr(args, f) if f in sent else getattr(row, f) for f in LAYOUT}
         versions, deleted = await _snapshot(ctx, row, layout)
         changes = [*changes, *versions]
         if deleted:
@@ -239,7 +273,7 @@ async def _duplicate_preview(ctx: ToolContext, args) -> Preview:
         changes=_new_report(
             ctx.user.id, "new:2", visibility=ReportVisibility.PRIVATE.value, name={"untrusted": name},
             description=None if source.description is None else {"untrusted": source.description},
-            layout_json=source.layout_json, canvas_filters_json=source.canvas_filters_json,
+            layout_json=_doc(source.layout_json), canvas_filters_json=_doc(source.canvas_filters_json),
         ),
         context={"name": name},
     )
@@ -259,7 +293,7 @@ register(route_tool(
 def _restore(row: Report, version: ReportVersion | None, what: str) -> Preview:
     """``_restore_version``: the version's layout and filters onto the report."""
     changes = [] if version is None else [
-        Change("reports", row.id, f, getattr(row, f), getattr(version, f))
+        Change("reports", row.id, f, _doc(getattr(row, f)), _doc(getattr(version, f)))
         for f in LAYOUT if getattr(row, f) != getattr(version, f)
     ]
     if not changes:

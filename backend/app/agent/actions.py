@@ -52,7 +52,7 @@ from app.models.agent_pending_action import (
     ActionChannel, ActionMode, ActionRisk, ActionStatus, AgentPendingAction as Action,
 )
 from app.models.user import User
-from app.rate_limit import limiter
+from app.rate_limit import limiter, user_rate_limit_key
 from app.rate_limit_overrides import load_rate_limit_overrides
 from app.services import audit_service
 from app import logs
@@ -149,17 +149,26 @@ async def call_gate(channel: str, api_token_id: int | None, risk: str) -> None:
     await _hit(f"agent:tok:{api_token_id}:calls:day", CALLS_PER_DAY, DAY, "token_rate_limited")
 
 
+def route_limits(endpoint: Any) -> list[Any]:
+    """Every slowapi ``Limit`` on ``endpoint``: the static ones and the dynamic
+    ones (iterating a group resolves its provider, overrides included)."""
+    name = f"{endpoint.__module__}.{endpoint.__name__}"
+    return [*limiter._route_limits.get(name, ()),
+            *itertools.chain(*limiter._dynamic_route_limits.get(name, ()))]
+
+
 async def route_gate(db: AsyncSession, user: User, spec: ToolSpec) -> None:
     """The mirrored route's own slowapi limit (``ToolSpec.route_limit``,
     TBD-669), which an in-process call never meets: drawn from the very bucket
     REST draws, so the agent is not a second allowance. As slowapi does it:
     the caller's overrides loaded now (``dynamic_limit`` then reads them), the
-    route's key (per user) and its scope (the path). Every channel. Fails
-    CLOSED when the limits store is unavailable."""
-    endpoint = spec.route_limit
-    groups = limiter._dynamic_route_limits[f"{endpoint.__module__}.{endpoint.__name__}"]
+    route's key (per user) and its scope (the path, or a shared scope). Only
+    the per-user limits: a per-address backstop has no address to key on here.
+    Every channel. Fails CLOSED when the limits store is unavailable."""
     await load_rate_limit_overrides(user, async_sessionmaker(db.bind, expire_on_commit=False))
-    for lim in itertools.chain(*groups):  # iterating resolves the provider
+    for lim in route_limits(spec.route_limit):
+        if lim.key_func is not user_rate_limit_key:
+            continue
         args = [*filter(None, [limiter._key_prefix]), f"user:{user.id}", lim.scope or spec.mirrors_route[1]]
         try:
             ok = await asyncio.to_thread(limiter.limiter.hit, lim.limit, *args)
