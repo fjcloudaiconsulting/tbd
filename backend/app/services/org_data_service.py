@@ -38,32 +38,26 @@ from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem
 from app.models.import_batch import ImportBatch
 from app.models.recurring import RecurringTransaction
-from app.models.tag import Tag, TagDictionary, TagDictionaryContributor, TransactionTag
+from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction
 from app.models.usage_counter import UsageCounter
 from app.services.org_bootstrap_service import seed_org_defaults
+from app.services import category_rules_service, tag_service
 
 
 async def _decrement_dictionary_counts_for_org(
     db: AsyncSession, *, org_id: int
 ) -> int:
-    """Decrement ``tag_dictionary.contributor_org_count`` for every
-    dictionary tag this org has contributed to, then delete the
-    contributor rows.
+    """Withdraw every shared-dictionary contribution of ``org_id``.
 
-    This keeps the k-anonymity invariant
+    Decrements ``tag_dictionary.contributor_org_count`` (and, since BE-18,
+    ``usage_count``) for every dictionary tag this org contributed to, then
+    deletes the contributor rows, through
+    ``tag_service.withdraw_dictionary_contributions``. This keeps the
+    k-anonymity invariant
     (``contributor_org_count == COUNT(DISTINCT contributor_org_id)``)
     intact when an org goes away. Without it, below-floor tags can
     still surface as suggestions even though the org no longer exists.
-
-    Order:
-        1. SELECT every ``dictionary_tag_id`` this org contributed to.
-        2. UPDATE ``tag_dictionary`` to ``contributor_org_count - 1``
-           for each one (one statement per tag id is fine, the count
-           is per-org so the worst case is the number of distinct
-           dictionary tags this org touched, which is bounded by the
-           org's tag count).
-        3. DELETE the contributor rows for this org.
 
     Returns the number of contributor rows that were deleted.
 
@@ -72,34 +66,8 @@ async def _decrement_dictionary_counts_for_org(
       ``ON DELETE CASCADE`` so the rows would disappear when the
       org is deleted, but the count would NOT be decremented
       automatically. This function provides the explicit sync.
-    - ``GREATEST(count - 1, 0)`` would be safer against count drift
-      from any historical bug, but we deliberately surface the
-      drift here (subtract straight) so a regression test would
-      catch it. Counts are non-negative by invariant.
     """
-    contributor_ids = (
-        await db.execute(
-            select(TagDictionaryContributor.dictionary_tag_id).where(
-                TagDictionaryContributor.contributor_org_id == org_id
-            )
-        )
-    ).scalars().all()
-    for dict_tag_id in contributor_ids:
-        await db.execute(
-            update(TagDictionary)
-            .where(TagDictionary.id == dict_tag_id)
-            .values(
-                contributor_org_count=TagDictionary.contributor_org_count - 1
-            )
-        )
-    deleted = (
-        await db.execute(
-            delete(TagDictionaryContributor).where(
-                TagDictionaryContributor.contributor_org_id == org_id
-            )
-        )
-    ).rowcount or 0
-    return deleted
+    return await tag_service.withdraw_dictionary_contributions(db, org_id=org_id)
 
 
 async def wipe_org_data(
@@ -227,6 +195,12 @@ async def wipe_org_data(
     counts["tags"] = (
         await db.execute(delete(Tag).where(Tag.org_id == org_id))
     ).rowcount or 0
+
+    # Shared merchant-dictionary votes (BE-28): each one takes its count
+    # off ``merchant_dictionary.vote_count`` as it goes.
+    counts["merchant_dictionary_votes"] = (
+        await category_rules_service.withdraw_shared_votes(db, org_id=org_id)
+    )
 
     # Metered usage goes with the org. Deliberately NOT in reset_org_data.
     counts["usage_counters"] = (
@@ -391,6 +365,10 @@ async def reset_org_data(
     counts["tags"] = (
         await db.execute(delete(Tag).where(Tag.org_id == org_id))
     ).rowcount or 0
+    # Shared merchant-dictionary votes (BE-28), as in ``wipe_org_data``.
+    counts["merchant_dictionary_votes"] = (
+        await category_rules_service.withdraw_shared_votes(db, org_id=org_id)
+    )
     await db.commit()
 
     # Re-seed the post-registration defaults. Idempotent: if the

@@ -307,7 +307,7 @@ async def test_real_password_reset_and_access_tokens_are_also_refused(session_fa
     app = make_app(session_factory)
 
     for token in (
-        create_password_reset_token(user_id),
+        create_password_reset_token(user_id, EMAIL),
         create_access_token(user_id, org_id=1, role=Role.OWNER.value),
     ):
         resp = _post(app, token, PASSWORD)
@@ -742,7 +742,7 @@ async def test_f8_register_squat_then_victim_recovers_end_to_end(
             uid = await db.scalar(select(User.id).where(User.email == victim))
         reset = client.post(
             "/api/v1/auth/reset-password",
-            json={"token": create_password_reset_token(uid), "new_password": "victim-Q-123"},
+            json={"token": create_password_reset_token(uid, victim), "new_password": "victim-Q-123"},
         )
         assert reset.status_code == 200, reset.text
 

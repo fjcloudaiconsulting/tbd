@@ -186,9 +186,12 @@ async def create_import_batch(
     """Persist a new ``import_batches`` row and link the imported
     transactions to it.
 
-    Called from ``import_service.execute_import`` once the per-row commit
-    loop is done. The caller passes the IDs of every transaction it just
-    committed (plain creates + import-source paired legs). NULL
+    The import confirm no longer calls this: since TBD-737 it creates its
+    header up front and links each committed chunk to it (see
+    ``import_service._claim_confirm``). This remains the one-shot form for
+    callers that already hold every transaction ID: the caller passes the IDs
+    of every transaction it just committed (plain creates + import-source
+    paired legs). NULL
     ``import_batch_id`` rows -- like the synthetic partner leg of a
     create_transfer_pair -- stay NULL because they didn't come from the
     bank file.
@@ -204,8 +207,7 @@ async def create_import_batch(
        ``pending_count == 0`` at creation time.
 
     Caller owns the outer transaction; this function flushes but does
-    not commit. ``import_service.execute_import`` already runs
-    ``await db.commit()`` after the per-row loop.
+    not commit.
     """
     ids = [tid for tid in transaction_ids if tid is not None]
     if not ids:

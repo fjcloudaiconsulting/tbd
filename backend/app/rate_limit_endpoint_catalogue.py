@@ -105,11 +105,17 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
+    # import router (BE-07): the three file-preview routes, no path params,
+    # so a plain ``limit`` each.
+    "import.ofx_preview",
+    "import.preview",
+    "import.tab_preview",
     # oauth router (TBD-587). The consent decision is a credential mint,
     # JWT + interactive session; no path param, so a plain ``limit``.
     "oauth.authorize",
     # org_members router. Backfilled by TBD-353: the decorator has
     # existed without a pattern, so no override for it could be stored.
+    "org_members.invite",  # BE-06, no path param: plain ``limit``
     "org_members.remove_member",
     # onboarding router
     "onboarding.complete",
@@ -122,6 +128,15 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # two are separately addressable.
     "reports.query",
     "reports.sankey_query",
+    # scenarios router (TBD-726): the two engine routes. Keyed per user
+    # (``user_rate_limit_key``), not per IP. Simulate carries
+    # ``{scenario_id}``, so it uses ``shared_limit``.
+    "scenarios.compare",
+    "scenarios.simulate",
+    # tags router (BE-18): the two routes that create tags. The transaction
+    # route carries ``{transaction_id}``, so it uses ``shared_limit``.
+    "tags.create",
+    "tags.set_transaction_tags",
     # users router
     "users.cancel_pending_email",
     "users.change_password",
@@ -150,9 +165,16 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.mfa_email_verify",
     "auth.mfa_recovery",
     "auth.mfa_verify",
+    # BE-10. Keyed on the refresh cookie's session family, not the IP (the
+    # decorator passes its own ``key_func``); a cookie that does not verify
+    # falls back to the per-IP key.
+    "auth.refresh",
     "auth.register",
     "auth.resend_verification_public",
     "auth.reset_password",
+    # TBD-654 email-first sign-up: both legs run before any account exists.
+    "auth.signup_complete",
+    "auth.signup_start",
     "auth.sso_stepup_callback",
     "auth.verify",
     "auth.verify_email",
@@ -163,11 +185,10 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "oauth.token",
     "org_members.accept_invitation",
     "org_members.preview_invitation",
-    # Backfilled by TBD-353. These three decorators pre-date this
+    # Backfilled by TBD-353. These two decorators pre-date this
     # catalogue entry and had none, which made the module's own
     # "single source of truth" claim false and left the admin UI's
     # dropdown implying the routes were unlimited.
-    "public_stats.founder_count",
     "security.csp_report",
     "webhooks.mailgun",
 })

@@ -10,6 +10,9 @@ Every mutating endpoint writes an ``audit_events`` row via
 ``record_audit_event`` on an independent session — the audit trail
 must survive a business-layer rollback (mirrors the
 ``feedback_service.submit_feedback`` pattern).
+
+Every mutating endpoint is also ``require_interactive_session`` (BE-20):
+a banner reaches every user, so a leaked write PAT must not post one.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.pat import require_interactive_session
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.announcement import Announcement, AnnouncementSeverity
@@ -128,6 +132,7 @@ async def list_announcements(
     "",
     response_model=AnnouncementAdminResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def create_announcement(
     body: AnnouncementCreate,
@@ -179,7 +184,11 @@ async def create_announcement(
     return row
 
 
-@router.patch("/{announcement_id}", response_model=AnnouncementAdminResponse)
+@router.patch(
+    "/{announcement_id}",
+    response_model=AnnouncementAdminResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def update_announcement(
     announcement_id: int,
     body: AnnouncementUpdate,
@@ -260,6 +269,7 @@ async def update_announcement(
     "/{announcement_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def delete_announcement(
     announcement_id: int,

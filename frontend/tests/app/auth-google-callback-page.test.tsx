@@ -9,12 +9,23 @@
  *
  * Returning SSO users land without `created_user=true`, the flag
  * stays absent, and the navigation target is `/dashboard` directly.
+ *
+ * FE-02: the fragment is accepted only with the nonce this tab stored when
+ * it started the sign-in (`tbd.google-sso-nonce` in sessionStorage).
  */
 import { render, waitFor } from "@testing-library/react";
 
 import GoogleCallbackPage, {
   SSO_DISCLOSURE_PENDING_KEY,
 } from "@/app/auth/google/callback/page";
+import { GOOGLE_SSO_NONCE_KEY } from "@/lib/google-sso";
+
+const NONCE = "tab-nonce-0123456789";
+
+/** The state a tab is in after it started a Google sign-in. */
+function startedSignIn() {
+  window.sessionStorage.setItem(GOOGLE_SSO_NONCE_KEY, NONCE);
+}
 
 const setAccessTokenMock = vi.fn();
 const refreshMeMock = vi.fn(async () => {});
@@ -49,10 +60,11 @@ beforeEach(() => {
 
 describe("GoogleCallbackPage", () => {
   it("stashes the disclosure flag and routes to /onboarding when created_user=true", async () => {
+    startedSignIn();
     window.history.replaceState(
       null,
       "",
-      "/auth/google/callback#token=abc.def.ghi&created_user=true",
+      `/auth/google/callback#token=abc.def.ghi&created_user=true&nonce=${NONCE}`,
     );
 
     render(<GoogleCallbackPage />);
@@ -67,10 +79,11 @@ describe("GoogleCallbackPage", () => {
   });
 
   it("returning SSO users (no created_user) go straight to /dashboard with no flag set", async () => {
+    startedSignIn();
     window.history.replaceState(
       null,
       "",
-      "/auth/google/callback#token=abc.def.ghi",
+      `/auth/google/callback#token=abc.def.ghi&nonce=${NONCE}`,
     );
 
     render(<GoogleCallbackPage />);
@@ -85,10 +98,11 @@ describe("GoogleCallbackPage", () => {
   });
 
   it("clears the URL fragment after parsing so the token does not persist in history", async () => {
+    startedSignIn();
     window.history.replaceState(
       null,
       "",
-      "/auth/google/callback#token=abc.def.ghi&created_user=true",
+      `/auth/google/callback#token=abc.def.ghi&created_user=true&nonce=${NONCE}`,
     );
 
     render(<GoogleCallbackPage />);
@@ -110,5 +124,72 @@ describe("GoogleCallbackPage", () => {
     });
     expect(setAccessTokenMock).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem(SSO_DISCLOSURE_PENDING_KEY)).toBeNull();
+  });
+
+  describe("FE-02: only a sign-in this tab started is accepted", () => {
+    it("refuses a planted token when this tab started no sign-in", async () => {
+      window.history.replaceState(null, "", `/auth/google/callback#token=planted.jwt.x&nonce=${NONCE}`);
+
+      render(<GoogleCallbackPage />);
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/login?sso_error=state");
+      });
+      expect(setAccessTokenMock).not.toHaveBeenCalled();
+      expect(refreshMeMock).not.toHaveBeenCalled();
+      expect(window.location.hash).toBe("");
+    });
+
+    it("refuses a token without the tab's nonce, and spends the nonce", async () => {
+      startedSignIn();
+      window.history.replaceState(null, "", "/auth/google/callback#token=planted.jwt.x&nonce=other-nonce-value");
+
+      render(<GoogleCallbackPage />);
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/login?sso_error=state");
+      });
+      expect(setAccessTokenMock).not.toHaveBeenCalled();
+      expect(window.sessionStorage.getItem(GOOGLE_SSO_NONCE_KEY)).toBeNull();
+    });
+
+    it("refuses a token with no nonce at all", async () => {
+      startedSignIn();
+      window.history.replaceState(null, "", "/auth/google/callback#token=planted.jwt.x");
+
+      render(<GoogleCallbackPage />);
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/login?sso_error=state");
+      });
+      expect(setAccessTokenMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("FE-03: the Google MFA challenge arrives in the fragment", () => {
+    it("hands the challenge to /mfa-verify through sessionStorage", async () => {
+      startedSignIn();
+      window.history.replaceState(null, "", `/auth/google/callback#mfa_token=challenge.jwt.x&nonce=${NONCE}`);
+
+      render(<GoogleCallbackPage />);
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/mfa-verify");
+      });
+      expect(window.sessionStorage.getItem("mfa_token")).toBe("challenge.jwt.x");
+      expect(window.location.hash).toBe("");
+      expect(setAccessTokenMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses a planted challenge like a planted token", async () => {
+      window.history.replaceState(null, "", "/auth/google/callback#mfa_token=planted.jwt.x&nonce=guess-nonce-value");
+
+      render(<GoogleCallbackPage />);
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/login?sso_error=state");
+      });
+      expect(window.sessionStorage.getItem("mfa_token")).toBeNull();
+    });
   });
 });

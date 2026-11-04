@@ -1,0 +1,7 @@
+# The Better Decision security contact (RFC 9116).
+Contact: mailto:security@thebetterdecision.com
+Expires: 2027-10-22T00:00:00.000Z
+Policy: https://github.com/fjcloudaiconsulting/tbd/blob/main/SECURITY.md
+Preferred-Languages: en
+Canonical: https://app.thebetterdecision.com/.well-known/security.txt
+Canonical: https://thebetterdecision.com/.well-known/security.txt

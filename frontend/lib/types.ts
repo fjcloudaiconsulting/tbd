@@ -29,6 +29,10 @@ export interface User {
   is_superadmin: boolean;
   is_active: boolean;
   mfa_enabled: boolean;
+  // BE-03. Whether a code sent to the account email may replace the
+  // authenticator at sign-in. Off unless the user turns it on. Optional so
+  // existing User fixtures keep compiling.
+  mfa_email_fallback?: boolean;
   // False for Google SSO users who have not yet set a real password.
   // The Settings UI flips Change Password into "Set a Password" mode and
   // swaps the email-change re-auth from "current password" to a Google
@@ -250,7 +254,11 @@ export interface RecurringTransaction {
   category_name: string;
   description: string;
   amount: string;
-  type: "income" | "expense";
+  // TBD-600: a transfer moves money from `account_id` to `to_account_id`
+  // (null otherwise); each occurrence is a linked transfer pair.
+  type: "income" | "expense" | "transfer";
+  to_account_id?: number | null;
+  to_account_name?: string;
   frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly";
   next_due_date: string;
   auto_settle: boolean;
@@ -418,6 +426,9 @@ export interface ImportConfirmRequest {
   // imported transactions.
   file_name: string;
   source_format: "csv" | "ofx" | "tab";
+  // TBD-737: one key per preview; a repeated confirm with it resumes or
+  // replays instead of importing twice.
+  idempotency_key?: string;
 }
 
 export interface ImportRowError {
@@ -435,6 +446,9 @@ export interface ImportConfirmResponse {
   // L3.2 Wave 2B: ID of the newly created ``import_batches`` row, or
   // ``null`` when no transactions were committed.
   import_id: number | null;
+  // TBD-737: true when this answers a repeat of an earlier confirm with the
+  // same idempotency key; the counters are those of the whole import.
+  replayed?: boolean;
 }
 
 // L3.2 Wave 2A manual batch transaction entry. Wraps a TransactionCreate

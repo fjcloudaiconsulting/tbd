@@ -60,13 +60,16 @@ Fence roster (see specs/tbd-308-skip-transfer-leg-balance-revert.md):
   it is what goes red if the partner is passed as ``None`` (the predicate fails
   OPEN on an unresolvable partner, which would silently disable the match
   revert).
+* **F7** (BE-17) kills a missing or SKIPPED-only refusal in
+  ``convert_and_create_leg``, which would mint a partner leg for a reverted
+  row; its guard half pins that ACCEPTED import rows still convert.
 """
 from datetime import date
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -540,6 +543,75 @@ async def test_pairing_a_skipped_row_still_succeeds(db_session):
     reloaded = await _reload(db_session, skipped.id)
     assert reloaded.linked_transaction_id == partner.id
     assert (await _reload(db_session, partner.id)).linked_transaction_id == skipped.id
+    await assert_invariant(db_session, seed)
+
+
+# ══ F7 -- convert-to-transfer must not mint a partner for a reverted row ═════
+
+
+@pytest.mark.parametrize(
+    "reverted_state",
+    [ReconciliationState.SKIPPED, ReconciliationState.REJECTED],
+    ids=["skipped", "rejected"],
+)
+@pytest.mark.asyncio
+async def test_converting_a_reverted_row_into_a_new_transfer_is_refused(
+    db_session, reverted_state
+):
+    """F7 (fence, BE-17). ``convert_and_create_leg`` CREATES the partner and
+    applies its amount to the destination. For a SKIPPED / REJECTED source,
+    whose own amount was reverted out of its account, that moves the
+    destination's balance with no matching outflow while both legs are linked
+    and so outside every report: the TBD-385 half-skipped pair, built by a
+    different route. ``reconcile_account`` would call it consistent, so the
+    fence asserts the refusal and that nothing moved.
+
+    NOT a ``_link_pair`` guard: F4 pins pairing a skipped row with an EXISTING
+    row as allowed, and that still passes.
+    """
+    seed = await _seed(db_session)
+    row = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="80.00",
+        label="reverted", tx_type=TransactionType.EXPENSE, in_batch=True,
+    )
+    await _reconcile(db_session, seed, _transition(row.id, reverted_state))
+    b_before = (await _account(db_session, seed["acct_b_id"])).balance
+    rows_on_b = await db_session.scalar(
+        select(func.count()).select_from(Transaction)
+        .where(Transaction.account_id == seed["acct_b_id"])
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        await transaction_service.convert_and_create_leg(
+            db_session, seed["org_id"], row.id, destination_account_id=seed["acct_b_id"],
+        )
+    # The refusal names the remedy, like F1's.
+    assert "pair it with" in str(exc.value).lower()
+
+    assert (await _account(db_session, seed["acct_b_id"])).balance == b_before
+    assert await db_session.scalar(
+        select(func.count()).select_from(Transaction)
+        .where(Transaction.account_id == seed["acct_b_id"])
+    ) == rows_on_b
+    assert (await _reload(db_session, row.id)).linked_transaction_id is None
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_converting_an_accepted_import_row_still_creates_the_partner(db_session):
+    """F7 over-reach guard: only REVERTED states are refused."""
+    seed = await _seed(db_session)
+    row = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="80.00",
+        label="accepted", tx_type=TransactionType.EXPENSE, in_batch=True,
+    )
+    await _reconcile(db_session, seed, _transition(row.id, ReconciliationState.ACCEPTED))
+    b_before = (await _account(db_session, seed["acct_b_id"])).balance
+
+    await transaction_service.convert_and_create_leg(
+        db_session, seed["org_id"], row.id, destination_account_id=seed["acct_b_id"],
+    )
+    assert (await _account(db_session, seed["acct_b_id"])).balance == b_before + Decimal("80.00")
     await assert_invariant(db_session, seed)
 
 

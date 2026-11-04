@@ -7,8 +7,8 @@
 #
 # Surface (intentionally minimal — full E2E is project_functional_tests.md):
 #   1. GET  /health                     — liveness
-#   2. GET  /ready                      — rotation readiness (DATABASE only)
-#   3. GET  /health/dependencies        — per-dependency truth
+#   2. GET  /ready                      — rotation readiness (DATABASE only); opt-in, see below
+#   3. GET  /health/dependencies        — per-dependency truth; opt-in, see below
 #   4. POST /api/v1/auth/login          — authenticated round-trip
 #   5. GET  /api/v1/categories          — one authenticated read
 #
@@ -18,10 +18,19 @@
 # /ready stays database-only on purpose, because it is what the platform
 # pulls replicas out of rotation on.
 #
+# The public hosts route only /api and /health to the backend (INF-09): /ready
+# and /health/dependencies query the database, so they are read inside the
+# cluster, and from outside they reach the frontend's 404. Checks 2 and 3 run
+# only with SMOKE_INTERNAL_PROBES=1, against a SMOKE_BASE_URL that reaches the
+# backend directly (a port-forward, or the local stack). The login and the
+# authenticated read still exercise the database end to end.
+#
 # Inputs (env vars):
 #   SMOKE_BASE_URL     — public URL, e.g. https://app.thebetterdecision.com
 #   SMOKE_USERNAME     — login for the dedicated smoke user (NOT a real user)
 #   SMOKE_PASSWORD     — password for the smoke user
+#   SMOKE_INTERNAL_PROBES — optional: 1 also checks /ready and
+#                        /health/dependencies; 0 or unset skips them
 #
 # The smoke user must be a dedicated, email-verified account with no real
 # data. Its required state is in infra private ops notes (owner-held).
@@ -29,7 +38,7 @@
 # Exit codes:
 #   0  every check passed
 #   1  any check failed
-#   2  required env var missing
+#   2  required env var missing, or SMOKE_INTERNAL_PROBES not 0 or 1
 #
 # Token / cookie redaction: this script never prints the access_token,
 # the refresh_token cookie, or the password. Failure logs include status
@@ -42,6 +51,7 @@ set -uo pipefail
 BASE_URL="${SMOKE_BASE_URL:-}"
 USERNAME="${SMOKE_USERNAME:-}"
 PASSWORD="${SMOKE_PASSWORD:-}"
+INTERNAL_PROBES="${SMOKE_INTERNAL_PROBES:-0}"
 
 if [[ -z "$BASE_URL" ]]; then
   echo "✗ SMOKE_BASE_URL is not set"
@@ -49,6 +59,11 @@ if [[ -z "$BASE_URL" ]]; then
 fi
 if [[ -z "$USERNAME" || -z "$PASSWORD" ]]; then
   echo "✗ SMOKE_USERNAME and SMOKE_PASSWORD must both be set"
+  exit 2
+fi
+# Strict: a typo ("true") must not silently drop the checks asked for.
+if [[ "$INTERNAL_PROBES" != 0 && "$INTERNAL_PROBES" != 1 ]]; then
+  echo "✗ SMOKE_INTERNAL_PROBES must be 0 or 1"
   exit 2
 fi
 
@@ -115,10 +130,14 @@ echo "Smoke testing ${BASE_URL}"
 echo
 
 check_status "GET /health"  200 GET "/health"  || true
-check_status "GET /ready"   200 GET "/ready"   || true
-# TBD-413: the check that would have caught the 2026-08-19 outage.
-# 503 here means a required dependency is unusable.
-check_status "GET /health/dependencies" 200 GET "/health/dependencies" || true
+if [[ "$INTERNAL_PROBES" == 1 ]]; then
+  check_status "GET /ready"   200 GET "/ready"   || true
+  # TBD-413: the check that would have caught the 2026-08-19 outage.
+  # 503 here means a required dependency is unusable.
+  check_status "GET /health/dependencies" 200 GET "/health/dependencies" || true
+else
+  echo "– GET /ready, GET /health/dependencies: not routed publicly (set SMOKE_INTERNAL_PROBES=1 against the backend directly)"
+fi
 
 # Login. Verifies three things end-to-end:
 #   (a) JWT issuance: 200 with a non-empty access_token in the body.

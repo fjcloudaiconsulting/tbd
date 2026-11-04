@@ -79,6 +79,15 @@ function sanitizeQuery(search: string): string | undefined {
   return result || undefined;
 }
 
+// Pages that land with a single-use token or OAuth code in the query string.
+const ONE_TIME_TOKEN_PATHS = new Set([
+  "/reset-password",
+  "/verify-email",
+  "/accept-invite",
+  "/mfa-verify",
+  "/settings/ai-providers/openrouter/callback",
+]);
+
 // The Referer is the full previous URL on same-origin navigation, so it can
 // carry an invite or reset token (INFRA-110). Keep origin and path only
 // (browsers never send the fragment).
@@ -172,6 +181,12 @@ export function proxy(request: NextRequest) {
   const response = NextResponse.next({ request: { headers: requestHeaders } });
   response.headers.set("x-request-id", requestId);
   applySecurityHeaders(response, nonce);
+  // FE-03: these pages hold a single-use token in the query string until the
+  // client strips it after hydration. Subresources fetched before then would
+  // send the full URL as Referer, even same-origin, so send none.
+  if (ONE_TIME_TOKEN_PATHS.has(request.nextUrl.pathname)) {
+    response.headers.set("Referrer-Policy", "no-referrer");
+  }
 
   const entry = {
     timestamp: new Date().toISOString(),

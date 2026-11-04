@@ -83,6 +83,7 @@ const fixtureCredential = {
   id: 42,
   org_id: 1,
   provider: "openai",
+  provider_supported: true,
   last_four: "abcd",
   key_fingerprint: "deadbeefcafebabe",
   base_url: null,
@@ -123,7 +124,8 @@ function mockAuxiliaryEndpoints(credentials: unknown[]) {
       return {
         providers: [
           { key: "openai", label: "OpenAI", availability: "available" },
-          { key: "native", label: "Native", availability: "not_yet_available" },
+          { key: "anthropic", label: "Anthropic", availability: "available" },
+          { key: "openai_compatible", label: "OpenAI-compatible", availability: "available" },
         ],
         ai_native_enabled: false,
       } as never;
@@ -507,7 +509,7 @@ describe("AiProvidersPage", () => {
     );
   });
 
-  it("disables the native option in the provider picker when not_yet_available", async () => {
+  it("offers no local-model provider and always asks for an API key (TBD-584)", async () => {
     mockAuxiliaryEndpoints([]);
 
     render(<AiProvidersPage />);
@@ -522,12 +524,52 @@ describe("AiProvidersPage", () => {
       name: /Add AI credential/i,
     });
     const select = within(dialog).getByLabelText(/^Provider$/i) as HTMLSelectElement;
-    const nativeOption = Array.from(select.options).find(
-      (o) => o.value === "native",
+    await waitFor(() =>
+      expect(Array.from(select.options).map((o) => o.value)).toEqual([
+        "openai",
+        "anthropic",
+        "openai_compatible",
+      ]),
     );
-    expect(nativeOption).toBeTruthy();
-    expect(nativeOption?.disabled).toBe(true);
-    expect(nativeOption?.textContent).toMatch(/coming soon/i);
+    expect(dialog.textContent).not.toMatch(/ollama|native/i);
+    for (const value of ["openai", "anthropic", "openai_compatible"]) {
+      fireEvent.change(select, { target: { value } });
+      expect(within(dialog).getByLabelText(/^API key$/i)).toBeRequired();
+      expect(within(dialog).queryByLabelText(/Bearer token/i)).not.toBeInTheDocument();
+    }
+  });
+
+  it("shows a credential of a removed provider as no longer supported (TBD-584)", async () => {
+    const retired = {
+      ...fixtureCredential,
+      id: 7,
+      provider: "ollama",
+      provider_supported: false,
+      last_four: null,
+      label: "lan",
+    };
+    mockRouting({
+      credentials: [fixtureCredential, retired],
+      routing: { default: { org_id: 1, credential_id: 7, model: "llama3" }, features: [] },
+    });
+    render(<AiProvidersPage />);
+    await routingReady();
+
+    const table = screen.getByTestId("credentials-table");
+    const row = within(table).getByText("ollama").closest("tr") as HTMLTableRowElement;
+    expect(
+      within(row).getByText("Provider no longer supported. Delete this credential."),
+    ).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "Validate now" })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+
+    // The routing that still points at it stays visible, but the row cannot be picked again.
+    const defaultCred = screen.getByLabelText(/^Credential$/i) as HTMLSelectElement;
+    expect(defaultCred.value).toBe("7");
+    const option = Array.from(defaultCred.options).find((o) => o.value === "7");
+    expect(option?.disabled).toBe(true);
+    expect(option?.textContent).toMatch(/no longer supported/);
+    expect(screen.queryByRole("button", { name: "Refresh models" })).not.toBeInTheDocument();
   });
 
   it("posts an openai_compatible credential with the preset base URL", async () => {
@@ -548,7 +590,6 @@ describe("AiProvidersPage", () => {
           return {
             providers: [
               { key: "openai", label: "OpenAI", availability: "available" },
-              { key: "ollama", label: "Ollama", availability: "available" },
               {
                 key: "openai_compatible",
                 label: "OpenAI-compatible",
@@ -598,7 +639,8 @@ describe("AiProvidersPage", () => {
     fireEvent.change(baseUrlInput(), {
       target: { value: "https://my.host/v1" },
     });
-    fireEvent.change(select, { target: { value: "ollama" } });
+    fireEvent.change(select, { target: { value: "openai" } });
+    fireEvent.change(select, { target: { value: "openai_compatible" } });
     expect(baseUrlInput().value).toBe("https://my.host/v1");
 
     // Picking a preset takes its URL, even over a typed one.
@@ -609,7 +651,7 @@ describe("AiProvidersPage", () => {
     expect(baseUrlInput().value).toBe("https://openrouter.ai/api/v1");
 
     // Leaving a preset for another provider clears its untouched URL.
-    fireEvent.change(select, { target: { value: "ollama" } });
+    fireEvent.change(select, { target: { value: "openai_compatible" } });
     expect(baseUrlInput().value).toBe("");
 
     fireEvent.change(select, { target: { value: "openrouter" } });

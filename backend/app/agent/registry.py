@@ -28,6 +28,7 @@ the per-token call limit, TBD-561) runs just above every admission.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -118,6 +119,27 @@ UNTRUSTED_KEYS: frozenset[str] = frozenset(
 )
 
 _ROUTE_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+
+# A tool's domain, from its mirrored route unless it declares one. The in-app
+# chat sends every read tool but only the write and sensitive tools of the
+# domains the model loads (TBD-788), so a non-read tool without one is refused.
+_DOMAIN_ROUTES: dict[str, str] = {
+    "/api/v1/accounts": "accounts",
+    "/api/v1/account-types": "accounts",
+    "/api/v1/budgets": "budgets_and_categories",
+    "/api/v1/categories": "budgets_and_categories",
+    "/api/v1/recurring": "recurring_and_billing",
+    "/api/v1/settings/billing-cycle": "recurring_and_billing",
+    "/api/v1/settings/billing-period": "recurring_and_billing",
+    "/api/v1/settings/billing-periods": "recurring_and_billing",
+    "/api/v1/transactions": "transactions",
+}
+
+
+def _route_domain(path: str) -> str | None:
+    return next(
+        (d for p, d in _DOMAIN_ROUTES.items() if path == p or path.startswith(p + "/")), None,
+    )
 
 
 class ToolError(Exception):
@@ -222,6 +244,25 @@ class ToolSpec:
     run: Callable[[ToolContext, Any], Awaitable[Any]] | None = None
     preview: Callable[..., Awaitable[Any]] | None = None
     execute: Callable[..., Awaitable[Any]] | None = None
+    # The APIRoute a route-bound tool runs in-process (``app.agent.route_tool``,
+    # TBD-664); ``None`` for a hand-written adapter.
+    route: Any = field(default=None, compare=False, repr=False)
+    # Further product-area switches the route also carries (TBD-666: seeding
+    # budgets from a forecast is behind both Budgets and Forecast).
+    extra_areas: tuple[Feature, ...] = ()
+    # ``(args_json, preview_json) -> args`` restoring a done write, for a tool
+    # whose primary fields are not its own args (TBD-666: a rebalance's items);
+    # ``None`` uses ``actions.inverse_args``' field-for-field default.
+    inverse: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = field(
+        default=None, compare=False, repr=False,
+    )
+    # The group the in-app chat loads this tool with (TBD-788); ``None`` takes
+    # it from ``mirrors_route`` (``_DOMAIN_ROUTES``).
+    domain: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.domain is None:  # frozen: the documented way to set a derived field
+            object.__setattr__(self, "domain", _route_domain(self.mirrors_route[1]))
 
 
 _TOOLS: dict[str, ToolSpec] = {}
@@ -248,6 +289,13 @@ def wrap_untrusted(value: Any) -> Any:
     return value
 
 
+def unwrap_untrusted(value: Any) -> Any:
+    """The string inside a ``{"untrusted": s}`` disclosure; anything else as is."""
+    if isinstance(value, dict) and set(value) == {"untrusted"}:
+        return value["untrusted"]
+    return value
+
+
 def register(spec: ToolSpec) -> ToolSpec:
     """Add ``spec`` to the registry, refusing anything half-declared or unsafe."""
     if not TOOL_NAME_RE.fullmatch(spec.name):
@@ -262,6 +310,10 @@ def register(spec: ToolSpec) -> ToolSpec:
         raise ToolRegistrationError(f"{spec.name}: min_role must be a Role")
     if spec.product_area is not None and not isinstance(spec.product_area, Feature):
         raise ToolRegistrationError(f"{spec.name}: product_area must be a Feature or None")
+    if spec.extra_areas and (
+        spec.product_area is None or not all(isinstance(f, Feature) for f in spec.extra_areas)
+    ):
+        raise ToolRegistrationError(f"{spec.name}: extra_areas are Features beside a product_area")
     method, path = spec.mirrors_route
     if method not in _ROUTE_METHODS or not path.startswith("/api/v1/"):
         raise ToolRegistrationError(f"{spec.name}: bad mirrors_route {spec.mirrors_route!r}")
@@ -283,6 +335,8 @@ def register(spec: ToolSpec) -> ToolSpec:
             raise ToolRegistrationError(
                 f"{spec.name}: a delete is never 'write'; declare it 'sensitive'"
             )
+    if spec.risk != "read" and spec.domain is None:
+        raise ToolRegistrationError(f"{spec.name}: a {spec.risk} tool needs a domain")
     _TOOLS[spec.name] = spec
     return spec
 
@@ -293,6 +347,11 @@ def get_tool(name: str) -> ToolSpec | None:
 
 def all_tools() -> list[ToolSpec]:
     return list(_TOOLS.values())
+
+
+def domains() -> list[str]:
+    """Every domain with a write or sensitive tool, sorted."""
+    return sorted({s.domain for s in _TOOLS.values() if s.risk != "read" and s.domain})
 
 
 async def call_mapped(fn: Callable[..., Awaitable[Any]], *a: Any) -> Any:
@@ -387,8 +446,9 @@ async def check_gates(
     if not await feature_service.has_feature(db, org_id, AGENT_FEATURE_KEY):
         raise ToolError("feature_not_entitled", AGENT_FEATURE_KEY)
     # 3. Product area (env floor, operator switch, tenant opt-out).
-    if spec.product_area is not None and not await resolve_feature(spec.product_area, org_id, db):
-        raise ToolError("feature_disabled", spec.product_area.value)
+    for area in (spec.product_area, *spec.extra_areas):
+        if area is not None and not await resolve_feature(area, org_id, db):
+            raise ToolError("feature_disabled", area.value)
     # 4. Role.
     if ROLE_RANK.get(user.role, 0) < ROLE_RANK[spec.min_role]:
         raise ToolError("insufficient_role", spec.min_role.value)
@@ -549,17 +609,19 @@ async def revert_action(db: AsyncSession, user: User, action_id: str) -> dict[st
         staged = (await invoke(
             db, user, spec.name, inverse, channel="in_app", reverts=rid
         ))["data"]
-        p = original[0]
-        expected = {
-            c["field"]: c["after"] for c in original
-            if (c["entity"], c["id"]) == (p["entity"], p["id"])
-        }
+        # Every row of the primary table the original changed (TBD-666: a
+        # rebalance changes several budgets).
+        table = original[0]["entity"]
+
+        def key(c):
+            return json.dumps(c["id"], sort_keys=True), c["field"]
+
+        expected = {key(c): c["after"] for c in original if c["entity"] == table}
         drift = [
             {"entity": c["entity"], "id": c["id"], "field": c["field"],
-             "expected": expected[c["field"]], "current": c["before"]}
+             "expected": expected[key(c)], "current": c["before"]}
             for c in staged["changes"]
-            if (c["entity"], c["id"]) == (p["entity"], p["id"])
-            and c["field"] in expected and c["before"] != expected[c["field"]]
+            if c["entity"] == table and key(c) in expected and c["before"] != expected[key(c)]
         ]
         if drift:
             raise ToolError(

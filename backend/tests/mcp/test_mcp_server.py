@@ -540,6 +540,27 @@ async def test_fa1_auto_token_over_mcp_never_executes_a_sensitive_tool(client, w
         assert (row.status.value, row.mode.value) == ("pending", "confirm")
 
 
+@pytest.mark.parametrize("token", ["write", "auto"])
+async def test_confirm_action_over_mcp_refuses_a_sensitive_action(client, w, factory, scratch, token):
+    """FENCE (TBD-664, transport). Wrong implementation: ``confirm_action``
+    model-callable for a sensitive action, so a model injected through a
+    transaction memo stages AND confirms it. The refusal is a tool result and
+    the action stays pending for the person to confirm in the app."""
+    calls = scratch("sens_tool", risk="sensitive")
+    r = await _call(client, "sens_tool", {"budget_id": w["budget"]}, token=token)
+    staged = r.json()["result"]["structuredContent"]["data"]
+    assert staged["requires_browser_confirmation"] is True
+    r = await _call(client, "confirm_action", {"action_id": staged["action_id"]}, token=token)
+    res = r.json()["result"]
+    assert res["isError"] is True and res["structuredContent"]["code"] == "requires_browser_confirmation"
+    assert calls == []
+    async with factory() as db:
+        row = await db.get(AgentPendingAction, staged["action_id"])
+        assert row.status.value == "pending"
+    listed = _tools((await _post(client, _msg("tools/list"), token=token)))
+    assert "requires_browser_confirmation" in listed["confirm_action"]["description"]
+
+
 async def test_auto_token_executes_a_write_in_the_same_call(client, w, factory):
     r = await _call(client, "budgets_update_amount",
                     {"budget_id": w["budget"], "amount": "130.00"}, token="auto")

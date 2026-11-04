@@ -24,7 +24,7 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "npm non-major updates in one PR. recharts gets its own PR: any move trips the TBD-528 version tripwire (chart-animation-gate.test.ts).",
+      "description": "npm non-major updates in one PR. recharts gets its own PR: reduced-motion.test.tsx and line-geometry.test.tsx pin its real animation output, so a move is reviewed on its own (TBD-528).",
       "matchManagers": [
         "npm"
       ],
@@ -36,6 +36,31 @@
         "!recharts"
       ],
       "groupName": "npm non-major"
+    },
+    {
+      "description": "Hold TypeScript below 7. TS 7 is the native compiler and ships no JS compiler API, which typescript-eslint (via eslint-config-next, peer typescript <6.1.0) and the AST convention tests under frontend/tests import. Lift once typescript-eslint supports TS 7 and those tests no longer import the compiler API from \"typescript\".",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchPackageNames": [
+        "typescript"
+      ],
+      "allowedVersions": "<7"
+    },
+    {
+      "description": "Hold the Python runtime below 3.15: the python image in backend/Dockerfile and backend/Dockerfile.mcp, backend/.python-version, requires-python in backend/pyproject.toml, and a setup-python python-version input if one is ever set (actions/python-versions). PyYAML, which uvicorn[standard] pulls in, ships no cp315 wheels, so on 3.15 the image builds compile it from source with unpinned setuptools and Cython. Lift once PyYAML publishes cp315 wheels and every package in backend/uv.lock has a cp315 or abi3/py3 wheel.",
+      "matchManagers": [
+        "dockerfile",
+        "pyenv",
+        "pep621",
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "python",
+        "mirror.gcr.io/library/python",
+        "actions/python-versions"
+      ],
+      "allowedVersions": "<3.15"
     }
   ]
 }

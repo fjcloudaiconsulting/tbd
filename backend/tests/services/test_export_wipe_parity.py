@@ -41,6 +41,7 @@ EXPORT_ONLY_ACKNOWLEDGED: dict[str, str] = {
     "org_ai_default_routing": "TBD-223: not wiped today",
     "org_ai_feature_caps": "TBD-223: not wiped today",
     "org_ai_feature_routing": "TBD-223: not wiped today",
+    "plan_goals": "TBD-223: not wiped today (cascades via scenarios on org delete only)",
     "report_versions": "TBD-223: cascades via reports, no explicit count",
     "scenarios": "TBD-223: not wiped today",
     "user_dismissed_announcements": "TBD-223: cascades via users, no explicit count",

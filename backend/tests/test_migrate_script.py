@@ -64,6 +64,8 @@ def _patch_alembic(monkeypatch, *, heads: list[str], revisions: list[SimpleNames
 
 
 def _set_database_url(monkeypatch, url: str | None) -> None:
+    # MIGRATIONS_DATABASE_URL would win over DATABASE_URL (TBD-655).
+    monkeypatch.delenv("MIGRATIONS_DATABASE_URL", raising=False)
     if url is None:
         monkeypatch.delenv("DATABASE_URL", raising=False)
     else:

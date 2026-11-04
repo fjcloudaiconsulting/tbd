@@ -9,7 +9,7 @@ import datetime
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +22,7 @@ from app.models.forecast_plan import (
     ItemSource,
     PlanStatus,
 )
-from app.models.recurring import RecurringTransaction
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.forecast_plan import (
     BulkUpsertRequest,
@@ -42,6 +42,7 @@ from app.services.settings_service import (
 )
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    non_reverted_transaction_filter,
     org_currency_filter,
     reportable_transaction_filter,
 )
@@ -278,6 +279,10 @@ async def _build_response(
     # spec §3.2, which also records why `:512`'s loop-termination guard must
     # not be rewired.
     #
+    # TBD-764 note: the current period is no longer an averaging slot (it is
+    # B' in `R + max(H', B')`), but the reason stands: widened, B' and R would
+    # each hold months of spend and still be planned as one period.
+    #
     # `today` is injectable (D6) because the window floors at the wall clock.
     # All eleven `_build_response` call sites pass it through from their own
     # entry point; none of them is a loop, so this fires once per request.
@@ -400,12 +405,140 @@ async def get_plan_for_period(
     return await _build_response(db, org_id, plan, today=today)
 
 
+# ── populate: history already covered by a template (TBD-764) ──────────────
+
+_TEMPLATE_MATCH_TOLERANCE = Decimal("0.10")
+# Bound on the backward slot walk below, for a frontier set far ahead of the
+# period (a weekly template starting years out). Local on purpose: the shared
+# ``date_utils.MAX_OCCURRENCE_ITERATIONS`` is generation's cap and is being
+# retired from that module (TBD-338).
+_MAX_SLOT_WALK_STEPS = 600
+
+
+def _template_occurrences_in_month(
+    r: RecurringTransaction, year: int, month: int,
+) -> int:
+    """How many occurrences ``r``'s grid puts in calendar month ``year-month``.
+
+    A CAP for the history match, not an occurrence walk: it is aligned on the
+    template's own ``next_due_date`` (weekday, 14-day phase, quarter month,
+    anniversary month) and never projects anything. A past month has no
+    frontier to walk from, which is why ``occurrences_in_window`` is not used.
+
+    Known limit: the anchor is the CURRENT frontier. After a "this and
+    future" date move (TBD-756) -- a weekly template moved to another
+    weekday, say -- a past month's cap can be off by one, because that
+    month's rows were due on the old grid.
+    """
+    anchor = r.next_due_date
+    first = datetime.date(year, month, 1)
+    last = first + relativedelta(months=1) - datetime.timedelta(days=1)
+    freq = r.frequency
+    if freq == Frequency.WEEKLY:
+        offset = (anchor.weekday() - first.weekday()) % 7
+        return len(range(1 + offset, last.day + 1, 7))
+    if freq == Frequency.BIWEEKLY:
+        offset = (anchor - first).days % 14
+        return len(range(1 + offset, last.day + 1, 14))
+    months_apart = (year * 12 + month) - (anchor.year * 12 + anchor.month)
+    if freq == Frequency.QUARTERLY:
+        return 1 if months_apart % 3 == 0 else 0
+    if freq == Frequency.YEARLY:
+        return 1 if months_apart % 12 == 0 else 0
+    return 1
+
+
+def _has_open_slot_before_frontier(
+    r: RecurringTransaction,
+    p_start: datetime.date, p_end: datetime.date,
+    held: set[tuple[int, datetime.date]],
+) -> bool:
+    """True if ``r``'s grid has a slot in ``[p_start, p_end]`` BEFORE its
+    ``next_due_date`` that no row in ``held`` (``(recurring_id, date)``)
+    holds -- the template starts after a slot the user pays by hand.
+
+    Walked BACK from the frontier in whole frequency steps, each from the
+    frontier itself (``next_due - k months``, not iterated), until it falls
+    before ``p_start``. Slots at or after the frontier are the projection's.
+    Capped at ``_MAX_SLOT_WALK_STEPS``; past the cap the template is treated
+    as having no open slot (it matches).
+    """
+    anchor = r.next_due_date
+    freq = r.frequency
+    for k in range(1, _MAX_SLOT_WALK_STEPS + 1):
+        if freq == Frequency.WEEKLY:
+            d = anchor - datetime.timedelta(weeks=k)
+        elif freq == Frequency.BIWEEKLY:
+            d = anchor - datetime.timedelta(weeks=2 * k)
+        elif freq == Frequency.QUARTERLY:
+            d = anchor - relativedelta(months=3 * k)
+        elif freq == Frequency.YEARLY:
+            d = anchor - relativedelta(years=k)
+        else:
+            d = anchor - relativedelta(months=k)
+        if d < p_start:
+            return False
+        if d <= p_end and (r.id, d) not in held:
+            return True
+    return False
+
+
+def _drop_template_matches(
+    rows: list[tuple],
+    templates: list[RecurringTransaction],
+    year: int, month: int,
+    generated_counts: dict[tuple[int, tuple[int, int]], int],
+) -> list[tuple]:
+    """One DUE month of one group's history, minus the rows an active
+    template already plans.
+
+    ``rows`` start ``(category_id, account_id, amount, ...)``: SETTLED history
+    with ``recurring_id`` NULL, bucketed by their own ``date`` (the template's
+    grid is due dates; a month-end bill settling on the 2nd would otherwise
+    put two rows in one month). The group key already fixed the type.
+
+    A row matches a template on the same category and account with an amount
+    within +/-10% of the template's (inclusive). Each template takes at most
+    the occurrences its grid has that month MINUS the settled rows it
+    generated itself that month (``generated_counts``, by
+    ``(recurring_id, (year, month))``),
+    closest amount first, so a second bill of a similar size stays in H'.
+
+    Known limits, both erring toward planning MORE:
+      - exact ``category_id`` and ``account_id``: a template on the master
+        (Housing) misses rent imported on its sub (Housing > Rent), and a bill
+        that moved accounts misses its older rows;
+      - greedy, not optimal: templates go in id order and a matched row is
+        gone for the next one, so A=100 can take a 105 row that B=110 needed,
+        leaving 92 for nobody (an optimal assignment would match both).
+    """
+    matched: set[int] = set()
+    for t in sorted(templates, key=lambda t: t.id):
+        cap = _template_occurrences_in_month(t, year, month) - generated_counts.get(
+            (t.id, (year, month)), 0
+        )
+        if cap <= 0:
+            continue
+        band = t.amount * _TEMPLATE_MATCH_TOLERANCE
+        candidates = sorted(
+            (abs(row[2] - t.amount), i)
+            for i, row in enumerate(rows)
+            if i not in matched
+            and row[0] == t.category_id
+            and row[1] == t.account_id
+            and abs(row[2] - t.amount) <= band
+        )
+        matched.update(i for _, i in candidates[:cap])
+    return [row for i, row in enumerate(rows) if i not in matched]
+
+
 async def populate_from_sources(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
     *, today: datetime.date | None = None,
     pre_existing_sub_pairs: frozenset[tuple[int, str]] | None = None,
 ) -> ForecastPlanResponse:
-    """Auto-populate plan items from recurring templates and 3-month history averages.
+    """Auto-populate plan items from recurring obligations, the period's own
+    rows and 3-month history averages: per group, R + max(H', B') (TBD-764).
 
     Only adds items for categories not already in the plan.
 
@@ -426,13 +559,15 @@ async def populate_from_sources(
     p_end = period.end_date or (p_start + relativedelta(months=1) - datetime.timedelta(days=1))
 
     # TBD-325 PR 2: resolved ONCE for this entry point and threaded into ALL
-    # THREE aggregates below (history, recurring templates, current period)
-    # AND into ``_build_response`` at the bottom, so the suggestion and the
-    # actuals it is rendered against are in the same money.
+    # FOUR sources below (history, recurring templates, current period, and
+    # the period's generated rows -- TBD-764, which share the current-period
+    # select and its clause) AND into ``_build_response`` at the bottom, so
+    # the suggestion and the actuals it is rendered against are in the same
+    # money.
     #
-    # ⚠ "three", not "two". An earlier cut said two and scoped two; the
+    # ⚠ "four", not "two". An earlier cut said two and scoped two; the
     # recurring source was the one it missed, and a persisted cross-currency
-    # ``planned_amount`` is the result. If you add a fourth source, scope it.
+    # ``planned_amount`` is the result. If you add a fifth source, scope it.
     currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
     currency_clause = org_currency_filter(org_id, currency_scope)
 
@@ -521,25 +656,87 @@ async def populate_from_sources(
         else:
             claimed_sub.add(key)
 
-    # ── From active recurring templates (with date filter) ──
-    # Aggregate by master category before inserting
+    # ── TBD-764: ONE computation per group ──
+    #
+    #     planned = R + max(H', B')
+    #
+    #   R  = the group's recurring obligations in the period: its materialised
+    #        occurrences (rows with ``recurring_id`` set, any status, by
+    #        effective date) plus each active template's occurrences that have
+    #        no row yet.
+    #   B' = settled + pending rows WITHOUT ``recurring_id`` in the period.
+    #   H' = monthly average of SETTLED history rows without ``recurring_id``
+    #        over the three months before the period.
+    #
+    # Every row is split on ``recurring_id``, so a template's money lives in R
+    # and nowhere else, and a group holding rent AND variable spend plans both.
+    # This replaced a template branch that claimed the whole group and made the
+    # history pass skip it: a mixed group lost its variable spend and its
+    # manual pending rows, and once generation pushed the template's frontier
+    # past ``p_end`` the group fell through to the history pass, which averaged
+    # its own rent occurrence in as one month slot.
+    #
+    # History paid BEFORE its template existed is the other half of the split.
+    # Onboarding imports first and sets up templates second, and promoting a
+    # row links that row only, so a bill's past is usually plain rows with
+    # ``recurring_id`` NULL. Counted in H' next to the template's R they plan
+    # the bill twice (rent 1500 -> 3000). So a NULL history row that looks like
+    # one of the group's templates is matched out of H': see
+    # ``_drop_template_matches``. What is left (variable spend) stays.
+    #
+    # A template is kept OUT of the match only when its grid has a slot in
+    # this period BEFORE its frontier that no row holds: the template was set
+    # up to start later and the user pays this one by hand ("rent template
+    # from Dec 1, November paid by hand"), so the history is this period's
+    # only signal (``_has_open_slot_before_frontier``). A template simply not
+    # due this period (quarterly insurance due next month) still matches; so
+    # does one whose slot holds a SKIPPED row. Asymmetry, by design: "starts
+    # next period" plans the history average, "skipped this period" plans 0
+    # -- skip means "not this period", and a hand payment of it would reach
+    # B' as its own row anyway. A REJECTED row or a reconcile duplicate does
+    # not hold its slot (its amount was reverted; the template did not
+    # handle it).
+    #
+    # Known and NOT solved here, exactly as in ``forecast_service``:
+    #   - a hand-keyed pending row duplicating a template bill counts in B'
+    #     AND in R;
+    #   - in the period being planned, a plain settled bank row next to the
+    #     generated pending occurrence it was never reconciled with counts in
+    #     B' AND in R (rent 1500 -> 3000). In LATER periods that bank row is
+    #     history, and the template match keeps it out of H'.
+    #   - a PAUSED template plans 0: it projects nothing, its generated
+    #     history keeps ``recurring_id`` so it stays out of H', and a paused
+    #     template matches nothing. Paused means "do not plan this". Stopping
+    #     or deleting the template NULLs ``recurring_id`` and that history
+    #     counts in H' again.
+
+    def type_str(raw) -> str:
+        return raw.value if hasattr(raw, "value") else str(raw)
+
+    # ── R, first half: occurrences of active templates with no row yet ──
+    # ALL active templates are loaded, not only those due by ``p_end``: the
+    # history match below needs a template whose frontier generation already
+    # pushed past the period, and that is the common case once the period's
+    # occurrence exists. Only the projection narrows to ``next_due <= p_end``.
     rec_result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
             active_series_filter(),
-            RecurringTransaction.next_due_date <= p_end,
+            # TBD-600: a transfer series plans no income or expense, and its
+            # generated pair is not reportable history either.
+            RecurringTransaction.type != "transfer",
             # TBD-325 PR 2. ⚠ THE THIRD SOURCE, and the one that made this a
             # HALF-FIX until it was caught in review.
             #
-            # The history (above) and current-period (below) aggregates were
-            # scoped while this one was not, so ``planned_amount`` was written
-            # as a CROSS-CURRENCY total and PERSISTED to
-            # ``forecast_plan_items``. It then became
-            # ``total_planned_expense`` -- the DENOMINATOR of OnTrackTile's
-            # verdict and of the budget bars -- against a numerator that IS
-            # scoped. Measured: an EUR org with a USD 3000 recurring planned
-            # 3025.00 against 100.00 of scoped actuals, a 2925 phantom
-            # underspend that survives the scope because it is stored.
+            # The history and current-period aggregates (below) were scoped
+            # while this one was not, so ``planned_amount`` was written as a
+            # CROSS-CURRENCY total and PERSISTED to ``forecast_plan_items``.
+            # It then became ``total_planned_expense`` -- the DENOMINATOR of
+            # OnTrackTile's verdict and of the budget bars -- against a
+            # numerator that IS scoped. Measured: an EUR org with a USD 3000
+            # recurring planned 3025.00 against 100.00 of scoped actuals, a
+            # 2925 phantom underspend that survives the scope because it is
+            # stored.
             #
             # Scoping a numerator and not its denominator is worse than
             # scoping neither.
@@ -554,10 +751,35 @@ async def populate_from_sources(
             ),
         )
     )
-    recurring_totals: dict[tuple[int, str], Decimal] = {}
-    for r in rec_result.scalars().all():
-        grp_id = group_key(r.category_id)
-        key = (grp_id, r.type)
+    active_templates = list(rec_result.scalars().all())
+    recurring_items = [r for r in active_templates if r.next_due_date <= p_end]
+
+    # Anti-double-count probe, copied VERBATIM from
+    # ``forecast_service.compute_forecast`` (there it is inline, not a helper,
+    # and this change does not reach into that module). Keep the two
+    # identical: the predicate is generation's own create-condition negated
+    # -- (org_id, recurring_id, date), NO status, NO reportability, NO
+    # effective-date term -- so it asks only "does a row for this occurrence
+    # exist?". A skipped occurrence is such a row: the probe drops its date
+    # from the projection, and the reportable filter on the rows below drops
+    # the row, so it counts 0 in both halves. A row dated in this period but
+    # expected to settle in the next one is also found here, and counts in R
+    # next period by its effective date. The date bounds are a narrowing only.
+    materialised: set[tuple[int, datetime.date]] = set()
+    if recurring_items:
+        rows = await db.execute(
+            select(Transaction.recurring_id, Transaction.date).where(
+                Transaction.org_id == org_id,
+                Transaction.recurring_id.in_([r.id for r in recurring_items]),
+                Transaction.date >= p_start,
+                Transaction.date <= p_end,
+            )
+        )
+        materialised = {(rid, d) for rid, d in rows.all()}
+
+    r_totals: dict[tuple[int, str], Decimal] = {}
+    for r in recurring_items:
+        key = (group_key(r.category_id), type_str(r.type))
         if key in existing_keys:
             continue
 
@@ -568,65 +790,80 @@ async def populate_from_sources(
         # budget, and it would have been missed. It is now the shared walk, so
         # this plan source spends instalments exactly as the forecast and
         # generation do.
-        occs = occurrences_in_window(
+        for d in occurrences_in_window(
             r.next_due_date, r.frequency, p_start, p_end,
             budget=remaining_occurrences(r),
-        )
-        total = r.amount * len(occs)
-
-        if total > 0:
-            recurring_totals[key] = recurring_totals.get(key, Decimal("0")) + total
-
-    for key, total in recurring_totals.items():
-        if key in existing_keys:
-            continue
-        grp_id, r_type = key
-        # Master mode only: skip groups that would double-plan a leftover sub.
-        if would_conflict(grp_id, r_type):
-            continue
-        item = ForecastPlanItem(
-            plan_id=plan.id,
-            org_id=org_id,
-            category_id=grp_id,
-            type=ForecastItemType(r_type),
-            planned_amount=total,
-            source=ItemSource.RECURRING,
-        )
-        db.add(item)
-        existing_keys.add(key)
-        claim(grp_id, r_type)
-
-    # ── From 3-month historical monthly averages + current-period activity ──
-    # Two scopes:
-    #   - History (3 months prior to current period): SETTLED only. Pending
-    #     transactions from months ago shouldn't drive averages — if they
-    #     never settled, treating them as real history would inflate the
-    #     suggestion.
-    #   - Current period: SETTLED OR PENDING. The user's already-imported
-    #     bills for the period being planned are real expectations and
-    #     should feed the suggestion immediately, not after they settle.
-    # Each contributing month counts as one slot in the average; current
-    # period acts as one additional month.
-    #
-    # Month bucketing happens in Python (not SQL date_format) so the
-    # query stays portable between MySQL and SQLite (test fixtures run
-    # in-memory SQLite).
-    three_months_ago = p_start - relativedelta(months=3)
+        ):
+            if (r.id, d) in materialised:
+                continue
+            r_totals[key] = r_totals.get(key, Decimal("0")) + r.amount
 
     # Cash-basis: select + filter by the effective settled date so a row
     # dated in month X but settled in month Y buckets (and windows) by Y,
     # consistent with the list/reports/forecast.
     eff_date = effective_period_date_expr()
-    hist_q = (
+
+    # ── R, second half, and B': the period's rows, split on recurring_id ──
+    # SETTLED OR PENDING: the user's already-imported bills for the period
+    # being planned are real expectations and feed the suggestion right away,
+    # not after they settle. Generated rows go to R whatever the template's
+    # state now (paused, ended or deleted-and-kept), plain rows to B'.
+    generated = Transaction.recurring_id.is_not(None)
+    current_q = (
         select(
             Transaction.category_id,
             Transaction.type,
+            generated.label("generated"),
+            func.coalesce(func.sum(Transaction.amount), 0).label("total"),
+        )
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.status.in_(
+                [TransactionStatus.SETTLED, TransactionStatus.PENDING]
+            ),
+            eff_date >= p_start,
+            eff_date <= p_end,
+            Transaction.type.in_(["income", "expense"]),
+            reportable_transaction_filter(),
+            # One clause for BOTH the current-period source and the
+            # generated-rows source (TBD-764): they are this one select.
+            currency_clause,
+        )
+        .group_by(Transaction.category_id, Transaction.type, generated)
+    )
+    current_result = await db.execute(current_q)
+    b_totals: dict[tuple[int, str], Decimal] = {}
+    for cat_id, tx_type_raw, is_generated, total in current_result.all():
+        key = (group_key(cat_id), type_str(tx_type_raw))
+        amt = Decimal(str(total))
+        if amt <= 0:
+            continue
+        bucket = r_totals if is_generated else b_totals
+        bucket[key] = bucket.get(key, Decimal("0")) + amt
+
+    # ── H': 3-month history average ──
+    # SETTLED only. Pending transactions from months ago shouldn't drive
+    # averages — if they never settled, treating them as real history would
+    # inflate the suggestion. Generated rows belong to R, never to H': a
+    # template's past occurrences averaged in here would plan it twice.
+    #
+    # Month bucketing happens in Python (not SQL date_format) so the
+    # query stays portable between MySQL and SQLite (test fixtures run
+    # in-memory SQLite).
+    three_months_ago = p_start - relativedelta(months=3)
+    hist_q = (
+        select(
+            Transaction.category_id,
+            Transaction.account_id,
+            Transaction.type,
             eff_date.label("eff_date"),
             Transaction.amount,
+            Transaction.date,
         )
         .where(
             Transaction.org_id == org_id,
             Transaction.status == TransactionStatus.SETTLED,
+            Transaction.recurring_id.is_(None),
             eff_date >= three_months_ago,
             eff_date < p_start,
             Transaction.type.in_(["income", "expense"]),
@@ -639,83 +876,127 @@ async def populate_from_sources(
     )
     hist_result = await db.execute(hist_q)
 
-    # Group by the granularity key (master in master mode, sub in sub mode),
-    # then compute monthly averages.
-    # Structure: {(group_id, type): {month: total}}
-    master_monthly: dict[tuple[int, str], dict[str, Decimal]] = {}
-    for cat_id, tx_type_raw, eff_dt, amount in hist_result.all():
-        tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
-        grp_id = group_key(cat_id)
-        key = (grp_id, tx_type)
-        # Bucket by the effective settled date selected above.
-        month = f"{eff_dt.year:04d}-{eff_dt.month:02d}"
-        if key not in master_monthly:
-            master_monthly[key] = {}
-        master_monthly[key][month] = master_monthly[key].get(month, Decimal("0")) + Decimal(str(amount))
+    # Group by the granularity key (master in master mode, sub in sub mode).
+    # Each row keeps BOTH months: its effective month buckets H' (cash basis,
+    # unchanged), its due month (``date``) is where the template match looks.
+    # Structure: {(group_id, type): [(cat, account, amount, eff_month, due_month)]}
+    hist_rows: dict[tuple[int, str], list[tuple]] = {}
+    for cat_id, account_id, tx_type_raw, eff_dt, amount, due in hist_result.all():
+        key = (group_key(cat_id), type_str(tx_type_raw))
+        hist_rows.setdefault(key, []).append((
+            cat_id, account_id, Decimal(str(amount)),
+            (eff_dt.year, eff_dt.month), (due.year, due.month),
+        ))
 
-    # Current-period scope: SETTLED OR PENDING. Treated as one additional
-    # month slot in the rolling average so already-imported bills for the
-    # period being planned surface in the suggestion right away.
-    current_q = (
-        select(
-            Transaction.category_id,
-            Transaction.type,
-            func.coalesce(func.sum(Transaction.amount), 0).label("total"),
+    # The history match (see the comment at the top of this computation).
+    # Two small selects, both keyed on the org's active templates only:
+    #   - the rows that hold the templates' slots in THIS period (dated in
+    #     it; skipped counts, rejected and reconcile duplicates do not);
+    #   - how many SETTLED, reportable rows each template generated per due
+    #     month over the history rows' date span: those occurrences were paid
+    #     through the template, so its cap is spent. A generated row left
+    #     PENDING (never reconciled with the bank row that paid it) or skipped
+    #     spent nothing, and the plain row next to it IS that payment.
+    templates_by_group: dict[tuple[int, str], list[RecurringTransaction]] = {}
+    generated_counts: dict[tuple[int, tuple[int, int]], int] = {}
+    template_ids = [r.id for r in active_templates]
+    if template_ids and hist_rows:
+        held_rows = await db.execute(
+            select(Transaction.recurring_id, Transaction.date).where(
+                Transaction.org_id == org_id,
+                Transaction.recurring_id.in_(template_ids),
+                Transaction.date >= p_start,
+                Transaction.date <= p_end,
+                or_(
+                    Transaction.reconciliation_state == "skipped",
+                    non_reverted_transaction_filter(),
+                ),
+            )
         )
-        .where(
-            Transaction.org_id == org_id,
-            Transaction.status.in_(
-                [TransactionStatus.SETTLED, TransactionStatus.PENDING]
-            ),
-            eff_date >= p_start,
-            eff_date <= p_end,
-            Transaction.type.in_(["income", "expense"]),
-            reportable_transaction_filter(),
-            # Same clause as the history query above: the current period is one
-            # more slot in the SAME average, so scoping one and not the other
-            # would average across currencies through the back door.
-            currency_clause,
-        )
-        .group_by(Transaction.category_id, Transaction.type)
-    )
-    current_result = await db.execute(current_q)
-    current_period_label = "__current__"
-    for cat_id, tx_type_raw, total in current_result.all():
-        tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
-        grp_id = group_key(cat_id)
-        key = (grp_id, tx_type)
-        amt = Decimal(str(total))
-        if amt <= 0:
-            continue
-        if key not in master_monthly:
-            master_monthly[key] = {}
-        master_monthly[key][current_period_label] = master_monthly[key].get(
-            current_period_label, Decimal("0")
-        ) + amt
+        held = {(rid, d) for rid, d in held_rows.all()}
+        for r in active_templates:
+            if not _has_open_slot_before_frontier(r, p_start, p_end, held):
+                key = (group_key(r.category_id), type_str(r.type))
+                templates_by_group.setdefault(key, []).append(r)
 
-    for key, months in master_monthly.items():
+    if templates_by_group:
+        due_dates = [
+            datetime.date(*row[4], 1)
+            for key in templates_by_group
+            for row in hist_rows.get(key, [])
+        ]
+        if due_dates:
+            gen = await db.execute(
+                select(Transaction.recurring_id, Transaction.date).where(
+                    Transaction.org_id == org_id,
+                    Transaction.recurring_id.in_(
+                        [r.id for ts in templates_by_group.values() for r in ts]
+                    ),
+                    Transaction.status == TransactionStatus.SETTLED,
+                    reportable_transaction_filter(),
+                    Transaction.date >= min(due_dates),
+                    Transaction.date < max(due_dates) + relativedelta(months=1),
+                )
+            )
+            for rid, d in gen.all():
+                k = (rid, (d.year, d.month))
+                generated_counts[k] = generated_counts.get(k, 0) + 1
+
+    # Structure: {(group_id, type): {eff_month: total}}. EVERY month that had
+    # a history row counts in the divisor and the 2-month gate, even when the
+    # match took all of it (it holds 0): electricity 80 with 80+200, 80,
+    # 80+100 averages 300 over 3 months, not 2.
+    hist_monthly: dict[tuple[int, str], dict[tuple[int, int], Decimal]] = {}
+    for key, rows in hist_rows.items():
+        months = hist_monthly.setdefault(key, {})
+        for row in rows:
+            months.setdefault(row[3], Decimal("0"))
+        kept = rows
+        templates = templates_by_group.get(key)
+        if templates:
+            by_due: dict[tuple[int, int], list[tuple]] = {}
+            for row in rows:
+                by_due.setdefault(row[4], []).append(row)
+            kept = [
+                row
+                for (year, month), due_rows in by_due.items()
+                for row in _drop_template_matches(
+                    due_rows, templates, year, month, generated_counts
+                )
+            ]
+        for row in kept:
+            months[row[3]] += row[2]
+
+    # ── One item per group ──
+    # Insertion order only keeps the run deterministic; the guards below do
+    # not depend on it (``would_conflict`` reads the seeded snapshots, and in
+    # master mode every candidate is a master).
+    candidates = dict.fromkeys([*r_totals, *b_totals, *hist_monthly])
+    for key in candidates:
         if key in existing_keys:
             continue
-        # Current-period activity is authoritative: even if there is no
-        # historical settled signal in this category, an already-imported
-        # transaction in the period being planned should drive a suggestion.
-        # Pure-history signals still need 2+ months to avoid one-off noise.
-        has_current = current_period_label in months
-        if not has_current and len(months) < 2:
-            continue
         grp_id, tx_type = key
-        # Master mode only: skip groups that would double-plan a leftover sub.
+        # Skip groups that would double-plan a leftover sub (or master).
         if would_conflict(grp_id, tx_type):
             continue
-        avg_amount = sum(months.values()) / len(months)
+        r_total = r_totals.get(key, Decimal("0"))
+        # Pure-history signals need 2+ months to avoid one-off noise; the
+        # current period's own rows (B') need no such gate.
+        months = hist_monthly.get(key, {})
+        h_avg = Decimal("0")
+        if len(months) >= 2:
+            h_avg = Decimal(str(round(float(sum(months.values()) / len(months)), 2)))
+        planned = r_total + max(h_avg, b_totals.get(key, Decimal("0")))
+        if planned <= 0:
+            continue
 
         item = ForecastPlanItem(
             plan_id=plan.id,
             org_id=org_id,
             category_id=grp_id,
             type=ForecastItemType(tx_type),
-            planned_amount=Decimal(str(round(float(avg_amount), 2))),
-            source=ItemSource.HISTORY,
+            planned_amount=planned,
+            source=ItemSource.RECURRING if r_total > 0 else ItemSource.HISTORY,
         )
         db.add(item)
         existing_keys.add(key)

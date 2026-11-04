@@ -97,9 +97,11 @@ def test_f4_an_error_is_class_and_frames_never_the_message(log_lines):
 
 
 def test_f4_an_uncaught_error_is_one_json_line_without_the_message():
+    # Through the environment, not the source: Python 3.13+ tracebacks carry `-c` source lines.
     done = _run_python(
-        "from app import logs\nlogs.configure()\n"
-        f"raise RuntimeError({VALUE!r})\n"
+        "import os\nfrom app import logs\nlogs.configure()\n"
+        "raise RuntimeError(os.environ['TBD_TEST_VALUE'])\n",
+        {"TBD_TEST_VALUE": VALUE},
     )
 
     assert done.returncode != 0

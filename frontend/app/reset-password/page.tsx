@@ -1,16 +1,15 @@
 "use client";
 
 import { FormEvent, Suspense, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useOneTimeQueryParam } from "@/lib/hooks/use-one-time-query-param";
 import { input, label, btnPrimary, error as errorCls, success } from "@/lib/styles";
 
 function ResetPasswordForm() {
-  const searchParams = useSearchParams();
-  const token = searchParams.get("token");
+  const token = useOneTimeQueryParam("token");
 
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");

@@ -4,13 +4,23 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import Money
+
+
+# BE-27: ``recurring_transactions.description`` is String(255).
+RECURRING_DESCRIPTION_MAX_LENGTH = 255
+
 
 class RecurringCreate(BaseModel):
     account_id: int
     category_id: int
-    description: str
-    amount: Decimal = Field(gt=0)
-    type: Literal["income", "expense"]
+    description: str = Field(max_length=RECURRING_DESCRIPTION_MAX_LENGTH)
+    amount: Money = Field(gt=0)
+    type: Literal["income", "expense", "transfer"]
+    # TBD-600: required iff ``type`` is transfer, and then a different account
+    # of the same org and currency. Checked in ``recurring_service`` (400):
+    # the org and currency rules need the database.
+    to_account_id: Optional[int] = None
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_due_date: datetime.date
     auto_settle: bool = False
@@ -24,9 +34,13 @@ class RecurringCreate(BaseModel):
 
 class RecurringUpdate(BaseModel):
     account_id: Optional[int] = None
+    # TBD-600: a transfer series only. There is no way to change a template
+    # into or out of a transfer (``type`` below stays income/expense, and the
+    # service refuses a type change on a transfer): its rows are pairs.
+    to_account_id: Optional[int] = None
     category_id: Optional[int] = None
-    description: Optional[str] = None
-    amount: Optional[Decimal] = Field(default=None, gt=0)
+    description: Optional[str] = Field(default=None, max_length=RECURRING_DESCRIPTION_MAX_LENGTH)
+    amount: Optional[Money] = Field(default=None, gt=0)
     type: Optional[Literal["income", "expense"]] = None
     frequency: Optional[Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]] = None
     next_due_date: Optional[datetime.date] = None
@@ -37,10 +51,10 @@ class RecurringUpdate(BaseModel):
     # deliberately no ``occurrences_elapsed`` field here -- progress is written
     # by generation only.
     #
-    # ⚠ Like every other field on this model, ``None`` means "not supplied" and
-    # is indistinguishable from an explicit ``null``, so a counted series
-    # cannot be converted back to open-ended through this endpoint. Raising the
-    # count is the supported escape.
+    # ⚠ The ONE field on this model where an explicit ``null`` differs from an
+    # omitted key (TBD-762): ``null`` makes the series open-ended ("never
+    # ends"); omitted leaves the count alone. ``update_recurring`` reads
+    # ``model_fields_set`` for it. Every other field: ``None`` = not supplied.
     occurrence_count: Optional[int] = Field(default=None, gt=0, le=1200)
 
 
@@ -52,7 +66,9 @@ class RecurringResponse(BaseModel):
     category_name: str = ""
     description: str
     amount: Decimal
-    type: Literal["income", "expense"]
+    type: Literal["income", "expense", "transfer"]
+    to_account_id: Optional[int] = None
+    to_account_name: str = ""
     frequency: str
     next_due_date: datetime.date
     auto_settle: bool

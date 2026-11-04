@@ -17,8 +17,9 @@ Pins every architect-emphasized risk in
 5. ``/verify`` mirrors ``/refresh`` — accepts a grace ticket when the
    family is still alive, rejects when the family is gone.
 6. Concurrent rotation produces the correct audit shape: one
-   ``auth.session.rotated`` AND one
-   ``auth.session.grace_accept {via_already_rotated: true}``.
+   ``auth.session.grace_accept {via_already_rotated: true}`` and no row for
+   the winner's routine rotation (BE-10: a successful rotation is not
+   audited; grace, reuse and failure events still are).
 7. ``sid`` mismatch on the grace branch rejects.
 8. Replay-after-logout class — within the 30s grace window, if logout
    has deleted the family, the grace branch must reject.
@@ -39,7 +40,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -198,34 +199,47 @@ async def _httpx_app_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
 def rotate_barrier(monkeypatch):
     """Hold every ``session_rotate`` call until two have arrived, so both
     racing ``/refresh`` requests have validated the old head before either
-    rotates. The loser is then held until the winner's audit write is done:
-    the in-memory test DB is a single shared connection, so two concurrent
-    audit sessions would collide (a harness artifact, not production
-    behavior). Event gating only, never ``asyncio.sleep``."""
-    from app.routers import auth as auth_module
-
+    rotates. Only the loser writes an audit row (the winner's routine
+    rotation is not audited, BE-10), so nothing else needs ordering. Event
+    gating only, never ``asyncio.sleep``."""
     real = state_db.session_rotate
-    real_record = auth_module._record_session_rotated
-    state = {"arrived": 0, "release": asyncio.Event(), "winner_done": asyncio.Event()}
+    state = {"arrived": 0, "release": asyncio.Event()}
 
     async def _gated(*args, **kwargs):
         state["arrived"] += 1
         if state["arrived"] >= 2:
             state["release"].set()
         await asyncio.wait_for(state["release"].wait(), timeout=5)
-        result = await real(*args, **kwargs)
-        if result == state_db.SESSION_ROTATE_ALREADY_ROTATED:
-            await asyncio.wait_for(state["winner_done"].wait(), timeout=5)
-        return result
-
-    async def _record(*args, **kwargs):
-        try:
-            return await real_record(*args, **kwargs)
-        finally:
-            state["winner_done"].set()
+        return await real(*args, **kwargs)
 
     monkeypatch.setattr(state_db, "session_rotate", _gated)
-    monkeypatch.setattr(auth_module, "_record_session_rotated", _record)
+
+
+# ── 0. A routine rotation writes no audit row (BE-10) ───────────────────────
+
+
+async def test_routine_rotation_writes_no_audit_row(session_factory):
+    """A successful ``/refresh`` rotates the cookie and writes nothing to
+    ``audit_events``: one row per refresh grew the table with every active
+    session. Wrong implementation killed: keeping the
+    ``auth.session.rotated`` write on the ``ok`` path."""
+    await _seed_user(session_factory)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        token = _login(client)
+        async with session_factory() as db:
+            before = (await db.execute(select(func.count()).select_from(AuditEvent))).scalar()
+        for _ in range(3):
+            set_refresh_cookie(client, token)
+            res = client.post("/api/v1/auth/refresh")
+            assert res.status_code == 200, res.text
+            raw = _canonical_refresh_cookie(res.headers)
+            assert raw is not None
+            token = _refresh_token_from_set_cookie(raw)
+    async with session_factory() as db:
+        after = (await db.execute(select(func.count()).select_from(AuditEvent))).scalar()
+    assert after == before
+    assert await _list_audit(session_factory, "auth.session.rotated") == []
 
 
 # ── 1. Replay AFTER the grace window (manual expiry) ─────────────────────────
@@ -344,12 +358,12 @@ async def test_concurrent_refresh_one_winner_one_grace(session_factory, rotate_b
 # ── 3. Audit shape on the cross-tab race ─────────────────────────────────────
 
 
-async def test_concurrent_refresh_emits_one_rotated_and_one_grace_accept(
+async def test_concurrent_refresh_emits_only_the_grace_accept(
     session_factory, rotate_barrier
 ):
-    """The race in the previous test must emit BOTH audit events:
-    one ``auth.session.rotated`` (winner) AND one
-    ``auth.session.grace_accept {via_already_rotated: true}`` (loser)."""
+    """The race in the previous test emits one
+    ``auth.session.grace_accept {via_already_rotated: true}`` (loser) and no
+    ``auth.session.rotated`` row for the winner's routine rotation (BE-10)."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
 
@@ -369,7 +383,7 @@ async def test_concurrent_refresh_emits_one_rotated_and_one_grace_accept(
 
     rotated = await _list_audit(session_factory, "auth.session.rotated")
     grace = await _list_audit(session_factory, "auth.session.grace_accept")
-    assert len(rotated) == 1, f"expected 1 rotated event, got {len(rotated)}"
+    assert rotated == []
     assert len(grace) == 1, f"expected 1 grace_accept event, got {len(grace)}"
     assert grace[0].detail["via_already_rotated"] is True
     assert grace[0].detail["sid"] == sid
@@ -505,7 +519,8 @@ async def test_jti_collision_retries_and_succeeds(
     """Forced-collision RNG returns the SAME jti for two successive calls.
     First rotate call returns ``jti_collision`` (the member insert hits
     the primary key because that jti is already a member). Router regenerates and the
-    second attempt succeeds. Audit ``auth.session.rotated`` emitted ONCE.
+    second attempt succeeds. No audit row: the retry ends in a routine
+    rotation (BE-10), not a failure.
 
     We rig the collision by patching ``secrets.token_urlsafe`` inside
     ``app.security`` so the FIRST two refresh-token mints get the same
@@ -545,7 +560,7 @@ async def test_jti_collision_retries_and_succeeds(
     assert _canonical_refresh_cookie(res.headers) is not None
 
     rotated = await _list_audit(session_factory, "auth.session.rotated")
-    assert len(rotated) == 1, f"expected 1 rotated event, got {len(rotated)}"
+    assert rotated == []
     failed = await _list_audit(session_factory, "auth.session.rotated.failed")
     assert failed == []
 
@@ -641,7 +656,7 @@ async def test_refresh_direct_grace_path_emits_catchup_cookie_and_audit(
 
     grace = await _list_audit(session_factory, "auth.session.grace_accept")
     # Exactly one event from the second /refresh (the first /refresh was
-    # a normal rotation and emits auth.session.rotated, not grace).
+    # a routine rotation, which writes no audit row).
     assert len(grace) == 1, f"expected 1 grace_accept event, got {len(grace)}"
     assert grace[0].detail["via_already_rotated"] is False
     assert grace[0].detail["old_jti"] == old_jti

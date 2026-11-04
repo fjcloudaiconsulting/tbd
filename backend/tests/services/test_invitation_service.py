@@ -166,18 +166,25 @@ async def test_create_invitation_db_unique_loser_surfaces_as_conflict(session_fa
 
     async with session_factory() as db:
         real_execute = db.execute
-        call_count = {"n": 0}
+        bypassed = {"n": 0}
 
         class _NullResult:
             def scalar_one_or_none(self):
                 return None
 
         async def fake_execute(stmt):
-            call_count["n"] += 1
-            # 3rd execute in create_invitation is the pending-row
-            # lookup — bypass it so the duplicate insert flows to the
-            # DB UNIQUE constraint.
-            if call_count["n"] == 3:
+            # The pending-row lookup (a plain SELECT on invitations keyed on
+            # ``open_email``) is bypassed so the duplicate insert flows to the
+            # DB UNIQUE constraint. Matched on the statement, not on its
+            # position: TBD-727 put the org lock first and shifted every
+            # ordinal, which turned the old "3rd execute" gate into a bypass
+            # of the lazy clear and let the real pre-check raise instead.
+            if (
+                getattr(stmt, "is_select", False)
+                and getattr(stmt, "_for_update_arg", None) is None
+                and "invitations.open_email" in str(stmt)
+            ):
+                bypassed["n"] += 1
                 return _NullResult()
             return await real_execute(stmt)
 
@@ -188,6 +195,7 @@ async def test_create_invitation_db_unique_loser_surfaces_as_conflict(session_fa
                 db, org_id=org_id, created_by=owner_id,
                 email="race@acme.io", role=Role.MEMBER,
             )
+        assert bypassed["n"] == 1, "the pre-check was not bypassed; the fence proves nothing"
 
 
 @pytest.mark.asyncio
@@ -217,6 +225,75 @@ async def test_create_invitation_allows_reactivation_of_soft_deleted_user(sessio
         await db.commit()
         assert inv.email == "carol@acme.io"
         assert inv.role == Role.ADMIN
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_for_address_registered_elsewhere_is_not_revealed(session_factory):
+    """BE-06: an address registered to ANOTHER org is created like any other
+    (no distinct 409), and flagged undeliverable for the router."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    other_org_id, _ = await _seed_org_with_owner(
+        session_factory, name="Beta", owner_username="beta_owner",
+        owner_email="taken@beta.io",
+    )
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="Taken@Beta.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        assert inv.open_email == "taken@beta.io"
+        assert await invitation_service.is_registered_elsewhere(
+            db, org_id=org_id, email="Taken@Beta.io",
+        ) is True
+        assert await invitation_service.is_registered_elsewhere(
+            db, org_id=org_id, email="fresh@acme.io",
+        ) is False
+        # Same-org addresses are never "elsewhere".
+        assert await invitation_service.is_registered_elsewhere(
+            db, org_id=other_org_id, email="taken@beta.io",
+        ) is False
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_refuses_beyond_pending_cap(session_factory, monkeypatch):
+    monkeypatch.setattr(invitation_service, "MAX_PENDING_INVITATIONS", 2)
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    async with session_factory() as db:
+        for i in range(2):
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email=f"p{i}@acme.io", role=Role.MEMBER,
+            )
+        await db.commit()
+        with pytest.raises(ConflictError) as exc:
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="p2@acme.io", role=Role.MEMBER,
+            )
+    assert exc.value.code == "pending_invitation_cap"
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_daily_cap_counts_revoked_rows(session_factory, monkeypatch):
+    """Revoke-and-re-invite of one address still spends the daily budget."""
+    monkeypatch.setattr(invitation_service, "MAX_INVITATIONS_PER_DAY", 2)
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    async with session_factory() as db:
+        for _ in range(2):
+            inv = await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="churn@acme.io", role=Role.MEMBER,
+            )
+            await invitation_service.revoke_invitation(
+                db, org_id=org_id, invitation_id=inv.id,
+            )
+            await db.commit()
+        with pytest.raises(invitation_service.InvitationQuotaExceeded):
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="churn@acme.io", role=Role.MEMBER,
+            )
 
 
 # ── list / revoke ──────────────────────────────────────────────────────────
@@ -989,3 +1066,255 @@ async def test_remove_member_superadmin_reason_wins_over_last_owner(session_fact
                 db, org_id=org_id, current_user=actor, target_user_id=target_id,
             )
         assert excinfo.value.code == invitation_service.CODE_LAST_ACTIVE_OWNER
+
+
+# ── BE-23: plan seat limit on invite + accept ─────────────────────────────
+
+
+async def _put_org_on_plan(factory, org_id: int, *, max_users: int | None) -> None:
+    from app.models.subscription import Plan, Subscription, SubscriptionStatus
+
+    async with factory() as db:
+        plan = Plan(name=f"Seats {max_users}", slug=f"seats-{max_users}", max_users=max_users)
+        db.add(plan)
+        await db.flush()
+        db.add(Subscription(org_id=org_id, plan_id=plan.id, status=SubscriptionStatus.ACTIVE))
+        await db.commit()
+
+
+@pytest.fixture
+def billing_live(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.subscription_service.settings.billing_ui_enabled", True
+    )
+
+
+@pytest.fixture
+def billing_not_live(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.subscription_service.settings.billing_ui_enabled", False
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_refused_when_plan_has_no_free_seat(session_factory, billing_live):
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=1)
+    async with session_factory() as db:
+        with pytest.raises(SvcValidationError, match="maximum of 1 user"):
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="second@acme.io", role=Role.MEMBER,
+            )
+
+
+@pytest.mark.asyncio
+async def test_accept_refused_when_seats_filled_after_invite(session_factory, billing_live):
+    """Invites issued while a seat was free cannot overfill the plan."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=2)
+    async with session_factory() as db:
+        a = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="a@acme.io", role=Role.MEMBER,
+        )
+        b = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="b@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token_a = create_invitation_token(a.id, a.email)
+        token_b = create_invitation_token(b.id, b.email)
+        b_id = b.id
+    async with session_factory() as db:
+        await invitation_service.accept_invitation(
+            db, token=token_a, username="aaa", password="strong-pw-12345",
+        )
+        await db.commit()
+    async with session_factory() as db:
+        with pytest.raises(SvcValidationError, match="maximum of 2 user"):
+            await invitation_service.accept_invitation(
+                db, token=token_b, username="bbb", password="strong-pw-12345",
+            )
+    async with session_factory() as db:
+        assert (await db.get(Invitation, b_id)).accepted_at is None
+        assert await invitation_service.count_members(db, org_id=org_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_reactivation_counts_against_seats(session_factory, billing_live):
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _add_user(
+        session_factory, org_id=org_id, username="gone", email="gone@acme.io", is_active=False,
+    )
+    await _put_org_on_plan(session_factory, org_id, max_users=2)
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="gone@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    await _add_user(session_factory, org_id=org_id, username="filler", email="filler@acme.io")
+    async with session_factory() as db:
+        with pytest.raises(SvcValidationError):
+            await invitation_service.accept_invitation(
+                db, token=token, username="ignored", password="strong-pw-12345",
+            )
+
+
+@pytest.mark.asyncio
+async def test_seat_limit_inert_until_billing_is_live(session_factory, billing_not_live):
+    """Beta: every post-trial org is on Free (max_users=1); members still join."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=1)
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="second@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    async with session_factory() as db:
+        await invitation_service.accept_invitation(
+            db, token=token, username="second", password="strong-pw-12345",
+        )
+        await db.commit()
+        assert await invitation_service.count_members(db, org_id=org_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_unlimited_plan_never_blocks(session_factory, billing_live):
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=None)
+    async with session_factory() as db:
+        await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="n@acme.io", role=Role.MEMBER,
+        )
+
+
+# ── TBD-727: one lock order on create and accept ───────────────────────────
+#
+# SQLite over one StaticPool connection cannot run two transactions at once,
+# and its dialect drops FOR UPDATE from the emitted SQL, so a deadlock cannot
+# be staged here. What can be pinned is the ORDER in which each path asks for
+# locks and touches invitation rows: a locking SELECT carries
+# ``_for_update_arg`` on the statement object, and an UPDATE or INSERT on
+# ``invitations`` reaches the cursor. The rule both paths follow: the
+# organizations row is locked before any invitation row is locked or written,
+# whether or not the seat limit is live.
+
+
+@pytest.fixture
+def record_lock_order(monkeypatch, session_factory):
+    """Returns ``start()``; from that call on, every lock request and every
+    invitation write is appended, in order, to the list it returns."""
+    from sqlalchemy import event
+
+    seen: list[str] = []
+    sync_engine = session_factory.kw["bind"].sync_engine
+    real_execute = AsyncSession.execute
+
+    async def recording(self, statement, *args, **kwargs):
+        if getattr(statement, "_for_update_arg", None) is not None:
+            tables = sorted(t.name for t in statement.get_final_froms())
+            seen.append("lock " + ",".join(tables))
+        return await real_execute(self, statement, *args, **kwargs)
+
+    def on_cursor(_conn, _cursor, statement, *_rest):
+        head = " ".join(statement.split()[:3]).lower()
+        if head.startswith(("insert into invitations", "update invitations")):
+            seen.append("write invitations")
+
+    def start() -> list[str]:
+        monkeypatch.setattr(AsyncSession, "execute", recording)
+        event.listen(sync_engine, "before_cursor_execute", on_cursor)
+        return seen
+
+    yield start
+    if event.contains(sync_engine, "before_cursor_execute", on_cursor):
+        event.remove(sync_engine, "before_cursor_execute", on_cursor)
+
+
+def _assert_org_locked_first(seen: list[str]) -> None:
+    first_invitation_step = next(
+        (i for i, step in enumerate(seen) if "invitations" in step), None
+    )
+    assert first_invitation_step is not None, (
+        f"no invitation lock or write recorded, the fence sees nothing: {seen}"
+    )
+    assert "lock organizations" in seen[:first_invitation_step], (
+        f"an invitation row was locked or written before the org row: {seen}"
+    )
+
+
+_BILLING = pytest.mark.parametrize(
+    "billing", [True, False], ids=["billing_live", "billing_not_live"]
+)
+
+
+@pytest.mark.asyncio
+@_BILLING
+async def test_create_locks_the_org_before_any_invitation_row(
+    session_factory, monkeypatch, record_lock_order, billing
+):
+    monkeypatch.setattr(
+        "app.services.subscription_service.settings.billing_ui_enabled", billing
+    )
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=None)
+    # An expired pending row for the same address, so create's lazy clear
+    # issues its UPDATE on invitations: the earliest invitation write.
+    async with session_factory() as db:
+        db.add(
+            Invitation(
+                org_id=org_id,
+                email="new@acme.io",
+                open_email="new@acme.io",
+                role=Role.MEMBER,
+                created_by=owner_id,
+                expires_at=utcnow_naive() - datetime.timedelta(days=1),
+            )
+        )
+        await db.commit()
+
+    seen = record_lock_order()
+    async with session_factory() as db:
+        await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="new@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+
+    assert seen[0] == "lock organizations", seen
+    assert seen.count("write invitations") == 2, seen  # the lazy clear, then the insert
+    _assert_org_locked_first(seen)
+
+
+@pytest.mark.asyncio
+@_BILLING
+@pytest.mark.parametrize("reactivation", [False, True], ids=["new_user", "reactivation"])
+async def test_accept_locks_the_org_before_the_invitation_row(
+    session_factory, monkeypatch, record_lock_order, billing, reactivation
+):
+    monkeypatch.setattr(
+        "app.services.subscription_service.settings.billing_ui_enabled", billing
+    )
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    await _put_org_on_plan(session_factory, org_id, max_users=None)
+    if reactivation:
+        await _add_user(
+            session_factory, org_id=org_id, username="returning",
+            email="back@acme.io", is_active=False,
+        )
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id, email="back@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+
+    seen = record_lock_order()
+    async with session_factory() as db:
+        await invitation_service.accept_invitation(
+            db, token=token, username="newbie", password="strong-pw-12345",
+        )
+        await db.commit()
+
+    assert seen[:2] == ["lock organizations", "lock invitations"], seen
+    _assert_org_locked_first(seen)

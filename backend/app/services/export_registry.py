@@ -43,7 +43,7 @@ from typing import Union
 # Bumped whenever a disposition, a scope, or a redact set changes. Recorded
 # in the export header and in the ``org.data.exported`` audit row so an
 # artifact handed to a data subject can be tied to the rules that built it.
-REGISTRY_VERSION = 3
+REGISTRY_VERSION = 4
 
 
 # ── Scoping ────────────────────────────────────────────────────────────────
@@ -159,6 +159,7 @@ SECRET_NAME_ALLOWLIST: dict[tuple[str, str], str] = {
     # datetimes, not credentials, and they are the subject's own security
     # history — Art. 15 material. An earlier brief wrongly forbade them.
     ("users", "password_changed_at"): "datetime, the subject's security history",
+    ("users", "password_reset_at"): "datetime, the subject's security history",
     ("users", "password_set"): "boolean flag, not a credential",
 }
 
@@ -278,6 +279,13 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     # full export hands over no live capability.
     "invitations": Include(OrgColumn(), "addresses the org typed in; already shown in-app"),
     "merchant_dictionary": Exclude("cross-org PUBLIC normalisation dictionary, not org data"),
+    # Server-internal and never serialized, like tag_dictionary_contributors.
+    # A row only records that this org confirmed a dictionary suggestion; the
+    # org's own choices are already exported through category_rules.
+    "merchant_dictionary_votes": Exclude(
+        "cross-org PRIVATE vote rows on the public dictionary; server-internal "
+        "counting substrate, the org's choices are exported via category_rules"
+    ),
     "notifications": Include(
         Via("users", "user_id"), "in-app notifications the subject received"
     ),
@@ -312,6 +320,11 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     ),
     "org_settings": Include(OrgColumn(), "settings the subject chose"),
     "organizations": Include(OrgColumn("id"), "the org record itself"),
+    # Scoped through the plan, not its own org_id, so a goal written with a
+    # wrong org_id still exports with its plan's org only.
+    "plan_goals": Include(
+        Via("scenarios", "scenario_id"), "goals inside the plans the subject built"
+    ),
     "plans": Exclude("platform-global price list"),
     "platform_ai_models": Exclude("platform-global catalog, no org data"),
     "platform_ai_spend": Exclude("platform-global operational counter, no org data"),

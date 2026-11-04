@@ -1,19 +1,18 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { ApiResponseError, apiFetch, decodeJwtPayload } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useOneTimeQueryParam } from "@/lib/hooks/use-one-time-query-param";
 import { btnPrimary, error as errorCls, input, label, success } from "@/lib/styles";
 
 const CONTACT = "hello@thebetterdecision.com";
 
 function VerifyEmailHandler() {
-  const searchParams = useSearchParams();
-  const token = searchParams.get("token");
+  const token = useOneTimeQueryParam("token");
   const { user } = useAuth();
 
   const [status, setStatus] = useState<"loading" | "password" | "success" | "error">("loading");

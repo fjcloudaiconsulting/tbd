@@ -433,6 +433,31 @@ def test_delete_removes_row(session_factory, worlds):
         assert hit["amount"] is None
 
 
+def test_cycle_payment_audit_rows_record_the_client_ip(session_factory, worlds):
+    """TBD-665: the client IP reaches the audit rows through
+    ``Depends(get_client_ip)`` (the handlers no longer read the raw request)."""
+    import asyncio
+
+    from app.models.audit_event import AuditEvent
+
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        url = f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}"
+        assert client.put(url, json={"amount": "200.00"}).status_code == 200
+        assert client.delete(url).status_code == 200
+
+    async def _ips():
+        async with session_factory() as db:
+            return (await db.execute(select(AuditEvent.event_type, AuditEvent.ip_address).where(
+                AuditEvent.event_type.like("account.cycle_payment.%")).order_by(AuditEvent.id))).all()
+
+    assert asyncio.get_event_loop().run_until_complete(_ips()) == [
+        ("account.cycle_payment.created", "testclient"), ("account.cycle_payment.deleted", "testclient"),
+    ]
+
+
 def test_delete_absent_404(session_factory, worlds):
     a = worlds["a"]
     app = _make_app(session_factory, a["admin_id"])

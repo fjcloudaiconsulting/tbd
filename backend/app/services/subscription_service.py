@@ -7,6 +7,7 @@ import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app._time import utcnow_naive
 from app.config import settings
 from app.models.settings import OrgSetting
 from app.models.subscription import (
@@ -42,7 +43,9 @@ async def get_default_plan(db: AsyncSession) -> Plan:
 async def create_trial(db: AsyncSession, org_id: int) -> Subscription:
     """Create a trial subscription for a new org."""
     plan = await get_default_plan(db)
-    today = datetime.date.today()
+    # Subscription dates use the UTC date, like the entitlement resolver and
+    # the admin KPIs that read them (TBD-749).
+    today = utcnow_naive().date()
     trial_end = today + datetime.timedelta(days=settings.trial_duration_days)
 
     subscription = Subscription(
@@ -110,9 +113,11 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
     if sub.status != SubscriptionStatus.TRIALING:
         return sub
 
+    today = utcnow_naive().date()
+
     # Send trial expiring email at 3 days and 1 day remaining (idempotent, background)
     if sub.trial_end:
-        days_left = (sub.trial_end - datetime.date.today()).days
+        days_left = (sub.trial_end - today).days
         if days_left in (3, 1):
             sentinel_key = f"trial_reminder_{days_left}d_sent"
             already_sent = await db.scalar(
@@ -138,7 +143,7 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
                     # Fire and forget — don't block the request on email delivery
                     asyncio.create_task(_send_trial_email_safe(owner.email, days_left, org_name))
 
-    if sub.trial_end and sub.trial_end < datetime.date.today():
+    if sub.trial_end and sub.trial_end < today:
         # Trial expired — downgrade to free plan
         free_plan = await db.execute(
             select(Plan).where(Plan.slug == "free", Plan.is_active == True)
@@ -158,7 +163,14 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
 async def change_plan(
     db: AsyncSession, org_id: int, plan_slug: str, billing_interval: str
 ) -> Subscription:
-    """Change an org's plan. Instant switch."""
+    """Change an org's plan. Instant switch.
+
+    Self-service only reaches the public catalogue: a custom plan
+    (``is_custom``, made by a superadmin for one customer) is assigned
+    through the admin console, so it answers the same 404 as an unknown
+    slug. The one exception is the org's CURRENT plan, so an org already
+    on a custom plan can still switch billing interval.
+    """
     result = await db.execute(
         select(Plan).where(Plan.slug == plan_slug, Plan.is_active == True)
     )
@@ -169,6 +181,9 @@ async def change_plan(
     sub = await get_subscription(db, org_id)
     if sub is None:
         raise NotFoundError("Subscription")
+
+    if new_plan.is_custom and new_plan.id != sub.plan_id:
+        raise NotFoundError("Plan")
 
     # Validate billing interval
     try:
@@ -185,7 +200,7 @@ async def change_plan(
         sub.trial_start = None
         sub.trial_end = None
         # In mock mode, set a 30-day period
-        today = datetime.date.today()
+        today = utcnow_naive().date()
         sub.current_period_start = today
         if interval == BillingInterval.MONTHLY:
             sub.current_period_end = today + datetime.timedelta(days=30)
@@ -201,7 +216,11 @@ async def change_plan(
 
 
 async def cancel_subscription(db: AsyncSession, org_id: int) -> Subscription:
-    """Cancel subscription. Access continues until current period ends."""
+    """Cancel subscription. Access continues until current period ends.
+
+    After ``current_period_end`` (at once when there is none) the org is
+    entitled to the Free plan (``feature_service.get_entitlements``, BE-05);
+    the plan row is kept."""
     sub = await get_subscription(db, org_id)
     if sub is None:
         raise NotFoundError("Subscription")
@@ -213,7 +232,25 @@ async def cancel_subscription(db: AsyncSession, org_id: int) -> Subscription:
 
 
 async def enforce_user_limit(db: AsyncSession, org_id: int) -> None:
-    """Check if the org can add another user. Raises ValidationError if at limit."""
+    """Check if the org can add another user. Raises ValidationError if at limit.
+
+    Called before an invitation is created and inside invitation accept
+    (BE-23). It only adds a member; nobody is ever removed for being over.
+
+    Inert while ``billing_ui_enabled`` is off: during the beta every org past
+    its trial sits on Free (``max_users=1``) with no way to pay, so enforcing
+    then would stop households from adding a second member. Whether to
+    enforce before billing is live is an owner decision.
+
+    The org row is locked first so two concurrent accepts cannot both take
+    the last seat. A caller that also locks invitation rows takes this lock
+    before them (``invitation_service`` lock order, TBD-727).
+    """
+    if not settings.billing_ui_enabled:
+        return
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
     pair = await get_subscription_with_plan(db, org_id)
     if pair is None:
         return  # No subscription = no limit (shouldn't happen)

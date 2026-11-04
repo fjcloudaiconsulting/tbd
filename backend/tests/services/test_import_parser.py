@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.import_parser import ParseError, detect_delimiter, parse_csv
+from app.services.import_parser import MAX_ROWS, ParseError, detect_delimiter, parse_csv
 
 
 SEMICOLON_CSV = """Date;Name / Description;Account;Counterparty;Code;Debit/credit;Amount (EUR);Transaction type;Notifications
@@ -92,3 +92,71 @@ def test_parse_csv_wraps_invalid_amount_errors_with_row_number() -> None:
         parse_csv(content)
 
     assert exc.value.row_number == 1
+
+
+# ── BE-01: amounts the ledger cannot store ──
+
+
+@pytest.mark.parametrize(
+    "raw", ["1E+100000", "1E-100000", "NaN", "Infinity", "12345678901,00", "12,345"]
+)
+def test_parse_csv_rejects_unstorable_amounts_with_row_number(raw: str) -> None:
+    """A huge-exponent or non-finite amount is a row error, not a Decimal the
+    preview detectors would bind as a SQL literal as long as its exponent."""
+    content = f"""Date;Name / Description;Debit/credit;Amount (EUR)
+20260406;Groceries;Debit;12,34
+20260407;Groceries;Debit;{raw}
+"""
+
+    with pytest.raises(ParseError, match="Amount out of range") as exc:
+        parse_csv(content)
+
+    assert exc.value.row_number == 2
+
+
+def test_parse_csv_still_accepts_largest_storable_amount() -> None:
+    content = """Date;Name / Description;Debit/credit;Amount (EUR)
+20260406;House;Debit;9.999.999.999,99
+20260407;Coffee;Debit;0,01
+"""
+
+    rows = parse_csv(content)
+
+    assert [r.amount for r in rows] == [Decimal("9999999999.99"), Decimal("0.01")]
+
+
+# ── BE-07: row cap shared with the ABN .TAB parser ──
+
+
+def test_parse_csv_enforces_the_shared_row_cap() -> None:
+    header = "Date;Name / Description;Debit/credit;Amount (EUR)\n"
+    line = "20260406;Groceries;Debit;1,00\n"
+
+    assert len(parse_csv(header + line * MAX_ROWS)) == MAX_ROWS
+    with pytest.raises(ParseError, match=f"maximum of {MAX_ROWS} transactions") as exc:
+        parse_csv(header + line * (MAX_ROWS + 1))
+    assert exc.value.row_number == MAX_ROWS + 1
+
+
+def test_csv_and_tab_share_one_row_cap() -> None:
+    from app.services import import_abn_tab
+
+    assert import_abn_tab.MAX_ROWS is MAX_ROWS == 2000
+
+
+# ── BE-08: descriptions clipped to the column every parser feeds ──
+
+
+def test_parse_csv_clips_long_descriptions_to_the_column() -> None:
+    """A confirm row's description is capped at String(255); a longer bank
+    description is clipped at parse time so its file stays importable. The
+    full text survives in ``raw_data``."""
+    long = "Groceries " + "x" * 400
+    content = f"""Date;Name / Description;Debit/credit;Amount (EUR)
+20260406;{long};Debit;12,34
+"""
+
+    rows = parse_csv(content)
+
+    assert rows[0].description == long[:255]
+    assert rows[0].raw_data["Name / Description"] == long

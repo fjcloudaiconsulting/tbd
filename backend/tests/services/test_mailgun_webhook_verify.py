@@ -340,3 +340,47 @@ def test_map_event_range_is_exactly_the_ranked_delivery_statuses():
     # ``None`` must remain reachable: it is the 200-drop signal, and the
     # NULL that makes a row re-sendable.
     assert None in produced
+
+
+# ── BE-24: malformed values are bad_signature, never an exception ────────
+
+
+@pytest.mark.parametrize(
+    "timestamp,token,signature",
+    [
+        (float("inf"), "k" * 50, "0" * 64),          # JSON 1e400 / Infinity
+        (float("-inf"), "k" * 50, "0" * 64),
+        (float("nan"), "k" * 50, "0" * 64),
+        (str(_NOW), "k" * 50, "é" * 64),              # non-ASCII signature
+        (str(_NOW), "k" * 50, "\ud800" * 64),         # lone surrogate signature
+        (str(_NOW), "\ud800" + "k" * 49, "0" * 64),   # lone surrogate token
+        (str(_NOW), 12345, "0" * 64),                 # non-string token
+        (str(_NOW), {"t": 1}, "0" * 64),
+    ],
+    ids=[
+        "inf-ts", "neg-inf-ts", "nan-ts", "non-ascii-sig", "surrogate-sig",
+        "surrogate-token", "int-token", "dict-token",
+    ],
+)
+def test_malformed_fields_are_bad_signature_not_an_exception(timestamp, token, signature):
+    assert (
+        verify_signature(
+            timestamp,
+            token,
+            signature,
+            signing_key=_KEY,
+            tolerance_s=_TOLERANCE,
+            now_ts=_NOW,
+        )
+        == VERIFY_BAD_SIGNATURE
+    )
+
+
+def test_valid_signature_still_verifies_after_the_byte_compare():
+    ts, token = str(_NOW), "v" * 50
+    assert (
+        verify_signature(
+            ts, token, _sign(ts, token), signing_key=_KEY, tolerance_s=_TOLERANCE, now_ts=_NOW
+        )
+        == VERIFY_OK
+    )

@@ -29,7 +29,7 @@ iff the business write commits. Bootstrap-seed inserts are NOT audited
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import logging
@@ -75,7 +75,8 @@ def _txn_type_compatible(cat_type: CategoryType, tx_type: TransactionType) -> bo
 
 
 def _recurring_type_compatible(cat_type: CategoryType, recurring_type: str) -> bool:
-    """RecurringTransaction.type is a plain string Enum (`income`/`expense`)."""
+    """RecurringTransaction.type is a plain string Enum (`income`/`expense`/
+    `transfer`). A transfer takes BOTH only, as its legs share the category."""
     if cat_type == CategoryType.BOTH:
         return True
     if recurring_type == "income":
@@ -130,13 +131,14 @@ async def _count_incompatible_for_category(
         RecurringTransaction.org_id == org_id,
         RecurringTransaction.category_id == category_id,
     ]
+    # TBD-600: a transfer template is incompatible with any one-sided type.
     if new_type == CategoryType.EXPENSE:
-        rec_filters.append(RecurringTransaction.type == "income")
+        rec_filters.append(RecurringTransaction.type.in_(("income", "transfer")))
         rec_count = await db.scalar(
             select(func.count()).select_from(RecurringTransaction).where(*rec_filters)
         ) or 0
     elif new_type == CategoryType.INCOME:
-        rec_filters.append(RecurringTransaction.type == "expense")
+        rec_filters.append(RecurringTransaction.type.in_(("expense", "transfer")))
         rec_count = await db.scalar(
             select(func.count()).select_from(RecurringTransaction).where(*rec_filters)
         ) or 0
@@ -355,6 +357,17 @@ async def _dependent_breakdown(
             RecurringTransaction.type == "expense",
         )
     ) or 0
+    # TBD-600: a transfer template counts on BOTH sides, as its legs do (one
+    # income, one expense row), so it needs a BOTH migration target.
+    rec_transfer = await db.scalar(
+        select(func.count())
+        .select_from(RecurringTransaction)
+        .where(
+            RecurringTransaction.org_id == org_id,
+            RecurringTransaction.category_id == category_id,
+            RecurringTransaction.type == "transfer",
+        )
+    ) or 0
     fpi_income = await db.scalar(
         select(func.count())
         .select_from(ForecastPlanItem)
@@ -374,13 +387,13 @@ async def _dependent_breakdown(
         )
     ) or 0
 
-    income = tx_income + rec_income + fpi_income
-    expense = tx_expense + rec_expense + fpi_expense
+    income = tx_income + rec_income + rec_transfer + fpi_income
+    expense = tx_expense + rec_expense + rec_transfer + fpi_expense
     return _DependentBreakdown(
         income_count=income,
         expense_count=expense,
         transaction_count=tx_income + tx_expense,
-        recurring_count=rec_income + rec_expense,
+        recurring_count=rec_income + rec_expense + rec_transfer,
         forecast_item_count=fpi_income + fpi_expense,
     )
 
@@ -1177,24 +1190,32 @@ def _partition_rules_for_migration(
     return to_migrate, to_drop
 
 
-async def delete_category_with_migration(
+@dataclass
+class CategoryDeletePlan:
+    """What :func:`delete_category_with_migration` does, decided read-only
+    (TBD-666): the agent preview renders this plan and the delete applies it.
+    ``target`` is ``None`` on the no-dependents path, where every source rule
+    is dropped and nothing migrates."""
+
+    cat: Category
+    breakdown: _DependentBreakdown
+    target: Optional[Category] = None
+    item_moves: list[ForecastPlanItem] = field(default_factory=list)
+    # (source item, the target's item it folds into)
+    item_merges: list[tuple[ForecastPlanItem, ForecastPlanItem]] = field(default_factory=list)
+    rules_to_migrate: list[CategoryRule] = field(default_factory=list)
+    rules_to_drop: list[CategoryRule] = field(default_factory=list)
+
+
+async def plan_category_delete(
     db: AsyncSession,
     *,
     org_id: int,
     category_id: int,
     target_category_id: Optional[int],
-    actor_user_id: int,
-    actor_email: str,
-    actor_org_name: str,
-    request_id: Optional[str],
-    ip_address: Optional[str],
-) -> tuple[CategoryDeleteResult, bool]:
-    """Delete ``category_id`` with optional migration target.
-
-    Returns ``(result, had_dependents)``. The caller (router) uses
-    ``had_dependents`` to choose the response shape:
-    - True: 200 with ``CategoryDeleteResult`` body.
-    - False: 204 with no body.
+) -> CategoryDeletePlan:
+    """The guards of :func:`delete_category_with_migration`, in its order,
+    and the rows it migrates or drops. Issues SELECTs only.
 
     Order of guards (each fires before the next):
 
@@ -1239,14 +1260,12 @@ async def delete_category_with_migration(
         db, org_id=org_id, category_id=cat.id,
     )
 
+    source_rules = list((await db.scalars(
+        select(CategoryRule).where(CategoryRule.category_id == cat.id)
+    )).all())
     if breakdown.is_empty:
         # No dependents: 204 path. Migration target ignored.
-        return await _delete_category_no_dependents(
-            db, cat=cat, org_id=org_id,
-            actor_user_id=actor_user_id, actor_email=actor_email,
-            actor_org_name=actor_org_name, request_id=request_id,
-            ip_address=ip_address,
-        ), False
+        return CategoryDeletePlan(cat=cat, breakdown=breakdown, rules_to_drop=source_rules)
 
     # Dependents present. Migration target required.
     if target_category_id is None:
@@ -1278,6 +1297,81 @@ async def delete_category_with_migration(
         source=cat, target=target, breakdown=breakdown,
     )
 
+    plan = CategoryDeletePlan(cat=cat, breakdown=breakdown, target=target)
+    # Re-point source items that don't collide; for those that do, the
+    # source's planned_amount sums into the target's existing item and the
+    # source item is dropped. Both are unique per (plan, type), so the
+    # mapping is 1:1. Skipped when the source has no forecast items (the
+    # common transaction/recurring-only delete).
+    if breakdown.forecast_item_count:
+        target_items_by_key = {
+            (it.plan_id, it.type): it
+            for it in (await db.scalars(
+                select(ForecastPlanItem).where(
+                    ForecastPlanItem.org_id == org_id,
+                    ForecastPlanItem.category_id == target.id,
+                )
+            )).all()
+        }
+        for item in await db.scalars(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.org_id == org_id,
+                ForecastPlanItem.category_id == cat.id,
+            )
+        ):
+            existing = target_items_by_key.get((item.plan_id, item.type))
+            if existing is None:
+                plan.item_moves.append(item)
+            else:
+                plan.item_merges.append((item, existing))
+
+    # ``category_rules`` is unique per org on ``normalized_token`` (see
+    # uq_category_rules_org_token). For any source rule whose token the
+    # target already owns, the target is the surviving category.
+    target_tokens = set((await db.scalars(
+        select(CategoryRule.normalized_token).where(
+            CategoryRule.category_id == target.id,
+        )
+    )).all())
+    plan.rules_to_migrate, plan.rules_to_drop = _partition_rules_for_migration(
+        source_rules, target_tokens=target_tokens,
+    )
+    return plan
+
+
+async def delete_category_with_migration(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    category_id: int,
+    target_category_id: Optional[int],
+    actor_user_id: int,
+    actor_email: str,
+    actor_org_name: str,
+    request_id: Optional[str],
+    ip_address: Optional[str],
+) -> tuple[CategoryDeleteResult, bool]:
+    """Delete ``category_id`` with optional migration target.
+
+    Returns ``(result, had_dependents)``. The caller (router) uses
+    ``had_dependents`` to choose the response shape:
+    - True: 200 with ``CategoryDeleteResult`` body.
+    - False: 204 with no body.
+
+    The guards and the rows touched are :func:`plan_category_delete`.
+    """
+    plan = await plan_category_delete(
+        db, org_id=org_id, category_id=category_id, target_category_id=target_category_id,
+    )
+    cat, target = plan.cat, plan.target
+    if target is None:
+        return await _delete_category_no_dependents(
+            db, cat=cat, org_id=org_id,
+            actor_user_id=actor_user_id, actor_email=actor_email,
+            actor_org_name=actor_org_name, request_id=request_id,
+            ip_address=ip_address,
+        ), False
+
     # Execute the migration + delete in one txn boundary OWNED BY THE
     # CALLER. The router calls ``await db.commit()`` once after the
     # service returns. We do not open a nested ``db.begin()`` here
@@ -1302,63 +1396,25 @@ async def delete_category_with_migration(
     # Forecast plan items carry a unique constraint on
     # (plan_id, category_id, type) (uq_forecast_item_plan_cat_type), so a
     # blind FK rewrite collides whenever the target already owns an item for
-    # the same plan+type. Mirror the category_rules merge below: re-point
-    # source items that don't collide; for those that do, sum the source's
-    # planned_amount into the target's existing item and drop the source
-    # item. Both source and target items are unique per (plan, type), so the
-    # mapping is 1:1. Skip the queries entirely when the source has no
-    # forecast items (the common transaction/recurring-only delete).
-    source_items: list[ForecastPlanItem] = []
-    if breakdown.forecast_item_count:
-        source_items = list(await db.scalars(
-            select(ForecastPlanItem).where(
-                ForecastPlanItem.org_id == org_id,
-                ForecastPlanItem.category_id == cat.id,
-            )
-        ))
-        target_items_by_key = {
-            (it.plan_id, it.type): it
-            for it in (await db.scalars(
-                select(ForecastPlanItem).where(
-                    ForecastPlanItem.org_id == org_id,
-                    ForecastPlanItem.category_id == target.id,
-                )
-            )).all()
-        }
-        for item in source_items:
-            existing = target_items_by_key.get((item.plan_id, item.type))
-            if existing is None:
-                item.category_id = target.id
-            else:
-                existing.planned_amount += item.planned_amount
-                await db.delete(item)
+    # the same plan+type: those fold into the target's item (see the plan).
+    for item in plan.item_moves:
+        item.category_id = target.id
+    for item, existing in plan.item_merges:
+        existing.planned_amount += item.planned_amount
+        await db.delete(item)
 
     # Re-point the source's learned auto-categorization rules to the target
-    # so removing a category does not silently drop its learning state.
-    # ``category_rules`` is unique per org on ``normalized_token`` (see
-    # uq_category_rules_org_token). For any source rule whose token the
-    # target already owns, the target is the surviving category: keep its
-    # rule and drop the source's. Re-point the rest. This runs in the same
-    # transaction as the transaction/recurring/forecast migration above.
-    source_rules = (await db.scalars(
-        select(CategoryRule).where(CategoryRule.category_id == cat.id)
-    )).all()
-    target_tokens = set((await db.scalars(
-        select(CategoryRule.normalized_token).where(
-            CategoryRule.category_id == target.id,
-        )
-    )).all())
-    to_migrate, to_drop = _partition_rules_for_migration(
-        source_rules, target_tokens=target_tokens,
-    )
-    for rule in to_migrate:
+    # so removing a category does not silently drop its learning state; a
+    # rule whose token the target already owns is dropped (see the plan).
+    # This runs in the same transaction as the migration above.
+    for rule in plan.rules_to_migrate:
         rule.category_id = target.id
-    for rule in to_drop:
+    for rule in plan.rules_to_drop:
         # Collision: target already has a rule for this token; keep it,
         # drop the source's duplicate.
         await db.delete(rule)
-    migrated_rules = len(to_migrate)
-    dropped_rules = len(to_drop)
+    migrated_rules = len(plan.rules_to_migrate)
+    dropped_rules = len(plan.rules_to_drop)
     await db.flush()
 
     # Delete the source's Budget row, if any (section 5: both delete paths
@@ -1377,7 +1433,7 @@ async def delete_category_with_migration(
 
     migrated_tx = tx_updated.rowcount or 0
     migrated_rec = rec_updated.rowcount or 0
-    migrated_fpi = len(source_items)
+    migrated_fpi = len(plan.item_moves) + len(plan.item_merges)
 
     audit_service.add_audit_event_to_session(
         db,

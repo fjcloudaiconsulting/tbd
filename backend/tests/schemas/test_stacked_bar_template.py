@@ -22,11 +22,9 @@ every published measure pair on every source (R1).
 """
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 
-from app.reports.templates import _this_month_range, get_report_templates
+from app.reports.templates import get_report_templates
 from app.schemas.report_layout import validate_layout_json
 
 TEMPLATE_KEY = "category_deep_dive"
@@ -96,12 +94,11 @@ def test_stacked_by_month_carries_its_own_multi_month_window() -> None:
         "grouping by month over the canvas's one-month window renders a "
         "single bar; the panel must declare its own window"
     )
-    start = date.fromisoformat(date_range["start"])
-    end = date.fromisoformat(date_range["end"])
-    span_months = (end.year - start.year) * 12 + (end.month - start.month)
-    assert span_months > 1, (
-        f"window {date_range} spans {span_months} month(s); a month-grouped "
-        "chart needs more than one bucket to stack anything"
+    # TBD-759: the window persists as a relative token (resolved per query
+    # against the current date), never as frozen absolute dates.
+    assert date_range == {"preset": "last_12_months"}, (
+        f"window {date_range} is not the relative trailing-12-month token; a "
+        "month-grouped chart needs more than one bucket to stack anything"
     )
 
 
@@ -113,9 +110,8 @@ def test_category_deep_dive_canvas_window_is_untouched() -> None:
     top of a spend canvas. The override is per-widget, and the canvas stays
     on the current month.
     """
-    today = date.today()
     assert _template(TEMPLATE_KEY)["canvas_filters_json"] == {
-        "date_range": _this_month_range(today)
+        "date_range": {"preset": "this_month"}
     }
 
 

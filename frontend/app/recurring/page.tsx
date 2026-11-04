@@ -3,13 +3,17 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { X } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import Pagination from "@/components/ui/Pagination";
+import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { SeriesScopeChoice, type SeriesScope } from "@/components/transactions/SeriesScopeChoice";
+import EditSeriesDialog from "@/components/recurring/EditSeriesDialog";
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 
 import { demotionNotice } from "@/lib/demotion";
@@ -18,12 +22,14 @@ import {
   paginate,
   pageCount,
   type SortDir,
+  type TableState,
 } from "@/lib/hooks/use-table-state";
-import { SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
+import { usePersistedFilters } from "@/lib/hooks/use-persisted-filters";
+import { FILTERS_KEY_RECURRING, SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
 import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, input as inputCls, label as labelCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { RecurringTransaction } from "@/lib/types";
 import { instalmentDone, seriesRunning } from "@/lib/recurring";
-import { useMoney } from "@/lib/hooks/use-org-currency";
+import { useBalancesHidden, useMoney } from "@/lib/hooks/use-org-currency";
 
 const FREQ_LABELS: Record<string, string> = {
   weekly: "Weekly",
@@ -46,6 +52,18 @@ function instalmentLabel(r: RecurringTransaction): string | null {
   return `${r.occurrences_elapsed} of ${r.occurrence_count}`;
 }
 
+// TBD-600: a transfer is neither income nor expense, so it carries no sign
+// and no gain/loss colour, and its account reads "From -> To".
+function signOf(r: RecurringTransaction): string {
+  return r.type === "income" ? "+" : r.type === "expense" ? "-" : "";
+}
+function amountTone(r: RecurringTransaction): string {
+  return r.type === "income" ? "text-success" : r.type === "expense" ? "text-danger" : "text-text-secondary";
+}
+function accountLabel(r: RecurringTransaction): string {
+  return r.type === "transfer" ? `${r.account_name} → ${r.to_account_name ?? ""}` : r.account_name;
+}
+
 // Sort field identifiers for the recurring tables.
 type SortField =
   | "description"
@@ -63,6 +81,12 @@ const ALLOWED_SORT_FIELDS: readonly SortField[] = [
   "next_due_date",
   "amount",
 ];
+
+const DEFAULT_SORT_FIELD: SortField = "next_due_date";
+const DEFAULT_SORT_DIR: SortDir = "asc";
+
+// TBD-761. Module scope: `usePersistedFilters` resets to this exact object.
+const RECURRING_FILTER_DEFAULTS = { search: "" };
 
 // Comparator helpers. Nulls/empties always sort last regardless of direction.
 // `factor` is +1 for ascending, -1 for descending. It is applied ONLY to the
@@ -117,10 +141,64 @@ function sortRecurring(
   return sorted;
 }
 
+// TBD-761. The client twin of the transactions search's amount parse
+// (`_parse_search_amount`): drop currency symbols, spaces and the locale's
+// group separator, so "12.5", "$12.50" and "1,200" all read as numbers. The
+// separators come from the same default locale `formatAmount` uses: in de-DE
+// "12,50" is twelve and a half and "1.200" twelve hundred. The sign is kept
+// apart: the rows SHOW one ("-$12.50"), so a typed sign narrows to that side
+// and an unsigned amount matches both.
+function parseSearchAmount(q: string): { value: number; sign: "+" | "-" | null } | null {
+  // Seven digits: some locales (es-ES) do not group four.
+  const parts = new Intl.NumberFormat().formatToParts(1234567.5);
+  const group = parts.find((p) => p.type === "group")?.value;
+  const decimal = parts.find((p) => p.type === "decimal")?.value ?? ".";
+  let s = q.replace(/[$€£\s]/g, "");
+  if (group) s = s.split(group).join("");
+  s = s.split(decimal).join(".");
+  let sign: "+" | "-" | null = null;
+  if (s.startsWith("+") || s.startsWith("-")) {
+    sign = s[0] as "+" | "-";
+    s = s.slice(1);
+  }
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(s)) return null;
+  return { value: Number(s), sign };
+}
+
+// Name, account, category, or amount: the displayed amount as a substring
+// ("1,200"), or the number itself ("12.5" finds 12.50). `query` arrives
+// trimmed and lower-cased. With balances hidden the rows show a mask, so the
+// number is not matched: "1 of 4" would reveal the amount it hides.
+function searchMatcher(
+  query: string,
+  money: (value: number | string) => string,
+  amountsHidden: boolean,
+): (r: RecurringTransaction) => boolean {
+  const amount = amountsHidden ? null : parseSearchAmount(query);
+  return (r) => {
+    const sign = signOf(r);
+    if (
+      [r.description, accountLabel(r), r.category_name, `${sign}${money(r.amount)}`]
+        .some((text) => text != null && text.toLowerCase().includes(query))
+    ) {
+      return true;
+    }
+    return (
+      amount !== null &&
+      (amount.sign === null || amount.sign === sign) &&
+      amount.value === Number(r.amount)
+    );
+  };
+}
+
 interface RecurringTableProps {
   title: string;
-  storageKey: string;
+  table: TableState<SortField>;
   items: RecurringTransaction[];
+  // TBD-761. The page filters; the table needs the unfiltered count for its
+  // "x of y" title and to tell "no templates" from "no matches".
+  totalCount: number;
+  searching: boolean;
   paused?: boolean;
   emptyLabel: string;
   onStop?: (item: RecurringTransaction) => void;
@@ -128,6 +206,8 @@ interface RecurringTableProps {
   // TBD-272/273. Passed to the Active table only.
   onSkipNext?: (item: RecurringTransaction) => void;
   onEditNext?: (item: RecurringTransaction) => void;
+  // TBD-762. Both tables: a paused or finished series is editable too.
+  onEditSeries: (item: RecurringTransaction) => void;
   onDelete: (id: number) => void;
   testId: string;
   targetId: number | null;
@@ -135,26 +215,25 @@ interface RecurringTableProps {
 
 function RecurringTable({
   title,
-  storageKey,
+  table,
   items,
+  totalCount,
+  searching,
   paused = false,
   emptyLabel,
   onStop,
   onResume,
   onSkipNext,
   onEditNext,
+  onEditSeries,
   onDelete,
   testId,
   targetId,
 }: RecurringTableProps) {
   const money = useMoney();
-  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
-    useTableState<SortField>({
-      key: storageKey,
-      defaultSortField: "next_due_date",
-      defaultSortDir: "asc",
-      allowedSortFields: ALLOWED_SORT_FIELDS,
-    });
+  // TBD-761: owned by the page, so its one Reset can reach both tables.
+  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } = table;
+  const emptyText = totalCount > 0 ? "No recurring transactions match your search." : emptyLabel;
 
   const sorted = useMemo(
     () => sortRecurring(items, sortField, sortDir),
@@ -215,7 +294,7 @@ function RecurringTable({
     <div className={`${card} overflow-x-auto`} data-testid={testId}>
       <div className={cardHeader}>
         <h2 className={cardTitle}>
-          {title} ({items.length})
+          {title} ({searching ? `${items.length} of ${totalCount}` : items.length})
         </h2>
       </div>
 
@@ -309,7 +388,7 @@ function RecurringTable({
                     </span>
                   )}
                 </td>
-                <td className="px-3 py-3 text-sm text-text-secondary">{r.account_name}</td>
+                <td className="px-3 py-3 text-sm text-text-secondary">{accountLabel(r)}</td>
                 <td className="px-3 py-3 text-sm text-text-secondary">{r.category_name}</td>
                 <td className="px-3 py-3 text-xs text-text-muted">
                   {FREQ_LABELS[r.frequency] ?? r.frequency}
@@ -318,13 +397,20 @@ function RecurringTable({
                   {r.next_due_date}
                 </td>
                 <td
-                  className={`px-3 py-3 text-right text-sm font-medium tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}
+                  className={`px-3 py-3 text-right text-sm font-medium tabular-nums ${amountTone(r)}`}
                 >
-                  {r.type === "income" ? "+" : "-"}
+                  {signOf(r)}
                   {money(r.amount)}
                 </td>
                 <td className="px-3 py-3">
                   <span className="flex flex-wrap justify-end gap-x-2 gap-y-1">
+                    <button
+                      onClick={() => onEditSeries(r)}
+                      aria-label={`Edit series: ${r.description}`}
+                      className="min-h-[44px] md:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent"
+                    >
+                      Edit series
+                    </button>
                     {/* TBD-272/273. Only for a series that can still deliver an
                         occurrence; the server's 409 decides everything else. */}
                     {onEditNext && onSkipNext && seriesRunning(r) && (
@@ -373,7 +459,7 @@ function RecurringTable({
             {items.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-6 py-8 text-center text-sm text-text-muted">
-                  {emptyLabel}
+                  {emptyText}
                 </td>
               </tr>
             )}
@@ -404,7 +490,7 @@ function RecurringTable({
                   )}
                 </div>
                 <div className="mt-0.5 text-xs text-text-muted tabular-nums">
-                  Next: {r.next_due_date} &middot; {r.account_name}
+                  Next: {r.next_due_date} &middot; {accountLabel(r)}
                   {instalmentLabel(r) && (
                     <>
                       {" "}
@@ -417,9 +503,9 @@ function RecurringTable({
                 </div>
               </div>
               <div
-                className={`shrink-0 text-right text-sm font-semibold tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}
+                className={`shrink-0 text-right text-sm font-semibold tabular-nums ${amountTone(r)}`}
               >
-                {r.type === "income" ? "+" : "-"}
+                {signOf(r)}
                 {money(r.amount)}
               </div>
             </div>
@@ -428,6 +514,13 @@ function RecurringTable({
             )}
             <div className="text-xs text-text-muted">{FREQ_LABELS[r.frequency] ?? r.frequency}</div>
             <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+              <button
+                onClick={() => onEditSeries(r)}
+                aria-label={`Edit series: ${r.description}`}
+                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+              >
+                Edit series
+              </button>
               {onEditNext && onSkipNext && seriesRunning(r) && (
                 <>
                   <button
@@ -474,7 +567,7 @@ function RecurringTable({
           </article>
         ))}
         {items.length === 0 && (
-          <div className="px-4 py-8 text-center text-sm text-text-muted">{emptyLabel}</div>
+          <div className="px-4 py-8 text-center text-sm text-text-muted">{emptyText}</div>
         )}
       </div>
 
@@ -483,7 +576,7 @@ function RecurringTable({
           <Pagination
             page={safePage}
             pageSize={pageSize}
-            total={items.length}
+            total={sorted.length}
             onPageChange={setPage}
             onPageSizeChange={setPageSize}
           />
@@ -520,11 +613,58 @@ function RecurringPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   // TBD-272/273.
   const [confirmSkip, setConfirmSkip] = useState<RecurringTransaction | null>(null);
-  const [editNext, setEditNext] = useState<{ item: RecurringTransaction; amount: string } | null>(null);
+  const [editNext, setEditNext] = useState<
+    { item: RecurringTransaction; amount: string; scope: SeriesScope | null } | null
+  >(null);
+  // TBD-762.
+  const [editSeries, setEditSeries] = useState<RecurringTransaction | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const money = useMoney();
+  const amountsHidden = useBalancesHidden();
   const signed = (r: RecurringTransaction, value: number | string) =>
-    `${r.type === "income" ? "+" : "-"}${money(value)}`;
+    `${signOf(r)}${money(value)}`;
+
+  // TBD-761. Sort lives here, not in each table, so the one Reset reaches both.
+  const activeTable = useTableState<SortField>({
+    key: `${SORT_KEY_RECURRING}:active`,
+    defaultSortField: DEFAULT_SORT_FIELD,
+    defaultSortDir: DEFAULT_SORT_DIR,
+    allowedSortFields: ALLOWED_SORT_FIELDS,
+  });
+  const pausedTable = useTableState<SortField>({
+    key: `${SORT_KEY_RECURRING}:stopped`,
+    defaultSortField: DEFAULT_SORT_FIELD,
+    defaultSortDir: DEFAULT_SORT_DIR,
+    allowedSortFields: ALLOWED_SORT_FIELDS,
+  });
+  // The Paused table's sort counts only while that table is shown.
+  const hasPaused = items.some((r) => !r.is_active);
+  const sortIsDefault = (hasPaused ? [activeTable, pausedTable] : [activeTable]).every(
+    (t) => t.sortField === DEFAULT_SORT_FIELD && t.sortDir === DEFAULT_SORT_DIR,
+  );
+  const persistedFilters = usePersistedFilters(FILTERS_KEY_RECURRING, RECURRING_FILTER_DEFAULTS);
+  const { search } = persistedFilters.filters;
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Back to page 1 of the new matches, in the handler rather than an effect:
+  // an effect here would run after the tables' deep-link jump and undo it.
+  function setSearch(value: string) {
+    persistedFilters.setField("search", value);
+    activeTable.setPage(1);
+    pausedTable.setPage(1);
+  }
+
+  // TBD-761. The deep link addresses one template: a persisted search that
+  // hides it is dropped, once, on landing, and the table's jump then finds it.
+  // A search that shows it, or a search typed later, is left alone.
+  const deepLinkCheckedRef = useRef(false);
+  const resetSearch = persistedFilters.reset;
+  useEffect(() => {
+    if (fetching || deepLinkCheckedRef.current) return;
+    deepLinkCheckedRef.current = true;
+    const target = items.find((r) => r.id === targetId);
+    const q = search.trim().toLowerCase();
+    if (target && q !== "" && !searchMatcher(q, money, amountsHidden)(target)) resetSearch();
+  }, [fetching, items, targetId, search, money, amountsHidden, resetSearch]);
 
   const reload = useCallback(async () => {
     const data = await apiFetch<RecurringTransaction[]>("/api/v1/recurring");
@@ -618,7 +758,9 @@ function RecurringPage() {
 
   // TBD-273. Write the occurrence, then edit its amount. Never retry the
   // materialise: it moved the frontier, so a retry would 409 or take the NEXT one.
-  async function doEditNext(item: RecurringTransaction, amount: string) {
+  // TBD-756: `scope` "future" also moves the series' amount (the only way to
+  // change it from this page); the user picks it explicitly in the dialog.
+  async function doEditNext(item: RecurringTransaction, amount: string, scope: SeriesScope) {
     setError(""); setSuccessMsg("");
     setSubmitting(true);
     let created: { id: number } | null = null;
@@ -629,9 +771,11 @@ function RecurringPage() {
       });
       await apiFetch(`/api/v1/transactions/${created.id}`, {
         method: "PUT",
-        body: JSON.stringify({ amount }),
+        body: JSON.stringify({ amount, series_scope: scope }),
       });
-      setSuccessMsg(`"${item.description}" on ${item.next_due_date} is now ${signed(item, amount)}. Later occurrences stay at ${signed(item, item.amount)}.`);
+      setSuccessMsg(scope === "future"
+        ? `"${item.description}" is now ${signed(item, amount)} from ${item.next_due_date} on.`
+        : `"${item.description}" on ${item.next_due_date} is now ${signed(item, amount)}. Later occurrences stay at ${signed(item, item.amount)}.`);
     } catch (err) {
       const msg = extractErrorMessage(err);
       setError(created
@@ -674,6 +818,18 @@ function RecurringPage() {
 
   const activeItems = items.filter((r) => r.is_active);
   const pausedItems = items.filter((r) => !r.is_active);
+
+  // TBD-761. A client-side filter over the one fetch, applied before each
+  // table's sort and pagination.
+  const query = search.trim().toLowerCase();
+  const searching = query !== "";
+  const matches = searchMatcher(query, money, amountsHidden);
+  const visibleActive = searching ? activeItems.filter(matches) : activeItems;
+  const visiblePaused = searching ? pausedItems.filter(matches) : pausedItems;
+  const shownCount = visibleActive.length + visiblePaused.length;
+  const resultCountText = searching
+    ? `${shownCount} of ${items.length} recurring transactions match your search`
+    : `${items.length} recurring ${items.length === 1 ? "transaction" : "transactions"}`;
 
   return (
     <AppShell>
@@ -720,18 +876,76 @@ function RecurringPage() {
         page or the Dashboard and check the &quot;Repeats&quot; option.
       </p>
 
+      {/* TBD-761. Announces the result count as the search narrows it. Its
+          own always-mounted region, outside the loading switch, like the
+          transactions page's. */}
+      <p className="sr-only" role="status" aria-live="polite" data-testid="recurring-result-count">
+        {fetching ? "" : resultCountText}
+      </p>
+
       {fetching ? (
         <Spinner />
       ) : (
         <div className="space-y-6">
+          {items.length > 0 && (
+            // TBD-761. Same box as the transactions search; the Reset sits
+            // beside it as there is no filter panel here.
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative w-full sm:max-w-sm">
+                <label htmlFor="recurring-search" className="sr-only">Search recurring transactions</label>
+                <input
+                  ref={searchInputRef}
+                  id="recurring-search"
+                  type="text"
+                  placeholder="Search by name, account, category or amount..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className={`${inputCls} pr-10`}
+                />
+                {search && (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => {
+                      setSearch("");
+                      searchInputRef.current?.focus();
+                    }}
+                    className="absolute inset-y-0 right-0 flex items-center rounded-md px-3 text-text-muted hover:text-text-primary"
+                  >
+                    <X aria-hidden="true" className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <ResetSortFiltersButton
+                className="self-start sm:self-auto"
+                visible={!persistedFilters.isDefault || !sortIsDefault}
+                onClick={() => {
+                  // Sort only: like the transactions Reset, the page size the
+                  // user picked stays.
+                  persistedFilters.reset();
+                  activeTable.setSort(DEFAULT_SORT_FIELD, DEFAULT_SORT_DIR);
+                  pausedTable.setSort(DEFAULT_SORT_FIELD, DEFAULT_SORT_DIR);
+                  // The button unmounts on reset; keep focus nearby.
+                  searchInputRef.current?.focus();
+                }}
+              />
+            </div>
+          )}
           <RecurringTable
             title="Active"
-            storageKey={`${SORT_KEY_RECURRING}:active`}
-            items={activeItems}
+            table={activeTable}
+            items={visibleActive}
+            totalCount={activeItems.length}
+            searching={searching}
             emptyLabel="No active recurring transactions."
             onStop={handleStop}
             onSkipNext={setConfirmSkip}
-            onEditNext={(item) => setEditNext({ item, amount: String(item.amount) })}
+            onEditNext={(item) =>
+              // TBD-600: a transfer occurrence is a linked pair, which the server
+              // never applies to future occurrences, so it is this one only.
+              setEditNext({ item, amount: String(item.amount), scope: item.type === "transfer" ? "this" : null })
+            }
+            onEditSeries={setEditSeries}
             onDelete={handleDelete}
             testId="recurring-active-table"
             targetId={targetId}
@@ -740,11 +954,14 @@ function RecurringPage() {
           {pausedItems.length > 0 && (
             <RecurringTable
               title="Paused"
-              storageKey={`${SORT_KEY_RECURRING}:stopped`}
-              items={pausedItems}
+              table={pausedTable}
+              items={visiblePaused}
+              totalCount={pausedItems.length}
+              searching={searching}
               paused
               emptyLabel="No paused recurring transactions."
               onResume={handleResume}
+              onEditSeries={setEditSeries}
               onDelete={handleDelete}
               testId="recurring-paused-table"
               targetId={targetId}
@@ -779,14 +996,14 @@ function RecurringPage() {
         open={editNext !== null}
         title="Edit Next Amount"
         message={editNext
-          ? `Change the amount of "${editNext.item.description}" on ${editNext.item.next_due_date} only. The series stays at ${signed(editNext.item, editNext.item.amount)}.`
+          ? `Change the amount of "${editNext.item.description}" on ${editNext.item.next_due_date}. The series is at ${signed(editNext.item, editNext.item.amount)}.`
           : ""}
         confirmLabel="Save amount"
         submitting={submitting}
-        confirmDisabled={!editNextValid || editNextUnchanged}
+        confirmDisabled={!editNextValid || editNextUnchanged || editNext?.scope == null}
         onConfirm={() => {
-          if (editNext && editNextValid && !editNextUnchanged) {
-            doEditNext(editNext.item, editNext.amount);
+          if (editNext && editNextValid && !editNextUnchanged && editNext.scope !== null) {
+            doEditNext(editNext.item, editNext.amount, editNext.scope);
           }
         }}
         onCancel={() => setEditNext(null)}
@@ -814,9 +1031,31 @@ function RecurringPage() {
                 {editNextError}
               </p>
             )}
+            {editNext.item.type !== "transfer" && (
+              <SeriesScopeChoice
+                idSuffix="edit-next"
+                legend="Apply the new amount to"
+                stacked
+                value={editNext.scope}
+                onChange={(scope) => setEditNext({ ...editNext, scope })}
+              />
+            )}
           </div>
         )}
       </ConfirmModal>
+      {editSeries && (
+        <EditSeriesDialog
+          key={editSeries.id}
+          item={editSeries}
+          onCancel={() => setEditSeries(null)}
+          onSaved={(updated) => {
+            setEditSeries(null);
+            setError("");
+            setSuccessMsg(`Saved "${updated.description}".`);
+            reload().catch(() => {});
+          }}
+        />
+      )}
       <ConfirmModal
         open={confirmDeleteId !== null}
         title="Delete Recurring Template"

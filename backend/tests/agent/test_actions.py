@@ -33,6 +33,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
@@ -140,7 +141,8 @@ async def w(factory):
             db.add(tx)
             await db.flush()
             out[tag] = {"org": org.id, "member": member.id, "b1": b1.id, "b2": b2.id,
-                        "c1": master.id, "c2": master2.id, "acct": acct.id, "tx": tx.id}
+                        "c1": master.id, "c2": master2.id, "acct": acct.id, "tx": tx.id,
+                        "type": at.id}
         a = out["A"]
         admin = _user(a["org"], "adminA", Role.ADMIN)
         other = _user(a["org"], "otherA", Role.MEMBER)
@@ -403,15 +405,17 @@ async def test_fp3_drift_between_preview_and_confirm_is_stale(factory, w):
 # ── F-P4 ──────────────────────────────────────────────────────────────────
 
 async def test_fp4_principal_is_token_and_channel(factory, w):
-    """FENCE F-P4. Wrong implementations: WHERE without token/channel, or
-    ``api_token_id == :tok`` (an in-app NULL row could never be confirmed)."""
+    """FENCE F-P4. Wrong implementations: an MCP WHERE without token/channel,
+    or ``api_token_id == :tok`` (an in-app NULL row could never be confirmed).
+    TBD-664: the in-app side is the person, so it finds the user's rows by org
+    and user whatever staged them; another member still cannot."""
     a = w["A"]
     mcp = await _stage(factory, w, "121.00", api_token_id=a["t1"], **MCP)
     # second token of the same user
     assert (await _refused(_confirm(factory, a["member"], mcp["action_id"],
                                     api_token_id=a["t2"], **MCP))).code == "action_not_found"
-    # in-app cannot confirm an mcp row
-    assert (await _refused(_confirm(factory, a["member"], mcp["action_id"]))).code == "action_not_found"
+    # another member of the org, in-app
+    assert (await _refused(_confirm(factory, a["other"], mcp["action_id"]))).code == "action_not_found"
     inapp = await _stage(factory, w, "122.00")
     # mcp cannot confirm an in-app row
     assert (await _refused(_confirm(factory, a["member"], inapp["action_id"],
@@ -704,20 +708,54 @@ async def test_confirm_bucket_is_30_per_hour_and_checked_before_the_claim(factor
     assert (await _row(factory, out["action_id"])).status.value == "pending"
 
 
-async def test_sensitive_confirm_over_mcp_has_its_own_daily_bucket(factory, w, scratch):
+async def test_mcp_never_confirms_a_sensitive_action_and_the_browser_does(factory, w, scratch):
+    """FENCE (TBD-664, the MCP self-confirm hole). Wrong implementation: the
+    MCP confirm claiming a sensitive row, so a model injected through user
+    text stages AND confirms a money write. The refusal comes before the
+    claim: the row stays pending, and the person applies it from the app."""
     a = w["A"]
     calls = scratch("sens_tool", risk="sensitive")
-    out = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]},
-                        api_token_id=a["t1"], **MCP)
-    _seed_bucket(f"agent:tok:{a['t1']}:sensitive:day", 10)
-    err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"], **MCP))
-    assert err.code == "sensitive_budget_exhausted"
-    assert (await _row(factory, out["action_id"])).status.value == "failed"
-    assert calls == []
-    # in-app sensitive confirms are not on that bucket
+    for scope in ("agent:write", "agent:auto"):
+        out = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]},
+                            api_token_id=a["t1"], channel="mcp", scope=scope)
+        assert out["requires_browser_confirmation"] is True
+        err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"],
+                                      channel="mcp", scope=scope))
+        assert (err.code, err.data) == ("requires_browser_confirmation", {"action_id": out["action_id"]})
+        row = await _row(factory, out["action_id"])
+        assert (row.status.value, row.decided_at) == ("pending", None)
+    assert calls == [] and await _audits(factory) == []
+    # the same user, in the app: it runs
+    done = await _confirm(factory, a["member"], out["action_id"])
+    assert done["status"] == "done" and calls == ["sens_tool"]
+    (ev,) = await _audits(factory)
+    assert (ev.detail["channel"], ev.detail["risk"]) == ("in_app", "sensitive")
+    # staged in the app, it is confirmed in the app as before
     inapp = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]})
     await _confirm(factory, a["member"], inapp["action_id"])
-    assert calls == ["sens_tool"]
+    assert calls == ["sens_tool", "sens_tool"]
+
+
+async def test_a_write_re_registered_sensitive_is_released_for_the_browser(factory, w, scratch):
+    """FENCE (TBD-664, defence in depth). Wrong implementations: trusting the
+    tier stored at staging, so a row staged while the tool was ``write`` runs
+    over MCP after the tool became ``sensitive``; or refusing it but leaving
+    the row failed while the refusal says the person confirms it in the app.
+    The claim is released: pending again, and the app runs it."""
+    import dataclasses
+
+    a = w["A"]
+    calls = scratch()
+    out = await _invoke(factory, a["member"], "scratch_write", {"budget_id": a["b1"]},
+                        api_token_id=a["t1"], **MCP)
+    registry._TOOLS["scratch_write"] = dataclasses.replace(registry._TOOLS["scratch_write"], risk="sensitive")
+    err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"], **MCP))
+    assert err.code == "requires_browser_confirmation" and calls == []
+    row = await _row(factory, out["action_id"])
+    assert (row.status.value, row.decided_at, row.error_code) == ("pending", None, None)
+    assert await _audits(factory) == []
+    assert (await _confirm(factory, a["member"], out["action_id"]))["status"] == "done"
+    assert calls == ["scratch_write"]
 
 
 # ── auto ──────────────────────────────────────────────────────────────────
@@ -820,7 +858,38 @@ _WRITE_CASES = {
     "budgets_update_amount": lambda a: {"budget_id": a["b1"], "amount": "120.00"},
     # A reportable row on the confirm path: the category rule upsert is disclosed.
     "transactions_set_category": lambda a: {"transaction_id": a["tx"], "category_id": a["c2"]},
+    "transactions_update": lambda a: {"transaction_id": a["tx"], "description": "Renamed"},
+    "recurring_update": lambda a: {"recurring_id": a["rec"], "description": "Rent, flat 2"},
+    "accounts_update": lambda a: {"account_id": a["acct"], "name": "Renamed"},
+    "account_types_update": lambda a: {"type_id": a["type"], "name": "Renamed"},
+    # TBD-666: two primary rows (a revert swaps both back).
+    "budgets_rebalance": lambda a: {"items": [
+        {"budget_id": a["b1"], "expected_amount": "100.00", "amount": "80.00"},
+        {"budget_id": a["b2"], "expected_amount": "50.00", "amount": "70.00"},
+    ]},
+    "categories_update": lambda a: {"category_id": a["c1"], "name": "Groceries"},
 }
+
+
+async def _a_template(f, a):
+    async with f() as db:
+        r = RecurringTransaction(
+            org_id=a["org"], account_id=a["acct"], category_id=a["c1"], description="RENT",
+            amount=Decimal("500.00"), type="expense", frequency=Frequency.MONTHLY,
+            next_due_date=P_START + datetime.timedelta(days=60),
+        )
+        db.add(r)
+        await db.commit()
+        a["rec"] = r.id
+
+
+# Rows a case needs beyond the shared world ``w`` (TBD-667).
+_WRITE_SETUP = {"recurring_update": _a_template}
+
+
+async def write_setup(f, a, tool):
+    if tool in _WRITE_SETUP:
+        await _WRITE_SETUP[tool](f, a)
 
 # A derived row is disclosed by its natural key, not its surrogate id: the
 # rule's change id is the normalized token (so a description edit goes stale),
@@ -836,7 +905,11 @@ def _disclosed_key(org_id, change) -> tuple:
 
 
 def test_fa3_every_write_tool_has_a_case():
-    live = {t.name for t in registry.all_tools() if t.risk != "read"}
+    # ``write`` tools only. A ``sensitive`` tool inserts rows (``"new:1"``) and
+    # names composite keys, which this row-level diff cannot key; the honesty
+    # fence (``test_agent_honesty``, T-A9b) covers every non-read tool,
+    # column by column.
+    live = {t.name for t in registry.all_tools() if t.risk == "write"}
     live -= {"scratch_write", "admin_tool", "sens_tool", "big_tool", "retiring"}
     assert live == set(_WRITE_CASES), "a write tool was added without an F-A3 case"
 
@@ -857,6 +930,7 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     """FENCE F-A3. Wrong implementation: a ``write`` tool with an undisclosed
     side write. Whole-database row diff, not review."""
     a = w["A"]
+    await write_setup(factory, a, tool)
     args = _WRITE_CASES[tool](a)
     out = await _invoke(factory, a["member"], tool, args)
     disclosed = {(c["entity"], _disclosed_key(a["org"], c)) for c in out["changes"]}
@@ -883,18 +957,21 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
 
 # ── review round 1 ────────────────────────────────────────────────────────
 
-async def test_fp4_a_null_token_mcp_row_is_not_an_in_app_row(factory, w):
-    """FENCE F-P4 (channel clause). An MCP row whose token was SET NULL looks
-    like an in-app row on the token column alone; only ``channel`` keeps the
-    in-app user from confirming or cancelling it."""
+async def test_fp4_a_null_token_mcp_row_is_not_another_tokens_row(factory, w):
+    """FENCE F-P4 (token clause). An MCP row whose token was SET NULL matches
+    no token: no MCP principal decides it. Its user still can, in the app."""
     a = w["A"]
     out = await _stage(factory, w, api_token_id=a["t1"], **MCP)
     async with factory() as db:
         await db.execute(update(AgentPendingAction).values(api_token_id=None))
         await db.commit()
-    assert (await _refused(_confirm(factory, a["member"], out["action_id"]))).code == "action_not_found"
-    assert (await _refused(_cancel(factory, a["member"], out["action_id"]))).code == "action_not_found"
+    for tok in ("t1", "t2"):
+        err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a[tok], **MCP))
+        assert err.code == "action_not_found"
+        err = await _refused(_cancel(factory, a["member"], out["action_id"], api_token_id=a[tok], **MCP))
+        assert err.code == "action_not_found"
     assert (await _row(factory, out["action_id"])).status.value == "pending"
+    assert (await _cancel(factory, a["member"], out["action_id"]))["data"]["status"] == "cancelled"
 
 
 async def test_fp12_mcp_per_user_daily_preview_bucket(factory, w):
@@ -1034,3 +1111,20 @@ async def test_purge_never_raises_and_logs_only_the_error_class(monkeypatch, log
     lines = [ln for ln in log_lines() if ln["msg"] == "scheduler.agent_action_purge.failed"]
     assert len(lines) == 1 and lines[0]["error"] == "OperationalError"
     assert secret not in json.dumps(log_lines())
+
+
+def test_t786_a_summary_total_needs_one_stated_currency():
+    """FENCE (TBD-786 review). Wrong implementations: summing EUR and USD rows
+    into one number, or totalling rows that state no currency."""
+    def row(amount, currency, field="amount"):
+        return [{"entity": "transactions", "id": 1, "field": field, "before": None,
+                 "after": amount, "currency": currency}]
+
+    assert actions._totals([row("1.50", "EUR"), row("2.25", "EUR")]) == {
+        "amount": "3.75", "currency": "EUR"}
+    assert actions._totals([row("1.50", "EUR"), row("2.25", "USD")]) == {}
+    assert actions._totals([row("1.50", "EUR"), row("2.25", None)]) == {}
+    assert actions._totals([row("1.50", None)]) == {}
+    # two money fields in two currencies: only the first keeps its total
+    assert actions._totals([row("1.00", "EUR"), row("4.00", "USD", "planned_amount")]) == {
+        "amount": "1.00", "currency": "EUR"}

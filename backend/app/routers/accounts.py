@@ -1,16 +1,18 @@
+import contextlib
 from typing import Optional
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.deps import get_current_user, get_session_factory
+from app.deps import get_caller_session, get_current_user, get_session_factory
 from app.models.account import Account, AccountType
-from app.models.transaction import Transaction
+from app.models.recurring import RecurringTransaction
+from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip, limiter
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
@@ -31,7 +33,7 @@ from app.services.account_type_change_service import (
 )
 from app.services.credit_card_service import validate_credit_card_fields
 from app.services.currency_service import assert_org_currency_allows
-from app.services.loan_service import compute_loan_metrics, validate_loan_fields
+from app.services.loan_service import loan_metrics_or_none, validate_loan_fields
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.payment_source_service import validate_payment_source_account
 from app.services.transaction_service import (
@@ -72,7 +74,7 @@ def _loan_metrics_for(account: Account) -> Optional[LoanMetrics]:
         or account.first_payment_date is None
     ):
         return None
-    m = compute_loan_metrics(
+    m = loan_metrics_or_none(
         principal_amount=account.principal_amount,
         interest_rate_apr=account.interest_rate_apr,
         term_months=account.term_months,
@@ -80,6 +82,8 @@ def _loan_metrics_for(account: Account) -> Optional[LoanMetrics]:
         first_payment_date=account.first_payment_date,
         balance=account.balance,
     )
+    if m is None:  # stored values the projection cannot handle (BE-16)
+        return None
     return LoanMetrics(
         expected_monthly_payment=m.expected_monthly_payment,
         maturation_date=m.maturation_date,
@@ -284,10 +288,14 @@ async def get_account(
 async def update_account(
     account_id: int,
     body: AccountUpdate,
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    # A dependency, not a raw ``Request``, so the agent tool runs this handler
+    # in-process (TBD-665; an agent call has no client IP).
+    client_ip: str | None = Depends(get_client_ip),
+    # None over REST; the agent's confirm passes the session holding the row lock.
+    locked_db: AsyncSession | None = Depends(get_caller_session),
 ):
     """Update an account.
 
@@ -317,8 +325,9 @@ async def update_account(
     actor_user_id = current_user.id
     actor_email = current_user.email
     actor_org_id = current_user.org_id
+    actor_is_admin = _is_admin_user(current_user)
     req_id = _request_id()
-    ip = get_client_ip(request)
+    ip = client_ip
 
     touches_type_or_liability_columns = (
         body.account_type_id is not None
@@ -343,17 +352,27 @@ async def update_account(
             actor_user_id=actor_user_id,
             actor_email=actor_email,
             actor_org_id=actor_org_id,
+            actor_is_admin=actor_is_admin,
             req_id=req_id,
             ip=ip,
             session_factory=session_factory,
+            locked_db=locked_db,
         )
 
     # ── Fast path: no type/cc-column touch, stay on the request session.
-    result = await db.execute(
+    stmt = (
         select(Account)
         .options(selectinload(Account.account_type))
         .where(Account.id == account_id, Account.org_id == actor_org_id)
     )
+    if body.opening_balance is not None:
+        # BE-15: an opening_balance change is a read-modify-write of
+        # ``balance``. Lock the row like every other balance writer
+        # (``get_account_for_update``) so a concurrent transaction's delta
+        # is read, not overwritten. populate_existing for the same reason
+        # as there: the locked state must replace any identity-map copy.
+        stmt = stmt.with_for_update(of=Account).execution_options(populate_existing=True)
+    result = await db.execute(stmt)
     account = result.scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -363,6 +382,7 @@ async def update_account(
     opening_changed = await _apply_non_type_fields(
         db, account, body, actor_org_id, nested_default=True,
         resolved_slug=account.account_type.slug if account.account_type else None,
+        actor_is_admin=actor_is_admin,
     )
     new_opening_balance = account.opening_balance
     new_opening_balance_date = account.opening_balance_date
@@ -409,6 +429,7 @@ async def _apply_non_type_fields(
     *,
     nested_default: bool,
     resolved_slug: Optional[str],
+    actor_is_admin: bool,
 ) -> bool:
     """Apply name / is_active / is_default / opening_* mutations.
 
@@ -535,6 +556,18 @@ async def _apply_non_type_fields(
     # the account will actually hold (finding 15): shifting up to a nonzero
     # balance must block deactivation, and shifting down to zero must allow it.
     if body.opening_balance is not None and body.opening_balance != account.opening_balance:
+        # BE-14: once settled activity sits on top of it, moving the opening
+        # balance rewrites the live balance with no ledger row, which is what
+        # the admin-only /adjust-balance exists for. A MEMBER may still fix
+        # the opening balance of an account with no settled activity yet.
+        if not actor_is_admin and await _has_settled_transactions(db, account.id, org_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Only an owner or admin can change the opening balance "
+                    "of an account with settled transactions"
+                ),
+            )
         # Opening balance is the foundation of the live balance
         # (balance == opening_balance + Σ settled txns). Correcting it must
         # shift the live balance by the same delta, otherwise the cached
@@ -579,6 +612,39 @@ async def _apply_non_type_fields(
     return opening_changed
 
 
+async def _has_settled_transactions(db: AsyncSession, account_id: int, org_id: int) -> bool:
+    return (
+        await db.scalar(
+            select(Transaction.id)
+            .where(
+                Transaction.account_id == account_id,
+                Transaction.org_id == org_id,
+                Transaction.status == TransactionStatus.SETTLED,
+            )
+            .limit(1)
+        )
+    ) is not None
+
+
+@contextlib.asynccontextmanager
+async def _atomic_session(
+    session_factory: async_sessionmaker[AsyncSession],
+    locked_db: AsyncSession | None,
+):
+    """The transaction ``_update_account_atomic`` writes in: its own (REST),
+    or ``locked_db``, whose transaction already holds the account's row lock
+    (the agent's confirm, TBD-665; a second session would wait on that lock).
+    Either commits on a clean exit; on a raise, REST's ``begin()`` rolls back
+    and ``locked_db`` is left uncommitted for its owner to roll back."""
+    if locked_db is not None:
+        yield locked_db
+        await locked_db.commit()
+        return
+    async with session_factory() as svc_db:
+        async with svc_db.begin():
+            yield svc_db
+
+
 async def _update_account_atomic(
     *,
     account_id: int,
@@ -586,9 +652,11 @@ async def _update_account_atomic(
     actor_user_id: int,
     actor_email: str,
     actor_org_id: int,
+    actor_is_admin: bool,
     req_id: str | None,
     ip: str,
     session_factory: async_sessionmaker[AsyncSession],
+    locked_db: AsyncSession | None = None,
 ) -> AccountResponse:
     """Single-transaction PUT path (PR #246 review P1 fix).
 
@@ -606,44 +674,55 @@ async def _update_account_atomic(
     new_opening_balance_date = None
     response_payload: AccountResponse | None = None
 
-    async with session_factory() as svc_db:
-        async with svc_db.begin():
-            target_type_id = body.account_type_id
-            if target_type_id is None:
-                current_type_id = await svc_db.scalar(
-                    select(Account.account_type_id).where(
-                        Account.id == account_id,
-                        Account.org_id == actor_org_id,
-                    )
+    async with _atomic_session(session_factory, locked_db) as svc_db:
+        target_type_id = body.account_type_id
+        if target_type_id is None:
+            current_type_id = await svc_db.scalar(
+                select(Account.account_type_id).where(
+                    Account.id == account_id,
+                    Account.org_id == actor_org_id,
                 )
-                if current_type_id is None:
-                    raise HTTPException(
-                        status_code=404, detail="Account not found"
-                    )
-                target_type_id = current_type_id
+            )
+            if current_type_id is None:
+                raise HTTPException(
+                    status_code=404, detail="Account not found"
+                )
+            target_type_id = current_type_id
 
-            account, type_result = await apply_type_change_in_session(
-                svc_db,
-                account_id=account_id,
-                org_id=actor_org_id,
-                target_type_id=target_type_id,
-                close_day_in_payload="close_day" in body.model_fields_set,
-                close_day_value=body.close_day,
-                payment_day_in_payload="payment_day" in body.model_fields_set,
-                payment_day_value=body.payment_day,
-                payment_day_relative_month_in_payload="payment_day_relative_month" in body.model_fields_set,
-                payment_day_relative_month_value=body.payment_day_relative_month,
+        account, type_result = await apply_type_change_in_session(
+            svc_db,
+            account_id=account_id,
+            org_id=actor_org_id,
+            target_type_id=target_type_id,
+            close_day_in_payload="close_day" in body.model_fields_set,
+            close_day_value=body.close_day,
+            payment_day_in_payload="payment_day" in body.model_fields_set,
+            payment_day_value=body.payment_day,
+            payment_day_relative_month_in_payload="payment_day_relative_month" in body.model_fields_set,
+            payment_day_relative_month_value=body.payment_day_relative_month,
+        )
+        # BE-14: leaving credit_card deletes the per-cycle payment rows,
+        # whose own endpoints are owner/admin only. Raised inside begin()
+        # so the type change rolls back with it.
+        if type_result.deleted_cycle_payments and not actor_is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Only an owner or admin can change the type of a credit "
+                    "card account with recorded cycle payments"
+                ),
             )
 
-            old_opening_balance = account.opening_balance
-            old_opening_balance_date = account.opening_balance_date
-            opening_changed = await _apply_non_type_fields(
-                svc_db, account, body, actor_org_id, nested_default=False,
-                resolved_slug=type_result.new_type_slug,
-            )
-            new_opening_balance = account.opening_balance
-            new_opening_balance_date = account.opening_balance_date
-            # ``async with svc_db.begin()`` commits on clean exit.
+        old_opening_balance = account.opening_balance
+        old_opening_balance_date = account.opening_balance_date
+        opening_changed = await _apply_non_type_fields(
+            svc_db, account, body, actor_org_id, nested_default=False,
+            resolved_slug=type_result.new_type_slug,
+            actor_is_admin=actor_is_admin,
+        )
+        new_opening_balance = account.opening_balance
+        new_opening_balance_date = account.opening_balance_date
+        # ``_atomic_session`` commits on clean exit.
 
     # Outer txn committed cleanly. The cached ``account.account_type``
     # relationship inside the service session points at the OLD
@@ -793,6 +872,14 @@ async def delete_account(
         db, Transaction,
         [Transaction.account_id == account.id, Transaction.org_id == current_user.org_id],
         "transaction", "account",
+    )
+    # Neither recurring foreign key has ON DELETE: a template using the account,
+    # on either side of a transfer, would fail the delete in the database.
+    await assert_no_dependents(
+        db, RecurringTransaction,
+        [RecurringTransaction.org_id == current_user.org_id,
+         or_(RecurringTransaction.account_id == account.id, RecurringTransaction.to_account_id == account.id)],
+        "recurring transaction", "account",
     )
 
     await db.delete(account)

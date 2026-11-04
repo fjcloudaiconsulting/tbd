@@ -92,7 +92,7 @@ import logging
 from fastapi import HTTPException
 
 from app.config import settings
-from app.services.import_parser import ParseError, ParsedRow
+from app.services.import_parser import ParseError, ParsedRow, check_amount_in_range
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,13 @@ def _normalize(ofx: object, max_rows: int) -> tuple[list[ParsedRow], dict]:
         except (ParseError, Exception):
             skipped += 1
             continue
+        # BE-01: a TRNAMT the ledger cannot store (non-finite, too large, more
+        # than 2 decimals) fails the file with its transaction number, as the
+        # CSV and TAB parsers do.
+        try:
+            amount_raw = check_amount_in_range(amount_raw)
+        except ParseError as exc:
+            raise ParseError(f"OFX parse failed: transaction {i}: {exc}", row_number=i)
 
         # Per spec §1.3: type from TRNAMT sign; amount is |TRNAMT|.
         row_type = "income" if amount_raw > 0 else "expense"

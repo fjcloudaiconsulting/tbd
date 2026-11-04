@@ -8,10 +8,11 @@ import dataclasses
 import datetime
 
 import logging
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
+from app.models.account import Account, AccountType
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
@@ -23,12 +24,20 @@ from app.services.recurring_filters import (
     active_series_filter,
     has_remaining_occurrences,
 )
-from app.services.transaction_filters import non_reverted_transaction_filter
+from app.services.transaction_filters import (
+    REVERTED_RECONCILIATION_STATES,
+    is_reciprocal_pair,
+    non_reverted_transaction_filter,
+)
 from app.services.transaction_service import (
+    _link_pair,
     _load_opts as _tx_load_opts,
-    _settle_batch_counters_and_demote_orphans,
+    BatchSettlementPlan,
+    _propagate_fields_to_series,
     apply_balance,
+    apply_batch_settlement,
     get_account_for_update,
+    plan_batch_settlement,
     validate_account,
     validate_category_for_type,
 )
@@ -73,7 +82,11 @@ class PendingRemovalResult:
 
 
 def _load_opts():
-    return [selectinload(RecurringTransaction.account), selectinload(RecurringTransaction.category)]
+    return [
+        selectinload(RecurringTransaction.account),
+        selectinload(RecurringTransaction.to_account),
+        selectinload(RecurringTransaction.category),
+    ]
 
 
 # ── Frontier lower bound (TBD-283) ────────────────────────────────────────────
@@ -155,6 +168,8 @@ def to_response(r: RecurringTransaction) -> RecurringResponse:
         description=r.description,
         amount=r.amount,
         type=r.type,
+        to_account_id=r.to_account_id,
+        to_account_name=r.to_account.name if r.to_account else "",
         frequency=r.frequency.value,
         next_due_date=r.next_due_date,
         auto_settle=r.auto_settle,
@@ -162,6 +177,58 @@ def to_response(r: RecurringTransaction) -> RecurringResponse:
         occurrence_count=r.occurrence_count,
         occurrences_elapsed=r.occurrences_elapsed,
     )
+
+
+async def _validate_transfer_accounts(
+    db: AsyncSession, org_id: int, r_type: str,
+    account_id: int, to_account_id: int | None,
+) -> None:
+    """TBD-600: ``to_account_id`` is required iff the series is a transfer, and
+    then names another account of the same org and currency.
+
+    Same currency because ``_link_pair`` refuses a cross-currency pair, and a
+    template it refuses would fail every generation run, not just this request.
+    """
+    if r_type != "transfer":
+        if to_account_id is not None:
+            raise ValidationError("Only a transfer has a destination account")
+        return
+    if to_account_id is None:
+        raise ValidationError("A transfer needs a destination account")
+    if to_account_id == account_id:
+        raise ValidationError("Source and destination accounts must be different")
+    rows = {
+        aid: (currency, slug, active) for aid, currency, slug, active in (await db.execute(
+            select(Account.id, Account.currency, AccountType.slug, Account.is_active)
+            .join(AccountType, AccountType.id == Account.account_type_id, isouter=True)
+            .where(Account.id.in_([account_id, to_account_id]), Account.org_id == org_id)
+        )).all()
+    }
+    if len(rows) != 2:
+        raise ValidationError("Invalid account")
+    # An account archived AFTER the series was set up keeps it running: its
+    # leg is still generated, and the projections show only the active leg.
+    if not all(active for _, _, active in rows.values()):
+        raise ValidationError("A recurring transfer needs two active accounts")
+    _refuse_card_or_loan(slug for _, slug, _ in rows.values())
+    if rows[account_id][0] != rows[to_account_id][0]:
+        raise ValidationError("Transfer accounts must have the same currency")
+
+
+# Not yet supported on either side of a recurring transfer (ticketed
+# separately). As a destination the projection would pay a card twice (its
+# generated legs and ``synthesize_account_cc_payments``) and read a loan leg as
+# that month's payment; as a source a card is a cash advance with the same
+# first-period gap.
+_UNSUPPORTED_TRANSFER_SLUGS = {"credit_card", "loan"}
+
+
+def _refuse_card_or_loan(slugs) -> None:
+    if _UNSUPPORTED_TRANSFER_SLUGS & set(slugs):
+        raise ValidationError(
+            "A recurring transfer cannot use a credit card or loan account yet. "
+            "Choose two other accounts."
+        )
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -190,8 +257,13 @@ async def create_recurring(
     # directly from the template and would otherwise emit mismatched rows
     # at every cycle, bypassing the guard on _create_transaction_no_commit.
     await validate_account(db, body.account_id, org_id)
+    # A transfer validates as TransactionType.TRANSFER, which only a BOTH
+    # category passes: both legs share it, as on every transfer pair.
     await validate_category_for_type(
         db, body.category_id, org_id, TransactionType(body.type)
+    )
+    await _validate_transfer_accounts(
+        db, org_id, body.type, body.account_id, body.to_account_id
     )
     # TBD-283: one lower bound, enforced identically by all three write paths.
     await validate_frontier(db, org_id, body.next_due_date, today=today)
@@ -199,6 +271,7 @@ async def create_recurring(
     r = RecurringTransaction(
         org_id=org_id,
         account_id=body.account_id,
+        to_account_id=body.to_account_id,
         category_id=body.category_id,
         description=body.description,
         amount=body.amount,
@@ -253,7 +326,8 @@ async def update_recurring(
     On a plain update that does not flip ``is_active`` False->True, the
     supplied date is always kept verbatim.
 
-    ``occurrence_count`` (TBD-275) is editable and may be edited DOWNWARD below
+    ``occurrence_count`` (TBD-275) is editable, an explicit null making the
+    series open-ended again (TBD-762), and may be edited DOWNWARD below
     what the series has already delivered. That is honoured, not rejected:
     ``recurring_filters.remaining_occurrences`` goes negative,
     ``active_series_filter`` drops the template, and the series simply stops.
@@ -274,12 +348,24 @@ async def update_recurring(
     if today is None:
         today = datetime.date.today()
 
-    result = await db.execute(
+    # TBD-756/TBD-760: an amount, name, category or account change moves the
+    # pending occurrences still at the OLD value, so that old value must be
+    # read under the lock. TBD-762 widens it to any request carrying more than
+    # ``is_active``: generation locks the template too, so it cannot move the
+    # frontier or add a row between this read and the commit. The template lock
+    # alone does NOT make the next-due guard's row read current: on MySQL
+    # REPEATABLE READ a plain SELECT reads the snapshot taken by this request's
+    # first statement, from before it waited here, so the guard's read is a
+    # locking read of its own. Resume alone stays a plain read, as it always
+    # was. Lock order stays template -> rows.
+    q = (
         select(RecurringTransaction)
         .options(*_load_opts())
         .where(RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id)
     )
-    r = result.scalar_one_or_none()
+    if body.model_fields_set - {"is_active"}:
+        q = q.with_for_update().execution_options(populate_existing=True)
+    r = (await db.execute(q)).scalar_one_or_none()
     if r is None:
         raise NotFoundError("Recurring transaction")
 
@@ -287,10 +373,21 @@ async def update_recurring(
     # detectable below even though both fields are written in this same block.
     was_active = r.is_active
     had_remaining = has_remaining_occurrences(r)
+    old_amount = r.amount
+    old_type = TransactionType(r.type)
+    old_description = r.description
+    old_category_id = r.category_id
+    old_account_id = r.account_id
+    old_to_account_id = r.to_account_id
+    old_next_due = r.next_due_date
 
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
         r.account_id = body.account_id
+    if body.to_account_id is not None:
+        r.to_account_id = body.to_account_id
+    if body.account_id is not None or body.to_account_id is not None:
+        await _validate_transfer_accounts(db, org_id, r.type, r.account_id, r.to_account_id)
     if body.description is not None:
         r.description = body.description
     if body.amount is not None:
@@ -303,7 +400,11 @@ async def update_recurring(
         r.auto_settle = body.auto_settle
     if body.is_active is not None:
         r.is_active = body.is_active
-    if body.occurrence_count is not None:
+    # TBD-762: an explicit null is "never ends", so this reads key presence,
+    # not the value; an omitted key still leaves the count alone. Written here,
+    # with the other fields, so ``unexhausted`` below sees it: a finished series
+    # made open-ended resumes, and must take the re-anchor like any other.
+    if "occurrence_count" in body.model_fields_set:
         r.occurrence_count = body.occurrence_count
 
     # Validate the post-update (type, category) pair when either changes.
@@ -311,6 +412,12 @@ async def update_recurring(
     # one of the two fields must still be compatible with the unchanged
     # one. validate_category_for_type also re-checks org ownership when a
     # new category_id is supplied.
+    # TBD-600: a transfer's rows are linked pairs, and an income or expense
+    # series writes single rows; neither can become the other in place.
+    if body.type is not None and body.type != r.type and r.type == "transfer":
+        raise ValidationError(
+            "A recurring transfer cannot change type. Stop it and create a new series."
+        )
     if body.type is not None or body.category_id is not None:
         new_type = TransactionType(body.type) if body.type is not None else TransactionType(r.type)
         new_category_id = body.category_id if body.category_id is not None else r.category_id
@@ -349,10 +456,11 @@ async def update_recurring(
 
     # TBD-283: the frontier lower bound, on the POST-WRITE state.
     #
-    # ⚠ GATED, not unconditional. The only PUT the frontend ever issues is
-    # ``{"is_active": true}`` (Resume). Re-checking the stored frontier on every
-    # update would 400 Resume for exactly the long-paused templates users
-    # resume, in a UI that offers no field to fix it with.
+    # ⚠ GATED, not unconditional. Resume sends ``{"is_active": true}`` alone,
+    # and the Edit series dialog (TBD-762) sends only the fields the user
+    # changed. Re-checking the stored frontier on every update would 400 Resume
+    # for exactly the long-paused templates users resume, and refuse a rename
+    # over a date nobody touched.
     #
     # ⚠ The ``frequency`` clause is not decoration. Flipping a stale yearly
     # template to weekly multiplies its implied occurrences without a
@@ -376,12 +484,174 @@ async def update_recurring(
     if body.next_due_date is not None or body.frequency is not None:
         await validate_frontier(db, org_id, r.next_due_date, today=today)
 
+    # TBD-762: a next due date the user moved must clear the series' own rows.
+    # Gated on the user's edit: the re-anchor only walks a frozen frontier
+    # forward, and Resume alone must behave as it always has.
+    if body.next_due_date is not None and r.next_due_date != old_next_due:
+        await _check_frontier_clears_series(db, org_id, r, old_next_due=old_next_due)
+
+    # TBD-756/TBD-760: the pending occurrences still at the old amount, name,
+    # category or account follow the new one; a row whose value differs keeps
+    # it. Compared with the old values, not key presence: a re-send of the same
+    # value moves nothing. A ``next_due_date`` edit moves no materialised row:
+    # the frontier is the next UN-materialised occurrence, and callers move it
+    # by whole periods to skip or re-anchor. The helper's template writes are
+    # no-ops here (the template already holds the new values).
+    # Category only while the type is unchanged: a type change is out of scope
+    # here (rows keep their type), and a category validated for the NEW type
+    # must not land on old-type rows.
+    amount_changed = r.amount != old_amount
+    desc_changed = r.description != old_description
+    cat_changed = r.category_id != old_category_id and TransactionType(r.type) == old_type
+    acct_changed = r.account_id != old_account_id
+    if amount_changed or desc_changed or cat_changed or acct_changed:
+        await _propagate_fields_to_series(
+            db, org_id, r.id, tx_type=old_type,
+            description=r.description if desc_changed else None,
+            description_was=old_description,
+            category_id=r.category_id if cat_changed else None,
+            category_was=old_category_id,
+            account_id=r.account_id if acct_changed else None,
+            account_was=old_account_id,
+            amount=r.amount if amount_changed else None, amount_was=old_amount,
+        )
+    # TBD-600: that sync skips linked legs, so a transfer's pairs take their own.
+    if r.type == "transfer" and (
+        amount_changed or desc_changed or acct_changed
+        or r.category_id != old_category_id or r.to_account_id != old_to_account_id
+    ):
+        await _sync_pending_transfer_pairs(
+            db, org_id, r, amount_was=old_amount, description_was=old_description,
+            category_was=old_category_id, account_was=old_account_id,
+            to_account_was=old_to_account_id,
+        )
+
     await db.commit()
 
     result = await db.execute(
         select(RecurringTransaction).options(*_load_opts()).where(RecurringTransaction.id == r.id)
     )
     return result.scalar_one()
+
+
+async def _sync_pending_transfer_pairs(
+    db: AsyncSession, org_id: int, r: RecurringTransaction, *,
+    amount_was, description_was: str, category_was: int,
+    account_was: int, to_account_was: int | None,
+) -> None:
+    """Move a transfer template's edit onto its PENDING pairs (TBD-600).
+
+    The series sync (TBD-756/760, ``_propagate_fields_to_series``) skips
+    linked legs because a bulk write cannot keep a pair's invariants; this
+    writes both legs of each pair together. A field follows only while it
+    still holds the old template value, so a leg changed by hand keeps its
+    own: amount and category per pair (both legs share them), the name per
+    leg, the source account on the expense leg and the destination on the
+    income leg, never onto the partner's account. Pending rows only, so no
+    balance logic; currency and the ``both`` category were validated on the
+    template.
+
+    Skipped, as ``_series_sync_targets`` skips them: reverted pairs, and legs
+    a bank row was reconcile-matched against (a referrer other than the
+    partner). Lock order template -> rows, as the other series writes.
+    """
+    # The template's accounts were validated by ``update_recurring``; checked
+    # again here because this is what moves legs onto them.
+    _refuse_card_or_loan((await db.scalars(
+        select(AccountType.slug)
+        .join(Account, Account.account_type_id == AccountType.id)
+        .where(Account.id.in_([r.account_id, r.to_account_id]), Account.org_id == org_id)
+    )).all())
+    referrer = aliased(Transaction)
+    legs = (await db.execute(
+        select(Transaction)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.recurring_id == r.id,
+            Transaction.status == TransactionStatus.PENDING,
+            Transaction.linked_transaction_id.is_not(None),
+            Transaction.reconciliation_state.not_in(REVERTED_RECONCILIATION_STATES),
+            ~exists().where(
+                referrer.org_id == org_id,
+                referrer.linked_transaction_id == Transaction.id,
+                referrer.id != Transaction.linked_transaction_id,
+            ),
+        )
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    by_id = {t.id: t for t in legs}
+    for exp in legs:
+        inc = by_id.get(exp.linked_transaction_id)
+        if exp.type != TransactionType.EXPENSE or not is_reciprocal_pair(exp, inc):
+            continue
+        if exp.amount == inc.amount == amount_was:
+            exp.amount = inc.amount = r.amount
+        if exp.category_id == inc.category_id == category_was:
+            exp.category_id = inc.category_id = r.category_id
+        for leg in (exp, inc):
+            if leg.description == description_was:
+                leg.description = r.description
+        if exp.account_id == account_was and r.account_id != inc.account_id:
+            exp.account_id = r.account_id
+        if inc.account_id == to_account_was and r.to_account_id != exp.account_id:
+            inc.account_id = r.to_account_id
+
+
+async def _check_frontier_clears_series(
+    db: AsyncSession, org_id: int, r: RecurringTransaction,
+    *, old_next_due: datetime.date,
+) -> None:
+    """Refuse a moved ``next_due_date`` that lands where the series already has
+    an occurrence (TBD-762). Writes nothing.
+
+    Rent on the 1st, the Nov 1 row exists, next due Dec 1. Moving the frontier
+    to Nov 3 makes generation write a second November rent: its ``exists``
+    probe and the forecasts' materialised probe key on ``(recurring_id, date)``
+    and cannot see Nov 1. So the new frontier must be strictly after every row
+    of the series, and either a whole period (on the post-edit frequency) after
+    the latest one, or no earlier than the frontier it replaces: a later move
+    adds no occurrence to a period that did not already have one coming.
+
+    Runs only when the frontier MOVES. A frequency change that keeps it, e.g.
+    monthly -> yearly with Nov 1 materialised and Dec 1 next, is accepted
+    although Nov 1 and Dec 1 then share a yearly period: the user means "yearly
+    from Dec 1", which is exactly what generation does.
+
+    Every row counts, whatever its status or ``reconciliation_state``: a
+    skipped occurrence was still that period's occurrence, and generation's
+    probe does not read the state either.
+
+    ⚠ A LOCKING read (shared), not a plain one. On MySQL REPEATABLE READ a plain
+    SELECT reads the snapshot fixed by the request's first statement (the
+    current-user lookup), from BEFORE this request waited on the template lock.
+    A generation run holding that lock can insert Nov 1 and move the frontier to
+    Dec 1; the waiting PUT then sees frontier Dec 1 but a snapshot without
+    Nov 1, and accepts Nov 3. A locking read sees the latest committed rows.
+    Lock order stays template -> rows. sqlite ignores the clause; the test
+    asserts it on the statement.
+    """
+    latest = await db.scalar(
+        select(Transaction.date)
+        .where(Transaction.org_id == org_id, Transaction.recurring_id == r.id)
+        .order_by(Transaction.date.desc())
+        .limit(1)
+        .with_for_update(read=True)
+    )
+    if latest is None:
+        return
+    new = r.next_due_date
+    floor = advance_date(latest, r.frequency)
+    if new > latest and (new >= floor or new >= old_next_due):
+        return
+    # Exactly the earliest date the rule above accepts.
+    earliest = max(latest + datetime.timedelta(days=1), min(floor, old_next_due))
+    raise ConflictError(
+        f"The series has a transaction on {latest.isoformat()}, so its next due "
+        f"date cannot be {new.isoformat()}. Choose {earliest.isoformat()} or later, "
+        f"or move or delete that transaction first."
+    )
 
 
 # Runaway guard only, not policy: ~23 years of weekly occurrences. A frontier
@@ -523,46 +793,24 @@ async def _reanchor_frontier_on_resume(
         steps += 1
 
 
-async def _remove_pending_transactions(
+@dataclasses.dataclass(frozen=True)
+class PendingRemovalPlan:
+    """What :func:`_remove_pending_transactions` will do, decided under its
+    locks without writing (TBD-667): ``rows`` is the locked set, ``doomed`` the
+    pending rows it deletes, ``settlement`` the demotions and batch counters
+    (``None`` when nothing is doomed). An agent preview renders this plan, so
+    the preview and the removal cannot disagree."""
+
+    rows: dict[int, Transaction]
+    doomed: frozenset[int]
+    settlement: BatchSettlementPlan | None
+
+
+async def plan_pending_removal(
     db: AsyncSession, org_id: int, recurring_id: int,
-) -> PendingRemovalResult:
-    """Bulk-delete pending future transactions for a recurring template.
-
-    Returns BOTH the number of rows removed and the ids demoted to REJECTED
-    (TBD-312). The demotion is irreversible through every API we expose --
-    REJECTED is terminal and ``reconciliation_state`` is not settable through
-    ``TransactionUpdate`` -- so it must not be silent, and it used to be: this
-    function computed the ids and threw them away, leaving the caller able to
-    report only ``pending_removed``.
-
-    THE THIRD DELETE PATH (TBD-294). ``transaction_service`` has two --
-    ``delete_transaction`` and ``bulk_delete_transactions`` -- and this is the
-    third; ``stop_recurring`` and ``delete_recurring`` both reach it. It is
-    not user-CRUD-shaped (no requested id, no cascade, no balance revert,
-    because every row it removes is PENDING) but it destroys rows all the
-    same, and ``transactions.linked_transaction_id`` is ``ON DELETE SET NULL``
-    for these rows exactly as it is for the other two paths.
-
-    ``reconciliation_service._apply_match`` validates its target on org,
-    existence and not-self and NOTHING else -- no status filter, no
-    ``recurring_id`` filter -- so a settled bank row matched against the
-    PENDING recurring row it settles is a legal, and in fact the most natural,
-    reconcile action. Stopping that template used to delete the target, the FK
-    nulled the link, and the matched duplicate re-entered
-    ``balance_contribution_filter`` and ``reportable_transaction_filter``
-    carrying an amount ``accounts.balance`` does not contain.
-
-    So this routes through ``_settle_batch_counters_and_demote_orphans`` -- the SHARED entry
-    point, deliberately not a third copy of the probe. A fourth delete path
-    will appear; it should have one function to call.
-
-    Lock discipline mirrors ``delete_transaction``: an UNLOCKED pre-read to
-    discover the candidate set and its inbound referrers, then ONE ascending-id
-    ``FOR UPDATE`` over the union. A second, separate lock could invert
-    against ``update_transaction`` (which locks {row, link target} sorted) and
-    deadlock. The DELETE set is then RE-DERIVED from the locked rows, so the
-    predicate is evaluated on locked state and the pre-read cannot widen it.
-    """
+) -> PendingRemovalPlan:
+    """The decision half of :func:`_remove_pending_transactions`: the reads and
+    the locks, no write."""
     today = datetime.date.today()
     candidate_ids = set(
         (
@@ -577,7 +825,7 @@ async def _remove_pending_transactions(
         ).all()
     )
     if not candidate_ids:
-        return PendingRemovalResult(removed=0, demoted_ids=[])
+        return PendingRemovalPlan(rows={}, doomed=frozenset(), settlement=None)
 
     referrer_ids = set(
         (
@@ -614,16 +862,77 @@ async def _remove_pending_transactions(
         and r.status == TransactionStatus.PENDING
         and r.date >= today
     }
+    # TBD-600: never split a transfer pair. A pending leg whose partner
+    # survives (settled by hand, or past-dated) is KEPT: deleting it would let
+    # the FK null the survivor's link and turn a settled transfer leg into a
+    # reportable income/expense row. Kept, the pair stays a transfer and the
+    # user can still settle or delete it whole.
+    doomed -= {
+        i for i in doomed
+        if is_reciprocal_pair(
+            locked_rows[i], locked_rows.get(locked_rows[i].linked_transaction_id)
+        )
+        and locked_rows[i].linked_transaction_id not in doomed
+    }
     if not doomed:
+        return PendingRemovalPlan(rows=locked_rows, doomed=frozenset(), settlement=None)
+    return PendingRemovalPlan(
+        rows=locked_rows, doomed=frozenset(doomed),
+        settlement=plan_batch_settlement(org_id, locked_rows=locked_rows, deleted_ids=doomed),
+    )
+
+
+async def _remove_pending_transactions(
+    db: AsyncSession, org_id: int, recurring_id: int,
+) -> PendingRemovalResult:
+    """Bulk-delete pending future transactions for a recurring template.
+
+    Returns BOTH the number of rows removed and the ids demoted to REJECTED
+    (TBD-312). The demotion is irreversible through every API we expose --
+    REJECTED is terminal and ``reconciliation_state`` is not settable through
+    ``TransactionUpdate`` -- so it must not be silent, and it used to be: this
+    function computed the ids and threw them away, leaving the caller able to
+    report only ``pending_removed``.
+
+    THE THIRD DELETE PATH (TBD-294). ``transaction_service`` has two --
+    ``delete_transaction`` and ``bulk_delete_transactions`` -- and this is the
+    third; ``stop_recurring`` and ``delete_recurring`` both reach it. It is
+    not user-CRUD-shaped (no requested id, no cascade, no balance revert,
+    because every row it removes is PENDING) but it destroys rows all the
+    same, and ``transactions.linked_transaction_id`` is ``ON DELETE SET NULL``
+    for these rows exactly as it is for the other two paths.
+
+    ``reconciliation_service._apply_match`` validates its target on org,
+    existence and not-self and NOTHING else -- no status filter, no
+    ``recurring_id`` filter -- so a settled bank row matched against the
+    PENDING recurring row it settles is a legal, and in fact the most natural,
+    reconcile action. Stopping that template used to delete the target, the FK
+    nulled the link, and the matched duplicate re-entered
+    ``balance_contribution_filter`` and ``reportable_transaction_filter``
+    carrying an amount ``accounts.balance`` does not contain.
+
+    So this routes through the two halves of ``_settle_batch_counters_and_demote_orphans``
+    (``plan_batch_settlement`` in :func:`plan_pending_removal`, then
+    ``apply_batch_settlement``) -- the SHARED entry point, deliberately not a third
+    copy of the probe. A fourth delete path
+    will appear; it should have one function to call.
+
+    Lock discipline mirrors ``delete_transaction``: an UNLOCKED pre-read to
+    discover the candidate set and its inbound referrers, then ONE ascending-id
+    ``FOR UPDATE`` over the union. A second, separate lock could invert
+    against ``update_transaction`` (which locks {row, link target} sorted) and
+    deadlock. The DELETE set is then RE-DERIVED from the locked rows, so the
+    predicate is evaluated on locked state and the pre-read cannot widen it.
+    """
+    plan = await plan_pending_removal(db, org_id, recurring_id)
+    if not plan.doomed:
         return PendingRemovalResult(removed=0, demoted_ids=[])
 
-    demoted_ids = await _settle_batch_counters_and_demote_orphans(
-        db, org_id, locked_rows=locked_rows, deleted_ids=doomed
-    )
+    demoted_ids = await apply_batch_settlement(db, org_id, plan.settlement)
 
     result = await db.execute(
         delete(Transaction).where(
-            Transaction.id.in_(doomed), Transaction.org_id == org_id
+            Transaction.id.in_(plan.doomed), Transaction.org_id == org_id
         )
     )
     return PendingRemovalResult(removed=result.rowcount, demoted_ids=demoted_ids)
@@ -728,32 +1037,51 @@ async def _create_occurrence(
     passed. A skipped occurrence was never paid; an edit-next row exists so its
     amount can be changed BEFORE it settles, and ``_settle_due_auto`` settles it
     at the edited amount on the next run. ``skipped`` only sets the state.
+
+    A transfer series (TBD-600) writes ONE linked pair per occurrence, through
+    ``_link_pair`` as ``create_transfer`` does: an EXPENSE leg on
+    ``account_id`` and an INCOME leg on ``to_account_id``. Both legs carry
+    ``recurring_id``, so generation's ``exists`` probe, the forecasts'
+    materialised probe, ``_settle_due_auto`` and ``_remove_pending_transactions``
+    see the pair with no change of their own. Returns the expense leg.
     """
     tx_status = (
         TransactionStatus.SETTLED
         if (settle and r.auto_settle and due <= today)
         else TransactionStatus.PENDING
     )
+    if r.type == "transfer":
+        legs = [(r.account_id, TransactionType.EXPENSE), (r.to_account_id, TransactionType.INCOME)]
+    else:
+        legs = [(r.account_id, TransactionType(r.type))]
     async with db.begin_nested():
-        tx = Transaction(
-            org_id=org_id,
-            account_id=r.account_id,
-            category_id=r.category_id,
-            description=r.description,
-            amount=r.amount,
-            type=TransactionType(r.type),
-            status=tx_status,
-            date=due,
-            settled_date=due if tx_status == TransactionStatus.SETTLED else None,
-            recurring_id=r.id,
-        )
-        if skipped:
-            tx.reconciliation_state = "skipped"
-        db.add(tx)
+        rows = []
+        for account_id, leg_type in legs:
+            tx = Transaction(
+                org_id=org_id,
+                account_id=account_id,
+                category_id=r.category_id,
+                description=r.description,
+                amount=r.amount,
+                type=leg_type,
+                status=tx_status,
+                date=due,
+                settled_date=due if tx_status == TransactionStatus.SETTLED else None,
+                recurring_id=r.id,
+            )
+            if skipped:
+                tx.reconciliation_state = "skipped"
+            db.add(tx)
+            rows.append(tx)
+        if len(rows) == 2:
+            await db.flush()
+            await _link_pair(db, expense_tx=rows[0], income_tx=rows[1], recategorize=False)
         if tx_status == TransactionStatus.SETTLED:
-            acct = await get_account_for_update(db, r.account_id, org_id)
-            apply_balance(acct, r.amount, TransactionType(r.type))
-    return tx
+            # Sorted account order, as create_transfer locks its pair.
+            for tx in sorted(rows, key=lambda t: t.account_id):
+                acct = await get_account_for_update(db, tx.account_id, org_id)
+                apply_balance(acct, tx.amount, tx.type)
+    return rows[0]
 
 
 async def _load_transaction(db: AsyncSession, tx_id: int) -> Transaction:
@@ -909,17 +1237,33 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
     )
     rows = list(result.scalars().all())
     # Lock order: transaction rows first (the SELECT ... FOR UPDATE above),
-    # then the account row per item. /generate is user-triggered and the
-    # generation loop's FOR UPDATE on templates effectively serializes
-    # concurrent runs per org, so account locks are not contended across the
-    # sweep and the loop.
+    # then every account the sweep touches, ONCE, up front, in ascending id
+    # order (TBD-600), so two sweeps never take account locks in opposite
+    # orders. /generate is user-triggered and the generation loop's FOR UPDATE
+    # on templates effectively serializes concurrent runs per org. Both
+    # legs of a due transfer pair then settle in ONE savepoint, so a failure
+    # can never settle one side only. The count is occurrences, not rows (a
+    # pair counts once), as generation's ``created_settled`` is.
+    accounts = {
+        aid: await get_account_for_update(db, aid, org_id)
+        for aid in sorted({tx.account_id for tx in rows})
+    }
+    by_id = {tx.id: tx for tx in rows}
+    units = []
     for tx in rows:
+        partner = by_id.get(tx.linked_transaction_id)
+        if is_reciprocal_pair(tx, partner):
+            if tx.type == TransactionType.EXPENSE:
+                units.append([tx, partner])
+        else:
+            units.append([tx])
+    for unit in units:
         async with db.begin_nested():
-            tx.status = TransactionStatus.SETTLED
-            tx.settled_date = tx.date
-            acct = await get_account_for_update(db, tx.account_id, org_id)
-            apply_balance(acct, tx.amount, tx.type)
-    return len(rows)
+            for tx in unit:
+                tx.status = TransactionStatus.SETTLED
+                tx.settled_date = tx.date
+                apply_balance(accounts[tx.account_id], tx.amount, tx.type)
+    return len(units)
 
 
 async def generate_due_transactions(

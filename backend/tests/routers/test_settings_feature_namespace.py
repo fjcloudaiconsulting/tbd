@@ -28,6 +28,7 @@ CI and on MySQL alike.  The column-collation pin is TBD-322 part 2.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from urllib.parse import quote
 from unittest.mock import patch
 
 import pytest
@@ -397,3 +398,111 @@ async def test_delete_unrelated_key_still_deletes(session_factory):
             )
         ).scalar_one_or_none()
     assert row is None
+
+
+# ── BE-19: accent / width / ignorable-character spellings ───────────────────
+#
+# Casefolding alone left these open: ``utf8mb4_0900_ai_ci`` is also accent-
+# and width-insensitive and ignores control characters, so each spelling
+# below is the SAME key as the reserved row to production MySQL. As above,
+# the fences assert the Python guard, so they hold on SQLite CI too.
+LOOKALIKE_RESERVED_KEYS = [
+    "f\u00e9ature.reports",        # precomposed accent
+    "fe\u0301ature.reports",       # combining accent
+    "\uff46eature.reports",        # full-width letter
+    "FE\u0301ATURE.reports",       # accent + case
+    "feat\u200bure.reports",       # zero-width space (format char)
+    "fea\x01ture.reports",         # control char
+    "orgpr\u00e9f.budgets",        # other reserved namespaces too
+    "platform\uff3fai.cap",        # full-width low line
+]
+
+
+async def _owner_client(session_factory):
+    ids = await _seed(session_factory)
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    return ids, TestClient(_make_app(session_factory, resolver))
+
+
+async def _org_rows(session_factory, org_id):
+    async with session_factory() as db:
+        return (
+            await db.execute(select(OrgSetting).where(OrgSetting.org_id == org_id))
+        ).scalars().all()
+
+
+@pytest.mark.parametrize("key", LOOKALIKE_RESERVED_KEYS)
+@pytest.mark.asyncio
+async def test_put_lookalike_reserved_key_returns_403(session_factory, key):
+    ids, client = await _owner_client(session_factory)
+    resp = client.put("/api/v1/settings", json={"key": key, "value": "on"})
+    assert resp.status_code == 403, f"{key!r} got {resp.status_code}"
+    assert await _org_rows(session_factory, ids["org_id"]) == []
+
+
+@pytest.mark.parametrize("key", LOOKALIKE_RESERVED_KEYS)
+@pytest.mark.asyncio
+async def test_delete_lookalike_reserved_key_returns_403(session_factory, key):
+    ids, client = await _owner_client(session_factory)
+    async with session_factory() as db:
+        db.add(OrgSetting(org_id=ids["org_id"], key="feature.reports", value="off"))
+        await db.commit()
+    resp = client.delete(f"/api/v1/settings/{quote(key, safe='')}")
+    assert resp.status_code == 403, f"{key!r} got {resp.status_code}"
+    assert [r.key for r in await _org_rows(session_factory, ids["org_id"])] == ["feature.reports"]
+
+
+@pytest.mark.asyncio
+async def test_list_hides_stored_lookalike_reserved_rows(session_factory):
+    """A look-alike row stored before this fix is the reserved row to MySQL,
+    so the generic list must not hand out Edit / Delete controls for it."""
+    ids, client = await _owner_client(session_factory)
+    async with session_factory() as db:
+        db.add_all([
+            OrgSetting(org_id=ids["org_id"], key="f\u00e9ature.reports", value="on"),
+            OrgSetting(org_id=ids["org_id"], key="mysetting", value="1"),
+        ])
+        await db.commit()
+    resp = client.get("/api/v1/settings")
+    assert resp.status_code == 200
+    assert [s["key"] for s in resp.json()] == ["mysetting"]
+
+
+@pytest.mark.parametrize(
+    "key", ["caf\u00e9_mode", "\uff4dysetting", "my setting", "a..b", ".lead", "trail.", "x" * 101],
+)
+@pytest.mark.asyncio
+async def test_put_new_key_must_be_plain_ascii(session_factory, key):
+    """Only ASCII keys can be created, where the collation equals casefold, so
+    no new look-alike of any key (reserved or bounded) can be written."""
+    ids, client = await _owner_client(session_factory)
+    resp = client.put("/api/v1/settings", json={"key": key, "value": "1"})
+    assert resp.status_code == 400, f"{key!r} got {resp.status_code}"
+    assert await _org_rows(session_factory, ids["org_id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_case_variant_of_bounded_key_meets_the_same_bounds(session_factory):
+    """``Session_Lifetime_Days`` reaches the session_lifetime_days row under the
+    collation, so it cannot skip that key's 1..365 bound."""
+    ids, client = await _owner_client(session_factory)
+    resp = client.put(
+        "/api/v1/settings", json={"key": "Session_Lifetime_Days", "value": "100000"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert await _org_rows(session_factory, ids["org_id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_non_ascii_key_can_still_be_deleted(session_factory):
+    """Existing rows with other spellings are not stranded."""
+    ids, client = await _owner_client(session_factory)
+    async with session_factory() as db:
+        db.add(OrgSetting(org_id=ids["org_id"], key="caf\u00e9_mode", value="1"))
+        await db.commit()
+    resp = client.delete("/api/v1/settings/" + quote("caf\u00e9_mode"))
+    assert resp.status_code == 204, resp.text
+    assert await _org_rows(session_factory, ids["org_id"]) == []

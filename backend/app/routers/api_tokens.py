@@ -11,12 +11,14 @@ Mounted at ``/api/v1/system/api-tokens``. Every route is gated by BOTH:
 Security-critical paths:
 
 * **Step-up on mint (spec §8, mirrors ``users.py``):** a ``password_set``
-  superadmin proves presence with ``current_password`` (``verify_password``);
+  superadmin proves presence with ``current_password`` (``reauth_password``);
   an SSO superadmin (``password_set=False``) with a fresh step-up proof
   issued for the ``pat_mint`` action (``app.auth.stepup``, TBD-390), spent
   atomically on success; and — *additionally* —
-  any operator with ``mfa_enabled`` must supply a fresh TOTP ``mfa_code``.
-  Missing/wrong proof → 401. Operators without MFA are never asked for it.
+  any operator with ``mfa_enabled`` must supply a fresh TOTP ``mfa_code``,
+  accepted once per user. Missing/wrong proof → 401; wrong passwords and
+  codes draw from the per-account budgets sign-in uses (429 when full).
+  Operators without MFA are never asked for it.
 * **Reveal-once (SEC-R5):** the plaintext token appears ONLY in the mint
   response body, under ``Cache-Control: no-store``. It is never logged and
   never written to an audit ``detail`` (asserted by a test).
@@ -31,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.pat import require_interactive_session
+from app.auth.second_factor import reauth_password, require_second_factor
 from app.auth.stepup import consume_stepup, stepup_valid
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -40,9 +43,7 @@ from app.rate_limit import get_client_ip, limiter
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.api_token import ApiTokenOut, MintTokenRequest, MintTokenResponse
 from app.schemas.common import ListEnvelope
-from app.security import verify_password
 from app.services import api_token_service, audit_service, notification_service
-from app.services.mfa_service import MfaConfigError, decrypt_secret, verify_totp
 from app.services.notification_templates import api_token_created as _tpl_api_token_created
 from app import logs
 
@@ -72,16 +73,27 @@ async def require_superadmin(
     return current_user
 
 
+_STEP_UP_DETAIL = "Step-up verification required"
+
+
 def _step_up_401() -> HTTPException:
     """Generic step-up rejection (spec §8). One message for missing/wrong
     password, stepup token, or TOTP — no oracle for which factor failed."""
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Step-up verification required",
+        detail=_STEP_UP_DETAIL,
     )
 
 
-def _verify_step_up(user: User, body: MintTokenRequest, action: str) -> bool:
+async def _verify_step_up(
+    user: User,
+    body: MintTokenRequest,
+    action: str,
+    *,
+    request: Request,
+    db: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> bool:
     """Validate the mint step-up proofs against the LIVE user row (spec §8).
 
     ``action`` is the step-up action the SSO proof must have been issued for
@@ -91,18 +103,29 @@ def _verify_step_up(user: User, body: MintTokenRequest, action: str) -> bool:
     Returns ``True`` when an SSO step-up proof was validated (the caller must
     spend it with ``consume_stepup`` before minting), ``False`` otherwise. Raises a
     generic 401 for any missing/invalid proof; raises 503 only for a genuine
-    MFA config error (undecryptable secret), matching ``auth.py``.
+    MFA config error (undecryptable secret) or an unavailable attempt store,
+    matching ``auth.py``.
 
-    Does NOT mutate ``user`` — the SSO token consumption happens in the
-    handler after every proof (including MFA) has passed, so a failed MFA
-    check can't burn a valid step-up token.
+    A wrong password draws from the account's password budget and a wrong
+    TOTP code from its second-factor budget, the ones sign-in uses; a full
+    budget is a 429 (TBD-735). A TOTP code is accepted once per user, as at
+    sign-in (TBD-716). Only an authenticator code is accepted here, never a
+    recovery code.
+
+    Does NOT touch the SSO proof — its consumption happens in the handler
+    after every proof (including MFA) has passed, so a failed MFA check can't
+    burn a valid step-up token.
     """
     sso_proof = False
     if user.password_set:
-        if not body.current_password or not verify_password(
-            body.current_password, user.password_hash
-        ):
-            raise _step_up_401()
+        await reauth_password(
+            session_factory,
+            request=request,
+            user=user,
+            password=body.current_password,
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_STEP_UP_DETAIL,
+        )
     else:
         if not stepup_valid(user, body.stepup_token, action):
             raise _step_up_401()
@@ -114,15 +137,16 @@ def _verify_step_up(user: User, body: MintTokenRequest, action: str) -> bool:
     if user.mfa_enabled:
         if not body.mfa_code:
             raise _step_up_401()
-        try:
-            secret = decrypt_secret(user.totp_secret)
-        except (ValueError, MfaConfigError):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="MFA configuration error — contact support",
-            )
-        if not verify_totp(secret, body.mfa_code):
-            raise _step_up_401()
+        await require_second_factor(
+            db,
+            session_factory,
+            request=request,
+            user=user,
+            code=body.mfa_code,
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_STEP_UP_DETAIL,
+            totp_only=True,
+        )
 
     return sso_proof
 
@@ -164,7 +188,10 @@ async def mint_token(
     # live-but-hijacked session trying to plant a backdoor token), so it is
     # audited before we reject.
     try:
-        sso_proof = _verify_step_up(current_user, body, "pat_mint")
+        sso_proof = await _verify_step_up(
+            current_user, body, "pat_mint",
+            request=request, db=db, session_factory=session_factory,
+        )
         # Spend the SSO proof now that every proof (MFA included) has passed,
         # so a failed MFA never burns it and it can't be replayed (SEC F4).
         # A lost race is the same audited 401. After False the session is

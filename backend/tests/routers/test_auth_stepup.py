@@ -35,6 +35,7 @@ from fastapi import FastAPI, Request
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.auth.stepup import stored_proof
 from app.rate_limit import limiter
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -451,7 +452,7 @@ async def test_callback_with_password_set_state_redirects_with_issued_token(
     async with session_factory() as db:
         user = await db.get(User, user_id)
         assert user is not None
-        assert user.stepup_token == f"password_set:{fragment_token}"
+        assert user.stepup_token == stored_proof("password_set", fragment_token)
         assert user.stepup_token_expires_at is not None
 
 
@@ -1108,8 +1109,10 @@ def _drive_stepup_callback(app, client_kwargs: dict | None = None):
 
 
 # Comfortably past CPython's nesting limit, which is a C-stack check
-# and therefore not a fixed number. ~40 KB of brackets.
-_JSON_NEST_DEPTH = 20_000
+# and therefore not a fixed number: since 3.14 it scales with the real
+# thread stack, and 3.14 decoded 20_000 levels on an 8 MB stack without
+# tripping it. ~2 MB of brackets; the trip itself stays fast.
+_JSON_NEST_DEPTH = 1_000_000
 
 
 def _json_decode_error() -> ValueError:

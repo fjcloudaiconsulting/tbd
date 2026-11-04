@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app.auth.stepup import stored_proof
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
@@ -283,7 +284,7 @@ async def test_mint_sso_consumes_stepup_token(factory):
     uid = await _seed_superadmin(
         factory,
         password_set=False,
-        stepup_token=f"pat_mint:{token}",
+        stepup_token=stored_proof("pat_mint", token),
         stepup_expires_at=_naive_now() + timedelta(minutes=5),
     )
     jwt = await _jwt_for(factory, uid)
@@ -311,7 +312,7 @@ async def test_mint_sso_rejects_expired_stepup_token(factory):
     uid = await _seed_superadmin(
         factory,
         password_set=False,
-        stepup_token=f"pat_mint:{token}",
+        stepup_token=stored_proof("pat_mint", token),
         stepup_expires_at=_naive_now() - timedelta(seconds=1),
     )
     jwt = await _jwt_for(factory, uid)
@@ -421,7 +422,7 @@ async def test_mint_failed_mfa_does_not_burn_the_sso_proof(factory, _mfa_key):
         password_set=False,
         mfa_enabled=True,
         mfa_secret=encrypt_secret(secret),
-        stepup_token=f"pat_mint:{token}",
+        stepup_token=stored_proof("pat_mint", token),
         stepup_expires_at=_naive_now() + timedelta(minutes=5),
     )
     jwt = await _jwt_for(factory, uid)
@@ -430,7 +431,7 @@ async def test_mint_failed_mfa_does_not_burn_the_sso_proof(factory, _mfa_key):
         r = client.post(BASE, json={**body, "mfa_code": "000000"}, headers=_jwt_h(jwt))
         assert r.status_code == 401
         async with factory() as s:
-            assert (await s.get(User, uid)).stepup_token == f"pat_mint:{token}"
+            assert (await s.get(User, uid)).stepup_token == stored_proof("pat_mint", token)
         ok = client.post(
             BASE, json={**body, "mfa_code": pyotp.TOTP(secret).now()}, headers=_jwt_h(jwt)
         )

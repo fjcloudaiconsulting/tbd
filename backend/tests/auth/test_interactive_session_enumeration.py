@@ -48,6 +48,7 @@ from app.services.api_token_service import hash_api_token
 from tests.factories import make_test_app
 
 # Routers whose interactive-only routes we mount and exercise.
+from app.routers.admin_announcements import router as admin_announcements_router
 from app.routers.admin_broadcasts import router as admin_broadcasts_router
 from app.routers.admin_features import router as admin_features_router
 from app.routers.admin_orgs import router as admin_orgs_router
@@ -99,6 +100,8 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/auth/mfa/enable"),             # mfa_enable
     ("POST", "/api/v1/auth/mfa/disable"),            # mfa_disable
     ("POST", "/api/v1/auth/mfa/recovery-codes"),     # mfa_regenerate_codes
+    # BE-03. Turning it on lets the mailbox stand in for the authenticator.
+    ("PUT", "/api/v1/auth/mfa/email-fallback"),      # mfa_email_fallback
     # TBD-346. The ISSUER of the step-up proof, not a consumer of it. Every
     # consumer is already gated, so a PAT could reach only this one link of
     # the chain -- and could not redeem what it started, because the Google
@@ -140,6 +143,11 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/admin/broadcasts/1/resume"),   # resume_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
     ("DELETE", "/api/v1/admin/broadcasts/1"),        # delete_broadcast (draft-only)
+    # BE-20. Paid entitlements for any org, and a banner shown to every user.
+    ("PUT", "/api/v1/admin/orgs/1/subscription"),    # update_org_subscription
+    ("POST", "/api/v1/admin/announcements"),         # create_announcement
+    ("PATCH", "/api/v1/admin/announcements/1"),      # update_announcement
+    ("DELETE", "/api/v1/admin/announcements/1"),     # delete_announcement (hard)
     # TBD-586. Platform AI spends platform money: the operator settings and an
     # org turning a provider on. Turning it OFF (DELETE .../platform/{p}) is the
     # fail-safe direction and stays PAT-reachable on purpose; see the allowlist
@@ -239,6 +247,7 @@ def app(factory, monkeypatch):
             admin_orgs_router,
             admin_features_router,
             admin_broadcasts_router,
+            admin_announcements_router,
             org_data_router,
             orgs_router,
             org_members_router,

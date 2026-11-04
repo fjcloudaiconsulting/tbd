@@ -26,6 +26,10 @@ MAX_TAGS_PER_TRANSACTION = 5
 # section 3.2.
 SHARED_DICTIONARY_MIN_CONTRIBUTORS = 3
 
+# BE-18: only an org created at least this many days ago counts towards that
+# floor, so a batch of fresh orgs cannot lift a tag over it.
+SHARED_DICTIONARY_MIN_ORG_AGE_DAYS = 7
+
 
 class TagCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -69,9 +73,11 @@ SuggestionSource = Literal["org_co_category", "org_recent", "shared_dictionary"]
 
 
 class TagSuggestion(BaseModel):
+    # ``weight`` is the org's own usage count on the two org-local passes and
+    # None on ``shared_dictionary``: a cross-org count is never returned (BE-18).
     name: str
     source: SuggestionSource
-    weight: int
+    weight: Optional[int]
 
 
 class TagSuggestionsResponse(BaseModel):
@@ -93,6 +99,7 @@ class _TagInTransactionResponse(BaseModel):
 __all__ = [
     "MAX_TAGS_PER_TRANSACTION",
     "SHARED_DICTIONARY_MIN_CONTRIBUTORS",
+    "SHARED_DICTIONARY_MIN_ORG_AGE_DAYS",
     "TAG_NAME_MAX_LENGTH",
     "TagCreate",
     "TagRename",

@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.306.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.305.0...v0.306.0) (2026-11-03)
+
+
+### Features
+
+* **db:** make the rate-limit and state-db pool sizes settable from env (TBD-785) ([#1075](https://github.com/fjcloudaiconsulting/tbd/issues/1075)) ([58113e5](https://github.com/fjcloudaiconsulting/tbd/commit/58113e55cd0df02a47dd95ce400bc4aa59df2a1a))
+* **plans:** add the plan columns on scenarios and the plan_goals table (TBD-598) ([#1069](https://github.com/fjcloudaiconsulting/tbd/issues/1069)) ([2317cb5](https://github.com/fjcloudaiconsulting/tbd/commit/2317cb51d86326c383aef91ee0505ad40bd62fdc))
+
+
+### Bug Fixes
+
+* **auth:** run bcrypt hash and verify off the event loop (TBD-782) ([#1070](https://github.com/fjcloudaiconsulting/tbd/issues/1070)) ([8699825](https://github.com/fjcloudaiconsulting/tbd/commit/8699825625f50920392a4cdd489fc29bcdf41c5c))
+* **auth:** whole-second session cutoff for deactivations and agent token mints (TBD-583) ([#1068](https://github.com/fjcloudaiconsulting/tbd/issues/1068)) ([6f278f8](https://github.com/fjcloudaiconsulting/tbd/commit/6f278f8699cc9d19e1feded88a2c22d155525991))
+* **captcha:** fail closed on a non-object siteverify reply (TBD-783) ([#1071](https://github.com/fjcloudaiconsulting/tbd/issues/1071)) ([1302412](https://github.com/fjcloudaiconsulting/tbd/commit/13024128e270e9cc3396f8c59ae54a8c0bd58bc4))
+* **transactions:** clear committed rows after a batch submit (TBD-754) ([#1067](https://github.com/fjcloudaiconsulting/tbd/issues/1067)) ([0a0d33a](https://github.com/fjcloudaiconsulting/tbd/commit/0a0d33a243b0f5ee6d456ed5eef993ba019462a3))
+
+## [0.305.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.304.0...v0.305.0) (2026-11-01)
+
+
+### Features
+
+* **ai:** browser-only confirm for sensitive agent actions and the money, create, delete and transfer tools (TBD-664) ([#1048](https://github.com/fjcloudaiconsulting/tbd/issues/1048)) ([baaa760](https://github.com/fjcloudaiconsulting/tbd/commit/baaa760a6199149cb1edf702713b489e2f0c81e8))
+* **ai:** remove bring-your-own local model (Ollama) support (TBD-584) ([#1035](https://github.com/fjcloudaiconsulting/tbd/issues/1035)) ([0082f45](https://github.com/fjcloudaiconsulting/tbd/commit/0082f45aeb74a932ddcac93f01325843bd7b4752))
+
+
+### Bug Fixes
+
+* **ai:** key the AI-key fingerprint with an HMAC (TBD-719) ([#1043](https://github.com/fjcloudaiconsulting/tbd/issues/1043)) ([78e82e4](https://github.com/fjcloudaiconsulting/tbd/commit/78e82e4b7ca31fdd986efaaf5f0a6a3df3db3d2a))
+* **ai:** map hostile provider bodies to typed errors on every adapter path (TBD-607) ([#1042](https://github.com/fjcloudaiconsulting/tbd/issues/1042)) ([f79250e](https://github.com/fjcloudaiconsulting/tbd/commit/f79250ebc2938b9a59e6300552cf52f89a6f33d9))
+* **deps:** update npm non-major ([#1022](https://github.com/fjcloudaiconsulting/tbd/issues/1022)) ([37ecd63](https://github.com/fjcloudaiconsulting/tbd/commit/37ecd63e294bd629f9fe48fd6aefcb6048b7a9fa))
+* **import:** count shared merchant-dictionary votes server-side, one per org (TBD-692) ([#1041](https://github.com/fjcloudaiconsulting/tbd/issues/1041)) ([70209de](https://github.com/fjcloudaiconsulting/tbd/commit/70209de35327af20a744f552c532c487f5065fe6))
+
+## [0.304.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.303.1...v0.304.0) (2026-11-01)
+
+
+### Features
+
+* **ai:** route_tool factory, transactions_get and transactions_update (TBD-664) ([#1037](https://github.com/fjcloudaiconsulting/tbd/issues/1037)) ([f5187bd](https://github.com/fjcloudaiconsulting/tbd/commit/f5187bd0b92195d22a4dab7e0c03a74e5a4aaf58))
+* **recurring:** apply an amount or date change to future occurrences (TBD-756) ([#1054](https://github.com/fjcloudaiconsulting/tbd/issues/1054)) ([8aac6ec](https://github.com/fjcloudaiconsulting/tbd/commit/8aac6ec7ed75d5e1fb2ad89fb67c9488d8968e3e))
+* **recurring:** edit a whole series from the recurring page (TBD-762) ([#1060](https://github.com/fjcloudaiconsulting/tbd/issues/1060)) ([045822c](https://github.com/fjcloudaiconsulting/tbd/commit/045822cef4e2b9a20f7feee247fb08019c3f841f))
+* **recurring:** search the recurring page by name, account, category or amount (TBD-761) ([#1056](https://github.com/fjcloudaiconsulting/tbd/issues/1056)) ([2d1e417](https://github.com/fjcloudaiconsulting/tbd/commit/2d1e4173f5f259b4102feb7aea4c04c86515a0d2))
+* **transactions:** batch edit the date and settlement date (TBD-763) ([#1058](https://github.com/fjcloudaiconsulting/tbd/issues/1058)) ([f743ba6](https://github.com/fjcloudaiconsulting/tbd/commit/f743ba6bcec4856aff51ab18b7f192668991b45e))
+
+
+### Bug Fixes
+
+* **ai:** staged agent actions keep only the fields set, with an honesty fence over agent writes (TBD-664) ([#1001](https://github.com/fjcloudaiconsulting/tbd/issues/1001)) ([36bd73f](https://github.com/fjcloudaiconsulting/tbd/commit/36bd73f1441e8248009c368ea39551e55bc4c4cf))
+* **auth:** per-user limits on password re-checks and token-mint step-ups, bound reset tokens (TBD-735) ([#1033](https://github.com/fjcloudaiconsulting/tbd/issues/1033)) ([dbb7c96](https://github.com/fjcloudaiconsulting/tbd/commit/dbb7c967f41f9dca075799aae8ca4c25166c4c86))
+* **auth:** stop reading the MFA challenge token from the query string (TBD-654) ([#1034](https://github.com/fjcloudaiconsulting/tbd/issues/1034)) ([d39dd92](https://github.com/fjcloudaiconsulting/tbd/commit/d39dd9287a3e968c3c0950029c51c305ee3abe40))
+* **deps:** upgrade react-grid-layout to v2 and drop @types/react-grid-layout (TBD-638) ([#1028](https://github.com/fjcloudaiconsulting/tbd/issues/1028)) ([e682c43](https://github.com/fjcloudaiconsulting/tbd/commit/e682c439cafa03fa30c212cb0e572db50841ccc2))
+* **forecast:** count manual pending and mixed categories when auto-populating a plan (TBD-764) ([#1059](https://github.com/fjcloudaiconsulting/tbd/issues/1059)) ([d250674](https://github.com/fjcloudaiconsulting/tbd/commit/d250674f2d69c5c3defcfac2c705a6cfe5f7b060))
+* **import:** commit the confirm in chunks and make it idempotent (TBD-737) ([#1039](https://github.com/fjcloudaiconsulting/tbd/issues/1039)) ([8d713d9](https://github.com/fjcloudaiconsulting/tbd/commit/8d713d9444583d1c19e6b3d1f693596eb65c2386))
+* **invitations:** lock the org row before invitation rows on create and accept (TBD-727) ([#1036](https://github.com/fjcloudaiconsulting/tbd/issues/1036)) ([1e6358f](https://github.com/fjcloudaiconsulting/tbd/commit/1e6358fbd1e9f158470ecbd30a187da65a689e6c))
+* **invitations:** send the invitation preview token in the request body (TBD-738) ([#1038](https://github.com/fjcloudaiconsulting/tbd/issues/1038)) ([9c9603e](https://github.com/fjcloudaiconsulting/tbd/commit/9c9603eb4cd4a152b776ae0f8f0452f27019b91b))
+* **recurring:** carry template name, category and account edits to pending occurrences (TBD-760) ([#1055](https://github.com/fjcloudaiconsulting/tbd/issues/1055)) ([aa3922a](https://github.com/fjcloudaiconsulting/tbd/commit/aa3922abf166a91e7352ec534b214b0718de712b))
+* **reports:** keep calendar date presets relative after the month rolls over (TBD-759) ([#1057](https://github.com/fjcloudaiconsulting/tbd/issues/1057)) ([3f51eb7](https://github.com/fjcloudaiconsulting/tbd/commit/3f51eb759cf6219848875ba0bce97bee8ba83599))
+* **scenarios:** run the simulation off the event loop and rate limit it per user (TBD-726) ([#1032](https://github.com/fjcloudaiconsulting/tbd/issues/1032)) ([4223a93](https://github.com/fjcloudaiconsulting/tbd/commit/4223a9395348d6e08b1378a245378561484395d2))
+* **security:** let migrations run with their own database URL (TBD-655) ([#1030](https://github.com/fjcloudaiconsulting/tbd/issues/1030)) ([4ed71c9](https://github.com/fjcloudaiconsulting/tbd/commit/4ed71c908394bd2f084a660b6893c421808e26e4))
+* **security:** remove the unused public founder-count endpoint (TBD-661) ([#1040](https://github.com/fjcloudaiconsulting/tbd/issues/1040)) ([d000481](https://github.com/fjcloudaiconsulting/tbd/commit/d0004813e16b9e20e70726e30cedb85309f50700))
+* **subscriptions:** use the UTC date for trial and period dates (TBD-749) ([#1029](https://github.com/fjcloudaiconsulting/tbd/issues/1029)) ([bf5d220](https://github.com/fjcloudaiconsulting/tbd/commit/bf5d2207fc81f1b6266bc5677d9b0147ccffd67e))
+* **tags:** treat % and _ in the tag-suggestion prefix as literal characters (TBD-718) ([#1027](https://github.com/fjcloudaiconsulting/tbd/issues/1027)) ([cc2092f](https://github.com/fjcloudaiconsulting/tbd/commit/cc2092f48a30edaa068e5cfb017690c23a2ba3ca))
+
+
+### Performance Improvements
+
+* **import:** batch the preview detectors into set-based queries (TBD-736) ([#1031](https://github.com/fjcloudaiconsulting/tbd/issues/1031)) ([4a7a6d9](https://github.com/fjcloudaiconsulting/tbd/commit/4a7a6d95d6acef7d7da267b0df6047993b6c4f54))
+
+## [0.303.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.303.0...v0.303.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **auth:** opt-in email MFA fallback with a reset lock, and bound audit growth (BE-03, BE-10) ([#1019](https://github.com/fjcloudaiconsulting/tbd/issues/1019)) ([a131686](https://github.com/fjcloudaiconsulting/tbd/commit/a131686a2d8724ceea079e2ab3e2b316b2690c2f))
+* **deps:** update dependency react-resizable to v4 ([#941](https://github.com/fjcloudaiconsulting/tbd/issues/941)) ([effc909](https://github.com/fjcloudaiconsulting/tbd/commit/effc9098a32f630d6e1770a6793523d58a214474))
+* **infra:** public-only post-deploy smoke and FORWARDED_ALLOW_IPS for the proxy trust list (INF-09, INF-01, INF-02) ([#1021](https://github.com/fjcloudaiconsulting/tbd/issues/1021)) ([1fe8ada](https://github.com/fjcloudaiconsulting/tbd/commit/1fe8adaf1cf21804f2c72b7d39800857c6efa7ac))
+* **security:** billing entitlements, default org names, email addresses and the tag dictionary (BE-05, DB-03, DB-01, BE-18) ([#1020](https://github.com/fjcloudaiconsulting/tbd/issues/1020)) ([9c6f814](https://github.com/fjcloudaiconsulting/tbd/commit/9c6f8148c955aa31b6b9c9865528ad8800416d6c))
+* **security:** bound AI provider responses and the CSP sink, tighten admin and webhook edges ([#1008](https://github.com/fjcloudaiconsulting/tbd/issues/1008)) ([7f47868](https://github.com/fjcloudaiconsulting/tbd/commit/7f4786814504caa13df734ceedaad5a0713d567d))
+* **security:** bound request inputs across imports, reports, loans, plans and search ([#1006](https://github.com/fjcloudaiconsulting/tbd/issues/1006)) ([2f36594](https://github.com/fjcloudaiconsulting/tbd/commit/2f36594975d9777bf56f1800d84f774b7e078142))
+* **security:** harden CSV export, one-time token URLs and apex CSP, add security.txt ([#1004](https://github.com/fjcloudaiconsulting/tbd/issues/1004)) ([47b8e9f](https://github.com/fjcloudaiconsulting/tbd/commit/47b8e9f0e175399e940fac893b96926d83d0ba57))
+* **security:** harden sign-in limits, session revocation, MFA changes and Google SSO ([#1009](https://github.com/fjcloudaiconsulting/tbd/issues/1009)) ([8b9c95a](https://github.com/fjcloudaiconsulting/tbd/commit/8b9c95a3ece9d89277928d26104ea88e1bb69c43))
+* **security:** tighten tenant billing, invitation, account and settings logic ([#1005](https://github.com/fjcloudaiconsulting/tbd/issues/1005)) ([772ab8e](https://github.com/fjcloudaiconsulting/tbd/commit/772ab8e3973fbc6ca2e9b307ab6719b407e24319))
+
 ## [0.303.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.302.0...v0.303.0) (2026-10-23)
 
 

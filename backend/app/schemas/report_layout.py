@@ -50,6 +50,7 @@ from pydantic import (
 # and the live ``/query`` AST (``reports_query``) cannot drift.
 from app.schemas.reports_enums import (
     Aggregation,
+    CalendarDatePreset,
     Dataset,
     Dimension,
     MeasureField,
@@ -283,10 +284,13 @@ class CanvasDateRange(BaseModel):
 
     start: Optional[str] = None
     end: Optional[str] = None
-    # A relative token (e.g. ``next_cycle``) instead of absolute start/end.
-    # When set, the frontend emits an ``op:'relative'`` date filter that the
-    # backend resolves to a concrete window per request (dynamic).
-    preset: Optional[RelativeDateToken] = None
+    # A relative token instead of absolute start/end. ``next_cycle``: the
+    # frontend emits an ``op:'relative'`` date filter that the backend
+    # resolves to a concrete window per request. A calendar preset
+    # (``this_month``, ``ytd``, ...; TBD-759): the frontend resolves it
+    # against the local clock and emits ``between``. Either way the saved
+    # report re-resolves on every view instead of freezing a window.
+    preset: Optional[Union[RelativeDateToken, CalendarDatePreset]] = None
 
     @model_validator(mode="after")
     def _preset_excludes_absolute(self):

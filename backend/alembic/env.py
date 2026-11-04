@@ -1,5 +1,4 @@
 import asyncio
-import os
 
 from alembic import context
 from sqlalchemy import pool
@@ -7,6 +6,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app import logs
 from app.migration_lock import acquire_migration_lock
+from app.migration_url import migrations_database_url
 from app.models import Base
 
 config = context.config
@@ -16,8 +16,8 @@ logs.configure()
 
 target_metadata = Base.metadata
 
-# Override URL from env var if available
-db_url = os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
+# MIGRATIONS_DATABASE_URL (its own DB user, TBD-655), else DATABASE_URL, else alembic.ini.
+db_url = migrations_database_url() or config.get_main_option("sqlalchemy.url")
 
 
 def run_migrations_offline() -> None:

@@ -94,6 +94,7 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("auth", "mfa_email_verify"): ("auth.mfa_email_verify", "10/minute"),
     ("auth", "mfa_recovery"): ("auth.mfa_recovery", "10/minute"),
     ("auth", "mfa_verify"): ("auth.mfa_verify", "10/minute"),
+    ("auth", "refresh"): ("auth.refresh", "30/minute"),  # per session family (BE-10)
     ("auth", "register"): ("auth.register", "5/hour"),
     ("auth", "resend_verification"): ("auth.resend_verification", "3/hour"),
     ("auth", "resend_verification_public"): (
@@ -101,11 +102,16 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
         "3/hour",
     ),
     ("auth", "reset_password"): ("auth.reset_password", "10/minute"),
+    ("auth", "signup_complete"): ("auth.signup_complete", "10/minute"),
+    ("auth", "signup_start"): ("auth.signup_start", "5/hour"),
     ("auth", "sso_stepup_callback"): ("auth.sso_stepup_callback", "60/hour"),
     ("auth", "sso_stepup_initiate"): ("auth.sso_stepup_initiate", "10/hour"),
     ("auth", "verify"): ("auth.verify", "120/minute"),
     ("auth", "verify_email"): ("auth.verify_email", "10/minute"),
     ("feedback", "submit_feedback"): ("feedback.submit", "5/hour"),
+    ("import_router", "preview_import"): ("import.preview", "30/minute"),
+    ("import_router", "preview_ofx_import"): ("import.ofx_preview", "30/minute"),
+    ("import_router", "preview_tab_import"): ("import.tab_preview", "30/minute"),
     ("oauth", "authorize_decision"): ("oauth.authorize", "30/hour"),
     ("oauth", "register_client"): ("oauth.register", "1000/hour"),
     ("oauth", "token_endpoint"): ("oauth.token", "600/minute"),
@@ -113,16 +119,29 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("onboarding", "restart_tour"): ("onboarding.restart_tour", "10/hour"),
     ("onboarding", "seed_demo"): ("onboarding.seed_demo", "3/hour"),
     ("org_members", "accept_invitation"): ("org_members.accept_invitation", "10/minute"),
+    ("org_members", "create_invitation"): ("org_members.invite", "20/hour"),
     ("org_members", "preview_invitation"): (
+        "org_members.preview_invitation",
+        "30/minute",
+    ),
+    # TBD-738: the deprecated GET shape, one release only; shares the POST's
+    # bucket (``shared_limit`` on the same scope).
+    ("org_members", "preview_invitation_by_query"): (
         "org_members.preview_invitation",
         "30/minute",
     ),
     ("org_members", "remove_member"): ("org_members.remove_member", "30/minute"),
     ("orgs", "rename_org_endpoint"): ("orgs.rename", "10/hour"),
-    ("public_stats", "founder_count"): ("public_stats.founder_count", "60/minute"),
     ("reports", "run_query"): ("reports.query", "60/minute"),
     ("reports", "run_sankey_query"): ("reports.sankey_query", "60/minute"),
+    ("scenarios", "compare_scenarios"): ("scenarios.compare", "30/minute"),  # per user (TBD-726)
+    ("scenarios", "simulate_scenario"): ("scenarios.simulate", "60/minute"),  # per user (TBD-726)
     ("security", "csp_report"): ("security.csp_report", "60/minute"),
+    ("tags", "create_tag_endpoint"): ("tags.create", "30/minute"),
+    ("tags", "replace_transaction_tags_endpoint"): (
+        "tags.set_transaction_tags",
+        "60/minute",
+    ),
     ("users", "cancel_pending_email"): ("users.cancel_pending_email", "10/hour"),
     ("users", "change_password"): ("users.change_password", "5/hour"),
     ("users", "update_profile"): ("users.update_profile", "5/hour"),
@@ -355,6 +374,7 @@ _KNOWN_PATH_PARAM_LIMITED: frozenset = frozenset({
     "app.routers.admin_users.cancel_admin_pending_email",
     "app.routers.org_members.remove_member",
     "app.routers.orgs.rename_org_endpoint",
+    "app.routers.scenarios.simulate_scenario",
 })
 
 

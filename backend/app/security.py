@@ -1,12 +1,18 @@
+import asyncio
 import base64
+import dataclasses
 import hashlib
 import hmac as _hmac
 import secrets
 import uuid
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 
 import bcrypt
 import jwt
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +53,17 @@ def mfa_email_code_hmac(code: str) -> str:
 # Truncating here keeps every hash bcrypt 4 stored verifying (TBD-635).
 _BCRYPT_MAX_BYTES = 72
 
+# bcrypt runs here, never on the loop or its default executor: a login burst of
+# ~250 ms hashes must not starve ``asyncio.to_thread`` callers (the limits buckets).
+_BCRYPT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bcrypt")
+
+_T = TypeVar("_T")
+
+
+async def run_bcrypt(fn: Callable[..., _T], *args: object) -> _T:
+    """Run a bcrypt helper (``hash_password`` and friends) from async code."""
+    return await asyncio.get_running_loop().run_in_executor(_BCRYPT_EXECUTOR, fn, *args)
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(
@@ -56,6 +73,26 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode()[:_BCRYPT_MAX_BYTES], hashed.encode())
+
+
+_dummy_password_hash: str | None = None
+
+
+def verify_password_or_dummy(plain: str, hashed: str | None) -> bool:
+    """``verify_password``, or the same bcrypt work against a throwaway hash
+    when there is no stored one (BE-25): a login for a missing account then
+    takes as long as a wrong password, so the response time does not say
+    whether the username or email exists. Always False without a hash.
+
+    The throwaway hash is made once per process with ``hash_password``, so it
+    carries the current bcrypt cost."""
+    global _dummy_password_hash
+    if hashed is not None:
+        return verify_password(plain, hashed)
+    if _dummy_password_hash is None:
+        _dummy_password_hash = hash_password(secrets.token_urlsafe(16))
+    verify_password(plain, _dummy_password_hash)
+    return False
 
 
 def create_access_token(subject: int, org_id: int, role: str) -> str:
@@ -205,26 +242,124 @@ def decode_refresh_jti_sid(token: str) -> tuple[str, str]:
     return jti, sid
 
 
-def create_password_reset_token(user_id: int) -> str:
-    """Create a short-lived token for password reset (1 hour)."""
+PASSWORD_RESET_TTL_SECONDS = 60 * 60
+RESET_EMAIL_DIGEST_PURPOSE = b"password-reset-email-v1"
+
+
+def reset_email_digest(email: str) -> str:
+    """Keyed digest of the address a reset token is bound to (TBD-654). The
+    token carries this, never the address: a JWT payload is only base64, and
+    the link can surface in logs or a Referer."""
+    key = derive_hmac_key(RESET_EMAIL_DIGEST_PURPOSE)
+    return _hmac.new(key, email.strip().lower().encode(), hashlib.sha256).hexdigest()
+
+
+def create_password_reset_token(user_id: int, email: str) -> str:
+    """Create a short-lived token for password reset (1 hour).
+
+    Bound to the address it was mailed to (a keyed digest of ``email``) and
+    single-use through its ``jti`` (TBD-654): ``/reset-password`` refuses it
+    once the account's email has changed, and claims the ``jti`` in
+    ``used_tokens`` so it resets the password at most once.
+    """
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(hours=1)
+    expire = now + timedelta(seconds=PASSWORD_RESET_TTL_SECONDS)
     payload = {
         "sub": str(user_id),
         "type": "password_reset",
+        "email_digest": reset_email_digest(email),
+        "jti": secrets.token_urlsafe(16),
         "iat": now,
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+# Email-first sign-up (TBD-654). The link proves the inbox before any user
+# exists, so the token carries the address (encrypted: a JWT payload is only
+# base64) and no user id. Single use through its ``jti`` in ``used_tokens``.
+SIGNUP_TOKEN_TTL_SECONDS = 60 * 60
+SIGNUP_JTI_SCOPE = "signup"
+SIGNUP_EMAIL_PURPOSE = b"signup-email-v1"
+SIGNUP_MAIL_KEY_PURPOSE = b"signup-mail-v1"
+
+
+@dataclasses.dataclass(frozen=True)
+class SignupClaims:
+    email: str
+    jti: str
+    exp: int
+
+
+def _signup_fernet() -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(derive_hmac_key(SIGNUP_EMAIL_PURPOSE)))
+
+
+def create_signup_token(email: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "type": "signup",
+        "enc_email": _signup_fernet().encrypt(email.strip().lower().encode()).decode(),
+        "jti": secrets.token_urlsafe(16),
+        "iat": now,
+        "exp": now + timedelta(seconds=SIGNUP_TOKEN_TTL_SECONDS),
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def decode_signup_token(token: str) -> SignupClaims | None:
+    """The claims, or None on a bad signature, expiry, wrong type, a missing
+    claim or an address that does not decrypt. Never raises."""
+    payload = decode_token(token)
+    if payload is None or payload.get("type") != "signup":
+        return None
+    enc, jti, exp = payload.get("enc_email"), payload.get("jti"), payload.get("exp")
+    if not isinstance(enc, str) or not isinstance(jti, str) or not jti or not isinstance(exp, int):
+        return None
+    try:
+        email = _signup_fernet().decrypt(enc.encode()).decode()
+    except (InvalidToken, UnicodeDecodeError):
+        return None
+    return SignupClaims(email=email, jti=jti, exp=exp)
+
+
+_GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
+
+def _mailbox(email: str) -> str:
+    """The inbox an address delivers to, so ``bob+1@x`` and ``bob+2@x`` (and
+    Gmail's dot variants) share one cap. Only the cap key uses it; the account
+    email is stored as given."""
+    local, _, domain = email.strip().lower().rpartition("@")
+    local = local.split("+", 1)[0]
+    if domain in _GMAIL_DOMAINS:
+        local, domain = local.replace(".", ""), "gmail.com"
+    return f"{local}@{domain}"
+
+
+def signup_mail_key(email: str) -> str:
+    """Keyed digest of an address's mailbox for the signup mail caps. Keyed,
+    not a plain sha256, which a list of known addresses reverses (TBD-719)."""
+    key = derive_hmac_key(SIGNUP_MAIL_KEY_PURPOSE)
+    return _hmac.new(key, _mailbox(email).encode(), hashlib.sha256).hexdigest()
+
+
+MFA_CHALLENGE_TTL_SECONDS = 5 * 60
+
+
 def create_mfa_challenge_token(user_id: int) -> str:
-    """Create a short-lived token for MFA challenge (5 minutes)."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    """Create a short-lived token for MFA challenge (5 minutes).
+
+    The ``jti`` makes it single-use (BE-02): the second-factor routes claim it
+    in ``used_tokens`` on success, and burn it after too many wrong codes.
+    """
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "type": "mfa_challenge",
-        "exp": expire,
+        "jti": secrets.token_urlsafe(16),
+        "iat": int(now.timestamp()),
+        "exp": now + timedelta(seconds=MFA_CHALLENGE_TTL_SECONDS),
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
@@ -397,6 +532,50 @@ def decode_token(token: str) -> dict | None:
         )
     except jwt.PyJWTError:
         return None
+
+
+def session_cutoff(now: datetime | None = None) -> datetime:
+    """The cutoff a credential change writes to ``password_changed_at`` /
+    ``sessions_invalidated_at``: the start of the NEXT whole second (BE-04).
+
+    Token ``iat`` is floored to the second and every validator rejects
+    ``iat < cutoff``. Inside the event's own second a token minted just before
+    it and one minted just after carry the same ``iat``, so the cutoff has to
+    reject that whole second: rounding up does. Having no fraction also keeps
+    MySQL's fsp-0 columns from moving it; they round on insert, and a sub-.5
+    fraction rounded DOWN used to let a token from earlier in that second
+    survive. A sign-in inside that second waits it out (``wait_out_cutoff``).
+    """
+    now = now or datetime.now(timezone.utc)
+    return now.replace(microsecond=0) + timedelta(seconds=1)
+
+
+# Never more than this, so clock skew between app replicas cannot turn a
+# sub-second wait into a stall (TBD-583).
+MAX_CUTOFF_WAIT_SECONDS = 2.0
+
+
+async def _sleep_until(instant: datetime) -> None:
+    delay = min((instant - datetime.now(timezone.utc)).total_seconds(), MAX_CUTOFF_WAIT_SECONDS)
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
+async def wait_out_cutoff(user: User) -> None:
+    """Sleep until ``user``'s session cutoff has passed, so a token minted next
+    carries an ``iat`` the cutoff accepts. Only a sign-in in the second after a
+    credential change waits, and for under a second."""
+    await _sleep_until(token_cutoff(user))
+
+
+async def wait_out_cutoff_second(cutoff: datetime) -> None:
+    """Sleep until the second that starts at ``cutoff`` has passed (TBD-583).
+
+    Agent tokens and OAuth grants floor ``created_at`` and die at
+    ``created_at <= cutoff``, so one minted inside that second would be dead
+    on arrival. The mint routers call this first, before any write, so no row
+    lock is held while it sleeps."""
+    await _sleep_until(cutoff + timedelta(seconds=1))
 
 
 def token_cutoff(user: User) -> datetime:

@@ -233,9 +233,23 @@ def test_create_refuses_a_client_supplied_flag():
         )
 
 
-def test_ollama_keeps_userinfo_for_basic_auth(monkeypatch):
-    monkeypatch.setattr(app_settings, "ai_provider_allow_private_networks", False)
-    OrgAICredentialCreate(provider=AiProvider.OLLAMA, base_url="https://u:p@nas.example.com:11434")
+def test_stored_userinfo_is_masked_in_responses():
+    """Rows saved before DB-02 keep their URL; the listing masks the secret."""
+    from datetime import datetime
+
+    from app.schemas.org_ai_credential import OrgAICredentialResponse
+
+    now = datetime(2026, 1, 1)
+    common = dict(
+        id=1, org_id=1, provider="ollama", provider_supported=False, last_four=None,
+        key_fingerprint=None, label=None, created_at=now, updated_at=now,
+    )
+    masked = OrgAICredentialResponse(base_url="https://u:s3cr3t@nas.example.com:11434/x", **common)
+    assert masked.model_dump(mode="json")["base_url"] == "https://***@nas.example.com:11434/x"
+    assert "s3cr3t" not in masked.model_dump_json()
+    plain = OrgAICredentialResponse(base_url="https://nas.example.com:11434", **common)
+    assert plain.model_dump(mode="json")["base_url"] == "https://nas.example.com:11434"
+    assert OrgAICredentialResponse(base_url=None, **common).model_dump()["base_url"] is None
 
 
 # ---------- G-G5: Gemini fixture ------------------------------------
@@ -350,7 +364,6 @@ async def test_legacy_row_rotate_and_validate_keep_the_v1_root(
                 db,
                 credential=row,
                 new_api_key="sk-rotated-9999",
-                new_bearer_token=None,
                 session_factory=session_factory,
                 **_ACTOR_KW,
             )

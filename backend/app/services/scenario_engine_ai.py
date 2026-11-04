@@ -52,8 +52,10 @@ from app.services.ai_providers.base import (
 )
 from app.services.scenario_engine import (
     AnalyticEngine,
+    ScenarioSnapshot,
     SimulationRequest,
     WorldState,
+    simulate_off_loop,
 )
 
 
@@ -204,14 +206,14 @@ async def run_ai_simulation(
         options=options,
     )
 
-    def _baseline() -> dict[str, Any]:
+    async def _baseline() -> dict[str, Any]:
         """Compute the analytic baseline. Called only on fallback paths;
         the AI-success path re-runs analytic with adjusted params
         instead, so computing eagerly would double the simulator work
-        for every AI-engaged request.
+        for every AI-engaged request. Runs in a worker thread (TBD-726).
         """
-        return analytic.simulate(
-            baseline_request, smooth_with_regression=smooth_with_regression
+        return await simulate_off_loop(
+            analytic, baseline_request, smooth_with_regression=smooth_with_regression
         )
 
     # 1. Gate check. AI Tier off → return the baseline unchanged. No
@@ -230,7 +232,7 @@ async def run_ai_simulation(
                 "error_class": type(exc).__name__,
             },
         )
-        return _baseline()
+        return await _baseline()
     if not gate_open:
         logger.info(
             "plans.ai.gate.closed",
@@ -239,7 +241,7 @@ async def run_ai_simulation(
                 "scenario_id": scenario.id,
             },
         )
-        return _baseline()
+        return await _baseline()
 
     # 2. Build the prompt and call the dispatcher. The dispatcher
     #    handles routing, cap enforcement, ledger writes, and retries
@@ -346,7 +348,7 @@ async def run_ai_simulation(
             request_id=request_id,
             ip_address=ip_address,
         )
-        return _baseline()
+        return await _baseline()
 
     # 4. Apply whitelisted adjustments to a deep-copied params blob and
     #    re-run the analytic engine. Track every adjustment in
@@ -391,31 +393,22 @@ async def run_ai_simulation(
             request_id=request_id,
             ip_address=ip_address,
         )
-        return _baseline()
+        return await _baseline()
 
-    # 5. Re-run analytic engine with the adjusted params. The scenario
-    #    object's params_json is mutated in-place for the duration of
-    #    this call — but since SQLAlchemy hasn't committed, and the
-    #    router writes back the projection separately, this DOES NOT
-    #    persist to the DB.
-    #
-    # Use a shallow override technique: temporarily swap params_json,
-    # simulate, then restore. This avoids constructing a new Scenario
-    # instance (which would risk losing FK/state semantics).
-    original_params = scenario.params_json
-    scenario.params_json = new_params
-    try:
-        adjusted_result = analytic.simulate(
-            SimulationRequest(
-                scenario=scenario,
-                state=state,
-                horizon_months=horizon_months,
-                options=options,
-            ),
-            smooth_with_regression=smooth_with_regression,
-        )
-    finally:
-        scenario.params_json = original_params
+    # 5. Re-run analytic engine with the adjusted params, in a worker
+    #    thread (TBD-726). The adjusted assumptions go on a detached
+    #    ``ScenarioSnapshot``; the ORM row is never touched, so nothing
+    #    can flush them to the DB.
+    adjusted_result = await simulate_off_loop(
+        analytic,
+        SimulationRequest(
+            scenario=ScenarioSnapshot.of(scenario, params_json=new_params),
+            state=state,
+            horizon_months=horizon_months,
+            options=options,
+        ),
+        smooth_with_regression=smooth_with_regression,
+    )
 
     adjusted_result["engine_name"] = "analytic_v1+ai_assumptions_v1"
     adjusted_result["ai_assumptions"] = {

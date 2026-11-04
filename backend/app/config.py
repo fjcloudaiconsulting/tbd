@@ -1,6 +1,7 @@
+import ipaddress
 import logging
 
-from pydantic import ValidationError, field_validator, model_validator
+from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,24 @@ _PUBLIC_SECRET_VALUES = frozenset(
 )
 
 
+def _parse_forwarded_allow_ips(
+    value: str,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """``FORWARDED_ALLOW_IPS`` as networks: comma-separated, trimmed, empty entries dropped.
+
+    Stricter than uvicorn, which turns an entry it cannot parse into a literal that
+    matches no peer, and trusts every peer for a bare ``*``: here both refuse to boot.
+    """
+    entries = [e.strip() for e in value.split(",") if e.strip()]
+    try:
+        return tuple(ipaddress.ip_network(e) for e in entries)
+    except ValueError:
+        raise ValueError(
+            "FORWARDED_ALLOW_IPS must be comma-separated IP addresses or CIDR networks "
+            "with no host bits set; '*' and other literals are refused."
+        ) from None
+
+
 class Settings(BaseSettings):
     # App
     app_name: str = "The Better Decision"
@@ -58,13 +77,19 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2"
 
-    # SQLAlchemy connection pool sizing. Single-replica today: defaults
-    # are safe. Multi-replica future (HPA): each replica gets its own
-    # pool, so total concurrent DB connections = replicas * (db_pool_size
-    # + db_max_overflow). Keep the sum well under the managed DB's
-    # max_connections cap. Override via env vars when scaling horizontally.
+    # SQLAlchemy connection pool sizing. Each backend process opens three
+    # pools (the async app engine and the sync rate-limit and session-state
+    # engines), so its peak DB connections = (db_pool_size + db_max_overflow)
+    # + (rate_limit_db_pool_size + rate_limit_db_max_overflow)
+    # + (state_db_pool_size + state_db_max_overflow), 29 at the defaults,
+    # and the total is replicas times that. Keep it well under the DB
+    # user's and server's connection caps. Override via env vars.
     db_pool_size: int = 5
     db_max_overflow: int = 10
+    rate_limit_db_pool_size: int = 2
+    rate_limit_db_max_overflow: int = 5
+    state_db_pool_size: int = 2
+    state_db_max_overflow: int = 5
 
     # Pool recycle MUST stay under the App Platform → droplet VPC's
     # idle-connection drop interval. Once a pooled connection sits
@@ -143,29 +168,16 @@ class Settings(BaseSettings):
 
     # AI credentials (BYO provider keys, PR1 of AI tier train)
     # Fernet key for encrypting per-org provider API keys in
-    # ``org_ai_credentials.encrypted_api_key`` / ``encrypted_bearer_token``.
+    # ``org_ai_credentials.encrypted_api_key`` (and ``encrypted_bearer_token``,
+    # which only rows of the removed ollama provider hold).
     # MUST be a different Fernet key from ``mfa_encryption_key`` — the
     # lifespan KEK guard refuses to boot when the two SHA-256 hashes match.
     # ``_PREV`` is the previous-rotation key; decrypt falls back to it
     # when the current key fails, enabling lazy rotation in place.
     ai_credential_encryption_key: str = ""
     ai_credential_encryption_key_prev: str = ""
-    # Connect-time SSRF guard escape hatch for the ollama provider ONLY.
-    # By default every outbound request to an org-configured base_url
-    # resolves the hostname, validates EVERY A/AAAA record against the
-    # egress denylist (loopback, RFC1918/ULA, link-local, metadata,
-    # multicast, reserved, non-global), and pins the connection to a
-    # validated IP (see services/ai_providers/egress_guard.py). A
-    # self-hosted operator who genuinely runs Ollama on a private or
-    # loopback address can set AI_PROVIDER_ALLOW_PRIVATE_NETWORKS=1 to
-    # permit private + loopback targets for ollama credentials.
-    # Link-local / cloud-metadata / multicast / reserved addresses stay
-    # blocked regardless, and openai_compatible always gets the full
-    # denylist. Default OFF in all environments.
-    ai_provider_allow_private_networks: bool = False
-    # Master gate for the native (server-hosted) provider option. Stays
-    # OFF in PR1 — flipped on later when the native adapter ships
-    # alongside the consent UI (PR4).
+    # Master env gate for platform (hosted) AI. The ``native`` provider
+    # stub it was named after was removed in TBD-584.
     ai_native_enabled: bool = False
     # MCP OAuth authorization server (TBD-587). Off: every route in
     # ``app.routers.oauth`` answers 404 like an unknown path. Stays off in
@@ -222,31 +234,17 @@ class Settings(BaseSettings):
     # CORS
     backend_cors_origins: str = "http://localhost:3000"
 
+    # INF-01: the peers whose X-Forwarded-For / X-Forwarded-Proto are believed.
+    # uvicorn reads the same variable itself (no --forwarded-allow-ips on the
+    # command line), and the backend and MCP images set this default as ENV, so
+    # one value sets both uvicorn's trust and rate_limit.get_client_ip's own
+    # X-Forwarded-For walk. A deployment narrows it to its proxies' addresses.
+    forwarded_allow_ips: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"
+
     # Founding-members program (2026-06-22).
     # Throttle for the per-user last_active_at stamp: only re-stamp when the
     # stored value is older than this many seconds (≤1 write/user/window).
     last_active_stamp_throttle_seconds: int = 3600
-    # Usernames excluded from the public founder count (smoke/seed accounts).
-    # CSV, mirrors the cors-origins parsing pattern.
-    #
-    # ⚠⚠ NO DEFAULT VALUE, DELIBERATELY (TBD-371). This list names the
-    # production post-deploy smoke account, so no value is committed.
-    # Supply it from the environment.
-    #
-    # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint
-    # guards with ``if excluded:`` (routers/public_stats.py), so an empty list
-    # simply stops excluding and inflates an advertised public number by one.
-    #
-    # ⚠⚠ That is NOT guarded by refusing to boot, deliberately. The blast
-    # radius of this value being unset is one wrong integer on a marketing
-    # counter; the blast radius of a boot refusal is the whole application
-    # down. ``api_token_hmac_key`` earns its prod-required validator because
-    # losing it breaks PAT authentication -- a security primitive. This does
-    # not, and treating the two the same trades an outage for a cosmetic
-    # defect. ``public_stats`` logs ``public.founder_count.no_exclusions``
-    # at ERROR instead, which is greppable and alertable without taking
-    # production down.
-    founder_count_exclude_usernames: str = ""
 
     # Billing
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
@@ -351,9 +349,11 @@ class Settings(BaseSettings):
     # facing change on the next page load. Flip to True when the payment
     # platform is wired.
     #
-    # Backend API gating is NOT in scope — ``/api/v1/subscriptions`` and
-    # ``/api/v1/plans`` stay reachable; the gated frontend components just
-    # don't call them when the flag is off.
+    # One backend gate: while the flag is off, the owner self-service
+    # ``PUT /api/v1/subscriptions/plan`` answers 403 (no payment is taken
+    # yet; operators use the admin console). The rest of
+    # ``/api/v1/subscriptions`` and ``/api/v1/plans`` stays reachable; the
+    # gated frontend components just don't call them when the flag is off.
     billing_ui_enabled: bool = False
 
     # Reports v2 (flexible canvas + AST query engine)
@@ -492,6 +492,12 @@ class Settings(BaseSettings):
     export_max_rows: int = 2_000_000
     export_max_bytes: int = 1_073_741_824  # 1 GiB
 
+    @field_validator("forwarded_allow_ips")
+    @classmethod
+    def _validate_forwarded_allow_ips(cls, v: str) -> str:
+        _parse_forwarded_allow_ips(v)
+        return v
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:
@@ -499,6 +505,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SESSION_LIFETIME_DAYS must be between 1 and 365 (inclusive)."
             )
+        return v
+
+    @field_validator("rate_limit_db_pool_size", "state_db_pool_size")
+    @classmethod
+    def _validate_side_pool_size(cls, v: int, info: ValidationInfo) -> int:
+        if v < 1:
+            raise ValueError(f"{info.field_name.upper()} must be at least 1.")
+        return v
+
+    @field_validator("rate_limit_db_max_overflow", "state_db_max_overflow")
+    @classmethod
+    def _validate_side_pool_overflow(cls, v: int, info: ValidationInfo) -> int:
+        if v < 0:
+            raise ValueError(f"{info.field_name.upper()} must be at least 0.")
         return v
 
     @field_validator("broadcast_max_attempts")
@@ -671,12 +691,10 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.backend_cors_origins.split(",")]
 
     @property
-    def founder_count_exclude_list(self) -> list[str]:
-        return [
-            u.strip()
-            for u in self.founder_count_exclude_usernames.split(",")
-            if u.strip()
-        ]
+    def forwarded_allow_networks(
+        self,
+    ) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        return _parse_forwarded_allow_ips(self.forwarded_allow_ips)
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

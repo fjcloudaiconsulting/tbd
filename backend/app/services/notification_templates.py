@@ -134,6 +134,23 @@ def user_mfa_disabled() -> tuple[str, str, Optional[str]]:
     return (title, body, "/settings/security")
 
 
+def user_mfa_email_fallback_enabled() -> tuple[str, str, Optional[str]]:
+    """Copy for ``user.mfa.email_fallback.enabled`` (security category).
+
+    Self-target. A code mailed to the account address can now stand in for
+    the authenticator at sign-in (BE-03), so whoever controls the mailbox
+    holds a second factor. Copy names that trade-off and how to undo it.
+    Always written: security category is force-on.
+    """
+    title = "Email sign-in codes turned on"
+    body = (
+        "A code sent to your email can now be used instead of your "
+        "authenticator app when you sign in. If this wasn't you, turn it "
+        "off in your security settings."
+    )
+    return (title, body, "/settings/security")
+
+
 def api_token_created(*, name: str, prefix: str) -> tuple[str, str, Optional[str]]:
     """Copy for ``api_token.created`` (security category).
 

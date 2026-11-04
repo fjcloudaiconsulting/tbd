@@ -249,6 +249,25 @@ def test_update_account_opening_balance_writes_audit_row(session_factory, seeded
     assert detail["new_opening_balance_date"] == "2025-06-15"
 
 
+def test_update_account_audit_row_records_the_client_ip(session_factory, seeded):
+    """TBD-665: the client IP reaches the audit row through
+    ``Depends(get_client_ip)`` (the handler no longer reads the raw request)."""
+    import asyncio
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(f"/api/v1/accounts/{seeded['account_id']}",
+                         json={"opening_balance_date": "2025-06-15"})
+    assert res.status_code == 200, res.text
+
+    async def _ips():
+        async with session_factory() as db:
+            return (await db.scalars(select(AuditEvent.ip_address).where(
+                AuditEvent.event_type == "account.opening_balance.update"))).all()
+
+    assert asyncio.get_event_loop().run_until_complete(_ips()) == ["testclient"]
+
+
 def test_update_opening_balance_shifts_live_balance_by_delta(session_factory, seeded):
     """Editing opening_balance must move the live balance by the same delta so
     the invariant ``balance == opening_balance + Σ settled txns`` holds.
@@ -505,3 +524,51 @@ def test_opening_edit_shifts_balance_and_reconcile_stays_consistent(
     assert stored == Decimal("1450.00")
     assert computed == Decimal("1450.00")
     assert consistent is True
+
+
+# ── BE-15: the fast path locks the row it read-modify-writes ──────────────
+
+
+def _account_selects(monkeypatch) -> list:
+    """Record every SELECT on ``accounts`` the request issues, with its
+    FOR UPDATE argument. SQLite renders no FOR UPDATE, so the statement
+    object, not the SQL text, is what is inspected; MySQL honours it."""
+    seen: list = []
+    real_execute = AsyncSession.execute
+
+    async def spy(self, stmt, *args, **kwargs):
+        froms = getattr(stmt, "get_final_froms", lambda: [])()
+        if any(getattr(f, "name", None) == "accounts" for f in froms):
+            seen.append(getattr(stmt, "_for_update_arg", None))
+        return await real_execute(self, stmt, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "execute", spy)
+    return seen
+
+
+def test_opening_balance_edit_reads_the_account_under_a_row_lock(
+    session_factory, seeded, monkeypatch
+):
+    """Without the lock, a balance delta committed by a concurrent transaction
+    between this read and this commit is overwritten (lost update)."""
+    seen = _account_selects(monkeypatch)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['account_id']}",
+            json={"opening_balance": "75.00"},
+        )
+    assert res.status_code == 200, res.text
+    assert seen, "the handler issued no SELECT on accounts"
+    assert seen[0] is not None, "first accounts SELECT must be FOR UPDATE"
+
+
+def test_plain_rename_takes_no_row_lock(session_factory, seeded, monkeypatch):
+    seen = _account_selects(monkeypatch)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['account_id']}", json={"name": "Renamed"},
+        )
+    assert res.status_code == 200, res.text
+    assert seen and seen[0] is None

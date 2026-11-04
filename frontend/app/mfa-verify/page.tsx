@@ -1,9 +1,10 @@
 "use client";
 
 import { FormEvent, Suspense, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { apiFetch, signInWithAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useOneTimeQueryParam } from "@/lib/hooks/use-one-time-query-param";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls, success as successCls } from "@/lib/styles";
 import type { TokenResponse } from "@/lib/types";
@@ -33,11 +34,13 @@ function MfaVerifyContent() {
   const [emailToken, setEmailToken] = useState<string | null>(null);
   const [emailSending, setEmailSending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const searchParams = useSearchParams();
-
-  // Support mfa_token from sessionStorage (password login) or query param (Google SSO redirect)
+  // The challenge only ever arrives through sessionStorage: from the password
+  // login, or from the Google callback page, which takes it out of the URL
+  // fragment (FE-03). An ?mfa_token= in the address is never used, only
+  // dropped from the address bar and history (TBD-654).
+  useOneTimeQueryParam("mfa_token");
   const mfaToken = typeof window !== "undefined"
-    ? (sessionStorage.getItem("mfa_token") || searchParams.get("mfa_token"))
+    ? sessionStorage.getItem("mfa_token")
     : null;
 
   useEffect(() => {

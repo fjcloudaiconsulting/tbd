@@ -258,32 +258,47 @@ For the full router-by-router and service-by-service map, see the live file tree
 3. **Tokens issued.** Access token (15 min, response body) + refresh token (7 day, httpOnly cookie).
 4. **Silent refresh.** Frontend auto-refreshes via `POST /api/v1/auth/refresh` on 401.
 5. **Absolute session lifetime.** Sessions expire after `SESSION_LIFETIME_DAYS` (default 30) regardless of refresh activity.
+6. **Credential changes end sessions.** A password reset or change and a proven email change delete every session family of the user and write a cutoff at the next whole second, so no token minted before the change (even earlier in the same second) survives it; a sign-in in that second waits it out. Enabling or disabling MFA deletes every other session family and keeps the caller's (BE-04).
 
 ### SSO password security
 
 Google-SSO users have `password_set=False` until they explicitly set a password. To prevent a hijacked SSO session from silently attaching a password:
 
 - **First password set** requires a Google **step-up** verification. The user re-authenticates with the same Google account, the backend issues a 5-minute single-use step-up token, and only then accepts the password write.
-- **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success.
+- **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success. The 1-hour reset token carries a keyed digest of the address it was mailed to (never the address itself) and a `jti`: it stops working once the account's email changes, and its `jti` is claimed in `used_tokens`, so it resets the password once (TBD-654).
 - **Step-up proofs are scoped to one action** (`email_change`, `password_set`, `pat_mint`; `STEPUP_ACTIONS` in `backend/app/auth/stepup.py`). Initiate requires a known `action` (422 otherwise), the callback returns to that action's fixed page, and only the consumer for that action accepts the proof. A state carrying anything else fails as `sso_stepup_error=state`.
 - **Email change** also takes the step-up path and flips `password_set` back to `False` if the new email belongs to a different identity.
 
 ### MFA
 
-- TOTP via authenticator app (Google Authenticator, Authy, 1Password).
-- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable).
-- Email fallback with 6-digit code (10-minute expiry).
+- TOTP via authenticator app (Google Authenticator, Authy, 1Password). A code is accepted once per user: its time step, and the two before it, are claimed in `used_tokens` (BE-26). That holds everywhere a TOTP code is checked, the PAT, agent-token and OAuth-consent step-ups included (TBD-716).
+- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable), spent with a compare-and-swap on the stored list.
+- Email fallback with 6-digit code (10-minute expiry). For an account with TOTP it is off until the user turns it on in `/settings/security` (`PUT /api/v1/auth/mfa/email-fallback`), which takes a current TOTP code or an unused recovery code; turning it off takes neither, and disabling MFA turns it off (BE-03). While it is off, `/mfa/email-code` mails nothing and `/mfa/email-verify` completes no sign-in. For 72 hours after a password reset through the emailed link (`users.password_reset_at`) both refuse even when it is on, so the next sign-in takes TOTP or a recovery code; an in-app password change does not open that window.
+- The 5-minute challenge token from the first leg carries a `jti`: it is claimed on success (single-use) and burned after 5 wrong codes, so the next try starts from the password.
 - TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY`).
-- Setup and disable via `/settings/security`.
+- Setup and disable via `/settings/security`. Setup asks for the password first (an account created with Google, `password_set=False`, uses a Google step-up for the `mfa_setup` action). Disabling MFA, regenerating recovery codes and changing the email of an MFA account also take a current TOTP code or an unused recovery code; wrong codes and passwords there draw from the per-account budgets below (BE-32).
 
 ### Rate limiting
 
-All limits are per client IP via slowapi. Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
+All limits are per client IP via slowapi, except `/auth/refresh`, which is per session (below). Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
+
+Failed sign-in attempts are also counted per account, beside the per-IP limits (BE-02, `backend/app/auth/attempts.py`), so a client spread over many addresses gets no larger budget:
+
+| Counter | Budget per 15 minutes | When full |
+|---------|-----------------------|-----------|
+| Wrong password, keyed on the login as typed (lower-cased), checked before the lookup | 10 | `/login` answers 429 with `Retry-After`, even for the right password |
+| Wrong password, keyed on the user id: `/login` under any spelling, and every password re-check of a known account (the MFA settings routes, password and email change, the PAT / agent-token / OAuth-consent step-ups, confirming an unverified address at `/verify-email`) | 10 | `/login` stops checking that account's password and answers the usual 401 (a 429 would show the login exists); re-auth answers 429. A rename or email change does not reopen it |
+| Wrong second factor (TOTP, recovery or email code), per user, at sign-in, on the MFA settings routes and on the token-minting step-ups | 10 | every `/mfa/*` challenge leg and every such check answers 429 with `Retry-After` |
+| Wrong second factor, per challenge token | 5 | the challenge is burned: 401, sign in again |
+
+Only failures count. A success empties the account's window, a completed password reset empties its login window, and nothing locks permanently. The failure that fills an account's window writes one `auth.login.locked` or `auth.mfa.locked` audit row (for a real account only).
 
 | Endpoint | Limit |
 |----------|-------|
 | `POST /api/v1/auth/login` | 10/minute |
 | `POST /api/v1/auth/register` | 5/hour |
+| `POST /api/v1/auth/signup/start` | 5/hour per IP, plus per address 1 email per 10 minutes and 5 per 24 hours |
+| `POST /api/v1/auth/signup/complete` | 10/minute |
 | `GET /api/v1/auth/check-username` | 20/minute |
 | `POST /api/v1/auth/verify-email` | 10/minute |
 | `POST /api/v1/auth/resend-verification` | 3/hour |
@@ -293,10 +308,15 @@ All limits are per client IP via slowapi. Counters live in the MySQL `rate_limit
 | `POST /api/v1/auth/mfa/email-code` | 3/minute |
 | `POST /api/v1/auth/mfa/email-verify` | 10/minute |
 | `POST /api/v1/auth/logout` | 120/minute |
+| `POST /api/v1/auth/refresh` | 30/minute per session family (the refresh cookie's `sid`); per IP when the cookie does not verify |
 | `POST /api/v1/auth/reset-password` | 10/minute |
 | `GET /api/v1/auth/google` | 60/minute |
 | `GET /api/v1/auth/google/callback` | 60/minute |
 | `GET /api/v1/auth/sso-stepup/callback` | 60/hour |
+| `POST /api/v1/orgs/invitations` | 20/hour, plus per-org caps of 20 pending and 50 created per day |
+| `POST /api/v1/tags` | 30/minute (BE-18: a new tag can feed the shared tag dictionary) |
+| `PUT /api/v1/transactions/{id}/tags` | 60/minute, one budget across all transactions (it creates missing tags) |
+| New tags, on any route (the two above and `POST /api/v1/transactions/bulk-update`) | 30 per org per minute, counted per tag created (`tag_service.TAG_CREATE_LIMIT`); the tag routes answer 429, bulk update skips the row |
 
 ⚠ This table is a reader's summary of the auth surface, not the inventory.
 The authoritative one is `backend/app/rate_limit_endpoint_catalogue.py`, and
@@ -312,21 +332,38 @@ renders bare JSON in the middle of a browser navigation. The anonymous
 `audit_events` writes those routes used to permit are bounded by suppressing
 the rows, not by the limits (TBD-353).
 
-⚠ That bounds **those three routes**, not the anonymous `audit_events` write
-surface as a whole. `POST /api/v1/security/csp-report` is still an open,
-unauthenticated writer at 20 rows per body × 60/minute = **1200 rows/min/IP**,
-and the `/admin/audit` and alerting exclusion its own docstring names as the
-mitigation does not exist. Tracked separately; do not describe the surface as
-bounded.
+⚠ That bounds **those three routes**. `POST /api/v1/security/csp-report`, the
+other anonymous `audit_events` writer, is bounded by what it keeps (BE-10): a
+report identical to one the same client network recorded in the last hour is
+not recorded again, every row of a request lands in one commit, and the sink
+records at most **50 rows per hour per client network** (IPv6 by /64) and
+**1000 rows per hour across all clients**. Once that budget is spent, a reserve
+still records one row per CSP directive per hour (unknown directives share one
+`other` slot), so a distributed flood cannot hide every genuine report. The
+counters live in `rate_limits`; when they are unreachable the sink records
+nothing. Every dropped report counts in the `tbd.security.csp_reports` metric
+by outcome (`duplicate`, `client_budget`, `global_budget`) and directive; alert
+on `global_budget`. URL fields lose their query string and fragment before
+they are stored (FE-03). The default `/admin/audit` view hides these rows
+(`include_csp=true` shows them, TBD-439). A scheduler job deletes these rows
+30 days after they were recorded (`services/scheduler/jobs/csp_audit_purge.py`,
+BE-10), in batches of 1000 with one short transaction each, and logs only the
+count; no other event type is purged.
 
-`POST /api/v1/auth/refresh` remains **unlimited**, deliberately (TBD-353): it
-writes no audit row for an anonymous caller, and a 429 there wedges the
-frontend's mount-path session restore into a permanent spinner whose only
-recovery — reload — re-issues the request. Tracked separately.
+`POST /api/v1/auth/refresh` is limited to **30 a minute per session** (BE-10).
+The key is the session family (`sid`) of the newest refresh cookie that
+verifies, which every rotation keeps, so one session has one budget wherever it
+calls from and sessions behind a shared address do not pool theirs. A request
+whose cookie is missing or does not verify (garbage, forged, expired, another
+token type) is bucketed per IP instead.
+⚠ The frontend does not back off on a 429 yet (TBD-353): a session past its
+budget, or a signed-out visitor on an address past the per-IP one, sees the
+mount-path restore spinner until the minute is over, then a reload recovers.
+Legitimate use stays far below 30 a minute.
 
 ### Public endpoints (no auth required)
 
-Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 14 are genuinely **open**, and 16 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "30 public routes" is not 30 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
+Exactly **32** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 14 are genuinely **open**, and 18 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify/signup JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "32 public routes" is not 32 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
 
 **Open — no identity check at all (14)**
 
@@ -338,16 +375,16 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
 | `POST /api/v1/auth/register` | Account creation. Nothing to authenticate yet. |
+| `POST /api/v1/auth/signup/start` | Email-first sign-up, step 1 (TBD-654). Nothing to authenticate yet. Answers the same 202 for every address that passes the captcha, stores nothing, and queues the email for the address's state in the background. |
 | `POST /api/v1/auth/forgot-password` | Password reset request. Answers uniformly whether or not the address exists, so it leaks no account inventory. |
 | `POST /api/v1/auth/resend-verification-public` | Targets an unverified account, which cannot hold a usable session. The non-`-public` sibling `POST /api/v1/auth/resend-verification` **is** authenticated. |
 | `GET /api/v1/auth/google` | Starts the Google OAuth redirect; the caller is anonymous at this point by construction. |
-| `GET /api/v1/public/founder-count` | Single aggregate integer rendered on the signup surface, before any account exists. |
 | `POST /api/v1/security/csp-report` | Browsers post CSP violation reports with no auth context and no way to attach a bearer token. Always answers 204. |
 | `GET /.well-known/oauth-protected-resource/mcp` | MCP OAuth discovery (RFC 9728, TBD-587): read by an MCP client before it holds any credential. Static document derived from `APP_URL`. Its path is fixed by the RFC, outside `/api/v1`. |
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414), same reasons as the line above. |
 | `POST /api/v1/oauth/register` | Open dynamic client registration (RFC 7591, operator ruling). Public clients only, no secret issued; idempotent on identical metadata; new clients capped per https host, per loopback pool and IP, per IP per hour, and by a global row ceiling, all failing closed. |
 
-**Credential-bearing — authenticated, but no bearer token by construction (16)**
+**Credential-bearing — authenticated, but no bearer token by construction (18)**
 
 | Route | Credential, and why not a bearer token |
 | --- | --- |
@@ -357,18 +394,20 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | `POST /api/v1/auth/logout` | Must succeed once the access token has expired, or a user cannot log out of a stale session. The refresh cookie's HMAC signature is verified before any session family is revoked, so an anonymous caller cannot revoke a session they do not hold; with no cookie it is a no-op cookie clear. |
 | `POST /api/v1/auth/reset-password` | The single-use reset JWT. A caller who could already authenticate would not need this route. |
 | `POST /api/v1/auth/verify-email` | The emailed verification JWT. The account is not yet usable for login. |
+| `POST /api/v1/auth/signup/complete` | The single-use signup JWT mailed by `/signup/start`. No account exists before it; the route creates one, verified, and signs it in. |
 | `POST /api/v1/auth/mfa/verify` | Short-lived `mfa_token` from the first login leg. |
 | `POST /api/v1/auth/mfa/recovery` | Short-lived `mfa_token` from the first login leg. |
 | `POST /api/v1/auth/mfa/email-code` | Short-lived `mfa_token` from the first login leg. |
 | `POST /api/v1/auth/mfa/email-verify` | Short-lived `mfa_token` from the first login leg. |
 | `GET /api/v1/auth/google/callback` | Browser redirect from Google carrying `code` + `state`. A top-level navigation has no `Authorization` header; identity is bound by the state cookie and the provider's verified email. |
 | `GET /api/v1/auth/sso-stepup/callback` | Browser redirect from Google. Identity is bound by the httpOnly `oauth_state` cookie issued at `/sso-stepup/initiate`, which *does* require authentication, and re-checked against the Google account's verified email; the return target is an allowlisted key, never a caller-supplied URL. |
-| `GET /api/v1/orgs/invitations/preview` | The invitee has no account yet, so there is no credential to present. Gated by a signed, 7-day, email-bound invitation JWT; every failure mode returns one uniform `410` so the response cannot distinguish "not yours" from "does not exist". |
+| `POST /api/v1/orgs/invitations/preview` | The invitee has no account yet, so there is no credential to present. Gated by a signed, 7-day, email-bound invitation JWT, sent in the request body so it never sits in a URL (TBD-738); every failure mode returns one uniform `410` so the response cannot distinguish "not yours" from "does not exist". |
+| `GET /api/v1/orgs/invitations/preview` | **Deprecated, one release only (TBD-738).** The same preview with the JWT in the query string, kept while a frontend that still calls it may be deployed (backend and frontend deploy separately). Shares the POST's rate-limit bucket. Remove it, with its allowlist entry, in the next release. |
 | `POST /api/v1/orgs/invitations/accept` | Creates the account, so it necessarily runs before the caller has one. The signed invitation JWT is the credential: `org_id` and `role` are read from the locked DB row and never from the request body, the role can never be OWNER, and the token is consumed single-use under `SELECT ... FOR UPDATE`. |
 | `POST /api/v1/webhooks/mailgun` | HMAC signature-verified against the signing key on every call. Not open, just not bearer-authenticated. |
 | `POST /api/v1/oauth/token` | OAuth token endpoint (TBD-587). The credential is the authorization code plus its PKCE verifier, or a refresh token; an MCP client has no bearer token yet by construction. Limits are keyed on the credential, under a coarse per-IP ceiling. |
 
-The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable` and `mfa/recovery-codes` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
+The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable`, `mfa/recovery-codes` and `mfa/email-fallback` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
 
 This list is the authoritative one, and it is deliberately small and closed. Do not add to it without a security review. It is enforced automatically by `backend/tests/auth/test_public_route_allowlist.py`, which enumerates the real `app.main:app` and fails in both directions — a route that loses `Depends(get_current_user)` and a stale entry that no longer applies. Adding a route here without adding it to that test's `PUBLIC_ROUTES` literal (or the reverse) is a red build.
 
@@ -416,7 +455,8 @@ enumerates by *gate* rather than by path so those are covered.
 ⚠ **`require_interactive_session` is not an authorization gate.** It sits on many
 admin write routes (and on account and token routes outside `/api/v1/admin/`;
 the roster is `backend/tests/auth/test_interactive_session_enumeration.py`) and checks only that the caller used a browser session rather than
-a PAT — it authorizes nobody. A route carrying only that dependency is reachable
+a PAT — it authorizes nobody. Platform-wide writes carry it: plans, org
+subscriptions, announcements, broadcasts, features and overrides (BE-20). A route carrying only that dependency is reachable
 by every authenticated user.
 
 Enforced by `backend/tests/auth/test_admin_authorization_enumeration.py`, which
@@ -466,6 +506,8 @@ Three execution paths, picked by environment:
 - **Local dev (`./tbd start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
 - **Local prod simulation (`./tbd prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
 - **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `APP_ENV=production`) is set in cloud-infra `clusters/hetzner/tbd-prod/backend.yaml`.
+
+Every path connects with `MIGRATIONS_DATABASE_URL` when it is set (a user with DDL rights, TBD-655) and with `DATABASE_URL` otherwise.
 
 The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a failed migration blocks the rollout.
 

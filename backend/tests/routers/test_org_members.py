@@ -207,6 +207,89 @@ async def test_post_invitations_duplicate_returns_409(session_factory):
     assert dup.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_post_invitations_registered_elsewhere_answers_like_a_new_address(
+    session_factory, monkeypatch
+):
+    """BE-06: no cross-tenant oracle. Same status, same body shape, the row is
+    listed like any other, and no email goes out."""
+    await _seed(session_factory)
+    async with session_factory() as db:
+        other = Organization(name="Elsewhere", billing_cycle_day=1)
+        db.add(other)
+        await db.flush()
+        db.add(User(
+            org_id=other.id, username="elsewhere", email="taken@else.io",
+            password_hash="x", role=Role.OWNER, is_active=True,
+        ))
+        await db.commit()
+
+    sent = []
+    import app.routers.org_members as m
+
+    async def fake_send(to, **kwargs):
+        sent.append(to)
+    monkeypatch.setattr(m, "send_invitation_email", fake_send)
+
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        taken = client.post(
+            "/api/v1/orgs/invitations", json={"email": "taken@else.io", "role": "member"},
+        )
+        fresh = client.post(
+            "/api/v1/orgs/invitations", json={"email": "fresh@acme.io", "role": "member"},
+        )
+        listed = client.get("/api/v1/orgs/invitations")
+    assert taken.status_code == fresh.status_code == 201, taken.text
+    assert set(taken.json()) == set(fresh.json())
+    assert {i["email"] for i in listed.json()["items"]} == {"taken@else.io", "fresh@acme.io"}
+    assert sent == ["fresh@acme.io"]
+
+
+@pytest.mark.asyncio
+async def test_post_invitations_rate_limited(session_factory, monkeypatch):
+    await _seed(session_factory)
+    import app.routers.org_members as m
+
+    async def fake_send(*args, **kwargs):
+        return None
+    monkeypatch.setattr(m, "send_invitation_email", fake_send)
+
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        codes = [
+            client.post(
+                "/api/v1/orgs/invitations",
+                json={"email": f"rl{i}@acme.io", "role": "member"},
+            ).status_code
+            for i in range(21)
+        ]
+    assert codes[:20] == [201] * 20
+    assert codes[20] == 429
+
+
+@pytest.mark.asyncio
+async def test_post_invitations_daily_cap_is_429(session_factory, monkeypatch):
+    await _seed(session_factory)
+    import app.routers.org_members as m
+
+    async def fake_send(*args, **kwargs):
+        return None
+    monkeypatch.setattr(m, "send_invitation_email", fake_send)
+    monkeypatch.setattr(invitation_service, "MAX_INVITATIONS_PER_DAY", 1)
+
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/v1/orgs/invitations", json={"email": "d1@acme.io", "role": "member"},
+        )
+        second = client.post(
+            "/api/v1/orgs/invitations", json={"email": "d2@acme.io", "role": "member"},
+        )
+    assert first.status_code == 201, first.text
+    assert second.status_code == 429, second.text
+
+
 # ── GET /invitations ───────────────────────────────────────────────────────
 
 
@@ -279,6 +362,82 @@ async def test_preview_returns_410_for_invalid_token(session_factory):
         res = client.get("/api/v1/orgs/invitations/preview?token=not-a-jwt")
     assert res.status_code == 410
     assert res.json()["detail"]["code"] == "invitation_unavailable"
+
+
+# ── POST /invitations/preview (TBD-738: the token travels in the body) ─────
+
+
+def _public_app(session_factory):
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    app.dependency_overrides.pop(get_current_user, None)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_preview_by_body_returns_metadata_for_pending(session_factory):
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=seed["org_id"], created_by=seed["owner_id"],
+            email="pv@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    with TestClient(_public_app(session_factory)) as client:
+        res = client.post("/api/v1/orgs/invitations/preview", json={"token": token})
+    assert res.status_code == 200, res.text
+    assert res.json() == {
+        "org_name": "Acme",
+        "email": "pv@acme.io",
+        "role": "member",
+        "is_reactivation": False,
+        "existing_username": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_preview_by_body_returns_410_for_invalid_token(session_factory):
+    await _seed(session_factory)
+    with TestClient(_public_app(session_factory)) as client:
+        res = client.post("/api/v1/orgs/invitations/preview", json={"token": "not-a-jwt"})
+    assert res.status_code == 410
+    assert res.json()["detail"]["code"] == "invitation_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body", [{}, {"token": ""}, {"token": "x" * 4097}], ids=["missing", "empty", "oversized"]
+)
+async def test_preview_by_body_rejects_a_malformed_body(session_factory, body):
+    await _seed(session_factory)
+    with TestClient(_public_app(session_factory)) as client:
+        res = client.post("/api/v1/orgs/invitations/preview", json=body)
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_preview_query_and_body_share_one_budget(session_factory):
+    """The deprecated GET and the POST draw on ONE 30/minute bucket, so keeping
+    the GET for a release does not double the preview budget."""
+    await _seed(session_factory)
+    with TestClient(_public_app(session_factory)) as client:
+        statuses = []
+        for i in range(31):
+            if i % 2:
+                r = client.get("/api/v1/orgs/invitations/preview?token=not-a-jwt")
+            else:
+                r = client.post("/api/v1/orgs/invitations/preview", json={"token": "not-a-jwt"})
+            statuses.append(r.status_code)
+    assert statuses[:30] == [410] * 30
+    assert statuses[30] == 429
+
+
+def test_preview_query_route_is_marked_deprecated():
+    from app.main import app
+
+    op = app.openapi()["paths"]["/api/v1/orgs/invitations/preview"]
+    assert op["get"].get("deprecated") is True
+    assert not op["post"].get("deprecated")
 
 
 # ── POST /invitations/accept ───────────────────────────────────────────────

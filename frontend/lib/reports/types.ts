@@ -185,12 +185,14 @@ export interface ReportsQueryResponse {
 
 // ─── canvas filters (cascade source) ────────────────────────────
 
-// Date-preset identity. Calendar presets freeze an absolute
-// ``{start,end}`` window; ``next_cycle`` is a DYNAMIC relative token
-// resolved server-side at query time (never frozen to absolute dates).
-// Lives here (not in ``date-presets.ts``) so ``CanvasDateRange`` can
-// carry it without a type-only import cycle. ``date-presets.ts``
-// imports it back from here.
+// Date-preset identity. Every preset except ``custom`` persists as a
+// RELATIVE token in ``CanvasDateRange.preset`` (TBD-759), never as frozen
+// dates, so "This month" stays this month after the calendar rolls over.
+// Calendar presets resolve on the client against the local clock at query
+// time; ``next_cycle`` resolves server-side against the org's billing
+// cycle. Lives here (not in ``date-presets.ts``) so ``CanvasDateRange`` can
+// carry it without a type-only import cycle. ``date-presets.ts`` imports it
+// back from here.
 export type PresetKey =
   | "this_month"
   | "last_month"
@@ -199,22 +201,27 @@ export type PresetKey =
   | "next_cycle"
   | "custom";
 
+// The calendar subset: a window ``buildPresetRanges`` can compute from a
+// date. Mirrors the backend ``CalendarDatePreset`` enum.
+export type CalendarPresetKey = Exclude<PresetKey, "custom" | "next_cycle">;
+
 // The relative-token subset of PresetKey that is persisted in
 // ``CanvasDateRange.preset``. Its own type so the field can't drift from the
-// backend ``RelativeDateToken`` wire contract (next_cycle-only); persisting
-// any other key would 422 server-side.
-export type RelativeDateToken = "next_cycle";
+// backend ``CanvasDateRange.preset`` contract (``RelativeDateToken`` +
+// ``CalendarDatePreset``); persisting any other key would 422 server-side.
+export type RelativeDateToken = "next_cycle" | CalendarPresetKey;
 
 export interface CanvasDateRange {
   /** ISO date YYYY-MM-DD */
   start?: string;
   /** ISO date YYYY-MM-DD */
   end?: string;
-  // Additive optional relative-preset marker. When set (only
-  // ``next_cycle`` in v1) the range carries NO ``start``/``end`` — the
-  // token travels to the backend, which resolves the absolute window
-  // per request. Absent on every calendar preset and every legacy
-  // absolute blob, so the ~dozen ``start``/``end`` readers keep working.
+  // Additive optional relative-preset marker. When set the range carries
+  // NO ``start``/``end``: ``resolveFilters`` turns a calendar token into a
+  // ``between`` window against ``now``, and sends ``next_cycle`` as
+  // ``op:"relative"`` for the backend to resolve per request. Absent on a
+  // custom range and on every legacy absolute blob (reports saved before
+  // TBD-759 keep their frozen dates; there is no backfill).
   preset?: RelativeDateToken;
 }
 

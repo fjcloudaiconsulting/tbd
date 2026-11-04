@@ -6,7 +6,7 @@ JWT in the URL is the proof of intent.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.org_permissions import require_org_admin
@@ -26,6 +26,7 @@ from app.schemas.common import ListEnvelope
 from app.schemas.invitation import (
     InvitationAcceptRequest,
     InvitationCreateRequest,
+    InvitationPreviewRequest,
     InvitationPreviewResponse,
     InvitationResponse,
     MemberResponse,
@@ -34,6 +35,7 @@ from app.security import (
     create_access_token,
     create_invitation_token,
     get_org_session_ttl_seconds,
+    wait_out_cutoff,
 )
 from app.services import invitation_service
 from app.services.email_service import send_invitation_email
@@ -77,14 +79,32 @@ def _invitation_unavailable() -> HTTPException:
     )
 
 
+async def _deliver_invitation(
+    to: str, *, inviter_name: str, org_name: str, accept_url: str
+) -> None:
+    """Background send. Failures are logged inside email_service and never
+    surface: the row exists and the admin can revoke and re-invite."""
+    try:
+        await send_invitation_email(
+            to, inviter_name=inviter_name, org_name=org_name, accept_url=accept_url,
+        )
+    except Exception:
+        pass
+
+
 @router.post(
     "/invitations",
     response_model=InvitationResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
+# BE-06. Per client IP like every limit here; the per-ORG bound is the pending
+# and daily caps in invitation_service. No path parameter, so a plain `limit`.
+@limiter.limit(dynamic_limit("org_members.invite", "20/hour"))
 async def create_invitation(
+    request: Request,
     body: InvitationCreateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_org_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -98,6 +118,16 @@ async def create_invitation(
         )
     except ConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except invitation_service.InvitationQuotaExceeded:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many invitations sent today. Try again tomorrow.",
+        )
+    # BE-06: an address registered to another org gets the same 201 and the
+    # same pending row, but no email (accept would refuse it anyway).
+    deliver = not await invitation_service.is_registered_elsewhere(
+        db, org_id=current_user.org_id, email=inv.email,
+    )
 
     # Capture serializable fields BEFORE commit — once the session
     # expires the instance, attribute access would trigger a lazy
@@ -122,17 +152,21 @@ async def create_invitation(
             select(Organization).where(Organization.id == current_user.org_id)
         )
     ).scalar_one()
+    org_id, org_name = org.id, org.name
     await db.commit()
     # Email send happens after commit so a Mailgun outage doesn't roll
-    # back the invite (admin can revoke and re-invite).
-    try:
-        await send_invitation_email(
-            body.email, inviter_name=inviter_name, org_name=org.name, accept_url=accept_url,
+    # back the invite (admin can revoke and re-invite). It runs after the
+    # response, so response time does not reveal whether one was sent.
+    if deliver:
+        background_tasks.add_task(
+            _deliver_invitation,
+            body.email, inviter_name=inviter_name, org_name=org_name, accept_url=accept_url,
         )
-    except Exception:
-        # Logged inside email_service. Don't fail the API call — the
-        # row exists and admin can revoke + re-invite.
-        pass
+    else:
+        logger.info(
+            "org.invitation.delivery_skipped",
+            extra={"target_org_id": org_id, "invitation_id": snapshot.id},
+        )
     return snapshot
 
 
@@ -188,20 +222,47 @@ async def delete_invitation(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get(
-    "/invitations/preview",
-    response_model=InvitationPreviewResponse,
-)
-@limiter.limit("30/minute")
-async def preview_invitation(
-    request: Request,
-    token: str = Query(..., min_length=1),
-    db: AsyncSession = Depends(get_db),
-):
+async def _preview(db: AsyncSession, token: str) -> dict:
     try:
         return await invitation_service.preview_invitation(db, token=token)
     except invitation_service.InvitationUnavailable:
         raise _invitation_unavailable()
+
+
+# TBD-738: the token travels in the POST body so it never sits in a URL (edge
+# access logs, browser history, Referer). Both shapes share ONE pre-auth
+# budget (``shared_limit`` on the same scope), so keeping the GET for a
+# release does not double it.
+@router.post(
+    "/invitations/preview",
+    response_model=InvitationPreviewResponse,
+)
+@limiter.shared_limit("30/minute", scope="org_members.preview_invitation")
+async def preview_invitation(
+    request: Request,
+    payload: InvitationPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    return await _preview(db, payload.token)
+
+
+# DEPRECATED (TBD-738): the query-string shape, kept for one release only.
+# Backend and frontend images deploy separately, so a frontend still on the
+# GET must keep working until the frontend that posts is live. Delete this
+# route (and its PUBLIC_ROUTES and DECORATOR_PATTERNS entries) in the next
+# release.
+@router.get(
+    "/invitations/preview",
+    response_model=InvitationPreviewResponse,
+    deprecated=True,
+)
+@limiter.shared_limit("30/minute", scope="org_members.preview_invitation")
+async def preview_invitation_by_query(
+    request: Request,
+    token: str = Query(..., min_length=1),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _preview(db, token)
 
 
 @router.post("/invitations/accept", response_model=TokenResponse)
@@ -219,6 +280,8 @@ async def accept_invitation(
     except ConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
+    # A re-join in the second of a removal keeps that removal's cutoff (TBD-583).
+    await wait_out_cutoff(user)
     access = create_access_token(user.id, user.org_id, user.role.value)
     # PR 2 (specs/2026-05-17-backend-session-model.md §5.4): write the
     # session family row BEFORE set_cookie. Fails
@@ -314,8 +377,8 @@ async def list_members(
 # over N members N private budgets. The stated intent and the actual behaviour
 # disagreed; this makes the behaviour match the comment.
 #
-# NOTE the sibling `@limiter.limit("30/minute")` on `preview_invitation` above
-# is CORRECT as a plain `limit`: its path carries no parameter.
+# NOTE the preview routes above carry no path parameter either; they use
+# `shared_limit` only so the deprecated GET and the POST share one budget.
 @limiter.shared_limit(dynamic_limit("org_members.remove_member", "30/minute"), scope="org_members.remove_member")
 async def remove_member(
     user_id: int,

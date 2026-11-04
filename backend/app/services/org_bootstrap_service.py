@@ -154,6 +154,56 @@ async def seed_org_defaults(db: AsyncSession, *, org_id: int) -> dict[str, int]:
     return counts
 
 
+async def plan_recommended_categories(
+    db: AsyncSession, *, org_id: int
+) -> list[dict]:
+    """The system categories :func:`restore_recommended_categories` inserts
+    for ``org_id``, in insert order. Read-only (TBD-666): the agent preview
+    names these rows and the restore inserts them.
+
+    Each row holds the inserted ``name``, ``slug``, ``description`` and
+    ``type``, plus its master: ``parent_id`` (an existing master) or
+    ``parent`` (the index of a master inserted earlier in this list).
+    """
+    existing = dict((await db.execute(
+        select(Category.slug, Category.id).where(
+            Category.org_id == org_id,
+            Category.is_system.is_(True),
+        )
+    )).all())
+    plan: list[dict] = []
+
+    def add(spec: dict, type_: CategoryType, **parent) -> None:
+        plan.append({
+            "name": spec["name"], "slug": spec["slug"],
+            "description": spec["description"], "type": type_,
+            "parent_id": None, "parent": None, **parent,
+        })
+
+    for master_def in SYSTEM_CATEGORIES:
+        master_type = CategoryType(master_def["type"])
+        if master_def["slug"] in existing:
+            parent = {"parent_id": existing[master_def["slug"]]}
+        else:
+            add(master_def, master_type)
+            parent = {"parent": len(plan) - 1}
+        for child_def in master_def.get("children", []):
+            if child_def["slug"] not in existing:
+                add(child_def, master_type, **parent)
+
+    # Standalone system categories (Transfer, Credit Card Payment).
+    # Source list is ``STANDALONE_SYSTEM_CATEGORIES`` at module level so
+    # this stays in lockstep with ``seed_org_defaults``. Architect
+    # feedback on PR #297: previous version restored only Transfer and
+    # missed Credit Card Payment (which #296 added to seed_org_defaults
+    # before this PR landed), creating two different definitions of
+    # "recommended categories".
+    for spec in STANDALONE_SYSTEM_CATEGORIES:
+        if spec["slug"] not in existing:
+            add(spec, spec["type"])
+    return plan
+
+
 async def restore_recommended_categories(
     db: AsyncSession, *, org_id: int
 ) -> int:
@@ -167,72 +217,25 @@ async def restore_recommended_categories(
     Caller (router) owns the transaction boundary and the audit row.
     Category Fallback design Layer C (post-L3.10).
     """
-    created = 0
-
-    existing_slugs = set(
-        (await db.scalars(
-            select(Category.slug).where(
-                Category.org_id == org_id,
-                Category.is_system.is_(True),
-            )
-        )).all()
-    )
-
-    for master_def in SYSTEM_CATEGORIES:
-        master: Category | None
-        if master_def["slug"] in existing_slugs:
-            master = await db.scalar(
-                select(Category).where(
-                    Category.org_id == org_id,
-                    Category.slug == master_def["slug"],
-                    Category.is_system.is_(True),
-                )
-            )
-        else:
-            master = Category(
-                org_id=org_id,
-                name=master_def["name"],
-                slug=master_def["slug"],
-                description=master_def["description"],
-                type=CategoryType(master_def["type"]),
-                is_system=True,
-            )
-            db.add(master)
-            created += 1
-            await db.flush()
-
-        for child_def in master_def.get("children", []):
-            if child_def["slug"] in existing_slugs:
-                continue
-            db.add(Category(
-                org_id=org_id,
-                parent_id=master.id if master is not None else None,
-                name=child_def["name"],
-                slug=child_def["slug"],
-                description=child_def["description"],
-                type=CategoryType(master_def["type"]),
-                is_system=True,
-            ))
-            created += 1
-
-    # Standalone system categories (Transfer, Credit Card Payment).
-    # Source list is ``STANDALONE_SYSTEM_CATEGORIES`` at module level so
-    # this stays in lockstep with ``seed_org_defaults``. Architect
-    # feedback on PR #297: previous version restored only Transfer and
-    # missed Credit Card Payment (which #296 added to seed_org_defaults
-    # before this PR landed), creating two different definitions of
-    # "recommended categories".
-    for spec in STANDALONE_SYSTEM_CATEGORIES:
-        if spec["slug"] not in existing_slugs:
-            db.add(Category(
-                org_id=org_id,
-                name=spec["name"],
-                slug=spec["slug"],
-                description=spec["description"],
-                type=spec["type"],
-                is_system=True,
-            ))
-            created += 1
+    added: list[Category] = []
+    for row in await plan_recommended_categories(db, org_id=org_id):
+        parent_id = row["parent_id"]
+        if row["parent"] is not None:
+            master = added[row["parent"]]
+            if master.id is None:
+                await db.flush()  # the new master's id
+            parent_id = master.id
+        cat = Category(
+            org_id=org_id,
+            parent_id=parent_id,
+            name=row["name"],
+            slug=row["slug"],
+            description=row["description"],
+            type=row["type"],
+            is_system=True,
+        )
+        db.add(cat)
+        added.append(cat)
 
     await db.flush()
-    return created
+    return len(added)

@@ -25,7 +25,7 @@ from app.config import settings as app_settings, warn_open_production_defaults
 from app.database import engine
 from app import logs
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, agent_tokens, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, oauth, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
+from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, agent_tokens, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, oauth, onboarding, org_data, org_members, orgs, plans, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
 from app.routers import scheduler as scheduler_router
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.import_ofx_service import init_ofx_executor, shutdown_ofx_executor
@@ -198,6 +198,9 @@ async def _run_migrations() -> None:
         },
     )
 
+    # The child inherits this environment, so alembic/env.py migrates with
+    # MIGRATIONS_DATABASE_URL when it is set (TBD-655). The current-revision
+    # read above is a diagnostic on the app engine.
     result = subprocess.run(
         ["alembic", "upgrade", "head"],
         capture_output=True,
@@ -496,6 +499,21 @@ _SENSITIVE_FIELD_NAMES = frozenset({
     # an unspent SSO proof stays valid for 5 minutes.
     "stepup_token",
     "mfa_code",
+    # Org AI provider credentials (BE-12): create and rotate bodies. A
+    # body-level 422 (the create model validator) echoes the whole body.
+    "api_key",
+    "bearer_token",
+    # The OpenRouter OAuth completion nonce (its hash is public, the nonce
+    # is the proof). The rest are OAuth secrets no body carries today;
+    # listed so a future field with one of these names is covered.
+    "nonce",
+    "client_secret",
+    "code_verifier",
+    "access_token",
+    "id_token",
+    # AI provider base URLs are refused when they carry userinfo (DB-02);
+    # the 422 for that must not echo the password it refused.
+    "base_url",
 })
 
 _REDACTED = "<redacted>"
@@ -665,7 +683,6 @@ app.include_router(ai_forecast.router)
 app.include_router(admin_ai_usage.router)
 app.include_router(admin_rate_limit_overrides.router)
 app.include_router(security.router)
-app.include_router(public_stats.router)
 app.include_router(scheduler_router.router)
 app.include_router(webhooks.router)
 

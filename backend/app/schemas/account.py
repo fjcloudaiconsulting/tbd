@@ -9,6 +9,8 @@ from app.services.currency_service import (
     ISO_4217_CURRENCIES,
     normalise_currency,
 )
+# BE-16: the loan dates' range, also enforced by validate_loan_fields.
+from app.services.loan_service import LOAN_DATE_MAX, LOAN_DATE_MIN
 
 
 # Mirrors the Numeric(12, 2) DB constraint on accounts.opening_balance.
@@ -107,8 +109,8 @@ class AccountCreate(BaseModel):
         default=None, ge=0, le=_LOAN_APR_CAP_HI, max_digits=5, decimal_places=2
     )
     term_months: Optional[int] = Field(default=None, ge=1, le=480)
-    origination_date: Optional[date] = None
-    first_payment_date: Optional[date] = None
+    origination_date: Optional[date] = Field(default=None, ge=LOAN_DATE_MIN, le=LOAN_DATE_MAX)
+    first_payment_date: Optional[date] = Field(default=None, ge=LOAN_DATE_MIN, le=LOAN_DATE_MAX)
 
 
 class AccountUpdate(BaseModel):
@@ -151,8 +153,8 @@ class AccountUpdate(BaseModel):
         default=None, ge=0, le=_LOAN_APR_CAP_HI, max_digits=5, decimal_places=2
     )
     term_months: Optional[int] = Field(default=None, ge=1, le=480)
-    origination_date: Optional[date] = None
-    first_payment_date: Optional[date] = None
+    origination_date: Optional[date] = Field(default=None, ge=LOAN_DATE_MIN, le=LOAN_DATE_MAX)
+    first_payment_date: Optional[date] = Field(default=None, ge=LOAN_DATE_MIN, le=LOAN_DATE_MAX)
 
 
 class LoanMetrics(BaseModel):

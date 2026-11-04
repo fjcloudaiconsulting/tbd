@@ -13,7 +13,7 @@ from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus,
 from app.models.subscription import Plan, Subscription, SubscriptionStatus, BillingInterval
 from app.models.invitation import Invitation
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.merchant_dictionary import MerchantDictionaryEntry
+from app.models.merchant_dictionary import MerchantDictionaryEntry, MerchantDictionaryVote
 from app.models.feature_override import OrgFeatureOverride  # noqa: F401
 from app.models.limit_override import OrgLimitOverride  # noqa: F401
 from app.models.usage_counter import UsageCounter  # noqa: F401
@@ -45,7 +45,14 @@ from app.models.notification import (  # noqa: F401
 )
 from app.models.report import Report, ReportVersion, ReportVisibility  # noqa: F401
 from app.models.dashboard import DashboardLayout  # noqa: F401
-from app.models.scenario import Scenario, ScenarioType  # noqa: F401
+from app.models.scenario import (  # noqa: F401
+    PlanGoal,
+    PlanGoalKind,
+    PlanGoalTier,
+    Scenario,
+    ScenarioStatus,
+    ScenarioType,
+)
 from app.models.org_ai_credential import (  # noqa: F401
     AiProvider,
     OrgAICredential,
@@ -106,6 +113,7 @@ __all__ = [
     "CategoryRule",
     "RuleSource",
     "MerchantDictionaryEntry",
+    "MerchantDictionaryVote",
     "OrgFeatureOverride",
     "OrgLimitOverride",
     "UsageCounter",
@@ -143,7 +151,11 @@ __all__ = [
     "ReportVisibility",
     "DashboardLayout",
     "Scenario",
+    "ScenarioStatus",
     "ScenarioType",
+    "PlanGoal",
+    "PlanGoalKind",
+    "PlanGoalTier",
     "BroadcastStatus",
     "RecipientStatus",
     "EmailBroadcast",

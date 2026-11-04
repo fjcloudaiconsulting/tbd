@@ -7,11 +7,12 @@ Four tables, two privacy tiers:
 - ``TagDictionary`` is the cross-org public-shape table read by the
   suggestion endpoint. ``TagDictionaryContributor`` is the cross-org
   PRIVATE table that tracks "which org contributed which dictionary
-  tag". The contributors table is server-internal: never read by an
-  endpoint, never serialized in any response.
+  tag". The contributors table is server-internal: never serialized in
+  any response; the suggestion query reads it only as a count.
 
-The denormalized ``TagDictionary.contributor_org_count`` is the
-k-anonymity number the suggestion query filters on. The invariant
+The denormalized ``TagDictionary.contributor_org_count`` is a cheap
+pre-filter for the k-anonymity floor; the floor itself counts only
+contributors whose org is old enough (BE-18). The invariant
 (``count == COUNT(DISTINCT contributor_org_id)``) is maintained by
 ``app.services.tag_service`` inside the same transaction as
 contributor row inserts/deletes.
@@ -104,11 +105,12 @@ class TransactionTag(Base):
 class TagDictionary(Base):
     """Cross-org PUBLIC-shape tag dictionary.
 
-    Read by the suggestion endpoint. ``contributor_org_count`` is the
-    k-anonymity number; the invariant is maintained against
-    ``TagDictionaryContributor`` rows by the service layer. ``is_seed=True``
-    rows bypass the k-anonymity floor so seeded tags appear in
-    suggestions immediately.
+    Read by the suggestion endpoint. ``contributor_org_count`` counts
+    every contributor and ``usage_count`` counts each contributing org
+    once (BE-18); both are maintained against ``TagDictionaryContributor``
+    rows by the service layer and neither is returned by the API.
+    ``is_seed=True`` rows bypass the k-anonymity floor so seeded tags
+    appear in suggestions immediately.
 
     No FK to ``organizations`` exists on this table. A row is just
     ``(string, two counts, seed flag, timestamps)``.
@@ -151,9 +153,9 @@ class TagDictionaryContributor(Base):
     on ``(dictionary_tag_id, contributor_org_id)`` enforces one row per
     org per tag, the dedupe mechanism for the count.
 
-    **This table is never read by any API endpoint, never serialized in
-    any response, never surfaced to admins or users.** The suggestion
-    path queries ``tag_dictionary`` only.
+    **This table is never serialized in any response, never surfaced to
+    admins or users.** The suggestion path reads it only as a count of
+    aged contributors per dictionary tag (BE-18).
     """
 
     __tablename__ = "tag_dictionary_contributors"

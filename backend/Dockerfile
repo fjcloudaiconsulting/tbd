@@ -7,9 +7,9 @@
 # venv reaches either image.
 #   docker build --target migrations -t tbd-migrations backend
 #   docker build --target prod       -t tbd-backend    backend
-FROM mirror.gcr.io/library/python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS builder
+FROM mirror.gcr.io/library/python:3.14-slim@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966 AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.13.1@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef30279f7d64048519ab901ada336 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 /uv /uvx /bin/
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
@@ -24,7 +24,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project --no-default-groups --group app \
         $([ "$INSTALL_DEV" = "true" ] && echo "--group dev")
 
-FROM mirror.gcr.io/library/python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS runtime
+FROM mirror.gcr.io/library/python:3.14-slim@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966 AS runtime
 
 WORKDIR /app
 
@@ -83,4 +83,10 @@ EXPOSE 8000
 # in dev, DO's edge in prod) terminate TCP on private IPs and append
 # the real public client IP to the header. Forged leftmost entries are
 # bypassed by the walk.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+#
+# The list is FORWARDED_ALLOW_IPS, which uvicorn reads when the command has no
+# --forwarded-allow-ips, and app.config reads for the rate limiter's own walk
+# (INF-01): a deployment narrows both by setting the variable, not by
+# repeating this command.
+ENV FORWARDED_ALLOW_IPS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--proxy-headers"]

@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.services.ai_providers import capped_http
 from app.services.ai_providers.base import (
     AIProviderError,
     EmbedResponse,
@@ -39,9 +40,18 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+    UNEXPECTED_MODELS_RESPONSE,
+    UNEXPECTED_SHAPE_ERRORS,
+    embedding_vectors,
+    model_ids,
+    openai_message_content,
+    parse_openai_stream_event,
     provider_reason,
     parse_openai_tool_calls,
+    response_model,
     to_openai_messages,
+    token_count,
+    usage_of,
 )
 from app.services.ai_pricing import usd_to_micros
 from app.services.ai_providers.egress_guard import (
@@ -168,10 +178,16 @@ class OpenAICompatibleAdapter:
                 # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
                 # finding as ``captcha.py``, TBD-328).
                 async with asyncio.timeout(VALIDATE_TIMEOUT_S):
-                    resp = await client.get(url, headers=headers)
+                    resp = await capped_http.request(
+                        client, "GET", url, headers=headers
+                    )
         except BlockedAddressError:
             return ValidateResult(
                 ok=False, error=BLOCKED_ADDRESS_VALIDATION_ERROR
+            )
+        except AIProviderError as exc:
+            return ValidateResult(
+                ok=False, error=capped_http.validation_error(exc)
             )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             # NEVER ``str(exc)`` — exception reprs from httpx can include
@@ -202,11 +218,10 @@ class OpenAICompatibleAdapter:
             payload = resp.json()
         except ValueError:
             return ValidateResult(ok=False, error="Provider returned invalid JSON")
-        models = [
-            m["id"]
-            for m in payload.get("data", [])
-            if isinstance(m, dict) and "id" in m
-        ]
+        try:
+            models = model_ids(payload)
+        except TypeError:
+            return ValidateResult(ok=False, error=UNEXPECTED_MODELS_RESPONSE)
         return ValidateResult(
             ok=True,
             discovered_models=models,
@@ -229,8 +244,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -247,18 +262,19 @@ class OpenAICompatibleAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            content = payload["choices"][0]["message"]["content"] or ""
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (KeyError, IndexError, TypeError):
+            content = openai_message_content(payload)
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+            completion_tokens = token_count(usage.get("completion_tokens"))
+            cost_micros = self._cost_micros(usage)
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return LLMResponse(
             content=content,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
-            cost_micros=self._cost_micros(usage),
+            model=response_model(payload, model),
+            cost_micros=cost_micros,
         )
 
     async def embed(
@@ -279,8 +295,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=EMBED_TIMEOUT_S) as client:
                 async with asyncio.timeout(EMBED_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -297,19 +313,14 @@ class OpenAICompatibleAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            data = payload.get("data", []) or []
-            vectors = [
-                [float(x) for x in (row.get("embedding") or [])]
-                for row in data
-                if isinstance(row, dict)
-            ]
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        except (KeyError, TypeError, ValueError):
+            vectors = embedding_vectors(payload)
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return EmbedResponse(
             vectors=vectors,
-            model=payload.get("model", model) or model,
+            model=response_model(payload, model),
             prompt_tokens=prompt_tokens,
         )
 
@@ -345,8 +356,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -363,18 +374,19 @@ class OpenAICompatibleAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            content = payload["choices"][0]["message"]["content"] or ""
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (KeyError, IndexError, TypeError):
+            content = openai_message_content(payload)
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+            completion_tokens = token_count(usage.get("completion_tokens"))
+            cost_micros = self._cost_micros(usage)
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return LLMResponse(
             content=content,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
-            cost_micros=self._cost_micros(usage),
+            model=response_model(payload, model),
+            cost_micros=cost_micros,
         )
 
     async def function_call(
@@ -405,8 +417,8 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        url, headers=self._headers(), json=body
+                    resp = await capped_http.request(
+                        client, "POST", url, headers=self._headers(), json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -420,33 +432,26 @@ class OpenAICompatibleAdapter:
             )
         try:
             payload = resp.json()
-        except (ValueError, RecursionError):
+        except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
             message = payload["choices"][0]["message"]
             tool_calls = parse_openai_tool_calls(message)
             content = message.get("content")
             content = content if isinstance(content, str) else ""
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (
-            KeyError,
-            IndexError,
-            TypeError,
-            ValueError,
-            AttributeError,
-            OverflowError,
-            RecursionError,
-        ):
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("prompt_tokens"))
+            completion_tokens = token_count(usage.get("completion_tokens"))
+            cost_micros = self._cost_micros(usage)
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,
             content=content,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
-            cost_micros=self._cost_micros(usage),
+            model=response_model(payload, model),
+            cost_micros=cost_micros,
         )
 
     async def stream(
@@ -479,14 +484,16 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
-                    "POST", url, headers=headers, json=body
+                    "POST", url,
+                    headers=capped_http.identity_headers(headers),
+                    json=body,
                 ) as resp:
                     if resp.status_code != 200:
                         raise AIProviderError(
                             code=f"provider_status_{resp.status_code}",
                             status_code=resp.status_code,
                         )
-                    async for line in resp.aiter_lines():
+                    async for line in capped_http.aiter_lines(resp):
                         if not line:
                             continue
                         if not line.startswith("data:"):
@@ -497,27 +504,28 @@ class OpenAICompatibleAdapter:
                             break
                         try:
                             event = json.loads(data)
-                        except ValueError:
+                        except (ValueError, RecursionError):
+                            # malformed line (deep nesting included) — skip;
+                            # per-line resilience
                             continue
-                        choices = event.get("choices") or []
-                        if choices:
-                            delta = choices[0].get("delta") or {}
-                            delta_text = str(delta.get("content") or "")
-                            if delta_text:
-                                yield StreamChunk(
-                                    delta_text=delta_text, done=False
+                        try:
+                            delta_text, usage = parse_openai_stream_event(event)
+                            if usage is not None:
+                                final_usage = TokenUsage(
+                                    prompt_tokens=token_count(
+                                        usage.get("prompt_tokens")
+                                    ),
+                                    completion_tokens=token_count(
+                                        usage.get("completion_tokens")
+                                    ),
+                                    cost_micros=self._cost_micros(usage),
                                 )
-                        usage = event.get("usage")
-                        if isinstance(usage, dict):
-                            final_usage = TokenUsage(
-                                prompt_tokens=int(
-                                    usage.get("prompt_tokens", 0) or 0
-                                ),
-                                completion_tokens=int(
-                                    usage.get("completion_tokens", 0) or 0
-                                ),
-                                cost_micros=self._cost_micros(usage),
-                            )
+                        except UNEXPECTED_SHAPE_ERRORS:
+                            raise AIProviderError(
+                                code="provider_unexpected_shape"
+                            ) from None
+                        if delta_text:
+                            yield StreamChunk(delta_text=delta_text, done=False)
         except AIProviderError:
             raise
         except (httpx.HTTPError, httpx.TimeoutException) as exc:

@@ -286,7 +286,7 @@ async def test_detail_404_when_missing(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_kpis_counts_by_status(db_session: AsyncSession):
     plans = await _seed_plans(db_session)
-    today = datetime.date.today()
+    today = utcnow_naive().date()  # the app's "today" is the UTC date (TBD-749)
 
     # 2 active, 1 trialing (expiring in 3 days), 1 past_due, 1 cancelled.
     for status_, trial_end in [
@@ -333,7 +333,7 @@ async def test_kpis_plan_distribution_includes_zero_plans(db_session: AsyncSessi
 @pytest.mark.asyncio
 async def test_kpis_trial_expiring_excludes_already_expired(db_session: AsyncSession):
     plans = await _seed_plans(db_session)
-    today = datetime.date.today()
+    today = utcnow_naive().date()  # the app's "today" is the UTC date (TBD-749)
     a = await _seed_org(db_session, "A")
     b = await _seed_org(db_session, "B")
     # Past trial end: NOT counted.
@@ -350,3 +350,120 @@ async def test_kpis_trial_expiring_excludes_already_expired(db_session: AsyncSes
     )
     kpis = await admin_subscription_service.aggregate_revenue_kpis(db_session)
     assert kpis["trial_expiring_next_7d"] == 1
+
+
+# ── TBD-749: one "today" across the local/UTC midnight boundary ───────
+#
+# The clock is pinned to 23:30 UTC on 2026-10-24 on a host whose local zone
+# is UTC+2, where it is already 01:30 on 2026-10-25. Every subscription date
+# (trial start and end, the expiry check, the paid period, the admin KPI
+# window) must use the UTC date, 2026-10-24, as the entitlement resolver
+# already does. Before TBD-749 subscription_service used the process-local
+# date, so a trial ending "today" was already expired for the trial check
+# while the admin KPI still counted it as expiring.
+
+_BOUNDARY_UTC = datetime.datetime(2026, 10, 24, 23, 30, tzinfo=datetime.timezone.utc)
+_BOUNDARY_LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=2))
+_UTC_TODAY = datetime.date(2026, 10, 24)
+
+
+@pytest.fixture
+def boundary_clock(monkeypatch):
+    """Pin the UTC clock (``app._time``) and the process-local date seen by
+    ``subscription_service`` to the two sides of the boundary."""
+    import types
+
+    from app import _time
+    from app.services import subscription_service
+
+    class _PinnedDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return _BOUNDARY_UTC.astimezone(_BOUNDARY_LOCAL_TZ).replace(tzinfo=None)
+            return _BOUNDARY_UTC.astimezone(tz)
+
+    class _LocalDate(datetime.date):
+        @classmethod
+        def today(cls):
+            return _BOUNDARY_UTC.astimezone(_BOUNDARY_LOCAL_TZ).date()
+
+    monkeypatch.setattr(_time, "datetime", _PinnedDatetime)
+    # Swap only the module's NAME ``datetime``: replacing ``datetime.date``
+    # process-wide breaks SQLAlchemy's Date coercion.
+    monkeypatch.setattr(
+        subscription_service,
+        "datetime",
+        types.SimpleNamespace(
+            date=_LocalDate, datetime=_PinnedDatetime, timedelta=datetime.timedelta
+        ),
+    )
+    assert _LocalDate.today() == _UTC_TODAY + datetime.timedelta(days=1)
+    assert utcnow_naive().date() == _UTC_TODAY
+
+
+@pytest.mark.asyncio
+async def test_kpis_trial_window_uses_utc_date_at_the_boundary(
+    db_session: AsyncSession, boundary_clock
+):
+    plans = await _seed_plans(db_session)
+    for name, offset in [("yesterday", -1), ("today", 0), ("plus7", 7), ("plus8", 8)]:
+        org = await _seed_org(db_session, name)
+        await _seed_sub(
+            db_session, org=org, plan=plans["pro"],
+            status=SubscriptionStatus.TRIALING,
+            trial_end=_UTC_TODAY + datetime.timedelta(days=offset),
+        )
+    # Default clock, no ``now=``: "today" and "plus7" only.
+    kpis = await admin_subscription_service.aggregate_revenue_kpis(db_session)
+    assert kpis["trial_expiring_next_7d"] == 2
+
+
+@pytest.mark.asyncio
+async def test_trial_dates_use_utc_date_at_the_boundary(
+    db_session: AsyncSession, boundary_clock, monkeypatch
+):
+    from app.services import subscription_service
+
+    plans = await _seed_plans(db_session)
+    monkeypatch.setattr(subscription_service.settings, "default_plan_slug", "pro")
+
+    # A new trial starts on the UTC date.
+    new_org = await _seed_org(db_session, "New")
+    sub = await subscription_service.create_trial(db_session, new_org.id)
+    await db_session.commit()
+    assert sub.trial_start == _UTC_TODAY
+    assert sub.trial_end == _UTC_TODAY + datetime.timedelta(
+        days=subscription_service.settings.trial_duration_days
+    )
+
+    # A trial ending on the UTC date is still running, and the admin KPI
+    # counts it as expiring: the two agree.
+    ending = await _seed_org(db_session, "Ending")
+    await _seed_sub(
+        db_session, org=ending, plan=plans["pro"],
+        status=SubscriptionStatus.TRIALING, trial_end=_UTC_TODAY,
+    )
+    checked = await subscription_service.check_trial_expiry(db_session, ending.id)
+    assert checked.status == SubscriptionStatus.TRIALING
+    assert checked.plan_id == plans["pro"].id
+    kpis = await admin_subscription_service.aggregate_revenue_kpis(db_session)
+    assert kpis["trial_expiring_next_7d"] == 1
+
+    # A trial that ended the day before (UTC) moves to Free.
+    ended = await _seed_org(db_session, "Ended")
+    await _seed_sub(
+        db_session, org=ended, plan=plans["pro"],
+        status=SubscriptionStatus.TRIALING,
+        trial_end=_UTC_TODAY - datetime.timedelta(days=1),
+    )
+    expired = await subscription_service.check_trial_expiry(db_session, ended.id)
+    assert expired.status == SubscriptionStatus.ACTIVE
+    assert expired.plan_id == plans["free"].id
+
+    # Converting a trial starts the paid period on the UTC date.
+    upgraded = await subscription_service.change_plan(
+        db_session, ending.id, "pro", "monthly"
+    )
+    assert upgraded.current_period_start == _UTC_TODAY
+    assert upgraded.current_period_end == _UTC_TODAY + datetime.timedelta(days=30)

@@ -562,6 +562,9 @@ async def test_issue_tokens_helper_emits_legacy_cleanup():
             self.id = 1
             self.org_id = 1
             self.role = Role.OWNER
+            # Read by the BE-04 wait for a just-written session cutoff.
+            self.password_changed_at = None
+            self.sessions_invalidated_at = None
 
     class _FakeDb:
         """Stand-in for ``AsyncSession`` — ``_issue_tokens`` calls

@@ -20,11 +20,13 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     Enum,
     ForeignKey,
     Integer,
     String,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -68,6 +70,13 @@ class ImportBatch(Base):
     """
 
     __tablename__ = "import_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            # Key first: an org_id-led index would replace the FK's own index.
+            "idempotency_key", "org_id",
+            name="uq_import_batches_org_idempotency_key",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True
@@ -115,3 +124,13 @@ class ImportBatch(Base):
     closed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True
     )
+    # TBD-737: idempotent, chunked import confirm. ``idempotency_key`` is the
+    # client's key for one confirm (unique per org; NULL on batches created
+    # before it existed). ``confirm_state`` is the resumable progress of that
+    # confirm, written in the same transaction as each committed chunk:
+    # ``request_hash``, ``next_row``, ``completed`` and the accumulated
+    # ``response``. See ``import_service.execute_import``.
+    idempotency_key: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    confirm_state: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

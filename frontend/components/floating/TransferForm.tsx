@@ -2,6 +2,7 @@
 
 import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 
+import RecurrenceFields from "@/components/transactions/RecurrenceFields";
 import CategorySelect from "@/components/ui/CategorySelect";
 import HelpAnchor from "@/components/HelpAnchor";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -29,8 +30,10 @@ import type { Account, Category } from "@/lib/types";
  *   - Transfer between two active accounts the caller owns.
  *   - Optional category override (defaults to the server's Transfer
  *     category when omitted).
- *   - No recurring (transfers are a discrete movement; recurring
- *     transfer templates aren't part of the L3.x Transfers contract).
+ *   - Repeats (TBD-600): creates a recurring transfer template through
+ *     POST /api/v1/recurring instead of a one-off transfer. Its first
+ *     occurrence is this form's date; generation writes each occurrence as
+ *     a linked pair, so nothing is posted to /transfer here.
  *
  * "Save & add new" behavior:
  *   - Default Save submits + closes the panel via onSaved().
@@ -81,6 +84,11 @@ export default function TransferForm({
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<"settled" | "pending">("settled");
   const [date, setDate] = useState(todayISO());
+  const [repeat, setRepeat] = useState(false);
+  const [frequency, setFrequency] = useState("monthly");
+  const [autoSettle, setAutoSettle] = useState(false);
+  // Blank = open-ended; blank OMITS the key (the schema rejects 0 and null).
+  const [occurrenceCount, setOccurrenceCount] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   const descRef = useRef<HTMLInputElement>(null);
@@ -157,21 +165,56 @@ export default function TransferForm({
   }
 
   async function submit(addAnother: boolean) {
+    // A template needs a category: the one picked, else the default Transfer
+    // category the one-off endpoint would have used.
+    const trimmedCount = occurrenceCount.trim();
+    const seriesCategoryId =
+      categoryId !== "" ? categoryId : categories.find((c) => c.slug === "transfer")?.id;
+    if (repeat) {
+      if (seriesCategoryId === undefined) {
+        setErrMsg("Pick a transfer category for the recurring transfer.");
+        return;
+      }
+      if (trimmedCount !== "" && !(Number.isInteger(Number(trimmedCount)) && Number(trimmedCount) >= 1)) {
+        setErrMsg("Number of payments must be a whole number of 1 or more");
+        return;
+      }
+    }
     setSubmitting(true);
     setErrMsg("");
     try {
-      await apiFetch("/api/v1/transactions/transfer", {
-        method: "POST",
-        body: JSON.stringify({
-          from_account_id: fromAccountId,
-          to_account_id: toAccountId,
-          description,
-          amount,
-          status,
-          date,
-          ...(categoryId !== "" ? { category_id: categoryId } : {}),
-        }),
-      });
+      if (repeat) {
+        const name = (n: number | "") => activeAccounts.find((a) => a.id === n)?.name ?? "";
+        await apiFetch("/api/v1/recurring", {
+          method: "POST",
+          body: JSON.stringify({
+            type: "transfer",
+            account_id: fromAccountId,
+            to_account_id: toAccountId,
+            category_id: seriesCategoryId,
+            description:
+              description.trim() || `Transfer from ${name(fromAccountId)} to ${name(toAccountId)}`,
+            amount,
+            frequency,
+            next_due_date: date,
+            auto_settle: autoSettle,
+            ...(trimmedCount !== "" ? { occurrence_count: Number(trimmedCount) } : {}),
+          }),
+        });
+      } else {
+        await apiFetch("/api/v1/transactions/transfer", {
+          method: "POST",
+          body: JSON.stringify({
+            from_account_id: fromAccountId,
+            to_account_id: toAccountId,
+            description,
+            amount,
+            status,
+            date,
+            ...(categoryId !== "" ? { category_id: categoryId } : {}),
+          }),
+        });
+      }
       onTransactionAdded?.();
       if (addAnother) {
         clearForm();
@@ -330,25 +373,28 @@ export default function TransferForm({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label htmlFor="fab-xfer-status" className={label}>
-            Status
-          </label>
-          <select
-            id="fab-xfer-status"
-            value={status}
-            onChange={(e) =>
-              setStatus(e.target.value as "settled" | "pending")
-            }
-            className={input}
-          >
-            <option value="settled">Settled</option>
-            <option value="pending">Pending</option>
-          </select>
-        </div>
+        {/* A recurring transfer's status follows auto-settle instead. */}
+        {!repeat && (
+          <div>
+            <label htmlFor="fab-xfer-status" className={label}>
+              Status
+            </label>
+            <select
+              id="fab-xfer-status"
+              value={status}
+              onChange={(e) =>
+                setStatus(e.target.value as "settled" | "pending")
+              }
+              className={input}
+            >
+              <option value="settled">Settled</option>
+              <option value="pending">Pending</option>
+            </select>
+          </div>
+        )}
         <div>
           <label htmlFor="fab-xfer-date" className={label}>
-            Date
+            {repeat ? "First date" : "Date"}
           </label>
           <input
             id="fab-xfer-date"
@@ -359,6 +405,29 @@ export default function TransferForm({
             className={input}
           />
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="flex items-center gap-2 text-sm text-text-secondary">
+          <input
+            type="checkbox"
+            checked={repeat}
+            onChange={(e) => setRepeat(e.target.checked)}
+            className="rounded border-border"
+          />
+          Repeats
+        </label>
+        {repeat && (
+          <RecurrenceFields
+            idPrefix="fab-xfer"
+            frequency={frequency}
+            onFrequencyChange={setFrequency}
+            occurrenceCount={occurrenceCount}
+            onOccurrenceCountChange={setOccurrenceCount}
+            autoSettle={autoSettle}
+            onAutoSettleChange={setAutoSettle}
+          />
+        )}
       </div>
 
       <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">

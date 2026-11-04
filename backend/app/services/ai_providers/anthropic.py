@@ -21,6 +21,7 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from app.services.ai_providers import capped_http
 from app.services.ai_providers.base import (
     AIProviderError,
     EmbedResponse,
@@ -29,8 +30,15 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+    UNEXPECTED_MODELS_RESPONSE,
+    UNEXPECTED_SHAPE_ERRORS,
+    model_ids,
     provider_reason,
+    response_model,
+    text_or_empty,
+    token_count,
     tool_call_id,
+    usage_of,
 )
 
 
@@ -50,6 +58,15 @@ MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 # Anthropic requires max_tokens on every messages call.
 DEFAULT_CHAT_MAX_TOKENS = 1024
+
+
+def _content_blocks(payload: object) -> list:
+    """The ``content`` block list of a messages response. A missing or
+    non-list ``content`` raises one of ``UNEXPECTED_SHAPE_ERRORS``."""
+    blocks = payload["content"]  # type: ignore[index]
+    if not isinstance(blocks, list):
+        raise TypeError("content is not a list")
+    return blocks
 
 
 def _split_system(messages: list[dict]) -> tuple[list[str], list[dict]]:
@@ -177,11 +194,15 @@ class AnthropicAdapter:
                 # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
                 # finding as ``captcha.py``, TBD-328).
                 async with asyncio.timeout(VALIDATE_TIMEOUT_S):
-                    resp = await client.get(
-                        MODELS_URL,
+                    resp = await capped_http.request(
+                        client, "GET", MODELS_URL,
                         headers=headers,
                         params={"limit": MODELS_PAGE_LIMIT},
                     )
+        except AIProviderError as exc:
+            return ValidateResult(
+                ok=False, error=capped_http.validation_error(exc)
+            )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             return ValidateResult(
                 ok=False, error=f"Network error: {type(exc).__name__}"
@@ -200,11 +221,10 @@ class AnthropicAdapter:
             payload = resp.json()
         except ValueError:
             return ValidateResult(ok=False, error="Provider returned invalid JSON")
-        models = [
-            m["id"]
-            for m in payload.get("data", [])
-            if isinstance(m, dict) and "id" in m
-        ]
+        try:
+            models = model_ids(payload)
+        except TypeError:
+            return ValidateResult(ok=False, error=UNEXPECTED_MODELS_RESPONSE)
         return ValidateResult(
             ok=True,
             discovered_models=models,
@@ -236,8 +256,8 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        MESSAGES_URL, headers=headers, json=body
+                    resp = await capped_http.request(
+                        client, "POST", MESSAGES_URL, headers=headers, json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -254,22 +274,21 @@ class AnthropicAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            blocks = payload.get("content", []) or []
             content_text = "".join(
-                str(b.get("text", "") or "")
-                for b in blocks
+                text_or_empty(b.get("text"))
+                for b in _content_blocks(payload)
                 if isinstance(b, dict) and b.get("type") == "text"
             )
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("input_tokens", 0) or 0)
-            completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        except (KeyError, TypeError):
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("input_tokens"))
+            completion_tokens = token_count(usage.get("output_tokens"))
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return LLMResponse(
             content=content_text,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
+            model=response_model(payload, model),
         )
 
     async def embed(
@@ -327,8 +346,8 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        MESSAGES_URL, headers=headers, json=body
+                    resp = await capped_http.request(
+                        client, "POST", MESSAGES_URL, headers=headers, json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -345,9 +364,8 @@ class AnthropicAdapter:
         except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            blocks = payload.get("content", []) or []
             tool_input: Optional[dict] = None
-            for b in blocks:
+            for b in _content_blocks(payload):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     inp = b.get("input")
                     if isinstance(inp, dict):
@@ -356,16 +374,16 @@ class AnthropicAdapter:
             # No tool_use block -> the service-layer retry budget will
             # catch the empty-content case as a JSON parse failure.
             content_text = json.dumps(tool_input) if tool_input is not None else ""
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("input_tokens", 0) or 0)
-            completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        except (KeyError, TypeError):
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("input_tokens"))
+            completion_tokens = token_count(usage.get("output_tokens"))
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return LLMResponse(
             content=content_text,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
+            model=response_model(payload, model),
         )
 
     async def function_call(
@@ -400,8 +418,8 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
-                    resp = await client.post(
-                        MESSAGES_URL, headers=headers, json=body
+                    resp = await capped_http.request(
+                        client, "POST", MESSAGES_URL, headers=headers, json=body
                     )
         except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
@@ -415,10 +433,10 @@ class AnthropicAdapter:
             )
         try:
             payload = resp.json()
-        except (ValueError, RecursionError):
+        except ValueError:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
-            blocks = payload.get("content", []) or []
+            blocks = _content_blocks(payload)
             tool_calls: list[dict] = []
             seen_ids: set[str] = set()
             text_parts: list[str] = []
@@ -436,25 +454,17 @@ class AnthropicAdapter:
                     )
                 elif b.get("type") == "text":
                     text_parts.append(str(b.get("text") or ""))
-            usage = payload.get("usage", {}) or {}
-            prompt_tokens = int(usage.get("input_tokens", 0) or 0)
-            completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        except (
-            KeyError,
-            IndexError,
-            TypeError,
-            ValueError,
-            AttributeError,
-            OverflowError,
-            RecursionError,
-        ):
+            usage = usage_of(payload)
+            prompt_tokens = token_count(usage.get("input_tokens"))
+            completion_tokens = token_count(usage.get("output_tokens"))
+        except UNEXPECTED_SHAPE_ERRORS:
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,
             content="".join(text_parts),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=payload.get("model", model) or model,
+            model=response_model(payload, model),
         )
 
     async def stream(
@@ -500,14 +510,16 @@ class AnthropicAdapter:
         try:
             async with httpx.AsyncClient(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
-                    "POST", MESSAGES_URL, headers=headers, json=body
+                    "POST", MESSAGES_URL,
+                    headers=capped_http.identity_headers(headers),
+                    json=body,
                 ) as resp:
                     if resp.status_code != 200:
                         raise AIProviderError(
                             code=f"provider_status_{resp.status_code}",
                             status_code=resp.status_code,
                         )
-                    async for line in resp.aiter_lines():
+                    async for line in capped_http.aiter_lines(resp):
                         if not line or not line.startswith("data:"):
                             continue
                         data = line[len("data:"):].strip()
@@ -515,34 +527,40 @@ class AnthropicAdapter:
                             continue
                         try:
                             event = json.loads(data)
-                        except ValueError:
+                        except (ValueError, RecursionError):
+                            # malformed line (deep nesting included) — skip
                             continue
-                        etype = event.get("type")
-                        if etype == "content_block_delta":
-                            delta = event.get("delta") or {}
-                            text = str(delta.get("text") or "")
-                            if text:
-                                yield StreamChunk(
-                                    delta_text=text, done=False
+                        text = ""
+                        try:
+                            if not isinstance(event, dict):
+                                raise TypeError("event is not an object")
+                            etype = event.get("type")
+                            if etype == "content_block_delta":
+                                delta = event.get("delta") or {}
+                                text = text_or_empty(delta.get("text"))
+                            elif etype == "message_start":
+                                usage = usage_of(event.get("message") or {})
+                                prompt_tokens = token_count(
+                                    usage.get("input_tokens")
                                 )
-                        elif etype == "message_start":
-                            msg = event.get("message") or {}
-                            usage = msg.get("usage") or {}
-                            prompt_tokens = int(
-                                usage.get("input_tokens", 0) or 0
-                            )
-                            completion_tokens = int(
-                                usage.get("output_tokens", 0) or 0
-                            )
-                        elif etype == "error":
-                            errored = True
-                        elif etype == "message_delta":
-                            usage_final = isinstance(event.get("usage"), dict)
-                            usage = event.get("usage") or {}
-                            completion_tokens = int(
-                                usage.get("output_tokens", completion_tokens)
-                                or completion_tokens
-                            )
+                                completion_tokens = token_count(
+                                    usage.get("output_tokens")
+                                )
+                            elif etype == "error":
+                                errored = True
+                            elif etype == "message_delta":
+                                usage = usage_of(event)
+                                usage_final = isinstance(event.get("usage"), dict)
+                                completion_tokens = (
+                                    token_count(usage.get("output_tokens"))
+                                    or completion_tokens
+                                )
+                        except UNEXPECTED_SHAPE_ERRORS:
+                            raise AIProviderError(
+                                code="provider_unexpected_shape"
+                            ) from None
+                        if text:
+                            yield StreamChunk(delta_text=text, done=False)
         except AIProviderError:
             raise
         except (httpx.HTTPError, httpx.TimeoutException) as exc:

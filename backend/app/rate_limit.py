@@ -43,37 +43,23 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from typing import Iterable
 
 import logging
 from slowapi import Limiter
 from starlette.requests import Request
 
+from app import logs
 from app import rate_limit_db  # noqa: F401  (registers tbd-db://)
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-# Kept in lockstep with ``--forwarded-allow-ips`` in backend/Dockerfile,
-# docker-compose.yml, and docker-compose.prod.yml. When that list changes,
-# update here too so the rate limiter's trust boundary matches uvicorn's.
-_TRUSTED_PROXY_CIDRS: tuple[str, ...] = (
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "fc00::/7",
-    "127.0.0.0/8",
-    "::1/128",
-)
-
-
-def _compile_networks(
-    cidrs: Iterable[str],
-) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-    return tuple(ipaddress.ip_network(cidr) for cidr in cidrs)
-
-
-_TRUSTED_PROXY_NETWORKS = _compile_networks(_TRUSTED_PROXY_CIDRS)
+# The peers uvicorn takes X-Forwarded-For from: ``FORWARDED_ALLOW_IPS``, the
+# variable uvicorn itself reads (the images pass no ``--forwarded-allow-ips``),
+# with the images' default (INF-01). One value, so the rate limiter's trust
+# boundary is uvicorn's and the two cannot drift.
+_TRUSTED_PROXY_NETWORKS = settings.forwarded_allow_networks
 
 
 def _is_trusted_proxy(host: str | None) -> bool:
@@ -189,6 +175,24 @@ def rate_limit_key(request: Request) -> str:
     if ip.ipv4_mapped:
         return str(ip.ipv4_mapped)
     return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+
+
+def user_rate_limit_key(request: Request) -> str:
+    """Bucket key for per-user limits (TBD-726): the authenticated user.
+
+    For routes whose cost is per caller rather than per address, so users
+    behind one NAT do not share a budget and one user cannot spread across
+    addresses. slowapi calls the key function inside the route wrapper, after
+    the dependencies, and ``get_current_user`` (JWT and PAT alike) binds
+    ``user_id`` into the request's log context, the same channel
+    ``audit_service`` reads identity from. A request with no bound user falls
+    back to the per-IP key, so use this only on routes that depend on
+    ``get_current_user``.
+    """
+    user_id = logs.CONTEXT.get({}).get("user_id")
+    if isinstance(user_id, int):
+        return f"user:{user_id}"
+    return rate_limit_key(request)
 
 
 def _build_limiter() -> Limiter:

@@ -25,8 +25,10 @@ Architect-locked invariants:
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Optional
@@ -73,7 +75,7 @@ class RecurringSnapshot:
     id: int
     account_id: int
     amount: Decimal
-    type: str  # "income" | "expense"
+    type: str  # "income" | "expense" | "transfer"
     frequency: Frequency
     next_due_date: datetime.date
     # PR3: category_id is carried so custom ``expense_off`` events with
@@ -87,6 +89,9 @@ class RecurringSnapshot:
     # and one that keeps paying rent for 30 years. Defaulted to None so legacy
     # fixtures constructing a snapshot positionally are unaffected.
     remaining: Optional[int] = None
+    # TBD-600: a transfer's destination; it moves money out of ``account_id``
+    # and into this account, so the org's total is unchanged.
+    to_account_id: Optional[int] = None
 
 
 @dataclass
@@ -123,12 +128,66 @@ class WorldState:
     history: list[MonthlyCashflowPoint] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ScenarioSnapshot:
+    """The fields of a ``Scenario`` the engine reads, as plain data.
+
+    ``simulate_off_loop`` hands the engine this instead of the ORM row, so
+    nothing bound to an ``AsyncSession`` crosses into the worker thread
+    (TBD-726): an attribute read there could not lazy-load, and the session
+    is not thread-safe.
+    """
+
+    id: Optional[int]
+    scenario_type: ScenarioType
+    params_json: dict[str, Any]
+
+    @classmethod
+    def of(
+        cls, scenario: "Scenario | ScenarioSnapshot", *, params_json: Optional[dict[str, Any]] = None
+    ) -> "ScenarioSnapshot":
+        """Copy what the engine reads; ``params_json`` overrides the row's
+        assumptions (the AI path re-runs with adjusted ones)."""
+        params = scenario.params_json if params_json is None else params_json
+        return cls(
+            id=scenario.id,
+            scenario_type=scenario.scenario_type,
+            params_json=deepcopy(params or {}),
+        )
+
+
 @dataclass
 class SimulationRequest:
-    scenario: Scenario
+    scenario: Scenario | ScenarioSnapshot
     state: WorldState
     horizon_months: int
     options: dict[str, Any] = field(default_factory=dict)
+
+
+async def simulate_off_loop(
+    engine: "ScenarioEngine",
+    req: SimulationRequest,
+    *,
+    smooth_with_regression: bool = False,
+) -> dict[str, Any]:
+    """Run ``engine.simulate`` in a worker thread (TBD-726).
+
+    The projection is CPU-bound (up to 480 months of per-account math), so
+    running it in an async handler stalled every other request on the
+    worker's event loop. The caller loads everything first (the row, the
+    ``WorldState`` snapshot); here the scenario is copied into a
+    ``ScenarioSnapshot`` and the engine runs on plain data with no session.
+    The caller awaits the result before touching its session again.
+    """
+    detached = SimulationRequest(
+        scenario=ScenarioSnapshot.of(req.scenario),
+        state=req.state,
+        horizon_months=req.horizon_months,
+        options=req.options,
+    )
+    return await asyncio.to_thread(
+        engine.simulate, detached, smooth_with_regression=smooth_with_regression
+    )
 
 
 # ── Helpers shared by engines ───────────────────────────────────────────
@@ -433,12 +492,14 @@ class AnalyticEngine(ScenarioEngine):
                         and next_due <= month_end
                     ):
                         delta = Decimal(snap.amount)
-                        if snap.type == "expense":
-                            delta = -delta
-                        if snap.account_id in balances:
-                            balances[snap.account_id] = (
-                                balances[snap.account_id] + delta
-                            )
+                        legs = [(snap.account_id, delta)]
+                        if snap.type == "transfer":
+                            legs = [(snap.account_id, -delta), (snap.to_account_id, delta)]
+                        elif snap.type == "expense":
+                            legs = [(snap.account_id, -delta)]
+                        for account_id, leg_delta in legs:
+                            if account_id in balances:
+                                balances[account_id] = balances[account_id] + leg_delta
                     next_due = advance_date(next_due, snap.frequency)
                 new_queue.append((snap, next_due, remaining))
             recurring_queue = new_queue
@@ -685,6 +746,7 @@ async def build_world_state(
             next_due_date=r.next_due_date,
             category_id=r.category_id,
             remaining=remaining_occurrences(r),
+            to_account_id=r.to_account_id,
         )
         for r in recurring_rows
     ]
@@ -954,6 +1016,11 @@ class _RecurringFilter:
 
     def __init__(self, events: list[dict[str, Any]]):
         self.events = events
+        # BE-22: each event's ``category_ids`` as a set, built once, instead
+        # of a list scanned for every recurring row in every month.
+        self._category_sets = [
+            frozenset(ev.get("category_ids") or ()) for ev in events
+        ]
 
     def should_apply(
         self,
@@ -962,7 +1029,7 @@ class _RecurringFilter:
         month_index: int,
     ) -> bool:
         """Return True if the recurring should fire on this month_index."""
-        for ev in self.events:
+        for ev, cat_ids in zip(self.events, self._category_sets):
             ev_type = ev.get("type")
             if ev_type not in ("income_off", "expense_off"):
                 continue
@@ -978,7 +1045,6 @@ class _RecurringFilter:
             if ev_type == "income_off" and recurring.type == "income":
                 return False
             if ev_type == "expense_off" and recurring.type == "expense":
-                cat_ids = ev.get("category_ids")
                 if not cat_ids:
                     return False
                 if category_id is not None and category_id in cat_ids:

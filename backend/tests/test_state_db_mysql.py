@@ -185,3 +185,70 @@ def test_m10_jti_collision_is_classified_on_mysql(mysql_engine):
     s._rotate(sid + "a", sid + "b", sid, 1, TTL)
     assert s._rotate(sid + "b", sid + "a", sid, 1, TTL) == s.SESSION_ROTATE_JTI_COLLISION
     assert _head(mysql_engine, sid) == sid + "b"
+
+
+# ── BE-04: credential changes end every session ──────────────────────────
+
+
+def _uid():
+    """A user id no other test (or rerun) shares on this database."""
+    return 10**6 + uuid.uuid4().int % 10**8
+
+
+def test_m11_revoke_user_drops_every_family_but_the_kept_ones(mysql_engine):
+    uid = _uid()
+    sids = [_sid() for _ in range(3)]
+    for sid in sids:
+        s._issue(sid + "a", sid, uid, TTL)
+    assert s._revoke_user(uid, frozenset({sids[0]})) == 2
+    with mysql_engine.connect() as c:
+        left = set(c.execute(select(s._F.c.sid).where(s._F.c.user_id == uid)).scalars())
+    assert left == {sids[0]}
+    assert _members(mysql_engine, sids[1]) == set()
+    assert s._revoke_user(uid, frozenset()) == 1
+
+
+def test_m12_rotate_vs_revoke_user_never_leaves_a_live_successor(mysql_engine):
+    for _ in range(10):
+        uid, sid = _uid(), _sid()
+        s._issue(sid + "a", sid, uid, TTL)
+        rot, revoked = _run(
+            2,
+            lambda k: s._rotate(sid + "a", sid + "b", sid, uid, TTL) if k == 0 else s._revoke_user(uid, frozenset()),
+        )
+        assert rot in (s.SESSION_ROTATE_OK, s.SESSION_ROTATE_REVOKED)
+        assert revoked == 1
+        assert _head(mysql_engine, sid) is None
+        assert _members(mysql_engine, sid) == set()
+
+
+def test_m13_a_credential_cutoff_survives_fsp0_rounding(mysql_engine):
+    """The users cutoff columns are DATETIME(0) and MySQL rounds (or, under
+    TIME_TRUNCATE_FRACTIONAL, truncates) a fraction on insert. A raw cutoff at
+    .3 of a second is stored as that second, so a token minted earlier in it
+    (iat floored to the same second) passed the strict ``iat < cutoff``
+    check. ``session_cutoff`` is stored past it."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import Column, Integer, MetaData, Table, insert
+
+    from app.models.user import User
+    from app.security import session_cutoff
+
+    col = User.__table__.c.sessions_invalidated_at.type
+    probe = Table(
+        "be04_cutoff_probe", MetaData(),
+        Column("id", Integer, primary_key=True), Column("raw", col), Column("cutoff", col),
+        prefixes=["TEMPORARY"],
+    )
+    event = datetime(2026, 10, 23, 12, 0, 0, 300_000, tzinfo=timezone.utc)
+    token_iat = datetime.fromtimestamp(int(event.timestamp()), tz=timezone.utc)
+    with mysql_engine.connect() as c:
+        probe.create(c)
+        c.execute(insert(probe).values(id=1, raw=event, cutoff=session_cutoff(event)))
+        raw, cutoff = c.execute(select(probe.c.raw, probe.c.cutoff)).one()
+        probe.drop(c)
+    raw, cutoff = (v.replace(tzinfo=timezone.utc) for v in (raw, cutoff))
+    assert not token_iat < raw  # the defect the old write had
+    assert token_iat < cutoff
+    assert cutoff == event.replace(microsecond=0) + timedelta(seconds=1)

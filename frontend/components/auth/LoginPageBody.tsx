@@ -9,6 +9,7 @@ import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { ApiResponseError, apiFetch } from "@/lib/api";
+import { startGoogleSignIn } from "@/lib/google-sso";
 import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
 import { sanitizeReturnTo } from "@/lib/returnTo";
 
@@ -41,6 +42,8 @@ const SSO_ERROR_COPY: Record<string, string> = {
   deactivated:
     "This account is deactivated. Contact support if this is unexpected.",
   no_email: "Google didn't return an email for this account.",
+  email_unsupported:
+    "This Google account's email address uses accented letters or an international domain name, which aren't supported. Try another Google account.",
   cancelled:
     "You cancelled the Google sign-in. Try again whenever you're ready.",
   provider_error:
@@ -139,8 +142,8 @@ export default function LoginPageBody() {
   async function handleGoogleLogin() {
     setGoogleLoading(true);
     try {
-      const data = await apiFetch<{ redirect_url: string }>("/api/v1/auth/google");
-      window.location.href = data.redirect_url;
+      // FE-02: also stores the nonce the callback page checks.
+      await startGoogleSignIn();
     } catch (err) {
       setGoogleLoading(false);
       setError(err instanceof Error ? err.message : "Google sign-in is not available");

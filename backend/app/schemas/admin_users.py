@@ -1,7 +1,9 @@
 """Schemas for the admin user-management endpoints."""
 from __future__ import annotations
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.schemas.email_address import reject_non_ascii_email
 
 
 class UserMergeRequest(BaseModel):
@@ -54,6 +56,9 @@ class AdminEmailChangeRequest(BaseModel):
     new_email: EmailStr = Field(max_length=120)
     new_email_confirm: EmailStr = Field(max_length=120)
     reason: str = Field(min_length=4, max_length=200)
+
+    # DB-01: new addresses are ASCII only (see schemas/email_address.py).
+    _check_email = field_validator("new_email", "new_email_confirm")(reject_non_ascii_email)
 
 
 class AdminEmailChangeResponse(BaseModel):

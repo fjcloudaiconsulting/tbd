@@ -18,6 +18,7 @@ at an exact-integer month boundary, acceptable for a projection).
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import date
@@ -27,6 +28,10 @@ from typing import Optional
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 
+from app import tracing
+
+logger = logging.getLogger(__name__)
+
 _LOAN = "loan"
 
 # Ranges (belt-and-suspenders with the Pydantic Field constraints, which 422 at
@@ -35,6 +40,10 @@ _APR_LO = Decimal("0")
 _APR_HI = Decimal("999.99")
 _TERM_LO = 1
 _TERM_HI = 480
+# BE-16. Loan dates are bounded so maturation (first payment + up to 479
+# months) and the payoff projection stay inside ``date``'s range.
+LOAN_DATE_MIN = date(1900, 1, 1)
+LOAN_DATE_MAX = date(2200, 12, 31)
 
 _CENTS = Decimal("0.01")
 
@@ -93,10 +102,24 @@ def validate_loan_fields(
             status_code=422,
             detail="term_months must be between 1 and 480",
         )
+    for name in ("origination_date", "first_payment_date"):
+        if not (LOAN_DATE_MIN <= fields[name] <= LOAN_DATE_MAX):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name} must be between {LOAN_DATE_MIN} and {LOAN_DATE_MAX}",
+            )
     if first_payment_date < origination_date:
         raise HTTPException(
             status_code=422,
             detail="first_payment_date must be on or after origination_date",
+        )
+    # BE-16. PMT rounds to cents, so a tiny principal over a long term can
+    # round to 0.00, a payment that never repays anything (and divided by
+    # zero in the payoff projection).
+    if compute_pmt(principal_amount, interest_rate_apr, term_months) <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="loan terms give a monthly payment of 0.00; raise principal_amount or shorten term_months",
         )
 
 
@@ -174,10 +197,10 @@ def compute_loan_metrics(
             status="paid_off",
         )
 
-    if r == 0:
-        n_rem = math.ceil(owed / pmt)
-    elif pmt <= r * owed:
-        # Payment never covers the interest accrual -> never amortizes.
+    if pmt <= r * owed:
+        # Payment never covers the interest accrual -> never amortizes. Checked
+        # before the r == 0 branch so a legacy pmt of 0.00 (validation now
+        # refuses it, BE-16) lands here instead of dividing by zero.
         return LoanMetrics(
             expected_monthly_payment=pmt,
             maturation_date=maturation_date,
@@ -186,6 +209,8 @@ def compute_loan_metrics(
             projected_payoff_months=None,
             status="interest_only",
         )
+    elif r == 0:
+        n_rem = math.ceil(owed / pmt)
     else:
         # n_rem = ceil( -ln(1 - r*B/PMT) / ln(1 + r) ). One Decimal->float hop.
         ratio = 1.0 - float(r) * float(owed) / float(pmt)
@@ -194,11 +219,15 @@ def compute_loan_metrics(
     n_rem = max(n_rem, 1)
     # Anchor to the next scheduled payment date (deterministic; does not drift
     # with the day the page is opened, and stays consistent with maturation).
-    k = 0
-    while first_payment_date + relativedelta(months=k) < today:
-        k += 1
-    next_payment_date = first_payment_date + relativedelta(months=k)
-    projected_payoff_date = next_payment_date + relativedelta(months=n_rem - 1)
+    # BE-16: computed, not walked month by month from first_payment_date.
+    next_payment_date = _first_payment_on_or_after(first_payment_date, today)
+    try:
+        projected_payoff_date = next_payment_date + relativedelta(months=n_rem - 1)
+    except (OverflowError, ValueError):
+        # Further out than ``date`` can say (a payment barely above the
+        # interest on a large live balance). Still amortizing, so on_track,
+        # with no date; the UI renders "On track" without one.
+        projected_payoff_date = None
 
     return LoanMetrics(
         expected_monthly_payment=pmt,
@@ -208,3 +237,31 @@ def compute_loan_metrics(
         projected_payoff_months=n_rem,
         status="on_track",
     )
+
+
+def _first_payment_on_or_after(first_payment_date: date, today: date) -> date:
+    """The first ``first_payment_date + k months`` (k >= 0) on or after ``today``."""
+    if first_payment_date >= today:
+        return first_payment_date
+    k = (today.year - first_payment_date.year) * 12 + (today.month - first_payment_date.month)
+    # relativedelta clamps the day (Jan 31 + 1 month = Feb 28), so k months can
+    # land just before today; then k + 1 is the answer, as the walk found.
+    candidate = first_payment_date + relativedelta(months=k)
+    if candidate < today:
+        candidate = first_payment_date + relativedelta(months=k + 1)
+    return candidate
+
+
+def loan_metrics_or_none(**kwargs) -> Optional[LoanMetrics]:
+    """``compute_loan_metrics``, or ``None`` when a stored row's values cannot
+    be projected (BE-16).
+
+    Rows written before the date and payment bounds can still hold them. One
+    such account used to make every accounts list for its org a 500; now it
+    renders without its loan block, as an incomplete loan does.
+    """
+    try:
+        return compute_loan_metrics(**kwargs)
+    except (ArithmeticError, ValueError, OverflowError) as exc:
+        logger.warning("loan.metrics.unavailable", extra={"error": tracing.error_summary(exc)})
+        return None

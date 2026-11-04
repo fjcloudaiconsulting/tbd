@@ -184,6 +184,26 @@ async def test_create_tag_succeeds_and_persists(db_session):
 
 
 @pytest.mark.asyncio
+async def test_list_org_tags_search_treats_like_wildcards_literally(db_session):
+    """BE-27: tag names never contain ``%`` or ``_``, so a search for them
+    matches nothing (it used to match every tag, or any one character)."""
+    org, user = await _make_org_user(db_session, "wild")
+    await db_session.commit()
+    for name in ("insurance", "travel"):
+        await tag_service.create_tag(
+            db_session, org_id=org.id, name=name, created_by_user_id=user.id
+        )
+    await db_session.commit()
+
+    async def names(q):
+        return [t.name_normalized for t, _ in await tag_service.list_org_tags(db_session, org.id, q=q)]
+
+    assert await names("%") == []
+    assert await names("tr_vel") == []
+    assert await names("ravel") == ["travel"]
+
+
+@pytest.mark.asyncio
 async def test_create_tag_collision_within_org_raises_conflict(db_session):
     org, user = await _make_org_user(db_session, "alpha")
     await db_session.commit()
@@ -453,23 +473,38 @@ async def test_suggest_skips_dictionary_when_share_disabled(db_session):
 @pytest.mark.asyncio
 async def test_suggest_dictionary_pass_honors_k_anonymity_floor(db_session):
     """With sharing on, dictionary entries below the floor (3) are NOT
-    surfaced. Only entries at-or-above the floor (or seeded) appear."""
+    surfaced. Only entries at-or-above the floor (or seeded) appear.
+
+    BE-18: the floor counts contributor rows of aged orgs, so the entries
+    get real contributors from orgs older than the minimum age."""
     org, _user = await _make_org_user(db_session, "alpha")
     await _enable_share_tag_data(db_session, org.id)
-    db_session.add_all([
-        TagDictionary(
-            name_normalized="below",
-            contributor_org_count=2,  # below floor of 3
-            usage_count=99,
-            is_seed=False,
-        ),
-        TagDictionary(
-            name_normalized="above",
-            contributor_org_count=3,  # at floor
-            usage_count=10,
-            is_seed=False,
-        ),
-    ])
+    old = datetime.datetime(2020, 1, 1)
+    contributors = []
+    for name in ("c1", "c2", "c3"):
+        c, _ = await _make_org_user(db_session, name)
+        c.created_at = old
+        contributors.append(c)
+    below = TagDictionary(
+        name_normalized="below",
+        contributor_org_count=2,  # below floor of 3
+        usage_count=99,
+        is_seed=False,
+    )
+    above = TagDictionary(
+        name_normalized="above",
+        contributor_org_count=3,  # at floor
+        usage_count=10,
+        is_seed=False,
+    )
+    db_session.add_all([below, above])
+    await db_session.flush()
+    for c in contributors[:2]:
+        db_session.add(TagDictionaryContributor(dictionary_tag_id=below.id,
+                                                contributor_org_id=c.id))
+    for c in contributors:
+        db_session.add(TagDictionaryContributor(dictionary_tag_id=above.id,
+                                                contributor_org_id=c.id))
     await db_session.commit()
 
     res = await tag_service.suggest_tags(
@@ -504,6 +539,46 @@ async def test_suggest_seed_bypasses_floor(db_session):
         limit=10,
     )
     assert any(s.name == "gym" and s.source == "shared_dictionary" for s in res)
+
+
+@pytest.mark.asyncio
+async def test_suggest_prefix_treats_like_wildcards_literally(db_session):
+    """TBD-718: ``%`` and ``_`` in the prefix are literal in every pass,
+    as in ``list_org_tags`` (BE-27). Tag names never contain them, so such
+    a prefix matches nothing."""
+    org, user = await _make_org_user(db_session, "wild")
+    acc, cat = await _make_account_and_category(db_session, org.id)
+    tx = await _make_transaction(db_session, org.id, acc.id, cat.id)
+    await _enable_share_tag_data(db_session, org.id)
+    db_session.add(TagDictionary(
+        name_normalized="gym",
+        contributor_org_count=0,
+        usage_count=0,
+        is_seed=True,
+    ))
+    await db_session.commit()
+    await tag_service.set_transaction_tags(
+        db_session, org_id=org.id, transaction_id=tx.id,
+        tag_names=["insurance"], created_by_user_id=user.id,
+    )
+    await tag_service.create_tag(
+        db_session, org_id=org.id, name="travel", created_by_user_id=user.id
+    )
+    await db_session.commit()
+
+    async def names(prefix):
+        res = await tag_service.suggest_tags(
+            db_session, org_id=org.id, prefix=prefix, category_id=cat.id, limit=10,
+        )
+        return sorted((s.name, s.source) for s in res)
+
+    # Org co-category, org recent and shared dictionary passes alike.
+    for prefix in ("%", "%y", "_", "i_s", "t_", "g_m", "\\"):
+        assert await names(prefix) == [], prefix
+    # A plain prefix still matches in each pass.
+    assert await names("ins") == [("insurance", "org_co_category")]
+    assert await names("tra") == [("travel", "org_recent")]
+    assert await names("gy") == [("gym", "shared_dictionary")]
 
 
 # ---------------------------------------------------------------------------

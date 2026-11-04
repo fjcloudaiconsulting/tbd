@@ -123,6 +123,9 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         ("GET", "/api/v1/auth/check-username"),
         # Account creation. Nothing to authenticate yet.
         ("POST", "/api/v1/auth/register"),
+        # Email-first sign-up, step 1 (TBD-654). Nothing to authenticate yet;
+        # answers the same 202 for every address and stores nothing.
+        ("POST", "/api/v1/auth/signup/start"),
         # Password reset request. Answers uniformly regardless of whether the
         # address exists, so it leaks no account inventory.
         ("POST", "/api/v1/auth/forgot-password"),
@@ -134,9 +137,6 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # Starts the Google OAuth redirect; the caller is anonymous by
         # construction at this point in the flow.
         ("GET", "/api/v1/auth/google"),
-        # Founding-members counter rendered on the marketing/signup surface,
-        # before any account exists. Returns a single aggregate integer.
-        ("GET", "/api/v1/public/founder-count"),
         # CSP violation sink. Browsers post these with no auth context and no
         # way to attach a bearer token; wired in via ``report-uri``/
         # ``report-to``. Always answers 204.
@@ -176,6 +176,9 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # The emailed verification JWT is the credential; the account is not
         # yet usable for login at this point.
         ("POST", "/api/v1/auth/verify-email"),
+        # Email-first sign-up, step 2 (TBD-654). The single-use signup JWT,
+        # mailed in step 1, is the credential; no account exists before it.
+        ("POST", "/api/v1/auth/signup/complete"),
         # ── The four pre-auth MFA challenge routes. Each is the SECOND leg of
         # a login that has already passed password verification and holds a
         # short-lived ``mfa_token``; no access token exists yet. Listed
@@ -198,7 +201,13 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # The invitee has no account yet, so there is no credential to
         # present. Gated by a signed, 7-day, email-bound invitation JWT;
         # every failure mode returns one uniform 410 so the response cannot
-        # distinguish "not yours" from "does not exist".
+        # distinguish "not yours" from "does not exist". TBD-738: the JWT
+        # travels in the POST body, never in the URL.
+        ("POST", "/api/v1/orgs/invitations/preview"),
+        # DEPRECATED (TBD-738), one release only: the same preview with the
+        # JWT in the query string, kept while a frontend that still calls it
+        # may be deployed. Same credential, same uniform 410, and the same
+        # rate-limit bucket as the POST. Remove with the route.
         ("GET", "/api/v1/orgs/invitations/preview"),
         # Creates the account, so it necessarily runs before the caller has
         # one. The signed invitation JWT is the credential: ``org_id`` and
@@ -428,14 +437,14 @@ def test_p6_allowlist_literal_is_the_expected_size():
     The count is asserted separately from the set so a diff that quietly
     reshapes the literal cannot land without touching this number.
     """
-    assert len(PUBLIC_ROUTES) == 30, (
-        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 30. If a "
+    assert len(PUBLIC_ROUTES) == 32, (
+        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 32. If a "
         "route was legitimately added to or removed from the public surface, "
         "update this number, CONTRIBUTING.md, and record the security review."
     )
     # Deduped count must match too: a duplicated (method, path) line would
     # otherwise inflate the literal while the comparison set stayed the same.
-    assert len(_PUBLIC_ROUTE_SET) == 30, (
+    assert len(_PUBLIC_ROUTE_SET) == 32, (
         "PUBLIC_ROUTES contains duplicate entries: "
         f"{sorted({e for e in PUBLIC_ROUTES if PUBLIC_ROUTES.count(e) > 1})}"
     )

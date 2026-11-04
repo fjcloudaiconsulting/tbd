@@ -10,7 +10,7 @@ services:
     # If you need to move between this branch and an 8.0 branch, `./tbd reset`
     # on the way back, or keep the branches in separate worktrees with separate
     # `-p` compose projects so they never share this volume.
-    image: mirror.gcr.io/library/mysql:8.4@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69
+    image: mirror.gcr.io/library/mysql:8.4@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -44,7 +44,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--reload", "--proxy-headers"]
     volumes:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
@@ -128,7 +128,9 @@ services:
       # obeyed.
       - ./README.md:/app/README.md:ro
       # INF-03: tests/test_public_secret_defaults.py scans these for committed secrets that
-      # production must refuse. Same container-only trap as README.md above.
+      # production must refuse. INF-01: backend/tests/test_forwarded_allow_ips.py asserts no
+      # compose command pins --forwarded-allow-ips (it would hide FORWARDED_ALLOW_IPS from
+      # uvicorn). Same container-only trap as README.md above; recreate after a pull.
       - ./.env.example:/app/.env.example:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - ./docker-compose.prod.yml:/app/docker-compose.prod.yml:ro
@@ -182,7 +184,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--reload", "--proxy-headers"]
     volumes:
       - ./backend/app:/app/app:ro
 
@@ -229,7 +231,7 @@ services:
       - ./frontend/tsconfig.json:/app/tsconfig.json
 
   nginx:
-    image: mirror.gcr.io/library/nginx:alpine@sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417
+    image: mirror.gcr.io/library/nginx:alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
     # INF-10: loopback only. On all interfaces anyone on the same network reaches Swagger, the
     # dev OAuth server, the public dev pepper and the demo superadmin.
     ports:

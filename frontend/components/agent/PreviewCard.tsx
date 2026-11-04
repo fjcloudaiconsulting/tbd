@@ -11,7 +11,8 @@ import { AlertTriangle, ArrowRight, Check } from "lucide-react";
 
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 import {
-  actionHeadline, changeLabel, changeValue, drillDown, text, utcDate,
+  actionHeadline, changeLabel, changeValue, drillDown, isDelta, isNew, rowLabel, summaryChange,
+  summaryLabel, summaryTotal, text, utcDate,
 } from "@/lib/agent/present";
 import type { ActionChange, DriftRow, StagedAction } from "@/lib/agent/types";
 import { maskMoneyText } from "@/lib/format";
@@ -58,7 +59,25 @@ const OUTCOME: Record<Outcome, { label: string; cls: string }> = {
 };
 
 function subject(tool: string, ctx: Record<string, unknown>): string {
-  return text(tool === "transactions_set_category" ? ctx.description : ctx.category_name);
+  return text(tool.startsWith("transactions_") ? ctx.description : ctx.category_name);
+}
+
+const rowKey = (c: { entity: string; id: unknown }) => `${c.entity}:${JSON.stringify(c.id)}`;
+
+// How each change row reads: a counter or balance by its movement, a new row
+// by its value, and a deleted row as deleted. Deletion is what the server
+// states in `context.deleted`, never inferred from fields going to null (an
+// edit can clear several fields).
+function shapes(changes: ActionChange[], ctx: Record<string, unknown>) {
+  const stated = Array.isArray(ctx.deleted) ? (ctx.deleted as { entity: string; id: unknown }[]) : [];
+  const deleted = new Set(stated.map(rowKey));
+  // Name the row only when the preview touches several rows of one kind.
+  const kinds = new Map<string, number>();
+  for (const k of new Set(changes.map(rowKey))) kinds.set(k.split(":")[0], (kinds.get(k.split(":")[0]) ?? 0) + 1);
+  return {
+    deleted: (c: ActionChange) => deleted.has(rowKey(c)),
+    named: (c: ActionChange) => (kinds.get(c.entity) ?? 0) > 1,
+  };
 }
 
 function timeOf(iso: string): string {
@@ -102,7 +121,11 @@ export default function PreviewCard({
   // Hidden balances mask every amount; applying a money change unseen would be
   // blind consent to a ledger write, so Apply waits until balances are shown.
   const headline = actionHeadline(tool, action.summary, action.changes);
-  const blind = hidden && (action.changes.some((c) => c.currency) || maskMoneyText(headline) !== headline);
+  const summaries = action.summaries ?? [];
+  const blind = hidden && (
+    action.changes.some((c) => c.currency) || maskMoneyText(headline) !== headline
+    || summaries.some((s) => s.totals.currency || s.sample.some((c) => c.currency))
+  );
 
   async function decide(kind: "confirm" | "cancel") {
     if (busyRef.current || (kind === "confirm" && (blind || Date.now() < armedAt.current))) return;
@@ -147,9 +170,35 @@ export default function PreviewCard({
 
   const ctx = action.context ?? {};
   const primary = action.changes[0];
+  const shape = shapes(action.changes, ctx);
   const about = subject(tool, ctx);
   const link = drillDown(primary);
   const headingId = `preview-${action.action_id}`;
+  const changeRow = (c: ActionChange, i: number, named: boolean, deleted: boolean) => (
+    <div
+      key={`${c.entity}-${text(c.id)}-${c.field}-${i}`}
+      className="grid gap-1 px-5 py-2.5 sm:grid-cols-[11rem_1fr] sm:gap-4"
+    >
+      <dt className="text-xs text-text-secondary sm:pt-0.5">
+        {named && <span className="block text-text-muted">{rowLabel(c)}</span>}
+        {changeLabel(c)}
+      </dt>
+      <dd className="flex flex-wrap items-center gap-x-2 text-sm tabular-nums [overflow-wrap:anywhere]">
+        {isDelta(c) || (isNew(c.id) && c.before === null) ? (
+          <bdi className="font-medium text-text-primary">{changeValue(c, "after", primary, ctx)}</bdi>
+        ) : (
+          <>
+            <bdi className="text-text-secondary">{changeValue(c, "before", primary, ctx)}</bdi>
+            <ArrowRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.75} />
+            <span className="sr-only">to</span>
+            <bdi className="font-medium text-text-primary">
+              {deleted ? "Deleted" : changeValue(c, "after", primary, ctx)}
+            </bdi>
+          </>
+        )}
+      </dd>
+    </div>
+  );
   const sameRow = (d: DriftRow) => (c: ActionChange) =>
     c.entity === d.entity && text(c.id) === text(d.id) && c.field === d.field;
 
@@ -177,21 +226,40 @@ export default function PreviewCard({
       </div>
 
       <dl className="mt-3 divide-y divide-border-subtle border-y border-border-subtle">
-        {action.changes.map((c, i) => (
-          <div
-            key={`${c.entity}-${text(c.id)}-${c.field}-${i}`}
-            className="grid gap-1 px-5 py-2.5 sm:grid-cols-[11rem_1fr] sm:gap-4"
-          >
-            <dt className="text-xs text-text-secondary sm:pt-0.5">{changeLabel(c)}</dt>
-            <dd className="flex flex-wrap items-center gap-x-2 text-sm tabular-nums [overflow-wrap:anywhere]">
-              <bdi className="text-text-secondary">{changeValue(c, "before", primary, ctx)}</bdi>
-              <ArrowRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.75} />
-              <span className="sr-only">to</span>
-              <bdi className="font-medium text-text-primary">{changeValue(c, "after", primary, ctx)}</bdi>
-            </dd>
-          </div>
-        ))}
+        {action.changes.map((c, i) => changeRow(c, i, shape.named(c), shape.deleted(c)))}
       </dl>
+
+      {summaries.map((s, i) => {
+        const id = `${headingId}-summary-${i}`;
+        const shown = new Set(s.sample.map(rowKey)).size;
+        const change = summaryChange(s);
+        const total = summaryTotal(s);
+        return (
+          <div
+            key={id}
+            role="group"
+            aria-labelledby={id}
+            className="border-b border-border-subtle pt-3"
+            data-testid="preview-summary"
+          >
+            <p id={id} className="px-5 text-sm font-medium text-text-primary">{summaryLabel(s)}</p>
+            {change && (
+              <p className="mt-0.5 flex px-5 flex-wrap items-center gap-x-2 text-sm tabular-nums text-text-secondary">
+                <span>{changeLabel(change)}:</span>
+                <bdi>{changeValue(change, "before", primary, ctx)}</bdi>
+                <ArrowRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.75} />
+                <span className="sr-only">to</span>
+                <bdi className="font-medium text-text-primary">{changeValue(change, "after", primary, ctx)}</bdi>
+              </p>
+            )}
+            {total && <p className="mt-0.5 px-5 text-sm tabular-nums text-text-secondary">Total <bdi>{total}</bdi></p>}
+            <p className="mt-1 px-5 text-xs text-text-muted">Showing {shown} of {s.count}</p>
+            <dl className="mt-1 divide-y divide-border-subtle">
+              {s.sample.map((c, j) => changeRow(c, j, true, s.change === "delete"))}
+            </dl>
+          </div>
+        );
+      })}
 
       <div className="space-y-3 px-5 py-4">
         {(action.warnings ?? []).map((w) => (

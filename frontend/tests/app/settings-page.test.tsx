@@ -205,3 +205,61 @@ describe("Settings page — email change step-up token state hygiene", () => {
     expect(screen.getByText(/Google verified/i)).toBeInTheDocument();
   });
 });
+
+describe("Settings page — email change on an account with two-factor (BE-32)", () => {
+  function mockMfaUser() {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { ...makeUser(true), mfa_enabled: true } as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn().mockResolvedValue(undefined),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn().mockResolvedValue(undefined),
+    } as never);
+  }
+
+  beforeEach(() => {
+    vi.mocked(apiFetch).mockReset();
+    vi.mocked(apiFetch).mockResolvedValue({} as never);
+  });
+
+  it("asks for a code and sends it as mfa_code with the password", async () => {
+    mockMfaUser();
+    render(<SettingsProfilePage />);
+    fireEvent.change(screen.getByLabelText(/^Email$/i), { target: { value: "new@acme.io" } });
+    fireEvent.change(screen.getByLabelText(/^Current password/i), { target: { value: "hunter2" } });
+    fireEvent.change(screen.getByLabelText(/Authenticator or recovery code/i), {
+      target: { value: "123456" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Save Changes/i }));
+
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith("/api/v1/users/me", expect.objectContaining({ method: "PUT" })),
+    );
+    const call = vi.mocked(apiFetch).mock.calls.find(([u]) => u === "/api/v1/users/me");
+    expect(JSON.parse((call![1] as { body: string }).body)).toEqual({
+      email: "new@acme.io",
+      current_password: "hunter2",
+      mfa_code: "123456",
+    });
+  });
+
+  it("does not send the change without a code", async () => {
+    mockMfaUser();
+    render(<SettingsProfilePage />);
+    fireEvent.change(screen.getByLabelText(/^Email$/i), { target: { value: "new@acme.io" } });
+    fireEvent.change(screen.getByLabelText(/^Current password/i), { target: { value: "hunter2" } });
+    fireEvent.submit(screen.getByRole("button", { name: /Save Changes/i }).closest("form")!);
+
+    expect(await screen.findByText(/Enter a code from your authenticator app/i)).toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalledWith("/api/v1/users/me", expect.anything());
+  });
+
+  it("shows no code field when two-factor is off", () => {
+    mockUser(true);
+    render(<SettingsProfilePage />);
+    fireEvent.change(screen.getByLabelText(/^Email$/i), { target: { value: "new@acme.io" } });
+    expect(screen.queryByLabelText(/Authenticator or recovery code/i)).toBeNull();
+  });
+});

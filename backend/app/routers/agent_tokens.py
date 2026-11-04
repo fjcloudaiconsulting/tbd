@@ -46,7 +46,7 @@ from app.schemas.agent_token import (
 )
 from app.schemas.api_token import MintTokenResponse
 from app.schemas.common import ListEnvelope
-from app.security import token_cutoff
+from app.security import token_cutoff, wait_out_cutoff_second
 from app.services import api_token_service as svc
 from app.services import audit_service, notification_service
 from app.services.notification_templates import agent_token_created
@@ -138,6 +138,7 @@ async def mint_agent_token(
     # session is rolled back and the ORM attributes are expired.
     actor = (current_user.id, current_user.email, current_user.org_id)
     cutoff_seen = token_cutoff(current_user)
+    await wait_out_cutoff_second(cutoff_seen)  # before any write (TBD-583)
 
     try:
         await actions._hit(
@@ -149,7 +150,10 @@ async def mint_agent_token(
         raise _err(code, exc.code, exc.detail) from None
 
     try:
-        sso_proof = _verify_step_up(current_user, body, "agent_token_mint")
+        sso_proof = await _verify_step_up(
+            current_user, body, "agent_token_mint",
+            request=request, db=db, session_factory=session_factory,
+        )
         if sso_proof and not await consume_stepup(db, current_user):
             raise _step_up_401()
         plaintext, row = await svc.mint_agent(
@@ -260,6 +264,7 @@ async def _revoke(
     if row is None or row.revoked_at is not None:
         raise _not_found()
     row.revoked_at = svc._naive_utc_now()
+    await svc.cancel_staged_actions(db, [row.id])  # TBD-664: its staged actions die with it
     await db.commit()
     await _audit(session_factory, request, actor, "agent_token.revoked", "success", {
         "api_token_id": row.id, "name": row.name, "scope": row.scope,

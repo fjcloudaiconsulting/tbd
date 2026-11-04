@@ -4,7 +4,7 @@ PR1 shipped ``ValidateCapable`` only. PR2 added ``ChatCapable.chat`` +
 ``LLMResponse`` + ``AIProviderError``. PR3 (this layer) implements the
 remaining capability protocols:
 
-- ``EmbedCapable.embed`` — vector embedding for OpenAI, Ollama,
+- ``EmbedCapable.embed`` — vector embedding for OpenAI and
   OpenAI-compatible. Anthropic does not expose embeddings; the adapter
   raises ``NotImplementedError`` so callers can fall back. A future PR
   may add Voyage AI as a sibling provider.
@@ -15,29 +15,31 @@ remaining capability protocols:
   exhaustion the service raises ``StructuredOutputError`` with code
   ``STATUS_ERROR_STRUCTURED_OUTPUT``.
 - ``FunctionCallCapable.function_call`` — provider-side tool use
-  (OpenAI function-calling shape, Anthropic tool_use). Ollama is
-  model-dependent; the adapter raises ``CapabilityNotSupported`` for
-  models we know don't support it.
+  (OpenAI function-calling shape, Anthropic tool_use). An adapter may
+  raise ``CapabilityNotSupported`` for a model that cannot call tools.
 - ``StreamCapable.stream`` — async-iterator streaming of chat
   responses. The ledger is written once at end-of-stream with the
   final token usage (estimated if the provider doesn't report tokens
   for the streamed response).
 
-The Native adapter still raises ``NativeNotAvailable`` for every
-capability, including the PR3 ones, until PR4 wires a real backend.
+TBD-584 removed the ``ollama`` (bring-your-own local model) and dead
+``native`` adapters. A credential row that still names one of them gets
+no adapter: ``get_adapter`` raises ``ProviderNotSupported``.
 """
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Optional, Protocol, runtime_checkable
-
-import httpx
+from typing import TYPE_CHECKING, AsyncIterator, Optional, Protocol, runtime_checkable
 
 from app.models.org_ai_credential import AiProvider
 from app.schemas.org_ai_routing import MODEL_NAME_MAX_LENGTH
+
+if TYPE_CHECKING:
+    from app.services.ai_providers.capped_http import CappedResponse
 
 
 @dataclass
@@ -65,8 +67,7 @@ class LLMResponse:
     provider's own billed cost (micro-USD) when it reports one, else None.
     ``model`` echoes the model the adapter actually called — useful
     in the ledger for ops debugging when an adapter falls back to a
-    different model than the routing requested (e.g. Ollama with a
-    missing pinned model).
+    different model than the routing requested.
     """
 
     content: str
@@ -115,14 +116,13 @@ class FunctionCallResponse:
 
     ``tool_calls`` is the structured list of tool invocations the model
     requested. Each entry has ``id`` (the provider's call id, or a
-    synthesized one when the provider's is unusable; Ollama entries
-    carry no id), ``name`` (the tool
+    synthesized one when the provider's is unusable), ``name`` (the tool
     name) and ``arguments`` (a dict, already JSON-parsed). ``content`` is
     any free-text the model emitted alongside the tool call (typically
     empty when a tool was invoked).
 
     Multi-round transcript (provider-neutral, accepted by every
-    ``function_call`` except Ollama's): append
+    ``function_call``): append
     ``{"role": "assistant", "content": resp.content, "tool_calls":
     resp.tool_calls}`` and then exactly one ``{"role": "tool",
     "tool_call_id": <id>, "content": <str>}`` per call, error text
@@ -171,13 +171,10 @@ class StreamChunk:
 
 
 class NativeNotAvailable(Exception):
-    """Raised by the native adapter while AI_NATIVE_ENABLED is False.
-
-    PR4 keeps raising this even when the gate is true until a real
-    native backend exists (spec §5: "the toggle is a one-way decision
-    per environment"). Selection endpoints map this to the
-    ``not_yet_available`` typed code; ``call_llm`` maps it to
-    ``ai_native_not_available``.
+    """Hosted (platform) AI cannot serve this call: off, not entitled, no
+    consent, or no usable platform model. ``call_llm`` maps it to
+    ``ai_native_not_available``. The name predates TBD-584, which removed
+    the ``native`` provider stub that first raised it.
     """
 
     def __init__(self, code: str = "not_yet_available") -> None:
@@ -207,13 +204,151 @@ class AIProviderError(Exception):
         self.provider_reason = provider_reason
 
 
+# Every way a hostile or broken 200 body can fail to parse into the expected
+# shape (wrong types, missing keys, out-of-range numbers, deep nesting). Each
+# adapter maps them to ``provider_unexpected_shape`` (TBD-607).
+UNEXPECTED_SHAPE_ERRORS = (
+    KeyError,
+    IndexError,
+    TypeError,
+    ValueError,
+    AttributeError,
+    OverflowError,
+    RecursionError,
+)
+
+# Far above any real call, and low enough that prompt + completion still fits
+# the ledger's INT ``total_tokens`` column.
+MAX_TOKEN_COUNT = 1_000_000_000
+
+
+def token_count(value: object) -> int:
+    """A provider-reported token count as a non-negative int.
+
+    Missing (None) is 0, and so is a negative count: it must never lower the
+    month's metered cost. Anything else that is not an integral JSON number
+    up to ``MAX_TOKEN_COUNT`` (a string, a bool, NaN, infinity, a fraction)
+    raises one of ``UNEXPECTED_SHAPE_ERRORS``.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("token count is not a number")
+    if isinstance(value, float):
+        if not value.is_integer():  # also NaN and infinity
+            raise ValueError("token count is not an integer")
+        value = int(value)
+    if value > MAX_TOKEN_COUNT:
+        raise ValueError("token count out of range")
+    return max(0, value)
+
+
+def usage_of(container: object, key: str = "usage") -> dict:
+    """The usage object under ``key``: {} when absent, else it must be an object."""
+    if not isinstance(container, dict):
+        raise TypeError("expected an object")
+    usage = container.get(key)
+    if usage is None:
+        return {}
+    if not isinstance(usage, dict):
+        raise TypeError("usage is not an object")
+    return usage
+
+
+def text_or_empty(value: object) -> str:
+    """Provider text: None is "", anything but a string is a shape error."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError("text is not a string")
+    return value
+
+
+def response_model(payload: dict, requested: str) -> str:
+    """The model the provider echoed, or the requested one when the echo is
+    not a usable model name."""
+    echoed = payload.get("model")
+    if isinstance(echoed, str) and 0 < len(echoed) <= MODEL_NAME_MAX_LENGTH:
+        return echoed
+    return requested
+
+
+def openai_message_content(payload: object) -> str:
+    """Assistant text of an OpenAI-shape chat completion."""
+    return text_or_empty(payload["choices"][0]["message"]["content"])  # type: ignore[index]
+
+
+def parse_openai_stream_event(event: object) -> tuple[str, Optional[dict]]:
+    """(delta text, usage object or None) of one OpenAI-shape SSE event.
+
+    Raises one of ``UNEXPECTED_SHAPE_ERRORS`` on a wrongly shaped event.
+    """
+    if not isinstance(event, dict):
+        raise TypeError("event is not an object")
+    text = ""
+    choices = event.get("choices") or []
+    if choices:
+        delta = choices[0].get("delta") or {}
+        text = text_or_empty(delta.get("content"))
+    usage = event.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise TypeError("usage is not an object")
+    return text, usage
+
+
+def model_ids(payload: object) -> list:
+    """Model ids of a ``GET /models`` body; ``TypeError`` on a wrong shape."""
+    if not isinstance(payload, dict):
+        raise TypeError("expected an object")
+    data = payload.get("data") or []
+    if not isinstance(data, list):
+        raise TypeError("data is not a list")
+    ids = [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+    if not all(isinstance(i, str) for i in ids):
+        raise TypeError("model id is not a string")
+    return ids
+
+
+UNEXPECTED_MODELS_RESPONSE = "Provider returned an unexpected response"
+
+
+def embedding_vectors(payload: object) -> list[list[float]]:
+    """One float vector per ``data`` row of an OpenAI-shape embeddings body.
+
+    Every value must be a finite JSON number; raises one of
+    ``UNEXPECTED_SHAPE_ERRORS`` otherwise.
+    """
+    if not isinstance(payload, dict):
+        raise TypeError("expected an object")
+    data = payload.get("data") or []
+    if not isinstance(data, list):
+        raise TypeError("data is not a list")
+    vectors: list[list[float]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        embedding = row.get("embedding") or []
+        if not isinstance(embedding, list):
+            raise TypeError("embedding is not a list")
+        vector: list[float] = []
+        for x in embedding:
+            if isinstance(x, bool) or not isinstance(x, (int, float)):
+                raise TypeError("embedding value is not a number")
+            if not math.isfinite(x):
+                raise ValueError("embedding value is not finite")
+            vector.append(float(x))
+        vectors.append(vector)
+    return vectors
+
+
 _REASON_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 
 
-def provider_reason(resp: httpx.Response) -> Optional[str]:
+def provider_reason(resp: "CappedResponse") -> Optional[str]:
     """``error.type`` / ``error.code`` of a non-200 provider body, only when it
     is token-shaped: the value is provider-controlled text, and the message
-    field (which can echo the prompt) is never read."""
+    field (which can echo the prompt) is never read. The body is the capped
+    prefix ``capped_http.request`` kept (empty when it was too large)."""
     try:
         err = resp.json().get("error")
     except Exception:  # noqa: BLE001  (non-JSON body, or a stream not yet read)
@@ -242,13 +377,10 @@ class StructuredOutputError(Exception):
 
 
 class CapabilityNotSupported(Exception):
-    """Adapter refuses a capability the static class flag advertises.
-
-    Used by Ollama's ``function_call`` when the requested model isn't
-    known to support tool use — Ollama exposes function calling per
-    model, not per server. Callers (the service layer) decide whether
-    to fall back to free-text JSON, a smaller model, or surface a 412
-    to the user.
+    """Adapter refuses a capability the static class flag advertises,
+    because the requested model cannot serve it. Callers (the service
+    layer) decide whether to fall back to free-text JSON, a smaller model,
+    or surface a 412 to the user.
     """
 
     def __init__(self, *, model: str, capability: str = "function_call") -> None:
@@ -417,15 +549,29 @@ class FunctionCallCapable(Protocol):
         ...
 
 
+class ProviderNotSupported(Exception):
+    """The credential names a provider outside the registry (TBD-584): a
+    retired one such as ``ollama`` or ``native``. Such a row is never given
+    an adapter, so it can never be validated or dispatched."""
+
+    code = "ai_provider_not_supported"
+
+    def __init__(self, provider: object) -> None:
+        super().__init__(self.code)
+        self.provider = provider
+
+
 def get_adapter(
-    provider: AiProvider,
+    provider: AiProvider | str,
     *,
     api_key: str,
-    bearer_token: Optional[str] = None,
     base_url: Optional[str] = None,
     base_url_is_api_root: Optional[bool] = None,
 ) -> ValidateCapable:
     """Return a ValidateCapable adapter for ``provider``.
+
+    Raises ``ProviderNotSupported`` for anything outside the registry,
+    including a retired provider a stored row still holds.
 
     Imports are local so the package init stays light and so the test
     suite can monkeypatch individual adapter modules without dragging
@@ -437,15 +583,6 @@ def get_adapter(
     if provider == AiProvider.ANTHROPIC:
         from app.services.ai_providers.anthropic import AnthropicAdapter
         return AnthropicAdapter(api_key=api_key)
-    if provider == AiProvider.OLLAMA:
-        from app.services.ai_providers.ollama import OllamaAdapter
-        if not base_url:
-            raise ValueError("base_url required for ollama provider")
-        return OllamaAdapter(
-            base_url=base_url,
-            api_key=api_key,
-            bearer_token=bearer_token,
-        )
     if provider == AiProvider.OPENAI_COMPATIBLE:
         from app.services.ai_providers.openai_compatible import (
             OpenAICompatibleAdapter,
@@ -463,11 +600,4 @@ def get_adapter(
             base_url=base_url,
             base_url_is_api_root=base_url_is_api_root,
         )
-    if provider == AiProvider.NATIVE:
-        # The credential service refuses creation for native earlier
-        # (PR1 has no native backend), so this branch is dead code for
-        # PR1. Keeping it wired in keeps the registry symmetric — PR4's
-        # gate flip uses the same factory.
-        from app.services.ai_providers.native import NativeAdapter
-        return NativeAdapter()
-    raise ValueError(f"Unknown AI provider: {provider!r}")
+    raise ProviderNotSupported(provider)

@@ -10,6 +10,19 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from app.schemas.common import money_or_none
+
+# DoS stopgap shared by the text parsers that run in the request handler (CSV
+# and ABN ``.TAB``): a row past the cap raises ``ParseError`` rather than
+# parsing, and previewing, unbounded input. OFX parses in a killable
+# subprocess and has its own cap (``settings.ofx_max_rows``).
+MAX_ROWS = 2000
+
+# ``transactions.description`` is String(255). A longer bank description could
+# never be confirmed (BE-08), so every parser's rows are clipped to it here;
+# the full text stays in ``raw_data``.
+MAX_DESCRIPTION_LENGTH = 255
+
 
 @dataclass
 class ParsedRow:
@@ -36,6 +49,9 @@ class ParsedRow:
     bank_id: str | None = None
     account_type_ofx: str | None = None  # CHECKING / SAVINGS / CREDITLINE / MONEYMRKT
 
+    def __post_init__(self) -> None:
+        self.description = self.description[:MAX_DESCRIPTION_LENGTH]
+
 
 class ParseError(Exception):
     """Raised when a CSV file cannot be parsed."""
@@ -57,6 +73,23 @@ def detect_delimiter(content: str) -> str:
     return ","
 
 
+def check_amount_in_range(amount: Decimal) -> Decimal:
+    """Return ``amount`` if the ledger can store it, else raise ``ParseError``.
+
+    BE-01: the bound is ``Money`` (``Numeric(12, 2)``: finite, at most 12
+    digits, 2 decimals). A value outside it can never be confirmed, and the
+    preview's duplicate and transfer detectors would bind it as a SQL literal
+    as long as its exponent. Callers attach the row number.
+    """
+    bounded = money_or_none(amount)
+    if bounded is None:
+        raise ParseError(
+            "Amount out of range (at most 10 digits before and 2 after the "
+            "decimal point)"
+        )
+    return bounded
+
+
 def _parse_amount(value: str) -> Decimal:
     """Parse European-format amount: '63,97' -> Decimal('63.97').
 
@@ -66,9 +99,10 @@ def _parse_amount(value: str) -> Decimal:
     # European format: period = thousands, comma = decimal
     cleaned = cleaned.replace(".", "").replace(",", ".")
     try:
-        return Decimal(cleaned)
+        parsed = Decimal(cleaned)
     except InvalidOperation:
         raise ParseError(f"Cannot parse amount: '{value}'")
+    return check_amount_in_range(parsed)
 
 
 def _parse_date_yyyymmdd(value: str) -> date:
@@ -96,7 +130,8 @@ def parse_csv(content: str) -> list[ParsedRow]:
       [| Resulting balance | Tag]
 
     Returns a list of ParsedRow in file order.
-    Raises ParseError on structural issues (missing columns, unparseable values).
+    Raises ParseError on structural issues (missing columns, unparseable values)
+    and on a file with more than ``MAX_ROWS`` rows.
     """
     content = _strip_bom(content)
     delimiter = detect_delimiter(content)
@@ -113,6 +148,11 @@ def parse_csv(content: str) -> list[ParsedRow]:
 
     rows: list[ParsedRow] = []
     for i, row in enumerate(reader, start=1):
+        if i > MAX_ROWS:
+            raise ParseError(
+                f"File exceeds the maximum of {MAX_ROWS} transactions",
+                row_number=i,
+            )
         # Normalize keys (strip quotes and whitespace from DictReader keys)
         row = {k.strip().strip('"'): v.strip().strip('"') if v else "" for k, v in row.items()}
 

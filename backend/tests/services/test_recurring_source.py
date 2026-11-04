@@ -427,34 +427,18 @@ def test_validate_rejects_recurring_active_in_op():
         src.validate(ast)
 
 
-# ─── Fix 1: txn_type='transfer' is invalid for recurring ────────────
+# ─── txn_type='transfer' is a recurring type (TBD-600) ──────────────
 
 
-def test_validate_rejects_txn_type_transfer_eq():
-    """RecurringTransaction.type is Enum(income, expense) — recurring has NO
-    transfer. The shared scalar coercion accepts transfer (correct for
-    transactions), so validate() must reject it here or it silently compiles
-    to type=='transfer' (empty result on MySQL)."""
+def test_validate_accepts_txn_type_transfer():
+    """A recurring template can be a transfer since TBD-600, so a transfer
+    filter (alone or in a list) is valid for this source."""
     src = _source()
-    ast = _query(
-        filters=[Filter(field=FilterField.TXN_TYPE, op=FilterOp.EQ, value="transfer")],
-    )
-    with pytest.raises(ValueError):
-        src.validate(ast)
-
-
-def test_validate_rejects_txn_type_transfer_in_list():
-    """An `in` list containing transfer must also be rejected, even when it
-    also lists a valid value (income)."""
-    src = _source()
-    ast = _query(
-        filters=[
-            Filter(field=FilterField.TXN_TYPE, op=FilterOp.IN,
-                   value=["income", "transfer"]),
-        ],
-    )
-    with pytest.raises(ValueError):
-        src.validate(ast)
+    for f in (
+        Filter(field=FilterField.TXN_TYPE, op=FilterOp.EQ, value="transfer"),
+        Filter(field=FilterField.TXN_TYPE, op=FilterOp.IN, value=["income", "transfer"]),
+    ):
+        src.validate(_query(filters=[f]))  # must not raise
 
 
 def test_validate_accepts_txn_type_income_eq():

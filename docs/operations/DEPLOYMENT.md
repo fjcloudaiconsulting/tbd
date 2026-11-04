@@ -49,7 +49,7 @@ Two jobs run in parallel:
 
 | Job | Steps | Failure means |
 |---|---|---|
-| **Backend Checks** | Python 3.12, `uv sync --locked` (uv version pinned in `backend/.tool-versions`), `pytest`, then `python -m compileall backend/app` | Pytest failed, or a syntax error slipped in that pytest didn't reach |
+| **Backend Checks** | Python 3.14, `uv sync --locked` (uv version pinned in `backend/.tool-versions`), `pytest`, then `python -m compileall backend/app` | Pytest failed, or a syntax error slipped in that pytest didn't reach |
 | **Frontend Checks** | Node 22, `pnpm install --frozen-lockfile`, `scripts/check-design-tokens.sh`, `pnpm lint --quiet`, `pnpm test`, `pnpm build` | One of: design-token violation, lint error, test failure, production build failure |
 
 Both must pass for merge (branch protection rule).
@@ -166,12 +166,14 @@ The bump PR changes the image tags of the backend, frontend, scheduler and migra
 
 `scripts/smoke-test.sh` runs from cloud-infra after a production rollout, against `SMOKE_BASE_URL=https://app.thebetterdecision.com` with a dedicated smoke account. The account's credentials, its required state and its controls are in infra private ops notes (owner-held), not in this repo.
 
+cloud-infra fetches the script at the deployed tag. It checks `GET /health`, logs in as the smoke account and makes one authenticated read. The public hosts route only `/api` and `/health` to the backend, so the database probes `/ready` and `/health/dependencies` are checked only with `SMOKE_INTERNAL_PROBES=1`, against a `SMOKE_BASE_URL` that reaches the backend directly (a port-forward, or the local stack); a value other than `0` or `1` exits 2.
+
 ### How to verify a rollout
 
 1. Watch the Release run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml`
 2. Follow the cloud-infra bump PR and the Flux apply (runbook above); `kubectl -n tbd-prod logs deploy/backend -c migrate` shows the structured `migrate.*` JSON events.
-3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health`, `curl -fsS https://app.thebetterdecision.com/ready`, and `curl -fsS https://app.thebetterdecision.com/health/dependencies`.
-   `/ready` is the database-only rotation gate; `/health/dependencies` reports each dependency, and is the one a monitor should read.
+3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health` reports the version and revision.
+   `/ready` (the database-only rotation gate) and `/health/dependencies` (each dependency) are not routed from the public hosts: read them from inside the cluster, as the [cloud-infra runbook, "Post-deploy smoke"](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md#post-deploy-smoke) shows.
 
 ## 4. Apex landing deploy (`apex-deploy.yml`)
 

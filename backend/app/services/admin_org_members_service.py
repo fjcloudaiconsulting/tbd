@@ -31,9 +31,13 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app._time import utcnow_naive
 from app.models.user import Organization, Role, User
+from app.security import session_cutoff
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+
+# ``ConflictError.code`` of the platform-superadmin guard; the router answers
+# it with 403 (BE-30: branch on the code, never on the message text).
+CODE_TARGET_IS_SUPERADMIN = "target_is_superadmin"
 
 
 # Roles a superadmin can assign through this endpoint. Restricted to
@@ -133,7 +137,8 @@ async def update_member(
 
     if target.is_superadmin:
         raise ConflictError(
-            "Cannot modify a platform superadmin via org-member admin"
+            "Cannot modify a platform superadmin via org-member admin",
+            code=CODE_TARGET_IS_SUPERADMIN,
         )
 
     before = {
@@ -168,8 +173,10 @@ async def update_member(
         target.is_active = is_active
         if is_active is False:
             # Force a token re-issue check on next request, so the
-            # deactivated user can't continue an active session.
-            target.sessions_invalidated_at = utcnow_naive()
+            # deactivated user can't continue an active session. The next whole
+            # second, so MySQL's fsp-0 rounding cannot let a token from earlier in
+            # this second outlive a later reactivation (TBD-583).
+            target.sessions_invalidated_at = session_cutoff()
         changes.append("is_active")
 
     after = {

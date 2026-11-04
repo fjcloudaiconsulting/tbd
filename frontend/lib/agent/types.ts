@@ -7,21 +7,39 @@ export type Wire = string | number | boolean | null | Untrusted;
 
 export interface ActionChange {
   entity: string;
-  id: Wire;
+  // A composite key (a tag link: [transaction id, tag id]) is a list.
+  id: Wire | Wire[];
   field: string;
   before: Wire;
   after: Wire;
   currency?: string | null;
 }
 
+// A bulk group of rows a preview over the size cap shows as a count, a sample
+// and totals (TBD-786). Only row classes that move no money are summarised.
+export interface ActionSummary {
+  entity: string;
+  change: "update" | "insert" | "delete";
+  // An update: the one field every row of the group changes, and how.
+  field?: string;
+  before?: Wire;
+  after?: Wire;
+  count: number;
+  sample: ActionChange[];
+  totals: Record<string, string>;
+}
+
 export interface StagedAction {
   action_id: string;
   summary: string;
   changes: ActionChange[];
+  summaries?: ActionSummary[];
   warnings: string[];
   context: Record<string, unknown>;
   expires_at: string;
   requires_confirmation: boolean;
+  // A sensitive action a connected agent staged: only the app confirms it.
+  requires_browser_confirmation?: boolean;
 }
 
 export interface DriftRow {
@@ -41,13 +59,15 @@ export interface AgentActionRow {
   risk: "read" | "write" | "sensitive";
   mode: "confirm" | "auto";
   status: ActionStatus;
-  preview: { summary: string; changes: ActionChange[]; warnings: string[]; context: Record<string, unknown> };
+  preview: { summary: string; changes: ActionChange[]; summaries?: ActionSummary[]; warnings: string[]; context: Record<string, unknown> };
   error_code: string | null;
   created_at: string;
   expires_at: string;
   decided_at: string | null;
   // pending AND not past expires_at, decided server-side in one clock
   live: boolean;
+  // The name of the user's own agent token that staged an MCP row.
+  token_name?: string | null;
 }
 
 export type AgentScope = "agent:read" | "agent:write" | "agent:auto";

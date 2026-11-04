@@ -336,10 +336,14 @@ async def aggregate_revenue_kpis(
     keeps surfacing the disclosure even after a typo or test-fixture
     that accidentally returns a non-zero string here.
     """
-    base_now = now or datetime.datetime.now(datetime.timezone.utc)
     # Strip tzinfo to align with ``DateTime`` columns in the schema,
     # which are stored TZ-naive (UTC by convention — see ``app/_time.py``).
-    naive_now = base_now.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    if now is not None:
+        naive_now = now.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    else:
+        naive_now = utcnow_naive()
+    # The UTC date, the same "today" subscription_service writes trial and
+    # period dates with (TBD-749).
     today = naive_now.date()
     signups_cutoff = naive_now - datetime.timedelta(days=SIGNUPS_LOOKBACK_DAYS)
     trial_window_end = today + datetime.timedelta(days=TRIAL_EXPIRING_WINDOW_DAYS)

@@ -13,6 +13,15 @@ isolation:
 - Member-removal guards: same-org only; cannot remove self; ADMIN cannot
   remove OWNER; cannot remove the last OWNER. Soft-delete +
   ``sessions_invalidated_at = now`` so old tokens die immediately.
+- No cross-tenant oracle (BE-06): an address registered to ANOTHER org
+  gets the same pending row and the same 201 as a new address; the router
+  asks :func:`is_registered_elsewhere` and sends nothing, and accept
+  refuses it. Per-org caps bound pending and newly created invitations.
+- Lock order (TBD-727): the organizations row first, then invitation rows.
+  Create and accept both start with :func:`_lock_org`, before they lock or
+  write any invitation, so two concurrent requests for one org queue on the
+  org row instead of each holding the lock the other wants. Any new path
+  here that locks both must keep this order.
 """
 
 from __future__ import annotations
@@ -33,9 +42,11 @@ from app.schemas.auth import (
     USERNAME_MIN_LENGTH,
     USERNAME_PATTERN,
 )
-from app.security import decode_token, hash_password
+from app.security import decode_token, hash_password, session_cutoff, token_cutoff
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
+from app.security import run_bcrypt
+from app.services.subscription_service import enforce_user_limit
 from app.services.user_service import normalize_email as _normalize_email_shared
 
 
@@ -63,12 +74,35 @@ class InvitationUnavailable(Exception):
 
 INVITATION_TTL = datetime.timedelta(days=7)
 
+# BE-06 per-org caps, on top of the per-IP ``org_members.invite`` limit.
+# Revoked rows still count toward the daily cap, so revoke-and-re-invite of
+# one address cannot churn without bound. Far above a household's needs.
+MAX_PENDING_INVITATIONS = 20
+MAX_INVITATIONS_PER_DAY = 50
+
+
+class InvitationQuotaExceeded(Exception):
+    """The org created ``MAX_INVITATIONS_PER_DAY`` invitations in the last
+    24 hours. Routers translate this to 429."""
+
 
 def _normalize_email(value: str) -> str:
     # Thin wrapper preserving the historical name used throughout this
     # module. The canonical implementation lives in user_service so
     # every user-creation site shares the same rule.
     return _normalize_email_shared(value)
+
+
+async def _lock_org(db: AsyncSession, org_id: int) -> None:
+    """Take the org row lock: step one of the module's lock order (TBD-727).
+
+    Unconditional, unlike the seat check's own lock (live only with billing),
+    so the order holds in every configuration. ``enforce_user_limit`` locks
+    the same row again later in the transaction, which InnoDB grants at once.
+    """
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
 
 
 async def _clear_expired_open_invites(
@@ -102,19 +136,23 @@ async def create_invitation(
     """Create a pending invitation. Caller must have already verified the
     requesting user has OWNER or ADMIN role."""
     norm = _normalize_email(email)
+    # Lock order: org row before the invitation rows the lazy clear below
+    # updates and the insert at the end writes (TBD-727).
+    await _lock_org(db, org_id)
 
     # Reject if a user with that email exists ACTIVE in this org. Inactive
-    # same-org user → reactivation, allowed. Active user in another org
-    # → reject (multi-org out of scope).
+    # same-org user → reactivation, allowed. A user in ANOTHER org is not
+    # revealed (BE-06): the row is created like any other, the router sends
+    # nothing (``is_registered_elsewhere``), and accept refuses it
+    # (multi-org out of scope).
     existing = (
         await db.execute(select(User).where(User.email == norm))
     ).scalar_one_or_none()
     if existing is not None:
         if existing.org_id == org_id and existing.is_active:
             raise ConflictError("This person is already a member of the org")
-        if existing.org_id != org_id:
-            raise ConflictError("Email already registered to another organization")
-        # else: same-org soft-deleted → fall through to reactivation invite
+        # else: same-org soft-deleted → reactivation invite; other org →
+        # undeliverable invite.
 
     # Lazy-clear expired pending rows so they don't block a fresh invite.
     await _clear_expired_open_invites(db, org_id=org_id, email=norm)
@@ -130,6 +168,10 @@ async def create_invitation(
     ).scalar_one_or_none()
     if pending is not None:
         raise ConflictError("This email is already invited")
+
+    await _enforce_invitation_caps(db, org_id=org_id)
+    # BE-23: no new invitation while the plan has no free seat.
+    await enforce_user_limit(db, org_id)
 
     now = utcnow_naive()
     inv = Invitation(
@@ -155,6 +197,37 @@ async def create_invitation(
     # under prod's async engine.
     await db.refresh(inv)
     return inv
+
+
+async def _enforce_invitation_caps(db: AsyncSession, *, org_id: int) -> None:
+    """Per-org pending and daily-creation caps (BE-06). ``db.scalar``, not
+    ``db.execute``: the race test counts this function's ``execute`` calls."""
+    pending = await count_pending_invitations(db, org_id=org_id)
+    if pending >= MAX_PENDING_INVITATIONS:
+        raise ConflictError(
+            f"This organization already has {MAX_PENDING_INVITATIONS} pending "
+            "invitations. Revoke some before sending more.",
+            code="pending_invitation_cap",
+        )
+    # "Created in the last 24h" read off ``expires_at`` (app clock, set to
+    # creation + INVITATION_TTL) rather than ``created_at`` (DB clock).
+    created_after_expiry = utcnow_naive() + INVITATION_TTL - datetime.timedelta(days=1)
+    created = await db.scalar(
+        select(func.count())
+        .select_from(Invitation)
+        .where(Invitation.org_id == org_id, Invitation.expires_at > created_after_expiry)
+    ) or 0
+    if created >= MAX_INVITATIONS_PER_DAY:
+        raise InvitationQuotaExceeded()
+
+
+async def is_registered_elsewhere(db: AsyncSession, *, org_id: int, email: str) -> bool:
+    """True iff ``email`` belongs to a user of ANOTHER org. Such an invitation
+    is created (so the response cannot reveal it) but never delivered."""
+    other = await db.scalar(
+        select(User.id).where(User.email == _normalize_email(email), User.org_id != org_id)
+    )
+    return other is not None
 
 
 def _pending_invitation_filters(org_id: int):
@@ -307,10 +380,20 @@ async def accept_invitation(
     state, :class:`ConflictError` for username collisions on new users.
     Caller must commit the session.
     """
+    invitation_id = _decode_id_or_raise(token)
+    # Lock order: org row first, then the invitation row (TBD-727). A plain
+    # read finds the org; the locked read below re-fetches the row, and its
+    # ``org_id`` filter refuses a row that no longer matches the lock taken.
+    org_id = await db.scalar(
+        select(Invitation.org_id).where(Invitation.id == invitation_id)
+    )
+    if org_id is None:
+        raise InvitationUnavailable()
+    await _lock_org(db, org_id)
     inv = (
         await db.execute(
             select(Invitation)
-            .where(Invitation.id == _decode_id_or_raise(token))
+            .where(Invitation.id == invitation_id, Invitation.org_id == org_id)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
@@ -333,6 +416,12 @@ async def accept_invitation(
     existing = (
         await db.execute(select(User).where(User.email == inv.email))
     ).scalar_one_or_none()
+
+    # BE-23: reactivation and a new user both add an active member, so the
+    # seat check runs here, under the org lock it takes, before either
+    # writes. Every other case is refused below regardless.
+    if existing is None or (existing.org_id == inv.org_id and not existing.is_active):
+        await enforce_user_limit(db, inv.org_id)
 
     if existing is not None and existing.org_id == inv.org_id and not existing.is_active:
         # An invitation carries an ORG role and must never write the PLATFORM
@@ -367,7 +456,7 @@ async def accept_invitation(
         # sessions atomically with marking the invite accepted.
         existing.is_active = True
         existing.role = inv.role
-        existing.password_hash = hash_password(password)
+        existing.password_hash = await run_bcrypt(hash_password, password)
         # Whole-second session cutoff. The router mints an access token and
         # a refresh session immediately after this returns, and both stamp
         # "iat": int(now.timestamp()) — floored to a whole second. Every
@@ -385,7 +474,12 @@ async def accept_invitation(
         # ROUNDS fractional seconds on insert (measured on 8.0.46 — .5+
         # rounds up to the next second). Truncating on read cannot undo a
         # value that was already rounded UP past the token's iat.
-        cutoff = now.replace(microsecond=0)
+        #
+        # Never LOWER a cutoff already there: ``remove_member`` writes the
+        # next whole second, and flooring a re-join in that same second back
+        # down to it would revive a token from before the removal. The router
+        # then waits such a cutoff out before minting (TBD-583).
+        cutoff = max(now.replace(microsecond=0), token_cutoff(existing).replace(tzinfo=None))
         existing.password_changed_at = cutoff
         existing.sessions_invalidated_at = cutoff
         existing.email_verified = True
@@ -419,7 +513,7 @@ async def accept_invitation(
         org_id=inv.org_id,
         username=username,
         email=inv.email,
-        password_hash=hash_password(password),
+        password_hash=await run_bcrypt(hash_password, password),
         role=inv.role,
         is_superadmin=False,
         is_active=True,
@@ -596,6 +690,7 @@ async def remove_member(
             )
 
     target.is_active = False
-    target.sessions_invalidated_at = utcnow_naive()
+    # The next whole second, as in admin_org_members_service.update_member (TBD-583).
+    target.sessions_invalidated_at = session_cutoff()
     await db.flush()
     return target

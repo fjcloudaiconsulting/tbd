@@ -5,6 +5,7 @@ import { LineChart, Line } from "recharts";
 
 import LineWidgetChart from "@/components/reports/widgets/LineWidgetChart";
 import SparklineWidgetChart from "@/components/reports/widgets/SparklineWidgetChart";
+import { ComparisonView, type CompareProjection } from "@/components/scenarios/ComparisonView";
 import { ProjectionChart, type ProjectionInput } from "@/components/scenarios/ProjectionChart";
 
 /**
@@ -13,17 +14,19 @@ import { ProjectionChart, type ProjectionInput } from "@/components/scenarios/Pr
  *
  * ## The defect this exists for (measured on real recharts 3.8.1)
  *
- * `Line.js` decides whether to override `stroke-dasharray` on the RAW
+ * `Line.js` decided whether to override `stroke-dasharray` on the RAW
  * `isAnimationActive` prop. `"auto"` is a truthy string, so under reduced
- * motion (animation resolved OFF) it still builds a `"<len>px <total>px"`
+ * motion (animation resolved OFF) it still built a `"<len>px <total>px"`
  * dash, from `getTotalLength()` of the PREVIOUS commit's path, and nothing
- * re-renders to correct it. Measured in review: a `"4 2"` dashed line mounts
- * as `"0px, 0px"` (solid), a resize 300 -> 600 leaves a 326.9px dash on a
- * 609.2px path (46% of the line not drawn), and new data clips the tail.
+ * re-rendered to correct it. Measured in review: a `"4 2"` dashed line mounted
+ * as `"0px, 0px"` (solid), a resize 300 -> 600 left a 326.9px dash on a
+ * 609.2px path (46% of the line not drawn), and new data clipped the tail.
  *
- * So the four app `<Line>` sites stay `isAnimationActive={false}` until the
- * recharts bump (TBD-528), and this fence renders the real components to prove
- * the strokes are whole.
+ * So the four app `<Line>` sites were `isAnimationActive={false}` until the
+ * recharts bump (TBD-528). Since 3.9.0 the dash lives in `LineDrawShape` and is
+ * applied only while the draw-on runs, so on 3.10.1 the Lines are on `"auto"`
+ * at the house 220ms, and this fence renders the real components to prove the
+ * strokes stay whole.
  *
  * ## Why `getTotalLength` is stubbed at all
  *
@@ -193,6 +196,27 @@ function projection(variant: 0 | 1): ProjectionInput {
   };
 }
 
+/** Two scenarios over the same months, the second at twice the balances. */
+function comparison(variant: 0 | 1): CompareProjection[] {
+  const { currency, per_account_series } = projection(variant);
+  return [1, 2].map((id) => ({
+    scenario_id: id,
+    name: `Plan ${id}`,
+    scenario_type: "custom",
+    projection: {
+      engine_name: "analytic_v1",
+      horizon_months: per_account_series[0].points.length,
+      currency,
+      per_account_series: per_account_series.map((s) => ({
+        ...s,
+        points: s.points.map((p) => ({ ...p, projected_balance: String(Number(p.projected_balance) * id) })),
+      })),
+      alerts: [],
+      verdict: { color: "green", headline: "h", reason: "r" },
+    },
+  }));
+}
+
 describe("TBD-528: app <Line> strokes are fully drawn under reduced motion", () => {
   it("LineWidgetChart: two series stay undashed across mount, resize and new data", () => {
     mockMatchMedia(true);
@@ -229,6 +253,11 @@ describe("TBD-528: app <Line> strokes are fully drawn under reduced motion", () 
       stroke: "var(--color-danger)",
       dash: "4 2",
     });
+  });
+
+  it("ComparisonView: every scenario line stays undashed across mount, resize and new data", () => {
+    mockMatchMedia(true);
+    exercise((v) => <ComparisonView projections={comparison(v)} />, 2);
   });
 
   it("positive control: the harness sees recharts' animated px dash on a Line that animates", () => {

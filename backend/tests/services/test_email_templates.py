@@ -185,6 +185,54 @@ async def test_verification_email_template(captured_send: list[dict[str, Any]]):
 
 
 @pytest.mark.asyncio
+async def test_signup_link_email_template(captured_send: list[dict[str, Any]]):
+    """TBD-654: the "finish signing up" email for an address with no account."""
+    ok = await email_service.send_signup_link_email("new@example.com", "signuptok123")
+    assert ok is True
+    msg = captured_send[0]
+
+    _assert_brand_chrome(msg["body_html"])
+    _assert_brand_voice(msg["subject"], msg["body_html"], msg["body_text"])
+    assert "/signup/complete?token=signuptok123" in msg["body_html"]
+    assert "/signup/complete?token=signuptok123" in msg["body_text"]
+    assert "1 hour" in msg["body_html"] and "1 hour" in msg["body_text"]
+
+
+@pytest.mark.asyncio
+async def test_existing_account_signup_email_template(captured_send: list[dict[str, Any]]):
+    """TBD-654: the notice for an address that already has an account. It
+    carries no token and names no username."""
+    ok = await email_service.send_existing_account_signup_email("owner@example.com")
+    assert ok is True
+    msg = captured_send[0]
+
+    _assert_brand_chrome(msg["body_html"])
+    _assert_brand_voice(msg["subject"], msg["body_html"], msg["body_text"])
+    app_url = email_service.settings.app_url
+    for body in (msg["body_html"], msg["body_text"]):
+        assert f"{app_url}/login" in body
+        assert f"{app_url}/forgot-password" in body
+        assert "token=" not in body
+
+
+@pytest.mark.asyncio
+async def test_legacy_verification_email_template(captured_send: list[dict[str, Any]]):
+    """TBD-654: an unverified account registered before email-first sign-up
+    gets a fresh verification link, and is told to reset an unknown password."""
+    ok = await email_service.send_legacy_verification_email("old@example.com", "legacytok")
+    assert ok is True
+    msg = captured_send[0]
+
+    _assert_brand_chrome(msg["body_html"])
+    _assert_brand_voice(msg["subject"], msg["body_html"], msg["body_text"])
+    assert "/verify-email?token=legacytok" in msg["body_html"]
+    assert "/verify-email?token=legacytok" in msg["body_text"]
+    sentence = "If you don't know this account's password, reset it first."
+    assert sentence in msg["body_html"].replace("&#x27;", "'")
+    assert sentence in msg["body_text"]
+
+
+@pytest.mark.asyncio
 async def test_invitation_email_template(captured_send: list[dict[str, Any]]):
     ok = await email_service.send_invitation_email(
         "guest@example.com",
@@ -203,6 +251,23 @@ async def test_invitation_email_template(captured_send: list[dict[str, Any]]):
     assert "Accept invitation" in msg["body_html"]
     assert "7 days" in msg["body_html"]
     assert "accept-invite?token=invtoken" in msg["body_text"]
+
+
+@pytest.mark.asyncio
+async def test_invitation_subject_carries_no_inviter_text(captured_send: list[dict[str, Any]]):
+    """BE-06: the subject is the line a recipient trusts before opening the
+    message, so neither the inviter's name nor the org name reaches it."""
+    for inviter, org in (("Alice Doe", "Doe Household"), ("Bank Support", "Verify at evil")):
+        await email_service.send_invitation_email(
+            "guest@example.com",
+            inviter_name=inviter,
+            org_name=org,
+            accept_url="http://localhost/accept-invite?token=invtoken",
+        )
+    first, second = captured_send[0]["subject"], captured_send[1]["subject"]
+    assert first == second
+    for text in ("Alice", "Doe", "Bank", "Verify", "evil"):
+        assert text not in first
 
 
 @pytest.mark.asyncio

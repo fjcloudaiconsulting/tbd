@@ -8,7 +8,6 @@
  * report" button used to persist directly; it now lives only in the
  * unsaved draft until the user Saves.
  */
-import { buildPresetRanges } from "@/components/reports/filters/DatePresetChips";
 import type { CanvasFilters, LayoutJson } from "@/lib/reports/types";
 
 export interface DraftSeed {
@@ -16,10 +15,11 @@ export interface DraftSeed {
   canvasFilters: CanvasFilters;
 }
 
-export function blankDraftSeed(now: Date = new Date()): DraftSeed {
-  const ranges = buildPresetRanges(now);
+export function blankDraftSeed(): DraftSeed {
   return {
-    canvasFilters: { date_range: ranges.this_month },
+    // A relative token, not a frozen window (TBD-759): the saved report
+    // keeps showing the CURRENT month after the calendar rolls over.
+    canvasFilters: { date_range: { preset: "this_month" } },
     layout: {
       version: 1,
       widgets: [

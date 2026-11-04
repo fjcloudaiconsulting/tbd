@@ -36,7 +36,7 @@ const shippedFeatures = [
   "Reports by category",
   "Shared household organization with roles",
   "EU-hosted, CSV export from any report, never used by us to train AI",
-  "Optional AI: bring your own key or run it locally with Ollama, with spend caps and an audit trail",
+  "Optional AI: bring your own provider key, with spend caps and an audit trail",
 ];
 
 const softwareLd = {
@@ -89,7 +89,7 @@ const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   },
   {
     q: "Does it use AI, and is that optional?",
-    a: "AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories you accept before they are applied to a transaction, and proposes seasonal forecast adjustments you can accept or dismiss. Nothing changes without your action. There are hard spend caps and a full audit trail.",
+    a: "AI is optional and opt-in. Bring your own OpenAI, Anthropic or OpenAI-compatible key. It suggests categories you accept before they are applied to a transaction, and proposes seasonal forecast adjustments you can accept or dismiss. Nothing changes without your action. There are hard spend caps and a full audit trail.",
   },
 ];
 
@@ -140,7 +140,7 @@ const groups = [
     title: "AI on your terms",
     points: [
       "Optional, opt-in AI: you accept or dismiss every suggestion, nothing changes without your action, with hard spend caps and a full audit trail.",
-      "Bring your own OpenAI or Anthropic key, or run it entirely locally with Ollama.",
+      "Bring your own OpenAI, Anthropic or OpenAI-compatible key.",
       "Hard and soft spend caps, plus a full audit trail of every call.",
     ],
   },

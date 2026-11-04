@@ -1044,3 +1044,116 @@ def test_ai_assumption_delta_model_round_trips():
     model = AIAssumptionDelta.model_validate(payload)
     assert model.summary == "ok"
     assert model.adjustments[0].field == "annual_return_pct"
+
+
+# ── TBD-726: every analytic run happens in a worker thread ──────────────
+
+
+def _spy_engine_runs(monkeypatch, scenario: Scenario) -> list[dict]:
+    """Record, per ``AnalyticEngine.simulate`` call: whether a loop runs in
+    the calling thread, the params the engine saw, and the ORM row's params
+    at that moment (the old code swapped adjusted params onto the row)."""
+    import asyncio
+
+    calls: list[dict] = []
+    original = AnalyticEngine.simulate
+
+    def spy(self, req, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        calls.append(
+            {
+                "on_loop": on_loop,
+                "is_orm_row": isinstance(req.scenario, Scenario),
+                "engine_return_pct": req.scenario.params_json["annual_return_pct"],
+                "row_return_pct": scenario.params_json["annual_return_pct"],
+            }
+        )
+        return original(self, req, **kwargs)
+
+    monkeypatch.setattr(AnalyticEngine, "simulate", spy)
+    return calls
+
+
+async def _run(db, session_factory, seed, scenario, *, gate_open: bool, llm_result=None):
+    req = _make_request(scenario)
+    with patch(
+        "app.services.scenario_engine_ai.feature_service.has_feature",
+        AsyncMock(return_value=gate_open),
+    ), patch(
+        "app.services.scenario_engine_ai.call_llm_structured",
+        AsyncMock(return_value=llm_result),
+    ):
+        return await run_ai_simulation(
+            db,
+            session_factory=session_factory,
+            org_id=seed["org_id"],
+            user_id=seed["user_id"],
+            actor_email=seed["email"],
+            scenario=scenario,
+            state=req.state,
+            horizon_months=req.horizon_months,
+            options=req.options,
+            smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
+        )
+
+
+@pytest.mark.asyncio
+async def test_ai_fallback_baseline_runs_off_the_event_loop(
+    db, session_factory, seed_org_user, monkeypatch
+):
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
+    calls = _spy_engine_runs(monkeypatch, scenario)
+    result = await _run(db, session_factory, seed_org_user, scenario, gate_open=False)
+    assert result["engine_name"] == "analytic_v1"
+    assert [(c["on_loop"], c["is_orm_row"]) for c in calls] == [(False, False)]
+
+
+@pytest.mark.asyncio
+async def test_ai_adjusted_run_is_off_the_loop_and_never_touches_the_row(
+    db, session_factory, seed_org_user, monkeypatch
+):
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
+    fake_resp = StructuredDispatchResult(
+        response=StructuredResponse(
+            parsed={
+                "adjustments": [
+                    {
+                        "field": "annual_return_pct",
+                        "old_value": "6.0",
+                        "new_value": "7.5",
+                        "reason": "test",
+                    }
+                ],
+                "summary": "ok",
+            },
+            raw_text="{}",
+            prompt_tokens=10,
+            completion_tokens=10,
+            model="gpt-4o-mini",
+            retries_used=0,
+        ),
+        ledger_id=1,
+    )
+    calls = _spy_engine_runs(monkeypatch, scenario)
+    result = await _run(
+        db, session_factory, seed_org_user, scenario, gate_open=True, llm_result=fake_resp
+    )
+    assert result["engine_name"] == "analytic_v1+ai_assumptions_v1"
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["on_loop"] is False
+    assert call["is_orm_row"] is False
+    # The engine saw the adjusted assumption; the row never did.
+    assert call["engine_return_pct"] == "7.5"
+    assert call["row_return_pct"] == "6.0"
+    assert scenario.params_json["annual_return_pct"] == "6.0"
