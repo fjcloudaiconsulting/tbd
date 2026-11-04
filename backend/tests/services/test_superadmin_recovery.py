@@ -411,3 +411,28 @@ async def test_dashboard_counts_only_active_superadmins(factory, monkeypatch):
     async with factory() as db:
         payload = await build_dashboard_payload(db)
     assert payload["kpis"]["active_superadmins"] == 1
+
+
+@pytest.mark.asyncio
+async def test_superadmin_floor_probe_runs_once_under_the_tick_lock(monkeypatch):
+    """FENCE: the zero-superadmin detector is wired into the tick, and skipped
+    with it when locked out."""
+    from app.services.scheduler import loop
+
+    async def _noop(*a, **k):
+        return 0
+
+    for name in dir(loop):
+        if name.startswith("run_") and name != "run_one_tick":
+            monkeypatch.setattr(loop, name, _noop)
+    calls = {"n": 0}
+
+    async def _job(*a, **k):
+        calls["n"] += 1
+        return 1
+
+    monkeypatch.setattr(loop, "run_superadmin_floor_probe", _job)
+    assert await loop.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is True
+    assert calls["n"] == 1
+    assert await loop.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is False
+    assert calls["n"] == 1
