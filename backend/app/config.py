@@ -10,6 +10,14 @@ logger = logging.getLogger(__name__)
 
 # Cloudflare Turnstile's always-pass test secret, which .env.example ships for dev.
 TURNSTILE_ALWAYS_PASS_SECRET = "1x0000000000000000000000000000000AA"
+# All of Cloudflare's published Turnstile test secrets (always pass, always fail, token spent).
+TURNSTILE_TEST_SECRETS = frozenset(
+    {
+        TURNSTILE_ALWAYS_PASS_SECRET,
+        "2x0000000000000000000000000000000AA",
+        "3x0000000000000000000000000000000AA",
+    }
+)
 
 # INF-03: every secret-bearing setting. In production none may hold a value from
 # ``_PUBLIC_SECRET_VALUES`` or one starting "dev-only".
@@ -661,6 +669,14 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_captcha_by_default_in_production(self) -> "Settings":
+        # INF-05: unset, CAPTCHA_REQUIRED is on in production. An explicit false stays the rollback
+        # lever during a provider outage, and the API logs config.production_open_default for it.
+        if self.app_env == "production" and "captcha_required" not in self.model_fields_set:
+            self.captcha_required = True
+        return self
+
+    @model_validator(mode="after")
     def _validate_captcha_timeouts(self) -> "Settings":
         # Enforce ``0 < per_phase <= total`` on the LIVE values, not on the
         # field defaults (TBD-328 review). Both are operator-tunable env
@@ -727,26 +743,46 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class OpenProductionCaptcha(RuntimeError):
+    """INF-05: production requires the captcha, but its settings would let any token through."""
+
+
+def refuse_open_production_captcha(settings_obj: Settings) -> None:
+    """INF-05: with the captcha required in production, refuse to boot on an empty or Cloudflare
+    test secret, or on an unset hostname or action pin. Names the variables, never a value.
+
+    Not a Settings validator: the migrate job and mcp load the same settings and get no CAPTCHA_*
+    value. The API lifespan calls this, so every workload that serves registration refuses.
+    """
+    if settings_obj.app_env != "production" or not settings_obj.captcha_required:
+        return
+    secret = settings_obj.captcha_secret.strip()
+    checks = (
+        ("CAPTCHA_SECRET", not secret or secret in TURNSTILE_TEST_SECRETS),
+        ("CAPTCHA_EXPECTED_HOSTNAME", not settings_obj.captcha_expected_hostname.strip()),
+        ("CAPTCHA_EXPECTED_ACTION", not settings_obj.captcha_expected_action.strip()),
+    )
+    open_fields = [name for name, is_open in checks if is_open]
+    if open_fields:
+        logger.error("config.production_captcha_open", extra={"fields": open_fields})
+        raise OpenProductionCaptcha(
+            f"{', '.join(open_fields)} must hold real values while the captcha is required in "
+            "production; CAPTCHA_REQUIRED=false is the rollback lever"
+        )
+
+
 def warn_open_production_defaults(settings_obj: Settings) -> list[str]:
     """INF-05: log each registration safeguard production runs without; return the reasons.
 
-    A warning, not a validator: ``CAPTCHA_REQUIRED=false`` is the documented rollback during a
-    provider outage, and a boot refusal would take production down over it. The backend lifespan
-    calls this once per worker.
+    A warning, not a refusal: ``CAPTCHA_REQUIRED=false`` is the documented rollback during a
+    provider outage. A required captcha that is open refuses instead
+    (``refuse_open_production_captcha``). The backend lifespan calls this once per worker.
     """
     if settings_obj.app_env != "production":
         return []
     reasons: list[str] = []
     if not settings_obj.captcha_required:
-        # The pins only matter once the captcha runs.
         reasons.append("captcha_not_required")
-    else:
-        if settings_obj.captcha_secret == TURNSTILE_ALWAYS_PASS_SECRET:
-            reasons.append("captcha_test_secret")
-        if not settings_obj.captcha_expected_hostname:
-            reasons.append("captcha_hostname_unpinned")
-        if not settings_obj.captcha_expected_action:
-            reasons.append("captcha_action_unpinned")
     for reason in reasons:
         logger.warning("config.production_open_default", extra={"reason": reason})
     for origin in settings_obj.cors_origins:
