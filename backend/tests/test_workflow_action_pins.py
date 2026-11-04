@@ -3,6 +3,10 @@
 A tag (``@v1``) is a pointer its owner, or anyone who takes over that repo, can move to new code,
 and that code then runs with this repo's tokens and inherited secrets. Org-owned workflows are no
 exception. Local ``./`` paths are part of this checkout, and ``docker://`` images need a digest.
+
+Known gap: this checks one level deep. The pinned org ``release.yml`` still calls
+``promote-release.yml@v1`` and ``smoke.yml@v1``, so nested org-workflow calls are still at @v1;
+pin them in fjcloudaiconsulting/.github, then bump tbd's pin to that release.
 """
 
 from __future__ import annotations
