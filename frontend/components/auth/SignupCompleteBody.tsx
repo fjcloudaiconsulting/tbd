@@ -43,10 +43,19 @@ export default function SignupCompleteBody() {
   const [orgName, setOrgName] = useState("");
   const [orgError, setOrgError] = useState("");
   const [error, setError] = useState("");
-  const [blocked, setBlocked] = useState<"expired" | "account_exists" | null>(token ? null : "expired");
+  const [mismatch, setMismatch] = useState(false);
+  // "missing": the URL had no token, e.g. a reload after the page stripped it.
+  const [blocked, setBlocked] = useState<"missing" | "expired" | "account_exists" | null>(token ? null : "missing");
   const [submitting, setSubmitting] = useState(false);
   const usernameRef = useRef<HTMLInputElement>(null);
   const orgRef = useRef<HTMLInputElement>(null);
+  const password2Ref = useRef<HTMLInputElement>(null);
+  const blockedRef = useRef<HTMLDivElement>(null);
+
+  // Only a submit answer replaces the form; move focus to what replaced it.
+  useEffect(() => {
+    if (blocked === "expired" || blocked === "account_exists") blockedRef.current?.focus();
+  }, [blocked]);
 
   // Debounced availability hint; cancels stale requests. Only values that
   // satisfy the server rules are checked, otherwise the endpoint answers 422.
@@ -85,7 +94,11 @@ export default function SignupCompleteBody() {
     setError("");
     setUsernameError("");
     setOrgError("");
-    if (password !== password2) { setError("Passwords do not match"); return; }
+    if (password !== password2) {
+      setMismatch(true);
+      password2Ref.current?.focus();
+      return;
+    }
     setSubmitting(true);
     let accessToken: string;
     try {
@@ -143,23 +156,31 @@ export default function SignupCompleteBody() {
           <p className="mt-1.5 text-sm text-text-muted">Choose how you&apos;ll sign in</p>
         </div>
 
-        {blocked === "expired" ? (
-          <div className={errorCls} role="alert">
-            <p>This link has expired or was already used.</p>
-            <p className="mt-2 text-xs">
-              <Link href="/register" className="text-accent hover:text-accent-hover">
-                Start signing up again
-              </Link>
-            </p>
-          </div>
-        ) : blocked === "account_exists" ? (
-          <div className={errorCls} role="alert">
-            <p>This email already has an account.</p>
-            <p className="mt-2 text-xs">
-              <Link href="/login" className="text-accent hover:text-accent-hover">
-                Sign in instead
-              </Link>
-            </p>
+        {blocked ? (
+          <div ref={blockedRef} tabIndex={-1} className={errorCls} role="alert">
+            {blocked === "account_exists" ? (
+              <>
+                <p>This email already has an account.</p>
+                <p className="mt-2 text-xs">
+                  <Link href="/login" className="text-accent hover:text-accent-hover">
+                    Sign in instead
+                  </Link>
+                </p>
+              </>
+            ) : (
+              <>
+                <p>
+                  {blocked === "expired"
+                    ? "This link has expired or was already used."
+                    : "Open the link from your email again."}
+                </p>
+                <p className="mt-2 text-xs">
+                  <Link href="/register" className="text-accent hover:text-accent-hover">
+                    Start signing up again
+                  </Link>
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-5">
@@ -233,11 +254,22 @@ export default function SignupCompleteBody() {
             </div>
             <div>
               <label htmlFor="signup-password" className={label}>Password</label>
-              <PasswordInput id="signup-password" required minLength={8} maxLength={128} value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
+              <PasswordInput id="signup-password" required minLength={8} maxLength={128} value={password} onChange={(e) => { setPassword(e.target.value); setMismatch(false); }} className={input} autoComplete="new-password" />
             </div>
             <div>
               <label htmlFor="signup-password2" className={label}>Confirm Password</label>
-              <PasswordInput id="signup-password2" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
+              <PasswordInput
+                ref={password2Ref}
+                id="signup-password2"
+                required
+                value={password2}
+                onChange={(e) => { setPassword2(e.target.value); setMismatch(false); }}
+                className={input}
+                autoComplete="new-password"
+                aria-invalid={mismatch ? true : undefined}
+                aria-describedby={mismatch ? "signup-password2-error" : undefined}
+              />
+              {mismatch && <p id="signup-password2-error" className="mt-1 text-xs text-danger" role="alert">Passwords do not match</p>}
             </div>
             <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
               {submitting ? "Creating account..." : "Create Account"}

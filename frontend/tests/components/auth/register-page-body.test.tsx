@@ -165,13 +165,24 @@ describe("RegisterPageBody — the form", () => {
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/setup"));
   });
 
-  it("announces a validation error", async () => {
+  it("describes the email field by its hint", async () => {
+    mockApi(false);
+    await renderPage(false);
+    const field = screen.getByLabelText(/email/i);
+    expect(field).toHaveAccessibleDescription(/email you a link/i);
+    expect(field).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("announces a validation error and ties it to the email field", async () => {
     mockApi(false, () => {
       throw new ApiResponseError(422, "email: value is not a valid email address");
     });
     await renderPage(false);
     submit("alice@example.com");
     expect(await screen.findByRole("alert")).toHaveTextContent(/not a valid email/i);
+    const field = screen.getByLabelText(/email/i);
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveAccessibleDescription(/not a valid email/i);
   });
 });
 
@@ -277,6 +288,18 @@ describe("RegisterPageBody — captcha", () => {
     submit();
     await waitFor(() => expect(turnstileResetMock).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("alert")).toHaveTextContent(/could not verify you are human/i);
+  });
+
+  it("resets the widget on a 5xx, since the token was already spent", async () => {
+    mockApi(true, () => {
+      throw new ApiResponseError(503, "Service unavailable");
+    });
+    await renderPage(true);
+    fireEvent.click(screen.getByTestId("turnstile-mock-solve"));
+    submit();
+    await waitFor(() => expect(turnstileResetMock).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("alert")).toHaveTextContent(/service unavailable/i);
+    expect(screen.getByLabelText(/email/i)).not.toHaveAttribute("aria-invalid");
   });
 
   it("does NOT reset the widget on other failures (e.g. 429)", async () => {

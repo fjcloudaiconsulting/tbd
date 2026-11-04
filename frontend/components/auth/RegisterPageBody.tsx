@@ -38,6 +38,8 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
 
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
+  // A 422 is about the address itself; other errors are not the field's fault.
+  const [emailInvalid, setEmailInvalid] = useState(false);
   // The per-IP limit on /signup/start (429). It depends on the caller, never
   // on the address, so naming it reveals nothing about any account.
   const [limited, setLimited] = useState(false);
@@ -81,6 +83,7 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    setEmailInvalid(false);
     setLimited(false);
     setSubmitting(true);
     try {
@@ -103,11 +106,13 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
       // The Cloudflare Turnstile token is single-use AND short-lived
       // (5 min). Match the backend's structured ``code=captcha_failed``
       // (NOT the human-readable message) so a copy edit to the message
-      // never silently breaks the widget reset.
-      if (err instanceof ApiResponseError && err.code === "captcha_failed") {
+      // never silently breaks the widget reset. A 5xx comes after the
+      // captcha check, so the token is spent then too.
+      if (err instanceof ApiResponseError && (err.code === "captcha_failed" || err.status >= 500)) {
         turnstileRef.current?.reset();
         setCaptchaToken("");
       }
+      setEmailInvalid(err instanceof ApiResponseError && err.status === 422);
       setError(err instanceof Error ? err.message : "Sign-up failed");
     } finally {
       setSubmitting(false);
@@ -187,7 +192,7 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
           <p className="mt-1.5 text-sm text-text-muted">Join The Better Decision</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
-          {error && <div className={errorCls} role="alert">{error}</div>}
+          {error && <div id="reg-error" className={errorCls} role="alert">{error}</div>}
           {limited && (
             <div className={errorCls} role="alert">
               Too many sign-up attempts from this connection. Try again later
@@ -207,8 +212,10 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
               className={input}
               autoComplete="email"
               placeholder="you@example.com"
+              aria-invalid={emailInvalid ? true : undefined}
+              aria-describedby={error ? "reg-email-hint reg-error" : "reg-email-hint"}
             />
-            <p className="mt-1 text-xs text-text-muted">
+            <p id="reg-email-hint" className="mt-1 text-xs text-text-muted">
               We&apos;ll email you a link to choose your username and password.
             </p>
           </div>

@@ -78,11 +78,12 @@ describe("/signup/complete — the link", () => {
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 
-  it("shows the expired message when there is no token", async () => {
+  it("asks to reopen the email link when there is no token (e.g. a reload)", async () => {
     window.history.replaceState(null, "", "/signup/complete");
     render(<SignupCompletePage />);
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/expired or was already used/i);
+    expect(alert).toHaveTextContent(/open the link from your email again/i);
+    expect(alert).not.toHaveTextContent(/expired/i);
     expect(screen.getByRole("link", { name: /start signing up again/i })).toHaveAttribute("href", "/register");
     expect(screen.queryByLabelText(/username/i)).toBeNull();
   });
@@ -123,6 +124,10 @@ describe("/signup/complete — submit", () => {
     await screen.findByLabelText(/username/i);
     await fillAndSubmit({ password2: "different-pass-1" });
     expect(await screen.findByRole("alert")).toHaveTextContent(/passwords do not match/i);
+    const confirm = screen.getByLabelText(/confirm password/i);
+    expect(confirm).toHaveFocus();
+    expect(confirm).toHaveAttribute("aria-invalid", "true");
+    expect(confirm).toHaveAccessibleDescription(/passwords do not match/i);
     expect(apiFetchMock.mock.calls.some(([p]) => p === COMPLETE)).toBe(false);
   });
 
@@ -133,7 +138,9 @@ describe("/signup/complete — submit", () => {
     render(<SignupCompletePage />);
     await screen.findByLabelText(/username/i);
     await fillAndSubmit();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/expired or was already used/i);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/expired or was already used/i);
+    await waitFor(() => expect(alert).toHaveFocus());
     expect(screen.getByRole("link", { name: /start signing up again/i })).toHaveAttribute("href", "/register");
     expect(pushMock).not.toHaveBeenCalled();
   });
@@ -145,7 +152,9 @@ describe("/signup/complete — submit", () => {
     render(<SignupCompletePage />);
     await screen.findByLabelText(/username/i);
     await fillAndSubmit();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/already has an account/i);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/already has an account/i);
+    await waitFor(() => expect(alert).toHaveFocus());
     expect(screen.getByRole("link", { name: /sign in instead/i })).toHaveAttribute("href", "/login");
   });
 
