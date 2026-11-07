@@ -5,8 +5,10 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
+import { useSWRConfig } from "swr";
 import {
   ApiResponseError,
   ApiTimeoutError,
@@ -352,6 +354,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!user) clearAssistantSession();
     else adoptOwner(`${user.id}:${user.org_id}`);
   }, [loading, user]);
+
+  // So does the SWR cache, which is keyed by URL alone: once a signed-in
+  // (user, org) leaves or changes, drop every cached response so the next
+  // user's surfaces never mount onto the last one's data (TBD-620). No
+  // revalidate: AppShell has already unmounted them, nothing should refetch.
+  const { mutate } = useSWRConfig();
+  const cacheOwner = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading) return;
+    const owner = user ? `${user.id}:${user.org_id}` : null;
+    if (cacheOwner.current !== null && owner !== cacheOwner.current) {
+      void mutate(() => true, undefined, { revalidate: false });
+    }
+    cacheOwner.current = owner;
+  }, [loading, user, mutate]);
 
   const login = async (loginId: string, password: string) => {
     const data = await apiFetch<TokenResponse | MfaChallengeResponse>("/api/v1/auth/login", {
