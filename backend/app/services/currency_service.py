@@ -128,18 +128,18 @@ async def assert_org_currency_allows(
     # the org_id range, which serialises the second transaction behind the first.
     # The second then sees the committed row and refuses.
     #
-    # ⚠ THE TESTS CANNOT PROVE THIS. They run on aiosqlite, which ignores
+    # ⚠ THE SQLITE SHARDS CANNOT PROVE THIS. aiosqlite ignores
     # ``with_for_update()`` entirely (same caveat recorded in
-    # tests/routers/test_accounts_change_type.py). The lock is justified by the
-    # engine's documented semantics, not by a green fence — do not read the
-    # suite passing as evidence the race is closed, and do not remove this
-    # because "no test covers it".
+    # tests/routers/test_accounts_change_type.py). The fence is
+    # tests/routers/test_first_account_currency_mysql.py, which runs on real
+    # MySQL in the Backend Migrations CI job and asserts both no 500 and a
+    # single-currency org over repeated concurrent trials (TBD-508).
     #
     # A UNIQUE constraint cannot express this rule: it is "at most one DISTINCT
     # currency per org", not "one row per org". A generated column or a trigger
     # could, and would be a stronger guarantee if this ever needs one.
-    # ⚠ TBD-508 MITIGATION: LOCK THE ORG ROW FIRST. This is a lock-ORDER fix,
-    # not decoration.
+    # ⚠ TBD-508: LOCK THE ORG ROW FIRST. This is a lock-ORDER fix, not
+    # decoration.
     #
     # The ``FOR UPDATE`` below takes a GAP lock when the org has no accounts
     # (an empty range), and a gap lock conflicts with the other transaction's
@@ -154,12 +154,13 @@ async def assert_org_currency_allows(
     # the inversion. It also happens to be the row this function goes on to
     # UPDATE, so it is a lock we need regardless.
     #
+    # Every caller must take this lock before touching ``accounts`` (the
+    # demo seed takes it first thing). Removing it brings the deadlock back:
+    # the MySQL fence above fails in most of its trials without it.
+    #
     # ⚠ AIOSQLITE CANNOT SEE ANY OF THIS. It ignores ``with_for_update()``,
     # has no gap locks and no error 1213, and every backend shard runs on it --
-    # which is exactly why the deadlock shipped in PR 1 unnoticed. The suite
-    # passing is not evidence this is fixed; the measurement is. Full fix
-    # (retry vs. re-ordering, and where a fence for it can even live) is
-    # TBD-508.
+    # which is exactly why the deadlock shipped in PR 1 unnoticed.
     await db.execute(
         select(Organization.id)
         .where(Organization.id == org_id)
