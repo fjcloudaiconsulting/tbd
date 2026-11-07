@@ -10,6 +10,7 @@ async def _patch_platform_job(monkeypatch):
     async def _noop(*a, **k):
         return 0
     monkeypatch.setattr(L, "run_api_token_expiry_reminders", _noop)
+    monkeypatch.setattr(L, "run_superadmin_floor_probe", _noop)
     monkeypatch.setattr(L, "run_platform_ai_catalog_sync", _noop)
     monkeypatch.setattr(L, "run_platform_ai_spend_watch", _noop)
     monkeypatch.setattr(L, "run_agent_action_purge", _noop)
