@@ -23,7 +23,7 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -649,3 +649,79 @@ def test_the_instalment_count_steps_as_generation_does():
                     target_date=datetime.date(2027, 3, 30))
     spec = plan_lifecycle_service._series_spec(plan, goal, datetime.date(2027, 1, 31))
     assert spec["occurrence_count"] == 3
+
+
+async def test_a_failed_rollover_does_not_break_the_scheduler_close(factory, w, monkeypatch):
+    """FENCE (second review of #1120, finding B). The rollover's rollback
+    used to expire every object of the session, so the job's next
+    ``is_due(org)`` hit a lazy load (MissingGreenlet): the run raised, losing
+    its audit row and notification, after one step of a catch-up. With the
+    commit failing once, the job closes both periods, audits and notifies."""
+    from sqlalchemy.exc import OperationalError
+
+    from app.services.scheduler.jobs import billing_close
+
+    await _start(factory, w)
+    nxt = PERIOD_START + relativedelta(months=1)
+    async with factory() as db:
+        # A stub makes the job close one period per step; its Budget removed,
+        # the first step's rollover owes one, and that is the commit that fails.
+        await billing_service.ensure_future_periods(db, w["org"], count=1)
+        await db.execute(delete(Budget).where(Budget.period_start == nxt))
+        await db.commit()
+    real = plan_lifecycle_service._ensure_budgets
+    failed = []
+
+    async def then_fail_the_commit(db, *a, **k):
+        added = await real(db, *a, **k)
+        if not failed:
+            async def deadlock():
+                del db.commit  # once
+                failed.append(True)
+                raise OperationalError("COMMIT", {}, Exception("1213 Deadlock found"))
+            db.commit = deadlock
+        return added
+
+    monkeypatch.setattr(plan_lifecycle_service, "_ensure_budgets", then_fail_the_commit)
+    sent = []
+
+    async def audit(**k):
+        sent.append("audit")
+        return 1
+
+    async def notify(*a, **k):
+        sent.append("notify")
+        return 1
+
+    monkeypatch.setattr(billing_close, "record_run", audit)
+    monkeypatch.setattr(billing_close, "dispatch_notification_to_org_members", notify)
+    third = PERIOD_START + relativedelta(months=2)
+    async with factory() as db:
+        org = await db.get(Organization, w["org"])
+        result = await BillingCloseJob().run(db, org, third + datetime.timedelta(days=2))
+    assert (result.outcome, result.counts["steps"], failed, sent) == ("success", 2, [True], ["audit", "notify"])
+    async with factory() as db:
+        assert (await billing_service.find_open_period(db, w["org"])).start_date == third
+    # The failed step's Budget is lost; the second close's rollover gave the next one.
+    assert await _budget_periods(factory, w["org"]) == [PERIOD_START, third]
+
+
+async def test_a_plan_that_needs_attention_is_not_owed_a_budget(factory, w, monkeypatch):
+    """GUARD (second review of #1120, nit). The rollover skips such a plan, so
+    it must not make a Budgets page visit take every plan lock for nothing."""
+    pid = await _start(factory, w)
+    food = await _goal(factory, pid, "Food")
+    async with factory() as db:
+        (await db.get(Category, food.category_id)).parent_id = w["other_cat"]
+        await db.commit()
+    calls = []
+    real = plan_lifecycle_service.lock_plans
+
+    async def spy(db, org_id, **k):
+        calls.append(org_id)
+        return await real(db, org_id, **k)
+
+    monkeypatch.setattr(plan_lifecycle_service, "lock_plans", spy)
+    async with factory() as db:
+        assert len(await billing_service.ensure_future_periods(db, w["org"], count=1)) == 1
+    assert calls == [] and await _budget_periods(factory, w["org"]) == [PERIOD_START]

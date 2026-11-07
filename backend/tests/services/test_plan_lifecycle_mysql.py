@@ -249,3 +249,30 @@ async def test_a_close_during_a_start_does_not_wait_for_the_org_lock(factory, mo
     async with factory() as db:
         await billing_service.ensure_future_periods(db, s["org"], count=1)
     assert await budgeted()
+
+
+async def test_a_start_that_waited_sees_what_the_lock_holder_committed(factory):
+    """FENCE (second review of #1120, finding A). A goal edit holds the plan
+    locks and disables "Food"; a Start waits on them. Its snapshot must not
+    predate the lock (REPEATABLE READ): the Start sees "Food" disabled and
+    gives it no funding series. Wrong implementation: a plain read before the
+    lock, which fixes the snapshot, so the Start funds a disabled goal."""
+    s = await _seed(factory)
+    async with factory() as holder:
+        plan = await plan_lifecycle_service.lock(holder, await holder.get(Scenario, s["plan"]))
+        food = (await holder.scalars(select(PlanGoal).where(
+            PlanGoal.scenario_id == plan.id, PlanGoal.name == "Food"))).one()
+        food.enabled = False
+        await holder.flush()
+        starting = asyncio.create_task(_start(factory, s["plan"]))
+        await asyncio.sleep(1)
+        assert not starting.done(), "the Start did not wait on the plan locks"
+        await holder.commit()
+    await asyncio.wait_for(starting, timeout=20)
+    async with factory() as db:
+        goals = {g.name: g for g in (await db.scalars(
+            select(PlanGoal).where(PlanGoal.scenario_id == s["plan"]))).all()}
+        assert (goals["Food"].enabled, goals["Food"].funding_recurring_id) == (False, None)
+        assert goals["Fund"].funding_recurring_id is not None
+        assert await db.scalar(select(func.count()).select_from(RecurringTransaction).where(
+            RecurringTransaction.org_id == s["org"])) == 1

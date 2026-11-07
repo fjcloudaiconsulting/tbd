@@ -10,9 +10,14 @@ it unchanged.
 
 Every plan write first locks ALL the org's plan rows, in id order
 (``lock_plans``): the org's plan mutex. It serialises Start's checks across
-plans (an account claimed once, a tag and a category held by one plan), and
-those checks read the other plans with locking reads, so they see the latest
-commit rather than the transaction's REPEATABLE READ snapshot.
+plans (an account claimed once, a tag and a category held by one plan).
+
+The snapshot must not predate the locks: under REPEATABLE READ a transaction
+reads from the snapshot of its first plain read, and every route reads the
+plan before it locks it. So ``lock`` ends that read-only transaction first,
+and the first read after the locks starts a fresh snapshot that sees whatever
+a lock holder committed while this write waited (a goal disabled, a Budget
+added). One choke point, rather than a locking read at every read after it.
 
 Not the ``organizations`` row, which ``currency_service`` locks: every insert
 of an org-scoped row takes a shared lock on it (the foreign key check), so
@@ -46,7 +51,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app._time import utcnow_naive
@@ -98,13 +103,39 @@ async def lock_plans(db: AsyncSession, org_id: int, *, skip_locked: bool = False
         select(func.count()).select_from(Scenario).where(Scenario.org_id == org_id))
 
 
+_LOCKED_IN = "plan_lifecycle.locked_in"
+
+
+async def reload(db: AsyncSession) -> None:
+    """Re-read every object the session holds, after a rollback expired them:
+    a caller's object (the route's user, the scheduler's org) must not hit a
+    lazy load, which an async session refuses."""
+    for obj in list(db.identity_map.values()):
+        try:
+            await db.refresh(obj)
+        except InvalidRequestError:  # its row is gone
+            db.expunge(obj)
+
+
 async def lock(db: AsyncSession, plan: Scenario) -> Scenario:
-    """The org's plans locked (``lock_plans``), and this one re-read
-    (``populate_existing``: the identity map must carry the locked state, the
-    codebase's FOR UPDATE invariant)."""
-    await lock_plans(db, plan.org_id)
+    """The org's plans locked (``lock_plans``) on a fresh snapshot (module
+    docstring), and this one re-read (``populate_existing``: the identity map
+    must carry the locked state, the codebase's FOR UPDATE invariant).
+
+    The first call in a transaction rolls back the read-only work before it,
+    then reloads what the session holds; a later call in the same transaction
+    (an agent's preview, then the route it confirms) keeps the locks it has."""
+    org_id, plan_id = plan.org_id, plan.id
+    held_in = db.sync_session.get_transaction()
+    if held_in is None or db.info.get(_LOCKED_IN) is not held_in:
+        if db.new or db.dirty or db.deleted:
+            raise RuntimeError("plan_lifecycle_service.lock would roll back a pending write")
+        await db.rollback()
+        await lock_plans(db, org_id)
+        db.info[_LOCKED_IN] = db.sync_session.get_transaction()
+        await reload(db)
     row = (await db.execute(
-        select(Scenario).where(Scenario.id == plan.id)
+        select(Scenario).where(Scenario.id == plan_id)
         .with_for_update().execution_options(populate_existing=True)
     )).scalar_one_or_none()
     if row is None:
@@ -120,7 +151,7 @@ async def start(db: AsyncSession, *, plan: Scenario, today: datetime.date | None
     if not plan_draft_service.is_plan(plan):
         raise ValidationError(f"scenario {plan.id} is not a plan")
     # Before the lock: ``get_current_period`` commits a period it auto-creates.
-    period = await billing_service.get_current_period(db, plan.org_id, today=today)
+    period_start = (await billing_service.get_current_period(db, plan.org_id, today=today)).start_date
     plan = await lock(db, plan)
     if plan.status == _ACTIVE:
         return plan
@@ -148,7 +179,7 @@ async def start(db: AsyncSession, *, plan: Scenario, today: datetime.date | None
     await _tag(db, plan)
     for goal in goals:
         await _start_goal_steps(db, plan, goal, today)
-    await _ensure_budgets(db, plan, period.start_date)
+    await _ensure_budgets(db, plan, period_start)
     return plan
 
 
@@ -345,9 +376,10 @@ async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datet
     if plan.monthly_budget is None or plan.category_id is None:
         return 0
     added = 0
+    # A locking read: the rollover's snapshot predates its locks (its probe).
     have = set((await db.scalars(select(Budget.period_start).where(
         Budget.org_id == plan.org_id, Budget.category_id == plan.category_id,
-        Budget.period_start >= current_start))).all())
+        Budget.period_start >= current_start).with_for_update(read=True))).all())
     for period in (await db.scalars(select(BillingPeriod).where(
             BillingPeriod.org_id == plan.org_id, BillingPeriod.start_date >= current_start))).all():
         if period.start_date not in have:
@@ -374,9 +406,10 @@ async def budget_changed(db: AsyncSession, *, plan: Scenario) -> None:
 async def _owed(db: AsyncSession, org_id: int, current_start: datetime.date) -> bool:
     """Whether an active plan lacks a Budget in a period from ``current_start``
     on. A plain read: it decides whether the rollover locks anything at all."""
-    plans = (await db.scalars(select(Scenario).where(
+    plans = [p for p in (await db.scalars(select(Scenario).where(
         Scenario.org_id == org_id, Scenario.status == _ACTIVE,
         Scenario.monthly_budget.is_not(None), Scenario.category_id.is_not(None)))).all()
+        if not await attention(db, p)]  # the rollover skips these anyway
     if not plans:
         return False
     starts = (await db.scalars(select(BillingPeriod.start_date).where(
@@ -399,8 +432,11 @@ async def rollover(db: AsyncSession, org_id: int) -> bool:
     plans are being changed right now is skipped, so the rollover cannot be
     one side of a lock cycle with its caller's own locks. On any failure,
     database-level included (a deadlock rolls the whole transaction back), it
-    rolls back and logs ``plans.rollover.failed``; False then, as the rollback
-    expired the session's objects. A miss is filled by the next
+    rolls back, reloads what the session holds (so the caller's objects, the
+    scheduler's org among them, stay readable) and logs
+    ``plans.rollover.failed``; False then. No SAVEPOINT: it commits on success
+    anyway, so one would only spare the caller's objects on a Python error,
+    and the reload spares them on every error. A miss is filled by the next
     ``ensure_future_periods`` (every Budgets page visit)."""
     try:
         period = await billing_service.find_open_period(db, org_id)
@@ -420,8 +456,12 @@ async def rollover(db: AsyncSession, org_id: int) -> bool:
         await db.commit()
         return True
     except Exception:  # see the docstring: the caller's work has committed
-        await db.rollback()
         logger.exception("plans.rollover.failed", extra={"org_id": org_id})
+        try:
+            await db.rollback()
+            await reload(db)
+        except Exception:  # the database is gone: the caller's next read says so
+            logger.exception("plans.rollover.reload_failed", extra={"org_id": org_id})
         return False
 
 
