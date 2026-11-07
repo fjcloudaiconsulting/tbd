@@ -979,34 +979,85 @@ async def test_resume_on_draft_returns_409_launches_nothing_and_send_still_works
     assert audits == []
 
 
-# TBD-348: the resume gate, one row per ``BroadcastStatus``. ``None`` means
-# resumable; otherwise the 409 code. The completeness check below makes a new
-# status fail here until someone rules on it.
-_RESUME_RULING = {
-    BroadcastStatus.DRAFT: "broadcast_not_started",
-    BroadcastStatus.SENDING: None,
-    BroadcastStatus.FAILED: None,
-    BroadcastStatus.COMPLETED: "broadcast_completed",
+# TBD-348: the resume gate. Each case is (status, recipient rows as
+# (status, attempts, delivery_status), expected 409 code or None if resumable).
+# ``_AT_CAP``/``_OVER_CAP`` resolve against ``broadcast_max_attempts``. The
+# completeness check below makes a new ``BroadcastStatus`` fail here until
+# someone rules on it.
+_AT_CAP, _OVER_CAP = "at_cap", "over_cap"
+_RESUME_CASES = {
+    "draft": (BroadcastStatus.DRAFT, [], "broadcast_not_started"),
+    "sending": (BroadcastStatus.SENDING, [], None),
+    "failed": (BroadcastStatus.FAILED, [], None),
+    # TBD-637 F2: a rejected batch leaves the broadcast completed with failed
+    # rows below the cap, and resume is how those are retried.
+    "completed_with_retryable_failed": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.SENT, 1, None), (RecipientStatus.FAILED, 1, None)],
+        None,
+    ),
+    "completed_with_no_rows": (BroadcastStatus.COMPLETED, [], "broadcast_completed"),
+    "completed_all_sent_or_skipped": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.SENT, 1, None), (RecipientStatus.SKIPPED, 0, None)],
+        "broadcast_completed",
+    ),
+    "completed_failed_at_cap": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.SENT, 1, None), (RecipientStatus.FAILED, _AT_CAP, None)],
+        "broadcast_completed",
+    ),
+    "completed_failed_over_cap": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.FAILED, _OVER_CAP, None)],
+        "broadcast_completed",
+    ),
+    # A failed row a webhook already reported on is not retried (TBD-330), so
+    # it does not make a completed broadcast resumable either.
+    "completed_failed_but_reported": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.FAILED, 1, "bounced_permanent")],
+        "broadcast_completed",
+    ),
 }
 
 
-def test_resume_ruling_covers_every_broadcast_status():
-    assert set(_RESUME_RULING) == set(BroadcastStatus)
+def test_resume_cases_cover_every_broadcast_status():
+    assert {status for status, _rows, _code in _RESUME_CASES.values()} == set(
+        BroadcastStatus
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status_", list(_RESUME_RULING))
-async def test_resume_gate_per_status(session_factory, monkeypatch, status_):
-    """TBD-348: ``sending`` and ``failed`` are resumed; ``draft`` and
-    ``completed`` get a coded 409, launch nothing, write no audit row and keep
-    their status. The resumable rows are the control: a gate that refused
-    everything fails them (TBD-637 F2)."""
+@pytest.mark.parametrize("case", list(_RESUME_CASES))
+async def test_resume_gate_per_status(session_factory, monkeypatch, case):
+    """TBD-348: ``sending`` and ``failed`` are resumed, and ``completed`` only
+    while it holds rows the resume drain would retry. Everything else gets a
+    coded 409, launches nothing, writes no audit row and keeps its status. The
+    resumable cases are the control: a gate that refused everything fails them.
+    """
+    status_, rows, code = _RESUME_CASES[case]
+    cap = app_settings.broadcast_max_attempts
+    attempts_of = {_AT_CAP: cap, _OVER_CAP: cap + 1}
     await _seed(session_factory)
     launched: list[int] = []
     monkeypatch.setattr(
         admin_broadcasts_module, "launch_resume", lambda _sf, bid: launched.append(bid)
     )
     broadcast_id = await _seed_broadcast_with_status(session_factory, status_)
+    async with session_factory() as db:
+        for i, (rstatus, attempts, delivery_status) in enumerate(rows):
+            db.add(
+                EmailBroadcastRecipient(
+                    broadcast_id=broadcast_id,
+                    email=f"r{i}@customer.io",
+                    status=rstatus,
+                    attempts=attempts_of.get(attempts, attempts),
+                    delivery_status=delivery_status,
+                )
+            )
+        await db.commit()
+
     app = _make_app(session_factory, _superadmin_resolver())
     with TestClient(app) as client:
         res = client.post(f"/api/v1/admin/broadcasts/{broadcast_id}/resume")
@@ -1019,7 +1070,6 @@ async def test_resume_gate_per_status(session_factory, monkeypatch, status_):
         ).scalars().all()
         assert (await db.get(EmailBroadcast, broadcast_id)).status == status_
 
-    code = _RESUME_RULING[status_]
     if code is None:
         assert res.status_code == 200, res.text
         assert launched == [broadcast_id]

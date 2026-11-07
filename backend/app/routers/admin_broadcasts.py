@@ -55,6 +55,7 @@ from app.services.broadcast_service import (
     count_segment,
     delivery_counts,
     delivery_counts_for_broadcasts,
+    has_retryable_recipients,
     launch_drain,
     launch_resume,
     materialize_recipients,
@@ -72,10 +73,6 @@ router = APIRouter(prefix="/api/v1/admin/broadcasts", tags=["admin-broadcasts"])
 # fallback branch (``None``) is exercised separately so an operator can see
 # both greeting variants before sending.
 _PREVIEW_SAMPLE_FIRST_NAME = "Alex"
-
-
-# Statuses where recipients may still be unsent and a resume continues the job.
-_RESUMABLE_STATUSES = frozenset({BroadcastStatus.SENDING, BroadcastStatus.FAILED})
 
 
 def _request_id() -> Optional[str]:
@@ -646,24 +643,31 @@ async def resume_broadcast(
     second launch on this pod, and the per-batch claim keeps any recipient from
     being sent twice across pods. Audit ``broadcast.resume``.
 
-    Only ``sending`` (stalled mid-send) and ``failed`` (the drain crashed) are
-    resumable (TBD-348). A ``draft`` returns 409 ``broadcast_not_started`` and
-    a ``completed`` broadcast 409 ``broadcast_completed``; neither launches
-    anything or writes an audit row, like this router's other precondition
-    refusals.
+    Resumable (TBD-348): ``sending`` (stalled mid-send), ``failed`` (the
+    drain crashed), and ``completed`` only while it still holds rows the
+    resume drain would retry — a batch the mail provider rejected leaves the
+    broadcast ``completed`` with ``failed`` rows below the cap (TBD-637). A
+    ``draft`` returns 409 ``broadcast_not_started``; a ``completed`` broadcast
+    with nothing left to send returns 409 ``broadcast_completed``. A refusal
+    launches nothing and writes no audit row, like this router's other
+    precondition refusals.
     """
     actor_user_id = current_user.id
     actor_email = current_user.email
 
     # Lock the row so the gate and the launch are one step against a drain
-    # flipping the status (e.g. to COMPLETED) between them.
+    # flipping the status (e.g. to COMPLETED) or its counters between them.
     row = await _get_broadcast_or_404(db, broadcast_id, for_update=True)
 
-    if row.status not in _RESUMABLE_STATUSES:
+    resumable = row.status in (BroadcastStatus.SENDING, BroadcastStatus.FAILED) or (
+        row.status == BroadcastStatus.COMPLETED
+        and await has_retryable_recipients(db, broadcast_id)
+    )
+    if not resumable:
         # A draft has no recipient rows; resuming it would mark it COMPLETED
         # and the send CAS (requires draft) could never run again (TBD-637).
-        # A completed broadcast is finished: resuming one weeks later is never
-        # deliberate, and the admin UI never offers it (TBD-348).
+        # A completed broadcast with nothing left to retry is finished:
+        # resuming it is never deliberate (TBD-348).
         code = (
             "broadcast_not_started"
             if row.status == BroadcastStatus.DRAFT
