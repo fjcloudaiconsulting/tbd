@@ -21,13 +21,14 @@ describe("proxy Referrer-Policy on one-time token routes", () => {
     "/verify-email?token=t",
     "/accept-invite?token=t",
     "/mfa-verify?mfa_token=t",
+    "/signup/complete?token=t",
     "/settings/ai-providers/openrouter/callback?code=c&state=s",
   ])("sends no-referrer on %s", (path) => {
     const response = proxy(new NextRequest(`https://example.com${path}`));
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
   });
 
-  it.each(["/login", "/dashboard", "/reset-password-help", "/forgot-password"])(
+  it.each(["/login", "/dashboard", "/reset-password-help", "/forgot-password", "/register"])(
     "keeps the default policy on %s",
     (path) => {
       const response = proxy(new NextRequest(`https://example.com${path}`));
