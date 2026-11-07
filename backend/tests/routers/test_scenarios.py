@@ -47,7 +47,7 @@ from app.security import hash_password
 
 
 @pytest.fixture(autouse=True)
-def _enable_plans(monkeypatch):
+def _enable_plans(monkeypatch, plans_entitled):
     """Enable feature_plans for every test in this file.
 
     The scenarios router is now gated behind require_feature(Feature.PLANS).

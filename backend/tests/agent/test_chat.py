@@ -525,7 +525,7 @@ async def test_an_unloaded_tool_the_user_cannot_use_gets_the_gate_refusal(
     assert msgs[0] == {"error": "insufficient_role", "detail": {"untrusted": "admin"}}
 
 
-async def test_five_rounds_fit_the_default_budget_with_the_largest_domain(factory, w):
+async def test_five_rounds_fit_the_default_budget_with_the_largest_domain(factory, w, plans_entitled):
     """FENCE (TBD-788). The worst round ``load_tools`` allows is every read
     plus one domain (one is loaded at a time), for the owner (every tool).
     Five rounds of the base request must fit the default plan, for EVERY

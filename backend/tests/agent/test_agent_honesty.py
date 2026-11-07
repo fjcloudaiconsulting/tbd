@@ -1375,7 +1375,7 @@ COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIO
 
 
 @pytest.mark.parametrize("sid,build,setup,auto", SCENARIOS, ids=[s[0] for s in SCENARIOS])
-async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeypatch, sid, build, setup, auto):
+async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeypatch, plans_entitled, sid, build, setup, auto):
     """FENCE T-A9 / GUARD T-A9c. Wrong implementation: any preview whose
     Changes differ from what execute writes (see the T-A10 mutants), or this
     fence going vacuous (window counts are asserted)."""
