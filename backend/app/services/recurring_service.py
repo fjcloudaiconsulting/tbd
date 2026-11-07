@@ -250,6 +250,21 @@ async def create_recurring(
     ``today`` is the caller's resolved clock, used only to derive the frontier
     lower bound. Passing None falls back to ``date.today()``.
     """
+    r = await create_recurring_no_commit(db, org_id, body, today=today)
+    await db.commit()
+
+    result = await db.execute(
+        select(RecurringTransaction).options(*_load_opts()).where(RecurringTransaction.id == r.id)
+    )
+    return result.scalar_one()
+
+
+async def create_recurring_no_commit(
+    db: AsyncSession, org_id: int, body: RecurringCreate,
+    *, today: datetime.date | None = None,
+) -> RecurringTransaction:
+    """:func:`create_recurring`'s validation and insert, flushed, not committed:
+    a plan's Start creates its funding series inside its own transaction (TBD-602)."""
     # Validate refs. Category must be type-compatible with the template's
     # transaction type, generate_due_transactions writes Transaction rows
     # directly from the template and would otherwise emit mismatched rows
@@ -284,12 +299,8 @@ async def create_recurring(
         occurrences_elapsed=0,
     )
     db.add(r)
-    await db.commit()
-
-    result = await db.execute(
-        select(RecurringTransaction).options(*_load_opts()).where(RecurringTransaction.id == r.id)
-    )
-    return result.scalar_one()
+    await db.flush()
+    return r
 
 
 async def update_recurring(
@@ -967,6 +978,16 @@ async def stop_recurring(
     Returns the count removed AND any ids demoted to REJECTED. Settled
     transactions are preserved.
     """
+    outcome = await stop_recurring_no_commit(db, org_id, recurring_id)
+    await db.commit()
+    return outcome
+
+
+async def stop_recurring_no_commit(
+    db: AsyncSession, org_id: int, recurring_id: int
+) -> PendingRemovalResult:
+    """:func:`stop_recurring` without its commit, for a caller that owns the
+    transaction (a plan's Finish and Delete, TBD-602)."""
     result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id
@@ -990,8 +1011,6 @@ async def stop_recurring(
         )
         .values(recurring_id=None)
     )
-
-    await db.commit()
     return outcome
 
 
