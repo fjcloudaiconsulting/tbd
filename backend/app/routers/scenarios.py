@@ -300,7 +300,7 @@ async def update_scenario(
         db, user=current_user, scenario_id=scenario_id, write=True
     )
     with http_errors():
-        row = await plan_lifecycle_service.lock(db, row.id)
+        row = await plan_lifecycle_service.lock(db, row)
         plan_draft_service.assert_editable(
             row, confirm=confirm, changes={k: getattr(body, k) for k in body.model_fields_set},
             allowed=plan_draft_service.STARTED_PLAN_FIELDS,

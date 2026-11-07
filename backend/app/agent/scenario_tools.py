@@ -32,7 +32,7 @@ from app.routers import plan_goals as plan_goals_router
 from app.routers import scenarios as scenarios_router
 from app.schemas.plan_goal import PlanGoalCreate, PlanGoalUpdate
 from app.schemas.scenario import PLAN_FIELDS, CompareRequest, ScenarioCreate, ScenarioUpdate, SimulateRequest
-from app.services import plan_draft_service
+from app.services import plan_draft_service, plan_lifecycle_service
 from app.services.exceptions import ValidationError
 from app.services.feature_gate import Feature
 from app.services.scenario_engine import SimulationRequest, build_world_state, get_engine, simulate_off_loop
@@ -51,10 +51,8 @@ async def _owned(ctx: ToolContext, scenario_id: int, *, lock: bool = True) -> Sc
         row = await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=scenario_id, write=lock)
     if not lock:
         return row
-    return await ctx.db.scalar(
-        select(Scenario).where(Scenario.id == scenario_id, Scenario.org_id == ctx.org_id)
-        .with_for_update().execution_options(populate_existing=True)
-    )
+    # The org's plans locked first, as every plan write does (``plan_lifecycle_service.lock``).
+    return await plan_lifecycle_service.lock(ctx.db, row)
 
 
 # ── reads ─────────────────────────────────────────────────────────────────
@@ -250,13 +248,15 @@ register(route_tool(
 async def _owner_check(ctx: ToolContext, row: Scenario, args) -> None:
     with refusals():
         await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=row.id, write=True)
+
+
+async def _goals(ctx: ToolContext, row: Scenario, args) -> list[Change]:
+    # Takes the locks (``locks=True``): the org's plans first, as every plan write does.
+    row = await plan_lifecycle_service.lock(ctx.db, row)
     # Deleting a started plan also stops its series and drops its later
     # Budgets (TBD-602), which this preview does not disclose: TBD-604's.
     with refusals():
         plan_draft_service.assert_draft(row)
-
-
-async def _goals(ctx: ToolContext, row: Scenario, args) -> list[Change]:
     goals = (await ctx.db.scalars(
         select(PlanGoal).where(PlanGoal.scenario_id == row.id).order_by(PlanGoal.id)
     )).all()
@@ -277,7 +277,7 @@ register(route_tool(
     description=(f"Delete a draft plan and its goals (to archive instead, scenarios_update "
                  f"is_active=false). {CONFIRM}"),
     entity=Scenario, describe=("name", "scenario_type"), check=_owner_check, present=_delete_present,
-    cascade=CascadeDisclosure(covers=frozenset({"plan_goals.scenario_id"}), disclose=_goals),
+    cascade=CascadeDisclosure(covers=frozenset({"plan_goals.scenario_id"}), disclose=_goals, locks=True),
 ))
 
 
@@ -317,6 +317,8 @@ async def _goal_plan(ctx: ToolContext, scenario_id: int, links: dict[str, Any] |
 
 async def _goal(ctx: ToolContext, plan: Scenario, goal_id: int) -> PlanGoal:
     goal = await plan_draft_service.get_goal(ctx.db, plan=plan, goal_id=goal_id)
+    # The org's plans before the goal: the order every plan write takes.
+    await plan_lifecycle_service.lock(ctx.db, plan)
     return await ctx.db.scalar(
         select(PlanGoal).where(PlanGoal.id == goal.id).with_for_update().execution_options(populate_existing=True)
     )

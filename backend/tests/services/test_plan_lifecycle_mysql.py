@@ -32,6 +32,7 @@ from app.services import (
     plan_lifecycle_service,
     plan_projection_service,
 )
+from app.services.exceptions import ConflictError
 
 URL = os.environ.get("PLAN_LIFECYCLE_MYSQL_URL")
 if not URL:
@@ -153,3 +154,98 @@ async def test_concurrent_starts_create_one_set_of_rows(factory, monkeypatch):
 
         # The master and one child per goal; one tag, one Budget, one series per goal.
         assert [await count(m) for m in (Category, Tag, Budget, RecurringTransaction)] == [3, 1, 1, 2]
+
+
+async def test_concurrent_starts_of_two_plans_cannot_both_claim_an_account(factory, monkeypatch):
+    """FENCE (review of #1120, finding 1). Plan A saves from Main into Pot;
+    plan B is funded from Pot. Started together, exactly one becomes active
+    and the other gets the taken-account 409. Wrong implementation: locking
+    only the plan being started, and reading the other plans from a snapshot,
+    so each sees the other still a draft and both start."""
+    s = await _seed(factory)
+    async with factory() as db:
+        a = await db.get(Scenario, s["plan"])
+        pot = (await db.scalars(select(PlanGoal.account_id).where(
+            PlanGoal.scenario_id == a.id, PlanGoal.account_id.is_not(None)))).one()
+        b = Scenario(org_id=a.org_id, user_id=a.user_id, name=f"Other {uuid.uuid4().hex[:6]}",
+                     scenario_type=ScenarioType.CUSTOM, params_json=a.params_json, currency="EUR",
+                     funding_account_id=pot)
+        db.add(b)
+        await db.commit()
+        plan_ids = [a.id, b.id]
+
+    in_first, release = asyncio.Event(), asyncio.Event()
+    real = plan_projection_service.project
+
+    async def held(*a, **k):
+        if not in_first.is_set():
+            in_first.set()
+            await release.wait()
+        return await real(*a, **k)
+
+    monkeypatch.setattr(plan_projection_service, "project", held)
+
+    async def start(plan_id):
+        try:
+            await _start(factory, plan_id)
+            return "active"
+        except ConflictError as exc:
+            return exc.code
+
+    first = asyncio.create_task(start(plan_ids[0]))
+    await asyncio.wait_for(in_first.wait(), timeout=10)
+    second = asyncio.create_task(start(plan_ids[1]))
+    await asyncio.sleep(1)
+    release.set()
+    outcomes = await asyncio.wait_for(asyncio.gather(first, second), timeout=20)
+
+    assert outcomes == ["active", "plan_account_taken"]
+    async with factory() as db:
+        statuses = [(await db.get(Scenario, pid)).status for pid in plan_ids]
+    assert statuses == [ScenarioStatus.ACTIVE, ScenarioStatus.DRAFT]
+
+
+async def test_a_close_during_a_start_does_not_wait_for_the_org_lock(factory, monkeypatch):
+    """FENCE (review of #1120, finding 1, lock order). A Start holds the org's
+    plan locks; a period close in the same org runs meanwhile. Neither the
+    close nor its rollover may wait on them (a wait is one side of a lock
+    cycle; the organizations row, which every insert's foreign key check
+    reads, made the close wait here): the close returns while the Start is held, the owed Budget
+    is skipped, and the next ensure_future_periods fills it in."""
+    s = await _seed(factory)
+    await _start(factory, s["plan"])  # an active plan, owed a Budget at every new period
+    async with factory() as db:
+        a = await db.get(Scenario, s["plan"])
+        b = Scenario(org_id=a.org_id, user_id=a.user_id, name=f"Other {uuid.uuid4().hex[:6]}",
+                     scenario_type=ScenarioType.CUSTOM, params_json=a.params_json, currency="EUR")
+        db.add(b)
+        await db.commit()
+        b_id, master = b.id, a.category_id
+
+    in_b, release = asyncio.Event(), asyncio.Event()
+    real = plan_projection_service.project
+
+    async def held(*args, **k):
+        in_b.set()
+        await release.wait()
+        return await real(*args, **k)
+
+    monkeypatch.setattr(plan_projection_service, "project", held)
+    starting = asyncio.create_task(_start(factory, b_id))
+    await asyncio.wait_for(in_b.wait(), timeout=10)
+    today = datetime.date.today()
+    async with factory() as db:
+        opened = await asyncio.wait_for(billing_service.close_period(db, s["org"], today, today=today), timeout=5)
+        new_start = opened.start_date
+    release.set()
+    await asyncio.wait_for(starting, timeout=20)
+
+    async def budgeted() -> bool:
+        async with factory() as db:
+            return await db.scalar(select(func.count()).select_from(Budget).where(
+                Budget.category_id == master, Budget.period_start == new_start)) == 1
+
+    assert not await budgeted()
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, s["org"], count=1)
+    assert await budgeted()

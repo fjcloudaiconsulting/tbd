@@ -247,9 +247,12 @@ async def ensure_future_periods(
             created = []
 
     # TBD-602: a period made outside `close_period` gets the active plans'
-    # Budgets too (an idempotent ensure; it commits itself and never raises).
+    # Budgets too: an idempotent ensure that commits only when it adds one,
+    # and never raises.
     from app.services import plan_lifecycle_service
-    await plan_lifecycle_service.rollover(db, org_id)
+    if not await plan_lifecycle_service.rollover(db, org_id):
+        for s in created:  # its rollback expired them
+            await db.refresh(s)
     return created
 
 
@@ -1192,7 +1195,7 @@ async def close_period(
 
     # TBD-602: every active plan's Budget in the period just opened. After the
     # close's commit, in its own transaction, and it never raises: the close
-    # stands either way. The two racer returns above skip it, as the racer's
+    # stands either way (the refresh below re-reads the row if it rolled back). The two racer returns above skip it, as the racer's
     # own call runs it. Imported here: plan_lifecycle_service imports this module.
     from app.services import plan_lifecycle_service
     await plan_lifecycle_service.rollover(db, org_id)

@@ -8,6 +8,21 @@ plan or goal already links one. So a re-run, or the call that lost the lock
 race, is a no-op: Start on an active plan and Finish on a finished one return
 it unchanged.
 
+Every plan write first locks ALL the org's plan rows, in id order
+(``lock_plans``): the org's plan mutex. It serialises Start's checks across
+plans (an account claimed once, a tag and a category held by one plan), and
+those checks read the other plans with locking reads, so they see the latest
+commit rather than the transaction's REPEATABLE READ snapshot.
+
+Not the ``organizations`` row, which ``currency_service`` locks: every insert
+of an org-scoped row takes a shared lock on it (the foreign key check), so
+holding it through a Start stalls the whole org, and closes a cycle with
+``close_period`` (which holds Budget row locks, then inserts a period).
+Measured on MySQL: a close waited out its timeout behind a held Start. The plan
+rows are referenced by ``plan_goals`` only, which plan writes lock anyway.
+The rollover never waits for the plan locks (``rollover``), so it cannot be
+one side of a lock cycle.
+
 What Start makes is ordinary data the user owns (the master category and one
 child per enabled goal, the tag, the funding series, the Budgets). Finish and
 Delete stop the series and drop the Budgets of later periods; the category, the
@@ -30,8 +45,8 @@ from collections import Counter
 from decimal import Decimal
 from typing import Any
 
-from dateutil.relativedelta import relativedelta
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app._time import utcnow_naive
@@ -39,7 +54,7 @@ from app.models.account import Account, AccountType
 from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
-from app.models.recurring import RecurringTransaction
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, PlanGoalKind, Scenario, ScenarioStatus
 from app.models.tag import Tag
 from app.models.transaction import Transaction, TransactionStatus
@@ -53,6 +68,7 @@ from app.services import (
     tag_service,
 )
 from app.services.account_balance_forecast_service import LIABILITY_SLUGS
+from app.services.date_utils import occurrences_in_window
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.transaction_filters import (
     non_reverted_transaction_filter,
@@ -68,11 +84,27 @@ _TRANSFER_KINDS = {PlanGoalKind.SAVINGS_TARGET.value, PlanGoalKind.RETIREMENT.va
 _SPEND_KINDS = {PlanGoalKind.LUMP.value, PlanGoalKind.MONTHLY_SPEND.value}
 
 
-async def lock(db: AsyncSession, plan_id: int) -> Scenario:
-    """The plan row, locked and re-read (``populate_existing``: the identity
-    map must carry the locked state, the codebase's FOR UPDATE invariant)."""
+# Coded 409s: a claim another plan (or another goal) already holds.
+ACCOUNT_TAKEN, TAG_TAKEN, CATEGORY_TAKEN = "plan_account_taken", "plan_tag_taken", "plan_category_taken"
+
+
+async def lock_plans(db: AsyncSession, org_id: int, *, skip_locked: bool = False) -> bool:
+    """Every plan row of the org ``FOR UPDATE``, in id order: the first lock
+    of every plan write (module docstring). With ``skip_locked``, it never
+    waits, and is False when another transaction holds any of them."""
+    locked = (await db.scalars(select(Scenario.id).where(Scenario.org_id == org_id)
+                               .order_by(Scenario.id).with_for_update(skip_locked=skip_locked))).all()
+    return not skip_locked or len(locked) == await db.scalar(
+        select(func.count()).select_from(Scenario).where(Scenario.org_id == org_id))
+
+
+async def lock(db: AsyncSession, plan: Scenario) -> Scenario:
+    """The org's plans locked (``lock_plans``), and this one re-read
+    (``populate_existing``: the identity map must carry the locked state, the
+    codebase's FOR UPDATE invariant)."""
+    await lock_plans(db, plan.org_id)
     row = (await db.execute(
-        select(Scenario).where(Scenario.id == plan_id)
+        select(Scenario).where(Scenario.id == plan.id)
         .with_for_update().execution_options(populate_existing=True)
     )).scalar_one_or_none()
     if row is None:
@@ -89,7 +121,7 @@ async def start(db: AsyncSession, *, plan: Scenario, today: datetime.date | None
         raise ValidationError(f"scenario {plan.id} is not a plan")
     # Before the lock: ``get_current_period`` commits a period it auto-creates.
     period = await billing_service.get_current_period(db, plan.org_id, today=today)
-    plan = await lock(db, plan.id)
+    plan = await lock(db, plan)
     if plan.status == _ACTIVE:
         return plan
     if plan.status != ScenarioStatus.DRAFT:
@@ -112,7 +144,7 @@ async def start(db: AsyncSession, *, plan: Scenario, today: datetime.date | None
             horizon_end=plan_projection_service.default_horizon_end(today))
     ).model_dump(mode="json")
 
-    await _master_category(db, plan)
+    await _master_category(db, plan, linked_at_start=True)
     await _tag(db, plan)
     for goal in goals:
         await _start_goal_steps(db, plan, goal, today)
@@ -136,11 +168,12 @@ async def _check_topology(db: AsyncSession, plan: Scenario) -> None:
     included), a goal account is no active plan's funding account, neither is
     a liability, and an account backs one enabled goal. ``plan`` is active
     (flushed), so the queries below include it."""
+    # Locking reads (module docstring): another plan's commit is seen, not a snapshot.
     active = (await db.scalars(select(Scenario).where(
-        Scenario.org_id == plan.org_id, Scenario.status == _ACTIVE))).all()
+        Scenario.org_id == plan.org_id, Scenario.status == _ACTIVE).with_for_update(read=True))).all()
     goals = (await db.scalars(select(PlanGoal).where(
         PlanGoal.scenario_id.in_([p.id for p in active]), PlanGoal.enabled.is_(True),
-        PlanGoal.account_id.is_not(None)))).all()
+        PlanGoal.account_id.is_not(None)).with_for_update(read=True))).all()
     goal_accounts = Counter(g.account_id for g in goals)
     funding = {p.funding_account_id for p in active if p.funding_account_id is not None}
     mine = [g.account_id for g in goals if g.scenario_id == plan.id]
@@ -151,24 +184,27 @@ async def _check_topology(db: AsyncSession, plan: Scenario) -> None:
         if slugs.get(plan.funding_account_id) in LIABILITY_SLUGS:
             raise ValidationError("a plan cannot be funded from a credit card or loan")
         if plan.funding_account_id in goal_accounts:
-            raise ValidationError(
+            raise ConflictError(
                 f"account {plan.funding_account_id} is the goal account of an active plan, "
-                "so it cannot fund this one")
+                "so it cannot fund this one", code=ACCOUNT_TAKEN)
     for account_id in mine:
         if slugs.get(account_id) in LIABILITY_SLUGS:
             raise ValidationError("a goal cannot save into a credit card or loan")
         if account_id in funding:
-            raise ValidationError(f"account {account_id} funds an active plan, so it cannot be a goal account")
+            raise ConflictError(f"account {account_id} funds an active plan, so it cannot be a goal account",
+                                code=ACCOUNT_TAKEN)
         if goal_accounts[account_id] > 1:
-            raise ValidationError(f"account {account_id} already backs another enabled goal")
+            raise ConflictError(f"account {account_id} already backs another enabled goal", code=ACCOUNT_TAKEN)
 
 
-async def _master_category(db: AsyncSession, plan: Scenario) -> Category:
+async def _master_category(db: AsyncSession, plan: Scenario, *, linked_at_start: bool = False) -> Category:
     if plan.category_id is not None:
         cat = await db.get(Category, plan.category_id)
         if cat is None or cat.parent_id is not None:
             # Budgets are master-only, and the plan's Budget is on this category.
             raise ValidationError("a plan's category must be a master category")
+        if linked_at_start:
+            await _refuse_a_held_category(db, plan)
         return cat
     cat = Category(org_id=plan.org_id, name=plan.name[:100], type=CategoryType.BOTH)
     db.add(cat)
@@ -177,23 +213,53 @@ async def _master_category(db: AsyncSession, plan: Scenario) -> Category:
     return cat
 
 
+async def _refuse_a_held_category(db: AsyncSession, plan: Scenario) -> None:
+    """A category the user linked in the draft must be the plan's alone.
+    Budgets key on (org, category, period), so on a category that already has
+    one the plan would adopt it: rewrite its amount on a budget edit, delete
+    the later ones on Finish."""
+    held = await db.scalar(select(Scenario.id).where(
+        Scenario.org_id == plan.org_id, Scenario.category_id == plan.category_id, Scenario.id != plan.id,
+        Scenario.status != ScenarioStatus.DRAFT).with_for_update(read=True))
+    budgeted = await db.scalar(select(Budget.id).where(
+        Budget.org_id == plan.org_id, Budget.category_id == plan.category_id).limit(1))
+    if held is not None or budgeted is not None:
+        why = f"belongs to plan {held}" if held is not None else "already has budgets"
+        raise ConflictError(
+            f"category {plan.category_id} {why}: link a fresh category, or unlink it and "
+            "Start creates one", code=CATEGORY_TAKEN)
+
+
 def _tag_name(plan: Scenario) -> str:
     """The plan name in tag form (``normalize_tag_name`` refuses anything else)."""
     cleaned = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 \-]", " ", plan.name.lower())).strip()
     return cleaned[:tag_service.TAG_NAME_MAX_LENGTH].strip() or f"plan {plan.id}"
 
 
+async def _find_tag(db: AsyncSession, org_id: int, name: str) -> Tag | None:
+    # A locking read: a tag another Start just committed is seen and adopted.
+    return await db.scalar(select(Tag).where(
+        Tag.org_id == org_id, Tag.name_normalized == name).with_for_update(read=True))
+
+
 async def _tag(db: AsyncSession, plan: Scenario) -> None:
     if plan.tag_id is None:
         name = _tag_name(plan)
-        tag = await tag_service._get_tag_by_normalized(db, plan.org_id, name) or await tag_service.create_tag(
-            db, org_id=plan.org_id, name=name, created_by_user_id=plan.user_id)
+        try:
+            tag = await _find_tag(db, plan.org_id, name) or await tag_service.create_tag(
+                db, org_id=plan.org_id, name=name, created_by_user_id=plan.user_id)
+        except IntegrityError:
+            # The plan locks serialise Starts, so this is a guard: the unique
+            # name lost to a tag committed in between, which is another plan's.
+            raise ConflictError(f"the tag '{name}' is taken: rename this plan or link another tag",
+                                code=TAG_TAKEN) from None
         plan.tag_id = tag.id
     held = await db.scalar(select(Scenario.id).where(
-        Scenario.tag_id == plan.tag_id, Scenario.id != plan.id, Scenario.status != ScenarioStatus.DRAFT))
+        Scenario.org_id == plan.org_id, Scenario.tag_id == plan.tag_id, Scenario.id != plan.id,
+        Scenario.status != ScenarioStatus.DRAFT).with_for_update(read=True))
     if held is not None:
-        raise ValidationError(
-            f"the tag of plan {held} would be shared: rename this plan or link another tag")
+        raise ConflictError(
+            f"the tag of plan {held} would be shared: rename this plan or link another tag", code=TAG_TAKEN)
 
 
 def _series_spec(plan: Scenario, goal: PlanGoal, today: datetime.date) -> dict[str, Any] | None:
@@ -211,10 +277,10 @@ def _series_spec(plan: Scenario, goal: PlanGoal, today: datetime.date) -> dict[s
         return None
     count = None
     if goal.target_date is not None:
-        # Occurrences today, today + 1 month, ... up to and including the target date.
-        months = (goal.target_date.year - today.year) * 12 + goal.target_date.month - today.month
-        count = months + (today + relativedelta(months=months) <= goal.target_date)
-        if count <= 0:
+        # Stepped as generation steps it (path-dependent at month ends: Jan 31,
+        # Feb 28, Mar 28), from today up to and including the target date.
+        count = len(occurrences_in_window(today, Frequency.MONTHLY, today, goal.target_date, budget=1201))
+        if count == 0:
             return None
         # ``RecurringCreate``'s sanity bound (a century of instalments): beyond it, open-ended.
         count = count if count <= 1200 else None
@@ -256,7 +322,12 @@ async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, to
 
 async def _expected_balance(db: AsyncSession, account_id: int) -> Decimal:
     """Balance plus the pending delta: a pending row that settles after Start
-    moves the balance without being progress."""
+    moves the balance without being progress.
+
+    Every non-reverted pending row of the account counts, whatever its date,
+    not the kernel's ``pending_delta`` (the billing window's rows only): a row
+    dated after the window that is already booked at Start still lands in the
+    balance later, and counting it as saved would overstate progress."""
     account = await db.get(Account, account_id)
     pending = await db.scalar(select(func.coalesce(func.sum(signed_amount_expr()), 0)).where(
         Transaction.account_id == account_id, Transaction.status == TransactionStatus.PENDING,
@@ -267,12 +338,13 @@ async def _expected_balance(db: AsyncSession, account_id: int) -> Decimal:
 # ── Budgets and the rollover ─────────────────────────────────────────────
 
 
-async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datetime.date) -> None:
+async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datetime.date) -> int:
     """The plan's Budget on its master category in the current period and
     every later one that exists (stubs), unless one is there already
-    (``uq_budget_org_cat_period``)."""
+    (``uq_budget_org_cat_period``). Returns how many it added."""
     if plan.monthly_budget is None or plan.category_id is None:
-        return
+        return 0
+    added = 0
     have = set((await db.scalars(select(Budget.period_start).where(
         Budget.org_id == plan.org_id, Budget.category_id == plan.category_id,
         Budget.period_start >= current_start))).all())
@@ -282,6 +354,8 @@ async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datet
             # ``period_end`` is the raw row value, as ``budget_service.create_budget`` writes it.
             db.add(Budget(org_id=plan.org_id, category_id=plan.category_id, amount=plan.monthly_budget,
                           period_start=period.start_date, period_end=period.end_date))
+            added += 1
+    return added
 
 
 async def budget_changed(db: AsyncSession, *, plan: Scenario) -> None:
@@ -297,37 +371,65 @@ async def budget_changed(db: AsyncSession, *, plan: Scenario) -> None:
     await _ensure_budgets(db, plan, period.start_date)
 
 
-async def rollover(db: AsyncSession, org_id: int) -> None:
+async def _owed(db: AsyncSession, org_id: int, current_start: datetime.date) -> bool:
+    """Whether an active plan lacks a Budget in a period from ``current_start``
+    on. A plain read: it decides whether the rollover locks anything at all."""
+    plans = (await db.scalars(select(Scenario).where(
+        Scenario.org_id == org_id, Scenario.status == _ACTIVE,
+        Scenario.monthly_budget.is_not(None), Scenario.category_id.is_not(None)))).all()
+    if not plans:
+        return False
+    starts = (await db.scalars(select(BillingPeriod.start_date).where(
+        BillingPeriod.org_id == org_id, BillingPeriod.start_date >= current_start))).all()
+    have = set((await db.execute(select(Budget.category_id, Budget.period_start).where(
+        Budget.org_id == org_id, Budget.category_id.in_([p.category_id for p in plans]),
+        Budget.period_start >= current_start))).all())
+    return any((p.category_id, d) not in have for p in plans for d in starts)
+
+
+async def rollover(db: AsyncSession, org_id: int) -> bool:
     """Every healthy active plan's Budget in the open period and the stubs
     after it; a plan that needs attention is skipped. Run by
     ``billing_service.close_period`` (the scheduler and the manual close both
     call it) and ``ensure_future_periods`` (periods made outside a close).
 
-    Commits, and never raises: it runs after the close has committed, and a
-    close must not be reported failed over a Budget. The work sits in a
-    SAVEPOINT, so a failure discards only it and expires only the rows it
-    touched, never the caller's. A miss is filled by the next
+    Runs after the caller's work has committed, and never raises: a close must
+    not be reported failed over a Budget. It locks and commits only when a
+    plan is owed a Budget, and never waits for the plan locks: an org whose
+    plans are being changed right now is skipped, so the rollover cannot be
+    one side of a lock cycle with its caller's own locks. On any failure,
+    database-level included (a deadlock rolls the whole transaction back), it
+    rolls back and logs ``plans.rollover.failed``; False then, as the rollback
+    expired the session's objects. A miss is filled by the next
     ``ensure_future_periods`` (every Budgets page visit)."""
     try:
-        async with db.begin_nested():
-            period = await billing_service.find_open_period(db, org_id)
-            # Locked: a Finish racing this waits, or is waited for and seen.
-            plans = [] if period is None else (await db.scalars(select(Scenario).where(
-                Scenario.org_id == org_id, Scenario.status == _ACTIVE).order_by(Scenario.id)
-                .with_for_update().execution_options(populate_existing=True))).all()
-            for plan in plans:
-                if not await attention(db, plan):
-                    await _ensure_budgets(db, plan, period.start_date)
-    except Exception:  # see the docstring: the close has committed
-        logger.warning("plans.rollover_failed", extra={"org_id": org_id}, exc_info=True)
-    await db.commit()
+        period = await billing_service.find_open_period(db, org_id)
+        if period is None or not await _owed(db, org_id, period.start_date):
+            return True
+        if not await lock_plans(db, org_id, skip_locked=True):
+            await db.commit()  # release the ones it did lock
+            logger.info("plans.rollover.skipped_busy", extra={"org_id": org_id})
+            return True
+        # Re-read under the locks: a Finish that landed first is seen.
+        plans = (await db.scalars(select(Scenario).where(
+            Scenario.org_id == org_id, Scenario.status == _ACTIVE).order_by(Scenario.id)
+            .execution_options(populate_existing=True).with_for_update())).all()
+        for plan in plans:
+            if not await attention(db, plan):
+                await _ensure_budgets(db, plan, period.start_date)
+        await db.commit()
+        return True
+    except Exception:  # see the docstring: the caller's work has committed
+        await db.rollback()
+        logger.exception("plans.rollover.failed", extra={"org_id": org_id})
+        return False
 
 
 # ── Finish and Delete ────────────────────────────────────────────────────
 
 
 async def finish(db: AsyncSession, *, plan: Scenario) -> Scenario:
-    plan = await lock(db, plan.id)
+    plan = await lock(db, plan)
     if plan.status == ScenarioStatus.FINISHED:
         return plan
     if plan.status != _ACTIVE:
@@ -341,7 +443,7 @@ async def delete_plan(db: AsyncSession, *, plan: Scenario) -> None:
     """Any state. A started plan gets Finish's side effects first; its
     category, tag, accounts, current and past Budgets and transactions stay
     as ordinary rows."""
-    plan = await lock(db, plan.id)
+    plan = await lock(db, plan)
     if plan.status != ScenarioStatus.DRAFT:
         await _wind_down(db, plan)
     # Explicit, though ``plan_goals`` cascades: SQLite runs without FK enforcement.

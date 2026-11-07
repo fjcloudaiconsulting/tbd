@@ -208,32 +208,45 @@ async def test_start_adopts_an_existing_tag_of_the_same_normalised_name(factory,
         assert len(tags) == 1 and (await db.get(Scenario, pid)).tag_id == tags[0].id
 
 
-def _refusals(w: dict) -> dict[str, tuple[dict, list[dict], str]]:
-    """case -> (plan fields, goals, what the refusal says)."""
+TAKEN = "plan_account_taken"
+
+
+def _refusals(w: dict) -> dict[str, tuple[dict, list[dict], str | None, str]]:
+    """case -> (plan fields, goals, the 409's code (None: a 422), what it says).
+    An account another claim holds is a conflict (409); a wrong kind of
+    account, or a missing one, is invalid input (422)."""
     fund = {"name": "Fund", "tier": "want", "kind": "savings_target", "monthly_amount": "10.00"}
     return {
         "funding account is a liability": (
-            {"funding_account_id": w["card"]}, [], "funded from a credit card or loan"),
+            {"funding_account_id": w["card"]}, [], None, "funded from a credit card or loan"),
         "funding account is its own goal account": (
-            {}, [{**fund, "account_id": w["main"]}], f"account {w['main']} is the goal account"),
+            {}, [{**fund, "account_id": w["main"]}], TAKEN, f"account {w['main']} is the goal account"),
         "goal account is a liability": (
-            {}, [{**fund, "account_id": w["card"]}], "save into a credit card or loan"),
+            {}, [{**fund, "account_id": w["card"]}], None, "save into a credit card or loan"),
         "two enabled goals on one account": (
             {}, [{**fund, "account_id": w["pot"]}, {**fund, "name": "Two", "account_id": w["pot"]}],
-            f"account {w['pot']} already backs another enabled goal"),
-        "a transfer goal without an account": ({}, [fund], "needs an account to save into"),
+            TAKEN, f"account {w['pot']} already backs another enabled goal"),
+        "a transfer goal without an account": ({}, [fund], None, "needs an account to save into"),
         "goal account is another active plan's funding account": (
             {"funding_account_id": w["pot"]}, [{**fund, "account_id": w["main"]}],
-            f"account {w['main']} funds an active plan"),
+            TAKEN, f"account {w['main']} funds an active plan"),
         "funding account is another active plan's goal account": (
-            {"funding_account_id": w["savings"]}, [], f"account {w['savings']} is the goal account"),
-        "the tag is another active plan's": ({"name": "Lisbon trip"}, [], "would be shared"),
+            {"funding_account_id": w["savings"]}, [], TAKEN, f"account {w['savings']} is the goal account"),
+        "the tag is another active plan's": ({"name": "Lisbon trip"}, [], "plan_tag_taken", "would be shared"),
     }
+
+
+def _refused(res, code: str | None, says: str) -> bool:
+    """A coded 409 (``{"code", "message"}``) or a plain 422 that says ``says``."""
+    if code is None:
+        return res.status_code == 422 and says in res.json()["detail"]
+    detail = res.json()["detail"]
+    return res.status_code == 409 and detail["code"] == code and says in detail["message"]
 
 
 @pytest.mark.parametrize("case", list(_refusals({k: 0 for k in ("main", "card", "pot", "savings")})))
 async def test_start_refuses_and_writes_nothing(factory, w, case):
-    fields, goals, says = _refusals(w)[case]
+    fields, goals, code, says = _refusals(w)[case]
     with _client(factory, "alice") as alice:
         # The other active plan: funded from main, saving into savings.
         first = _draft(alice, w)
@@ -241,7 +254,7 @@ async def test_start_refuses_and_writes_nothing(factory, w, case):
         pid = _draft(alice, w, **{"name": "Second", **fields}, goals=goals)
         before = await _rows(factory, w["org"])
         res = alice.post(f"/api/v1/scenarios/{pid}/start")
-        assert res.status_code == 422 and says in res.json()["detail"], (case, res.text)
+        assert _refused(res, code, says), (case, res.text)
     assert await _rows(factory, w["org"]) == before
 
 
@@ -486,10 +499,153 @@ async def test_a_failing_rollover_never_fails_the_close(factory, w, monkeypatch)
     nxt = PERIOD_START + relativedelta(months=1)
     async with factory() as db:
         opened = await billing_service.close_period(db, w["org"], nxt - datetime.timedelta(days=1), today=nxt)
+        assert opened.start_date == nxt
         stubs = await billing_service.ensure_future_periods(db, w["org"], count=1)
-        assert (opened.start_date, [s.start_date for s in stubs]) == (nxt, [nxt + relativedelta(months=1)])
+        assert [s.start_date for s in stubs] == [nxt + relativedelta(months=1)]
     assert await _budget_periods(factory, w["org"]) == [PERIOD_START]
     monkeypatch.setattr(plan_lifecycle_service, "attention", real)
     async with factory() as db:
         await billing_service.ensure_future_periods(db, w["org"], count=1)
     assert await _budget_periods(factory, w["org"]) == [PERIOD_START, nxt, nxt + relativedelta(months=1)]
+
+
+async def test_start_refuses_a_linked_category_that_already_has_budgets(factory, w):
+    """FENCE (review of #1120, finding 2). Budgets key on (org, category,
+    period), so a plan on a category the user already budgets would adopt
+    those Budgets: overwrite them on a budget edit, delete the later ones on
+    Finish. Start refuses it; the user's Budgets are untouched."""
+    nxt = PERIOD_START + relativedelta(months=1)
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, w["org"], count=1)
+        travel = Category(org_id=w["org"], name="Travel", type=CategoryType.BOTH)
+        db.add(travel)
+        await db.flush()
+        for start in (PERIOD_START, nxt):
+            db.add(Budget(org_id=w["org"], category_id=travel.id, amount=Decimal(900), period_start=start))
+        await db.commit()
+        travel_id = travel.id
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, category_id=travel_id, monthly_budget="50.00")
+        before = await _rows(factory, w["org"])
+        res = alice.post(f"/api/v1/scenarios/{pid}/start")
+        assert _refused(res, "plan_category_taken", "link a fresh category"), res.text
+    assert await _rows(factory, w["org"]) == before
+    async with factory() as db:
+        assert [(b.period_start, b.amount) for b in (await db.scalars(
+            select(Budget).where(Budget.category_id == travel_id).order_by(Budget.period_start))).all()] == [
+            (PERIOD_START, Decimal("900.00")), (nxt, Decimal("900.00"))]
+
+
+async def test_start_refuses_another_started_plans_category(factory, w):
+    first = await _start(factory, w)
+    async with factory() as db:
+        taken = (await db.get(Scenario, first)).category_id
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, name="Second", category_id=taken, goals=[], monthly_budget=None)
+        res = alice.post(f"/api/v1/scenarios/{pid}/start")
+        assert _refused(res, "plan_category_taken", f"plan {first}"), res.text
+
+
+async def test_a_database_error_in_the_rollover_leaves_the_close_standing(factory, w, monkeypatch, caplog):
+    """FENCE (review of #1120, finding 3). A deadlock rolls the whole
+    transaction back, savepoint and all; the rollover's commit failing must
+    not fail a close that has committed, and the session stays usable."""
+    from sqlalchemy.exc import OperationalError
+
+    await _start(factory, w)
+    real = plan_lifecycle_service._ensure_budgets
+
+    async def then_fail_the_commit(db, *a, **k):
+        await real(db, *a, **k)
+
+        async def deadlock():
+            del db.commit  # once
+            raise OperationalError("COMMIT", {}, Exception("1213 Deadlock found"))
+        db.commit = deadlock
+
+    monkeypatch.setattr(plan_lifecycle_service, "_ensure_budgets", then_fail_the_commit)
+    nxt = PERIOD_START + relativedelta(months=1)
+    async with factory() as db:
+        opened = await billing_service.close_period(db, w["org"], nxt - datetime.timedelta(days=1), today=nxt)
+        assert opened.start_date == nxt
+        assert (await billing_service.find_open_period(db, w["org"])).id == opened.id  # still usable
+    assert await _budget_periods(factory, w["org"]) == [PERIOD_START]
+    failed = [r for r in caplog.records if r.getMessage() == "plans.rollover.failed"]
+    assert [(r.levelname, bool(r.exc_info)) for r in failed] == [("ERROR", True)]
+
+
+async def test_ensure_future_periods_commits_and_locks_only_when_something_changed(factory, w, monkeypatch):
+    """GUARD (review of #1120, finding 4). A Budgets page visit that adds no
+    stub and owes no plan Budget neither commits nor locks the plans."""
+    await _start(factory, w)
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, w["org"], count=1)
+    calls = []
+    real_lock = plan_lifecycle_service.lock_plans
+
+    async def spy_lock(db, org_id, **k):
+        calls.append("lock")
+        return await real_lock(db, org_id, **k)
+
+    monkeypatch.setattr(plan_lifecycle_service, "lock_plans", spy_lock)
+    async with factory() as db:
+        real_commit = db.commit
+
+        async def spy_commit():
+            calls.append("commit")
+            await real_commit()
+
+        db.commit = spy_commit
+        assert await billing_service.ensure_future_periods(db, w["org"], count=1) == []
+    assert calls == []
+
+
+async def test_a_goal_delete_locks_the_plan_first(factory, w, monkeypatch):
+    """GUARD (review of #1120, finding 6): as POST and PATCH, so it cannot
+    race a Start; the draft check runs on the locked row."""
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w)
+        later = await _goal(factory, pid, "Later")
+        seen = []
+        real = plan_lifecycle_service.lock
+
+        async def spy(db, plan):
+            row = await real(db, plan)
+            seen.append(row.status)
+            return row
+
+        monkeypatch.setattr(plan_lifecycle_service, "lock", spy)
+        assert alice.delete(f"/api/v1/scenarios/{pid}/goals/{later.id}").status_code == 204
+    assert seen == [ScenarioStatus.DRAFT]
+
+
+async def test_a_tag_insert_lost_to_a_concurrent_start_is_a_coded_409(factory, w, monkeypatch):
+    """GUARD (review of #1120, finding 7). The plan locks serialise Starts, so
+    the loser normally sees the winner's tag; should its insert still collide
+    (the unique key on the normalised name), it is the taken-tag 409, not a 500."""
+    from app.services import tag_service
+
+    async with factory() as db:
+        db.add(Tag(org_id=w["org"], name="lisbon trip", name_normalized="lisbon trip"))
+        await db.commit()
+
+    async def unseen(*a, **k):
+        return None
+
+    monkeypatch.setattr(plan_lifecycle_service, "_find_tag", unseen)
+    monkeypatch.setattr(tag_service, "_get_tag_by_normalized", unseen)
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, goals=[])
+        res = alice.post(f"/api/v1/scenarios/{pid}/start")
+        assert _refused(res, "plan_tag_taken", "lisbon trip"), res.text
+
+
+def test_the_instalment_count_steps_as_generation_does():
+    """GUARD (review of #1120, finding 8). Generation steps a month-end series
+    Jan 31 -> Feb 28 -> Mar 28, so a Mar 30 target gets three contributions;
+    closed-form months from Jan 31 (Mar 31) would count two."""
+    plan = Scenario(funding_account_id=1)
+    goal = PlanGoal(kind="savings_target", monthly_amount=Decimal(10), account_id=2,
+                    target_date=datetime.date(2027, 3, 30))
+    spec = plan_lifecycle_service._series_spec(plan, goal, datetime.date(2027, 1, 31))
+    assert spec["occurrence_count"] == 3

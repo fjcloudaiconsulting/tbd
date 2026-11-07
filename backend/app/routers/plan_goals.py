@@ -50,14 +50,16 @@ def http_errors() -> Iterator[None]:
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.detail) from None
     except ConflictError as exc:
-        raise HTTPException(status_code=409, detail=exc.detail) from None
+        # A coded conflict (a plan's claim already held, TBD-602) keeps its code.
+        detail = {"code": exc.code, "message": exc.detail} if exc.code else exc.detail
+        raise HTTPException(status_code=409, detail=detail) from None
 
 
 async def _plan_for_write(db: AsyncSession, user: User, scenario_id: int):
     """The plan the user may change, locked: a concurrent Start or Finish
     either lands first, and the edit sees its status, or waits for the edit."""
     plan = await plan_draft_service.get_plan(db, user=user, plan_id=scenario_id, write=True)
-    return await plan_lifecycle_service.lock(db, plan.id)
+    return await plan_lifecycle_service.lock(db, plan)
 
 
 @router.get("", response_model=list[PlanGoalResponse])
@@ -122,8 +124,8 @@ async def delete_goal(
     db: AsyncSession = Depends(get_db),
 ):
     with http_errors():
-        plan = await plan_draft_service.get_plan(
-            db, user=current_user, plan_id=scenario_id, write=True)
+        # Locked like POST and PATCH: the draft check runs on the locked row.
+        plan = await _plan_for_write(db, current_user, scenario_id)
         goal = await plan_draft_service.get_goal(db, plan=plan, goal_id=goal_id)
         await plan_draft_service.delete_goal(db, plan=plan, goal=goal)
     await db.commit()
