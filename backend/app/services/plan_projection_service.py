@@ -400,7 +400,8 @@ async def lifetime(
     still running that month: finite series to their last occurrence, loans
     to payoff, goal overlays to their target date, lumps in their month.
     Growth compounds from month 0, on non-liability balances only (the pool
-    and goal accounts), so month 24 has no kink. Retirement goals draw their
+    and goal accounts), so month 24 has no kink. Annual rates compound
+    monthly at pct / 12, as ``scenario_engine._required_monthly_to_close_gap``. Retirement goals draw their
     ``monthly_amount`` (today's money, inflated) from their account from
     ``target_date``.
     """
@@ -435,8 +436,32 @@ async def lifetime(
         active_series_filter(),
         RecurringTransaction.occurrence_count.is_not(None),
     ))).scalars().all()
+    cards = {a.account.id: a.account.payment_source_account_id
+             for a in base.accounts if a.type_slug == "credit_card"}
+    loans = {a.account.id: a for a in base.accounts if a.type_slug == "loan"}
+
+    def book_walk_legs(r, dates):
+        for d in dates:
+            for account_id, delta in _recurring_legs(r):
+                m = at(max(d, base.walk_start))
+                if account_id in cards:
+                    # shortcut: a card charge is paid from the card's source the
+                    # month after; a charge past the close day waits one more.
+                    # Upgrade with the kernel's cycle resolution.
+                    account_id = cards[account_id]
+                    m = m + 1 if m is not None and m + 1 < n else None
+                end_flow(account_id, m, delta)
+
+    # Transfers into a loan end at its payoff, with the scheduled payment.
+    into_loan = (await db.execute(select(RecurringTransaction).where(
+        RecurringTransaction.org_id == org_id,
+        active_series_filter(),
+        RecurringTransaction.type == "transfer",
+        RecurringTransaction.to_account_id.in_(list(loans)),
+    ))).scalars().all() if loans else []
+    into_loan = [r for r in into_loan if r.id not in excluded]
     for r in finite:
-        if r.id in excluded:
+        if r.id in excluded or r in into_loan:
             continue
         dates = list(base.series_dates.get(r.id, []))
         dates += [d for d in occurrences_in_window(
@@ -444,22 +469,31 @@ async def lifetime(
             months[-1] + relativedelta(months=1) - datetime.timedelta(days=1),
             budget=remaining_occurrences(r),
         ) if d > horizon]
-        for d in dates:
-            for account_id, delta in _recurring_legs(r):
-                end_flow(account_id, at(max(d, base.walk_start)), delta)
+        book_walk_legs(r, dates)
 
-    # Loans: the walk's payments to month 23, then payoff from the balance it
-    # leaves, at the last full payment and the loan's rate.
-    for a in base.accounts:
+    # Loans: the walk's payments (scheduled, and transfers into the loan) to
+    # month 23, then payoff from the balance it leaves at the same monthly
+    # payment and the loan's rate, shared among the payers.
+    for loan_id, a in loans.items():
+        transfers = [r for r in into_loan if r.to_account_id == loan_id]
         source = a.account.payment_source_account_id
-        if a.type_slug != "loan" or source is None or not a.loan_payments:
-            continue
         for d, amount in a.loan_payments:
             end_flow(source, at(d), -amount)
-        owed = -a.points[-1][1]
-        for k, pay in enumerate(_loan_payoff(owed, max(p for _, p in a.loan_payments),
-                                             a.account.interest_rate_apr, n - DETAILED_MONTHS)):
-            end_flow(source, DETAILED_MONTHS + k, -pay)
+        for r in transfers:
+            book_walk_legs(r, base.series_dates.get(r.id, []))
+        # shortcut: a transfer counts as monthly whatever its frequency; upgrade
+        # when non-monthly loan transfers matter.
+        payers = [(r.account_id, Decimal(str(r.amount))) for r in transfers]
+        if a.loan_payments and source is not None:
+            payers.append((source, max(p for _, p in a.loan_payments)))
+        payment = sum((p for _, p in payers), _ZERO)
+        if payment <= 0:
+            continue
+        payoff = _loan_payoff(-a.points[-1][1], payment, a.account.interest_rate_apr,
+                              n - DETAILED_MONTHS)
+        for k, pay in enumerate(payoff):
+            for account_id, share in payers:
+                end_flow(account_id, DETAILED_MONTHS + k, -pay * share / payment)
 
     # Goal overlays that end (a target date) and lumps; a budget's or an
     # open-ended goal's overlay is part of the steady net.
@@ -491,14 +525,16 @@ async def lifetime(
     i = _monthly_rate(inflation_pct)
     inflate = [(1 + i) ** m for m in range(n)]
 
-    # Retirement draws, in today's money inflated to each month.
+    # Retirement draws, in today's money inflated to each month: on top of the
+    # walk's nets as well as the steady net, and never in its average.
+    draws: dict[int | None, list[Decimal]] = {b: [_ZERO] * n for b in buckets}
     for g in enabled:
         if (g.kind == PlanGoalKind.RETIREMENT.value and g.account_id in proj.goal_accounts
                 and g.target_date and g.monthly_amount):
             start = at(g.target_date) if g.target_date >= months[0] else 0
             if start is not None:
                 for m in range(start, n):
-                    ending[g.account_id][m] -= g.monthly_amount * inflate[m]
+                    draws[g.account_id][m] -= g.monthly_amount * inflate[m]
 
     def flows(bucket) -> tuple[Decimal, list[Decimal]]:
         """(opening, monthly flows): the walk's nets, then the steady net plus ending flows."""
@@ -506,12 +542,15 @@ async def lifetime(
         opening = sum((by_id[a].seed for a in (proj.pool if bucket is None else {bucket})), _ZERO)
         nets, previous = [], opening
         for m in range(DETAILED_MONTHS):
-            nets.append(ends[months[m]] - previous)
-            previous = ends[months[m]]
+            end = ends.get(months[m], previous)  # no accounts: a single day-0 point
+            nets.append(end - previous)
+            previous = end
         steady = sum((nets[m] - ending[bucket][m] for m in range(12, DETAILED_MONTHS)),
                      _ZERO) / 12
-        return opening, [nets[m] if m < DETAILED_MONTHS else steady + ending[bucket][m]
-                         for m in range(n)]
+        return opening, [
+            (nets[m] if m < DETAILED_MONTHS else steady + ending[bucket][m]) + draws[bucket][m]
+            for m in range(n)
+        ]
 
     flow_of = {bucket: flows(bucket) for bucket in buckets}
     series = {bucket: _grow(opening, f, r) for bucket, (opening, f) in flow_of.items()}
@@ -526,17 +565,21 @@ async def lifetime(
         if g.account_id not in proj.goal_accounts or g.target_date is None:
             continue
         trajectory = series[g.account_id]
-        t = at(g.target_date) if g.target_date >= months[0] else None
+        past = g.target_date < months[0]
+        t = 0 if past else at(g.target_date)
+        if t is None:
+            continue  # beyond the domain
         if g.kind == PlanGoalKind.SAVINGS_TARGET.value and g.target_amount:
-            checks = [(t, g.target_amount)] if t is not None else []
+            checks = [(t, g.target_amount)]
         elif g.kind == PlanGoalKind.LUMP.value and g.target_amount:
-            checks = [(t, _ZERO)] if t is not None else []
+            checks = [(t, _ZERO)]
         elif g.kind == PlanGoalKind.RETIREMENT.value and g.monthly_amount:
-            checks = [(m, _ZERO) for m in range(t or 0, n)]
+            checks = [(m, _ZERO) for m in range(t, n)]
         else:
             continue
+        # Saving runs through the target month, as ``project``'s top-up does.
         required.append(GoalRequirement(g.id, required_contribution(
-            trajectory, checks, contribute_until=t if t is not None else 0, r=r)))
+            trajectory, checks, contribute_until=0 if past else t + 1, r=r)))
 
     return Lifetime(
         months=months,

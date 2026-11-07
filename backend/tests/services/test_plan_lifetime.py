@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
 
-from app.models import Account, AccountType
+from app.models import Account, AccountType, Organization
 from app.services import plan_projection_service as pps
 from app.services.loan_service import compute_pmt
 from tests.services import test_plan_projection_service as base
@@ -15,6 +15,7 @@ from tests.services.test_plan_projection_service import (
     _goal,
     _plan,
     _series,
+    _transfer,
 )
 
 db_session = base.db_session  # the same in-memory books fixture
@@ -125,7 +126,7 @@ def _bisect(flows, opening, r, t, ok):
     lo, hi = D("0"), D("100000")
     while hi - lo > D("0.001"):
         c = (lo + hi) / 2
-        balances = pps._grow(opening, [f + (c if m < t else 0) for m, f in enumerate(flows)], r)
+        balances = pps._grow(opening, [f + (c if m <= t else 0) for m, f in enumerate(flows)], r)
         lo, hi = (lo, c) if ok(balances) else (c, hi)
     return hi
 
@@ -159,11 +160,11 @@ async def test_required_contribution_closed_form_matches_bisection(db_session):
         assert abs(req.monthly - _bisect(flows, D("20000.00"), r, t, ok)) <= D("0.05"), goal.kind
 
 
-async def test_a_target_in_the_current_month_is_unreachable(db_session):
+async def test_a_target_already_past_is_unreachable(db_session):
     books = await _books(db_session)
     result = await _lifetime(db_session, books, goals=[_goal(
         books["org_id"], kind="savings_target", account_id=books["savings"],
-        target_amount=D("5000.00"), target_date=datetime.date(2026, 5, 31))])
+        target_amount=D("5000.00"), target_date=datetime.date(2026, 4, 30))])
     assert result.required == [pps.GoalRequirement(10, None)]
 
 
@@ -190,3 +191,79 @@ async def test_retirement_draws_are_todays_money_inflated(db_session):
     assert all(f == 0 for f in flows[:start])
     for m in (start, start + 30):
         assert abs(flows[m] + D("1000.00") * (1 + i) ** m) <= CENT
+
+
+# ── review fences (TBD-563) ──────────────────────────────────────────────────
+
+async def _savings(db, books, balance):
+    savings = await db.get(Account, books["savings"])
+    savings.balance = D(balance)
+    await db.commit()
+
+
+async def test_retirement_draws_run_inside_the_walk_too(db_session):
+    """Already retired, and retiring at month 16: every month from the start draws."""
+    books = await _books(db_session)
+    await _savings(db_session, books, "100000.00")
+    for start, first in ((datetime.date(2025, 1, 1), 0), (datetime.date(2027, 9, 1), 16)):
+        result = await _lifetime(db_session, books, goals=[_goal(
+            books["org_id"], kind="retirement", account_id=books["savings"],
+            monthly=D("1000.00"), target_date=start)])
+        flows = _flows(result.goal_accounts[books["savings"]], D("100000.00"), D("0"))
+        assert all(f == 0 for f in flows[:first])
+        assert all(f == D("-1000.00") for f in flows[first:60]), start
+
+
+async def test_card_instalments_end_in_the_pool(db_session):
+    books = await _books(db_session)
+    card = await db_session.get(Account, books["card"])
+    card.close_day, card.payment_day, card.payment_day_relative_month = 25, 1, 1
+    card.payment_source_account_id = books["main"]
+    s = _series(books["org_id"], books["card"], books["food"], "100.00", datetime.date(2026, 5, 20))
+    s.occurrence_count = 20
+    db_session.add(s)
+    await db_session.commit()
+    result = await _lifetime(db_session, books)
+    flows = _flows(result.nominal, D("1000.00"), D("0"))
+    assert flows[5] == D("-100.00")
+    assert all(f == 0 for f in flows[24:120])
+
+
+async def test_a_loan_paid_by_a_transfer_stops_at_payoff(db_session):
+    books = await _books(db_session)
+    loan_t = AccountType(org_id=books["org_id"], name="Loan", slug="loan", is_system=True)
+    db_session.add(loan_t)
+    await db_session.flush()
+    first = datetime.date(2026, 5, 15)
+    loan = Account(
+        org_id=books["org_id"], name="Loan", account_type_id=loan_t.id, balance=D("-5000.00"),
+        opening_balance=D("-5000.00"), currency="EUR", is_default=False,
+        payment_source_account_id=books["main"], principal_amount=D("5000.00"),
+        interest_rate_apr=D("0.00"), term_months=50,
+        origination_date=first - relativedelta(months=1), first_payment_date=first,
+    )
+    db_session.add(loan)
+    await db_session.commit()
+    await _transfer(db_session, books["org_id"], books["main"], loan.id, amount="100.00",
+                    next_due=datetime.date(2026, 5, 10))
+    result = await _lifetime(db_session, books)
+    flows = _flows(result.nominal, D("1000.00"), D("0"))
+    assert any(f < 0 for f in flows[24:40])
+    assert all(f == 0 for f in flows[60:200])
+
+
+async def test_the_target_month_is_a_contribution_month(db_session):
+    books = await _books(db_session)
+    result = await _lifetime(db_session, books, goals=[_goal(
+        books["org_id"], kind="savings_target", account_id=books["savings"],
+        target_amount=D("1000.00"), target_date=datetime.date(2026, 6, 30))])
+    assert result.required == [pps.GoalRequirement(10, D("500.00"))]
+
+
+async def test_an_org_without_accounts_projects_flat(db_session):
+    org = Organization(name="Empty", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.commit()
+    result = await pps.lifetime(db_session, org.id, [_plan(org.id)], [], today=TODAY,
+                                birth_year=None)
+    assert set(result.nominal) == {D("0")}
