@@ -462,18 +462,25 @@ def test_no_route_takes_a_token_in_the_url():
     """TBD-751: a bearer token (invitation, reset, verify, signup) travels in a
     body or header, never in a query string or path, where edge access logs,
     browser history and Referer keep it. Walks every dependency, not just the
-    handler's own signature."""
+    handler's own signature, and the MCP app's routes too."""
+    from app.mcp_main import app as mcp_app
+    from tests.app_routes import effective_routes
 
     def params(dependant):
-        yield from dependant.query_params
-        yield from dependant.path_params
+        for p in (*dependant.query_params, *dependant.path_params):
+            yield from {p.name, p.alias}
         for sub in dependant.dependencies:
             yield from params(sub)
 
+    def url_names(route):
+        # A plain Starlette Route has no dependant; its path params are all it can read from the URL.
+        dependant = getattr(route, "dependant", None)
+        return params(dependant) if dependant else route.param_convertors
+
     in_url = sorted(
-        (sorted(route.methods), route.path, p.name)
-        for route in _enumerate()["api_routes"]
-        for p in params(route.dependant)
-        if p.name.lower() == "token" or p.name.lower().endswith("_token")
+        (sorted(route.methods or ()), route.path, name)
+        for route in [*_enumerate()["api_routes"], *effective_routes(mcp_app)]
+        for name in url_names(route)
+        if name.lower() == "token" or name.lower().endswith("_token")
     )
     assert not in_url, f"route(s) taking a token in the URL: {in_url}"
