@@ -40,7 +40,7 @@ ROUTES = [("/api/v1/reports/query", "reports_query", QUERY),
 
 
 @pytest.fixture(autouse=True)
-def _fresh_limits(monkeypatch):
+def _fresh_limits(monkeypatch, plans_entitled):
     monkeypatch.setattr(app_settings, "feature_plans", True)
     limiter.reset()
     rate_limit_db.reset()

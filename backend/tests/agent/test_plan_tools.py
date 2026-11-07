@@ -16,7 +16,10 @@ from app.config import settings as app_settings
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus
 from app.models import Organization
 from app.models.scenario import Scenario, ScenarioStatus, ScenarioType
-from app.services import plan_draft_service
+from app.models.user import User
+from app.services import feature_service, plan_draft_service
+from app.services.feature_gate import Feature
+from app.services.feature_service import get_entitlements as real_get_entitlements
 from app.models.user import Role
 
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
@@ -26,13 +29,28 @@ from tests.agent.test_agent_honesty import _TRIP, _fplan, _ids, _own_plan, _reso
 
 
 @pytest.fixture(autouse=True)
-def _plans_on(monkeypatch):
+def _plans_on(monkeypatch, plans_entitled):
     monkeypatch.setattr(app_settings, "feature_plans", True)
 
 
 async def _count(f, model, *where) -> int:
     async with f() as db:
         return await db.scalar(select(func.count()).select_from(model).where(*where))
+
+
+async def test_the_plans_entitlement_gates_every_plans_tool(factory, w, monkeypatch):
+    """FENCE F-E5 (TBD-564), the agent path. The switch is on and ``ai.agent``
+    is granted, but the org isn't entitled to ``plans``: every Plans tool is
+    refused at the gate, before its handler runs."""
+    monkeypatch.setattr(feature_service, "get_entitlements", real_get_entitlements)
+    specs = [s for s in registry._TOOLS.values() if Feature.PLANS in (s.product_area, *s.extra_areas)]
+    assert specs
+    async with factory() as db:
+        user = await db.get(User, w["A"]["member"])
+        for spec in specs:
+            with pytest.raises(registry.ToolError) as err:
+                await registry.check_gates(db, user, spec, "in_app", None)
+            assert (err.value.code, err.value.detail) == ("feature_disabled", "plans"), spec.name
 
 
 # ── reads ─────────────────────────────────────────────────────────────────

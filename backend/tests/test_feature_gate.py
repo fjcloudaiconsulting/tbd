@@ -60,7 +60,7 @@ async def test_env_floor_when_no_rows(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_global_overrides_floor(db_session, monkeypatch):
+async def test_global_overrides_floor(db_session, monkeypatch, plans_entitled):
     from app.config import settings
     monkeypatch.setattr(settings, "feature_plans", False)
     db_session.add(SystemSetting(key=feature_setting_key(Feature.PLANS), value="on"))
@@ -84,7 +84,7 @@ async def test_org_override_beats_global(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unrecognized_org_value_falls_through(db_session, monkeypatch):
+async def test_unrecognized_org_value_falls_through(db_session, monkeypatch, plans_entitled):
     """An unrecognised org-level value must be ignored; resolution falls through
     to the next level (global SystemSetting) rather than treating it as off."""
     from app.models.user import Organization

@@ -201,7 +201,7 @@ async def test_scenarios_gate_off_returns_404(session_factory, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scenarios_gate_on_returns_200(session_factory, monkeypatch):
+async def test_scenarios_gate_on_returns_200(session_factory, monkeypatch, plans_entitled):
     """GET /api/v1/scenarios returns 200 (empty list) when feature_plans env floor is True."""
     monkeypatch.setattr(app_settings, "feature_plans", True)
     await _seed(session_factory)
@@ -241,7 +241,7 @@ async def test_reports_org_override_off_beats_true_env(session_factory, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_scenarios_org_override_on_beats_false_env(session_factory, monkeypatch):
+async def test_scenarios_org_override_on_beats_false_env(session_factory, monkeypatch, plans_entitled):
     """Org-level OrgSetting 'on' beats a False env floor: router returns 200.
 
     env feature_plans=False but org has key='feature.plans', value='on'

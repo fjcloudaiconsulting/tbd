@@ -29,6 +29,7 @@ from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_current_user_optional
 from app.models import Base
+from app.models.feature_override import OrgFeatureOverride
 from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.models.user import Organization, Role, User
@@ -151,7 +152,9 @@ async def test_unauthenticated_features_env_floor_inverted(
     assert resp.status_code == 200
     body = resp.json()
     assert body["features"]["reports"] is False
-    assert body["features"]["plans"] is True
+    # The switch is on, but with no org there is no plan to grant the paid
+    # ``plans`` entitlement (TBD-564). The frontend re-reads status once signed in.
+    assert body["features"]["plans"] is False
 
 
 @pytest.mark.asyncio
@@ -181,7 +184,7 @@ async def test_unauthenticated_backward_compat_keys_present(
 
 
 @pytest.mark.asyncio
-async def test_authenticated_org_override_plans(session_factory, monkeypatch) -> None:
+async def test_authenticated_org_override_plans(session_factory, monkeypatch, plans_entitled) -> None:
     """When org has OrgSetting feature.plans=on (global/env off) → plans True."""
     monkeypatch.setattr(app_settings, "feature_plans", False)
     monkeypatch.setattr(app_settings, "feature_reports_v2", False)
@@ -255,7 +258,7 @@ async def test_authenticated_org_override_reports(session_factory, monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_authenticated_no_org_override_uses_env(session_factory, monkeypatch) -> None:
+async def test_authenticated_no_org_override_uses_env(session_factory, monkeypatch, plans_entitled) -> None:
     """Authenticated user with no OrgSetting rows → env floor applies."""
     monkeypatch.setattr(app_settings, "feature_reports_v2", True)
     monkeypatch.setattr(app_settings, "feature_plans", True)
@@ -412,3 +415,34 @@ async def test_custom_dashboard_flips_with_org_override_in_status(
     # Other features still reflect env (off).
     assert body["features"]["reports"] is False
     assert body["features"]["plans"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("switch", "entitled", "expected"),
+    [(True, True, True), (True, False, False), (False, True, False), (False, False, False)],
+)
+async def test_plans_is_the_switch_and_the_entitlement(
+    session_factory, monkeypatch, switch, entitled, expected
+) -> None:
+    """FENCE F-E5 (TBD-564), auth status. ``features.plans`` is the product-area
+    switch AND the paid ``plans`` entitlement, so the nav hides Plans for an org
+    whose plan doesn't grant it."""
+    monkeypatch.setattr(app_settings, "feature_plans", switch)
+    async with session_factory() as db:
+        org = Organization(name="Org E5", billing_cycle_day=1)
+        db.add(org)
+        await db.flush()
+        user = User(
+            org_id=org.id, username="owner_e5", email="owner_e5@example.com",
+            password_hash=hash_password("pw-1234567"), role=Role.OWNER, email_verified=True,
+        )
+        db.add(user)
+        if entitled:
+            db.add(OrgFeatureOverride(org_id=org.id, feature_key="plans", value=True))
+        await db.commit()
+        await db.refresh(user)
+
+    with TestClient(_make_authed_app(session_factory, user)) as client:
+        body = client.get("/api/v1/auth/status").json()
+    assert body["features"]["plans"] is expected

@@ -571,3 +571,21 @@ class LogView:
 
     def text(self) -> str:
         return "\n".join(json.dumps(e, default=str) for e in self.events)
+
+
+@pytest.fixture
+def plans_entitled(monkeypatch):
+    """Grant every org the paid ``plans`` entitlement (TBD-564), for tests about
+    Plans behaviour rather than the gate. Patches the one resolver, which
+    ``feature_service.get_features`` looks up through the module global."""
+    import dataclasses
+
+    from app.services import feature_service
+
+    real = feature_service.get_entitlements
+
+    async def granted(db, org_id, **kwargs):
+        ent = await real(db, org_id, **kwargs)
+        return dataclasses.replace(ent, features={**ent.features, "plans": True})
+
+    monkeypatch.setattr(feature_service, "get_entitlements", granted)

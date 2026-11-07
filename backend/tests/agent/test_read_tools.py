@@ -47,7 +47,7 @@ NEEDS_PERIOD = (*PERIOD_TOOLS, "forecast_plan_get")
 
 
 @pytest.fixture(autouse=True)
-def _plans_on(monkeypatch):
+def _plans_on(monkeypatch, plans_entitled):
     monkeypatch.setattr(app_settings, "feature_plans", True)
 TODAY = datetime.date.today()
 P_START = TODAY.replace(day=1)

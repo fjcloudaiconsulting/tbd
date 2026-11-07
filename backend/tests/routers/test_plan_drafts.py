@@ -5,7 +5,8 @@
 - Rights (the reports precedent): a legacy scenario is its creator's only; a
   plan is visible org-wide and changed by its creator or an org owner or admin
   (another member gets 403). The matrix test covers every cell.
-- The paid gate (``Feature.PLANS``) answers 404 on every scenarios and goals route.
+- The paid gate (``Feature.PLANS``) answers 404 on every scenarios and goals route,
+  when either the switch is off or the org isn't entitled to ``plans`` (TBD-564).
 - A plan's currency is the org's currency scope; no scope is refused.
 - Every link on a plan or goal must belong to the plan's org; a goal's
   ``org_id`` is its plan's.
@@ -32,19 +33,22 @@ from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
+from app.models.feature_override import OrgFeatureOverride
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, Scenario, ScenarioStatus, ScenarioType
 from app.models.tag import Tag
 from app.models.user import Organization, Role, User
 from app.routers.plan_goals import router as goals_router
 from app.routers.scenarios import router as scenarios_router
+from app.services import feature_service
+from app.services.feature_service import get_entitlements as real_get_entitlements
 from app.services.plan_draft_service import NO_CURRENCY_SCOPE
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
-def _enable_plans(monkeypatch):
+def _enable_plans(monkeypatch, plans_entitled):
     monkeypatch.setattr(app_settings, "feature_plans", True)
 
 
@@ -278,6 +282,24 @@ async def test_the_paid_gate_closes_every_route(factory, w, monkeypatch):
             assert res.status_code == 404, (method, path, res.text)
     async with factory() as db:
         assert await db.get(PlanGoal, gid) is not None
+
+
+async def test_the_plans_entitlement_closes_every_route(factory, w, monkeypatch):
+    """FENCE F-E5 (TBD-564), routes. The switch is on, but the org's plan
+    doesn't grant ``plans``: every route answers 404 and nothing is written.
+    An override granting it reopens them."""
+    pid, gid = await _seed_plan(factory, w["A"], "alice")
+    monkeypatch.setattr(feature_service, "get_entitlements", real_get_entitlements)
+    with _client(factory, "alice") as alice:
+        for method, path, body in _every_route_call(pid, gid):
+            res = alice.request(method, path, json=body)
+            assert res.status_code == 404, (method, path, res.text)
+    async with factory() as db:
+        assert await db.get(PlanGoal, gid) is not None
+        db.add(OrgFeatureOverride(org_id=w["A"]["org"], feature_key="plans", value=True))
+        await db.commit()
+    with _client(factory, "alice") as alice:
+        assert alice.get(f"/api/v1/scenarios/{pid}").status_code == 200
 
 
 async def test_a_plan_takes_the_org_currency_and_refuses_another(factory, w):
