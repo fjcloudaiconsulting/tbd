@@ -272,7 +272,7 @@ async def test_char_bulk_delete_demotes_and_settles(db_session, log_lines):
     names = Names(seed, r0=rows[0].id, r1=rows[1].id, r2=rows[2].id, dup=dup.id, canonical=canonical.id)
 
     async def act():
-        n, skipped, demoted = await transaction_service.bulk_delete_transactions(
+        n, skipped, demoted, _adj = await transaction_service.bulk_delete_transactions(
             db_session, seed["org_id"], [canonical.id, rows[0].id, rows[2].id])
         return n, _ids(names, skipped), _ids(names, demoted)
 
