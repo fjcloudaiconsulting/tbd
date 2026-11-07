@@ -88,6 +88,10 @@ class AccountBaseline:
 
 @dataclass
 class Baseline:
+    # The first period as resolved: rows are read from ``window_start``, and
+    # future-dated settled rows are laid on their dates up to ``first_period_end``.
+    window_start: datetime.date
+    first_period_end: datetime.date
     walk_start: datetime.date
     horizon_end: datetime.date
     accounts: list[AccountBaseline]
@@ -556,6 +560,8 @@ async def baseline(
         ]
 
     return Baseline(
+        window_start=window_start,
+        first_period_end=first_period_end,
         walk_start=walk_start,
         horizon_end=horizon_end,
         accounts=accounts,

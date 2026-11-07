@@ -13,12 +13,13 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.models import Account, AccountType, Category, Organization
+from app.models import Account, AccountType, Category, Organization, Transaction
 from app.models.base import Base
 from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
 from app.models.recurring import RecurringTransaction
 from app.models.scenario import PlanGoal, Scenario
+from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.recurring import RecurringCreate
 from app.services import plan_projection_service as pps
 from app.services import recurring_service
@@ -259,3 +260,109 @@ async def test_card_spend_is_not_added_back_to_the_free_pool(db_session):
         books["org_id"], budget=D("100.00"), category_id=books["trip"])], [])
     june = _month(result, datetime.date(2026, 6, 1))
     assert june.surplus_ex_plans == june.free_pool_net
+
+
+# ── review fences (#1098) ────────────────────────────────────────────────────
+
+JUNE = datetime.date(2026, 6, 1)
+MAY = datetime.date(2026, 5, 1)
+
+
+async def test_spend_in_another_currency_never_funds_the_plan(db_session):
+    books = await _books(db_session)
+    db_session.add(_series(books["org_id"], books["usd"], books["trip"], "500.00",
+                           datetime.date(2026, 6, 5)))
+    await db_session.commit()
+    result = await _project(db_session, books, [_plan(
+        books["org_id"], budget=D("500.00"), category_id=books["trip"])], [])
+    assert {o.month: o.amount for o in result.overlays}[JUNE] == D("500.00")
+    assert _month(result, JUNE).surplus_ex_plans == _month(result, JUNE).free_pool_net
+
+
+async def test_one_series_funds_one_allocation(db_session):
+    """Two plans on one category, and a goal funded by a plan-category series:
+    the books' 100 is credited once, so the overlays make up the rest."""
+    books = await _books(db_session)
+    s = _series(books["org_id"], books["main"], books["trip"], "100.00", datetime.date(2026, 6, 5))
+    db_session.add(s)
+    await db_session.commit()
+    two = await _project(db_session, books, [
+        _plan(books["org_id"], pid=1, budget=D("100.00"), category_id=books["trip"]),
+        _plan(books["org_id"], pid=2, budget=D("100.00"), category_id=books["trip"]),
+    ], [])
+    goal = await _project(db_session, books, [_plan(
+        books["org_id"], budget=D("100.00"), category_id=books["trip"])], [_goal(
+        books["org_id"], kind="monthly_spend", monthly=D("100.00"), funding=s.id)])
+    for result in (two, goal):
+        june = _month(result, JUNE)
+        overlaid = sum((o.amount for o in result.overlays if o.month == JUNE), D("0"))
+        assert overlaid + D("100.00") == june.allocated == D("200.00")
+        assert june.surplus_ex_plans == june.free_pool_net + D("100.00")
+
+
+async def test_an_exhausted_series_last_pending_row_still_funds_its_month(db_session):
+    books = await _books(db_session)
+    s = _series(books["org_id"], books["main"], books["trip"], "100.00", datetime.date(2026, 5, 20))
+    s.occurrence_count = 1
+    db_session.add(s)
+    await db_session.commit()
+    await recurring_service.generate_due_transactions(
+        db_session, books["org_id"], today=datetime.date(2026, 5, 20))
+    result = await _project(db_session, books, [_plan(
+        books["org_id"], budget=D("100.00"), category_id=books["trip"])], [])
+    assert MAY not in {o.month for o in result.overlays}
+    assert _month(result, MAY).surplus_ex_plans == _month(result, MAY).free_pool_net + D("100.00")
+
+
+async def test_the_default_window_keeps_an_overdue_pending_row(db_session):
+    books = await _books(db_session)
+    db_session.add(_series(books["org_id"], books["main"], books["trip"], "100.00",
+                           datetime.date(2026, 5, 5)))
+    await db_session.commit()
+    await recurring_service.generate_due_transactions(
+        db_session, books["org_id"], today=datetime.date(2026, 5, 5))
+    result = await pps.project(db_session, books["org_id"], [_plan(
+        books["org_id"], budget=D("100.00"), category_id=books["trip"])], [],
+        today=TODAY, horizon_end=HORIZON)
+    assert MAY not in {o.month for o in result.overlays}
+
+
+async def test_a_future_dated_settled_row_funds_its_month(db_session):
+    books = await _books(db_session)
+    s = _series(books["org_id"], books["main"], books["trip"], "100.00", datetime.date(2026, 6, 25))
+    db_session.add(s)
+    await db_session.flush()
+    db_session.add(Transaction(
+        org_id=books["org_id"], account_id=books["main"], category_id=books["trip"],
+        amount=D("100.00"), type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=datetime.date(2026, 5, 25), settled_date=datetime.date(2026, 5, 25),
+        description="x", is_imported=False, is_manual_adjustment=False, recurring_id=s.id,
+    ))
+    await db_session.commit()
+    result = await _project(db_session, books, [_plan(
+        books["org_id"], budget=D("100.00"), category_id=books["trip"])], [])
+    assert MAY not in {o.month for o in result.overlays}
+
+
+async def test_allocation_stops_after_the_target_date(db_session):
+    books = await _books(db_session)
+    result = await _project(db_session, books, [_plan(books["org_id"])], [_goal(
+        books["org_id"], monthly=D("100.00"), account_id=books["savings"],
+        target_date=datetime.date(2026, 7, 31))])
+    assert _month(result, datetime.date(2026, 7, 1)).allocated == D("100.00")
+    assert _month(result, datetime.date(2026, 8, 1)).allocated == D("0")
+
+
+async def test_a_funded_lump_is_spent_from_its_account_and_its_funding_is_not_added_back(db_session):
+    books = await _books(db_session)
+    rid = await _transfer(db_session, books["org_id"], books["main"], books["savings"],
+                          amount="100.00", next_due=datetime.date(2026, 6, 20))
+    result = await _project(db_session, books, [_plan(books["org_id"])], [_goal(
+        books["org_id"], kind="lump", target_amount=D("400.00"),
+        target_date=datetime.date(2026, 9, 30), account_id=books["savings"], funding=rid)])
+    sep30 = datetime.date(2026, 9, 30)
+    # Four transfers Jun..Sep leave the pool; the lump leaves the savings account.
+    assert dict(result.with_plans)[sep30] == D("600.00")
+    assert dict(result.goal_accounts[books["savings"]])[sep30] == D("0.00")
+    june = _month(result, JUNE)
+    assert june.under_over == june.free_pool_net == D("-100.00")
