@@ -26,6 +26,11 @@ Mounted at ``/api/v1/scenarios``. Architect-locked:
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
+from decimal import Decimal
+from typing import Optional
+
+from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,7 +41,7 @@ from app.deps import get_current_user, get_session_factory
 from app.models.account import Account
 from app.models.category import Category
 from app.models.recurring import RecurringTransaction
-from app.models.scenario import Scenario, ScenarioType
+from app.models.scenario import PlanGoal, Scenario, ScenarioType
 from app.models.user import User
 from app.rate_limit import get_client_ip, limiter, user_rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
@@ -52,7 +57,12 @@ from app.schemas.scenario import (
     validate_horizon,
 )
 from app.routers.plan_goals import http_errors
-from app.services import plan_draft_service
+from app.schemas.plan_projection import (
+    LifetimeResponse,
+    PlanComparisonResponse,
+    PlanProjectionResponse,
+)
+from app.services import plan_draft_service, plan_projection_service
 from app.services.feature_gate import Feature, require_feature
 from app.services.scenario_engine import (
     SimulationRequest,
@@ -154,6 +164,91 @@ async def create_scenario(
     await db.commit()
     await db.refresh(row)
     return row
+
+
+# Declared before ``/{scenario_id}``, which would otherwise take "projection" as an id.
+MAX_PROJECTED_PLANS = 20
+
+
+async def _projection_inputs(
+    db: AsyncSession, user: User, plan_ids: list[int], off: list[int], on: list[int]
+) -> tuple[list[Scenario], list[PlanGoal]]:
+    """The visible plans (404 otherwise) and copies of their goals with the
+    toggles applied: a toggle here is for this projection only, never saved."""
+    plans, goals = [], []
+    for pid in dict.fromkeys(plan_ids):
+        plan = await _get_owned_scenario(db, user=user, scenario_id=pid)
+        if plan.currency is None:
+            raise HTTPException(status_code=422, detail=f"scenario {pid} is not a plan")
+        plans.append(plan)
+        for goal in await plan_draft_service.list_goals(db, plan=plan):
+            copy = PlanGoal(**{c.key: getattr(goal, c.key)
+                               for c in PlanGoal.__mapper__.column_attrs})
+            if goal.id in off or goal.id in on:
+                copy.enabled = goal.id in on
+            goals.append(copy)
+    return plans, goals
+
+
+async def _project(
+    db: AsyncSession, plans: list[Scenario], goals: list[PlanGoal], *, lifetime: bool,
+    birth_year: Optional[int], return_pct: Optional[Decimal],
+    inflation_pct: Optional[Decimal],
+) -> PlanProjectionResponse:
+    today = date.today()
+    org_id = plans[0].org_id
+    result = await plan_projection_service.project(
+        db, org_id, plans, goals, today=today,
+        horizon_end=today.replace(day=1) + relativedelta(months=24) - timedelta(days=1),
+    )
+    response = PlanProjectionResponse.model_validate(result)
+    if lifetime:
+        # Assumptions default to the first plan's ("whose timeline").
+        first = plans[0]
+        response.lifetime = LifetimeResponse.model_validate(await plan_projection_service.lifetime(
+            db, org_id, plans, goals, today=today,
+            birth_year=birth_year if birth_year is not None else first.birth_year,
+            return_pct=return_pct if return_pct is not None else first.return_pct,
+            inflation_pct=inflation_pct if inflation_pct is not None else first.inflation_pct,
+        ))
+    return response
+
+
+@router.get("/projection", response_model=PlanProjectionResponse)
+async def project_plans(
+    plan_id: list[int] = Query(..., min_length=1, max_length=MAX_PROJECTED_PLANS),
+    off: list[int] = Query(default=[]),
+    on: list[int] = Query(default=[]),
+    lifetime: bool = False,
+    birth_year: Optional[int] = Query(default=None, ge=1900),
+    return_pct: Optional[Decimal] = Query(default=None, ge=-100, le=100),
+    inflation_pct: Optional[Decimal] = Query(default=None, ge=-100, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Actual vs With plans for the selected plans together (they affect each
+    other), with the per-currency reconciliation, ``off``/``on`` goal toggles
+    and, with ``lifetime``, the lifetime tier. Read-only."""
+    plans, goals = await _projection_inputs(db, current_user, plan_id, off, on)
+    return await _project(db, plans, goals, lifetime=lifetime, birth_year=birth_year,
+                          return_pct=return_pct, inflation_pct=inflation_pct)
+
+
+@router.get("/projection/compare", response_model=list[PlanComparisonResponse])
+async def compare_plan_projections(
+    plan_id: list[int] = Query(..., min_length=1, max_length=MAX_PROJECTED_PLANS),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Each plan projected on its own, side by side: drafts compared. Read-only."""
+    plans, goals = await _projection_inputs(db, current_user, plan_id, [], [])
+    return [
+        PlanComparisonResponse(plan_id=plan.id, projection=await _project(
+            db, [plan], [g for g in goals if g.scenario_id == plan.id], lifetime=False,
+            birth_year=None, return_pct=None, inflation_pct=None,
+        ))
+        for plan in plans
+    ]
 
 
 @router.get("/{scenario_id}", response_model=ScenarioResponse)
