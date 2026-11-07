@@ -204,11 +204,6 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # distinguish "not yours" from "does not exist". TBD-738: the JWT
         # travels in the POST body, never in the URL.
         ("POST", "/api/v1/orgs/invitations/preview"),
-        # DEPRECATED (TBD-738), one release only: the same preview with the
-        # JWT in the query string, kept while a frontend that still calls it
-        # may be deployed. Same credential, same uniform 410, and the same
-        # rate-limit bucket as the POST. Remove with the route.
-        ("GET", "/api/v1/orgs/invitations/preview"),
         # Creates the account, so it necessarily runs before the caller has
         # one. The signed invitation JWT is the credential: ``org_id`` and
         # ``role`` are read from the locked DB row and never from the request
@@ -437,14 +432,14 @@ def test_p6_allowlist_literal_is_the_expected_size():
     The count is asserted separately from the set so a diff that quietly
     reshapes the literal cannot land without touching this number.
     """
-    assert len(PUBLIC_ROUTES) == 32, (
-        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 32. If a "
+    assert len(PUBLIC_ROUTES) == 31, (
+        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 31. If a "
         "route was legitimately added to or removed from the public surface, "
         "update this number, CONTRIBUTING.md, and record the security review."
     )
     # Deduped count must match too: a duplicated (method, path) line would
     # otherwise inflate the literal while the comparison set stayed the same.
-    assert len(_PUBLIC_ROUTE_SET) == 32, (
+    assert len(_PUBLIC_ROUTE_SET) == 31, (
         "PUBLIC_ROUTES contains duplicate entries: "
         f"{sorted({e for e in PUBLIC_ROUTES if PUBLIC_ROUTES.count(e) > 1})}"
     )
@@ -461,3 +456,31 @@ def test_p7_real_app_is_under_inspection():
         "app.main:app carries dependency_overrides — something in the test "
         f"session mutated the real app: {sorted(app.dependency_overrides)}"
     )
+
+
+def test_no_route_takes_a_token_in_the_url():
+    """TBD-751: a bearer token (invitation, reset, verify, signup) travels in a
+    body or header, never in a query string or path, where edge access logs,
+    browser history and Referer keep it. Walks every dependency, not just the
+    handler's own signature, and the MCP app's routes too."""
+    from app.mcp_main import app as mcp_app
+    from tests.app_routes import effective_routes
+
+    def params(dependant):
+        for p in (*dependant.query_params, *dependant.path_params):
+            yield from {p.name, p.alias}
+        for sub in dependant.dependencies:
+            yield from params(sub)
+
+    def url_names(route):
+        # A plain Starlette Route has no dependant; its path params are all it can read from the URL.
+        dependant = getattr(route, "dependant", None)
+        return params(dependant) if dependant else route.param_convertors
+
+    in_url = sorted(
+        (sorted(route.methods or ()), route.path, name)
+        for route in [*_enumerate()["api_routes"], *effective_routes(mcp_app)]
+        for name in url_names(route)
+        if name.lower() == "token" or name.lower().endswith("_token")
+    )
+    assert not in_url, f"route(s) taking a token in the URL: {in_url}"

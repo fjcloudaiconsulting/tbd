@@ -334,8 +334,8 @@ tracing.configure("tbd-api")
 # default, so every flag is passed. Native metrics only, recorded on tracing's MeterProvider (its
 # View is the attribute allowlist).
 # `tracing` must stay False: FastAPI's native tracing redacts only cloud-signature query
-# params (fastapi/telemetry/_asgi.py) and secrets travel in query strings (invitations
-# preview ?token=, Google OAuth callback ?code=); TracingMiddleware is tbd's own allowlisted
+# params (fastapi/telemetry/_asgi.py) and secrets can travel in query strings (the Google
+# OAuth callback ?code=); TracingMiddleware is tbd's own allowlisted
 # SERVER span instead. Native logs export exception messages, and auto_configure would add a
 # second exporter to our providers.
 TELEMETRY = {
