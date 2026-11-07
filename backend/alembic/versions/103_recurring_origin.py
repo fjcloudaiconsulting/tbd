@@ -27,7 +27,7 @@ from sqlalchemy.sql import column, table
 
 
 revision: str = "103_recurring_origin"
-down_revision: Union[str, None] = "099_recurring_transfers"
+down_revision: Union[str, None] = "102_recurring_last_spent_date"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
