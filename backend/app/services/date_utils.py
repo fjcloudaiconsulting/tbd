@@ -121,10 +121,13 @@ def occurrences_in_window(
     * ``stop_recurring`` NULLs ``recurring_id`` on surviving rows itself;
       ``delete_recurring`` does not, the FK's ``ON DELETE SET NULL`` does.
       Either way those keys stop resolving;
-    * moving the frontier BACK onto an already-generated date spends
-      ``occurrences_elapsed`` a second time through the ``exists`` branch, and
-      back onto a generated-then-DELETED date takes the create branch and
-      re-creates the row. Both are legal down to ``p_start`` (TBD-509);
+    * moving the frontier BACK onto a spent date would spend
+      ``occurrences_elapsed`` a second time: through the ``exists`` branch
+      while the row is linked, by re-creating it once the row is deleted or
+      unlinked by a stop. ``update_recurring`` refuses it (TBD-509): a moved
+      frontier must land after every row and after ``last_spent_date``, which
+      ``_advance_frontier`` writes and nothing else rewinds. A frontier
+      written around that guard still double-spends;
     * editing a row's date onto a LATER grid date of its own template aliases
       two occurrences into one key;
     * a ``frequency`` or frontier edit invalidates every UNMATERIALISED key,

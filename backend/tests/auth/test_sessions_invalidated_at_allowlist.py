@@ -79,6 +79,12 @@ BACKEND_APP = Path(__file__).resolve().parents[2] / "app"
 #       Admin deactivates a member. Same reasoning as the invitation-
 #       service removal above; the admin path is a separate function.
 #
+#   * services/superadmin_recovery_service.py::promote_superadmin
+#       TBD-443 operator break-glass grant of ``is_superadmin``. The
+#       flag is read live from the row, so without the cutoff every
+#       session the target already held (a stolen one included) would
+#       gain platform rights at once. Privilege-grade mutation.
+#
 # ``routers/auth.py::logout`` was REMOVED from this set in PR 4 —
 # per-session logout via session family revoke replaced it. That
 # removal is the load-bearing change this regression pins.
@@ -141,6 +147,12 @@ ALLOWED_WRITE_SITES: tuple[tuple[str, str, str], ...] = (
         "services/admin_org_members_service.py",
         "update_member",
         "admin deactivates org member (spec §6 trigger 5)",
+    ),
+    (
+        "services/superadmin_recovery_service.py",
+        "promote_superadmin",
+        "TBD-443 operator superadmin grant: prior sessions must not "
+        "inherit the platform flag",
     ),
 )
 

@@ -22,6 +22,7 @@ don't double-net.
 """
 from __future__ import annotations
 
+from collections.abc import Hashable
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -145,16 +146,16 @@ def synthesize_account_cc_payments(
     p_end: date,
     opening_balance: Decimal,
     ledger: list[tuple[date, Decimal]],
-    credits: list[tuple[int, date, Decimal]],
+    credits: list[tuple[Hashable, date, Decimal]],
     per_cycle_amounts: dict[tuple[int, int, int], Decimal],
     projected: list[tuple[date, Decimal]] = (),
     projected_after: date | None = None,
 ) -> list[tuple[date, Decimal]]:
     """Chronological (payment_date, outflow) pairs for one CC (outflow > 0).
 
-    ``credits`` is (id, eff_date, amount) for real CC payment-in legs
-    (transfer income legs). Threads ``S_prev`` and a consumed-credit set
-    across the horizon's cycles.
+    ``credits`` is (id, eff_date, amount) for CC payment-in legs (transfer
+    income legs, real rows and projected recurring ones; any unique id).
+    Threads ``S_prev`` and a consumed-credit set across the horizon's cycles.
 
     ``projected`` is (date, signed) charges that do not exist as rows yet
     (un-generated recurring occurrences). They join the ledger only for a
@@ -163,7 +164,7 @@ def synthesize_account_cc_payments(
     with_projected = list(ledger) + list(projected)
     cycles = due_cycles_in_horizon(account, p_start=p_start, p_end=p_end)
     s_prev = Decimal("0")
-    consumed: set[int] = set()
+    consumed: set[Hashable] = set()
     payments: list[tuple[date, Decimal]] = []
     for cycle in cycles:
         # Belt-and-suspenders: a payment date on or before the close date

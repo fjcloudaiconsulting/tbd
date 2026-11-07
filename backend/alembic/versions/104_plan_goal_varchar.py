@@ -34,7 +34,7 @@ from alembic import op
 
 
 revision: str = "104_plan_goal_varchar"
-down_revision: Union[str, None] = "099_recurring_transfers"
+down_revision: Union[str, None] = "103_recurring_origin"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

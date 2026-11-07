@@ -117,6 +117,10 @@ class Transaction(Base):
     recurring_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("recurring_transactions.id", ondelete="SET NULL"), nullable=True
     )
+    # TBD-789: the template a recurring TRANSFER leg was generated from. Unlike
+    # ``recurring_id`` it survives a stop or delete (no FK), so the loan
+    # forecast can still tell a generated leg from a manual payment.
+    recurring_origin_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     date: Mapped[date] = mapped_column(Date, nullable=False)
     settled_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     is_imported: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)

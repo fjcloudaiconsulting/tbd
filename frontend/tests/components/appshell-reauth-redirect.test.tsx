@@ -140,6 +140,15 @@ describe("AppShell — graceful re-auth redirect", () => {
     expect(replaceMock).toHaveBeenCalledWith("/login?reason=expired");
   });
 
+  it("does not set returnTo for the /signup/complete link page (TBD-654)", async () => {
+    currentPathname = "/signup/complete";
+    mockSignedOut("expired");
+
+    await renderShell();
+
+    expect(replaceMock).toHaveBeenCalledWith("/login?reason=expired");
+  });
+
   // A minimal signed-in user for the second-episode test. AppShell reads a
   // handful of fields when it renders the full shell; onboarded_at is a
   // non-null string so the onboarding-bounce effect stays dormant.

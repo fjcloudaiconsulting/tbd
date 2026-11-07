@@ -122,8 +122,11 @@ register(route_tool(
         "Create a recurring income, expense or transfer template. Generation then writes each "
         "occurrence from next_due_date on (settled ones move the balance when auto_settle is "
         "on); occurrence_count limits how many. A transfer moves money from account_id to "
-        "to_account_id (another account in the same currency, not a credit card or loan) as a "
-        "linked expense and income pair, and needs a category of type both. "
+        "to_account_id (another account in the same currency; a credit card or loan only as "
+        "to_account_id, as a payment toward it) as a linked expense and "
+        "income pair, and needs a category of type both. Recurring transfers into a loan that add "
+        "up to at least its monthly payment in a month are that payment (the excess is extra "
+        "principal); less is extra principal on top of it. "
         f"{CONFIRM}"
     ),
     entity=RecurringTransaction, check=_create_check, present=_create_present,
@@ -228,6 +231,7 @@ async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, chang
     post = SimpleNamespace(
         id=r.id, next_due_date=new["next_due_date"], frequency=Frequency(new["frequency"]),
         occurrence_count=new["occurrence_count"], occurrences_elapsed=r.occurrences_elapsed,
+        last_spent_date=r.last_spent_date,
     )
     resumed = getattr(args, "is_active", None) is True and not r.is_active
     if resumed or (has_remaining_occurrences(post) and not has_remaining_occurrences(r)):
@@ -500,7 +504,8 @@ def _occurrence(
             "description": {"untrusted": r.description}, "amount": f"{r.amount:.2f}", "type": leg_type,
             "status": status, "date": _iso(due),
             "settled_date": _iso(due) if status == TransactionStatus.SETTLED.value else None,
-            "recurring_id": r.id, "linked_transaction_id": other if len(legs) == 2 else None, **extra,
+            "recurring_id": r.id, "linked_transaction_id": other if len(legs) == 2 else None,
+            "recurring_origin_id": r.id if len(legs) == 2 else None, **extra,
         }
         out += [Change("transactions", gid, f, None, v, cur.get(account_id) if f == "amount" else None)
                 for f, v in cols.items() if v is not None]
@@ -528,6 +533,7 @@ def _next_preview(skipped: bool):
         changes = _occurrence(r, due, PENDING, cur, **extra) + [
             Change(TEMPLATE, r.id, "next_due_date", _iso(due), _iso(advance_date(due, r.frequency))),
             Change(TEMPLATE, r.id, "occurrences_elapsed", r.occurrences_elapsed, r.occurrences_elapsed + 1),
+            Change(TEMPLATE, r.id, "last_spent_date", _iso(r.last_spent_date), _iso(due)),
         ]
         verb = "Skip" if skipped else "Write"
         return Preview(
@@ -566,7 +572,8 @@ register(route_tool(
 # ── recurring_generate ────────────────────────────────────────────────────
 #
 # ``generate_due_transactions``, read-only: first the PENDING rows of
-# auto-settle templates whose date has passed settle (``_settle_due_auto``),
+# auto-settle templates whose expected settlement has come settle
+# (``recurring_service.due_auto_settle_units``, the sweep's own selection),
 # then every active, unfinished template due by the end of the current cycle
 # walks its schedule, writing each occurrence that has no row yet (settled,
 # with its balance, when auto-settle and due) and spending each one.
@@ -577,25 +584,13 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
     _, period_end = current_cycle_window(cycle_day or 1, today)
     changes: list[Change] = []
     deltas: dict[int, Decimal] = {}
-    due_rows = (await db.scalars(
-        select(Transaction)
-        .join(RecurringTransaction, Transaction.recurring_id == RecurringTransaction.id)
-        .where(
-            Transaction.org_id == org_id, Transaction.status == TransactionStatus.PENDING,
-            Transaction.recurring_id.is_not(None), Transaction.date <= today,
-            RecurringTransaction.auto_settle == True,  # noqa: E712
-            non_reverted_transaction_filter(),
-        ).order_by(Transaction.id).execution_options(populate_existing=True)
-    )).all()
-    by_id = {tx.id: tx for tx in due_rows}
-    settling = 0  # occurrences: both legs of a due transfer pair count once
-    for tx in due_rows:
+    units = await recurring_service.due_auto_settle_units(db, org_id, today, lock=False)
+    settling = len(units)  # occurrences: both legs of a due transfer pair count once
+    for tx in (tx for unit in units for tx in unit):
         changes.append(Change("transactions", tx.id, "status", PENDING, "settled"))
-        if tx.settled_date != tx.date:
-            changes.append(Change("transactions", tx.id, "settled_date", _iso(tx.settled_date), _iso(tx.date)))
+        if tx.settled_date is None:  # settles on its expected date, else its date
+            changes.append(Change("transactions", tx.id, "settled_date", None, _iso(tx.date)))
         _add(deltas, tx.account_id, _signed(tx.amount, tx.type))
-        pair = is_reciprocal_pair(tx, by_id.get(tx.linked_transaction_id))
-        settling += 0 if pair and tx.type != TransactionType.EXPENSE else 1
 
     templates = (await db.scalars(
         select(RecurringTransaction).where(
@@ -622,12 +617,13 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
                 if settled:
                     for account_id, leg_type in _legs(r):
                         _add(deltas, account_id, _signed(r.amount, leg_type))
-            due = advance_date(due, r.frequency)
+            spent, due = due, advance_date(due, r.frequency)
             walk.occurrences_elapsed += 1
         if due != r.next_due_date:
             changes += [
                 Change(TEMPLATE, r.id, "next_due_date", _iso(r.next_due_date), _iso(due)),
                 Change(TEMPLATE, r.id, "occurrences_elapsed", r.occurrences_elapsed, walk.occurrences_elapsed),
+                Change(TEMPLATE, r.id, "last_spent_date", _iso(r.last_spent_date), _iso(spent)),
             ]
     money = await _balance_changes(ctx, deltas)
     if not changes:
