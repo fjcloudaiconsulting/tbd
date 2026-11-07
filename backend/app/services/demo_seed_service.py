@@ -43,6 +43,10 @@ from app.services.currency_service import (
     assert_org_currency_allows,
     normalise_currency,
 )
+from app.services.transaction_filters import (
+    balance_contribution_filter,
+    signed_amount_expr,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -150,6 +154,9 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
         raise DemoSeedAlreadyApplied("org already seeded with demo data")
 
     today = date.today()
+    # The history below starts on the 1st of last month; the accounts open
+    # then so the net-worth replay starts before the first seeded row.
+    history_start = today.replace(day=1) - relativedelta(months=1)
 
     # 1. Sentinel category. Slug is unique by convention; the seed
     # writes it FIRST so a concurrent re-entry trips the sentinel
@@ -202,6 +209,7 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
             account_type_id=checking_type.id,
             name=name,
             balance=balance,
+            opening_balance_date=history_start,
             currency=seed_currency,
             is_active=True,
             is_default=(name == "Sample Checking"),
@@ -291,6 +299,27 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
             db.add(tx)
             tx_count += 1
 
+    await db.flush()
+
+    # TBD-597: the rows above were inserted without moving ``balance``, so
+    # back the opening balance out of the shown balance to keep the
+    # invariant ``balance == opening_balance + Σ settled signed``.
+    seeded_net = dict(
+        (
+            await db.execute(
+                select(Transaction.account_id, func.sum(signed_amount_expr()))
+                .where(
+                    Transaction.org_id == org_id,
+                    Transaction.account_id.in_([a.id for a in accounts]),
+                    Transaction.status == TransactionStatus.SETTLED,
+                    balance_contribution_filter(),
+                )
+                .group_by(Transaction.account_id)
+            )
+        ).all()
+    )
+    for acct in accounts:
+        acct.opening_balance = acct.balance - seeded_net.get(acct.id, 0)
     await db.flush()
 
     logger.info(
