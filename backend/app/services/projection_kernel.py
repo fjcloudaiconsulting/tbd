@@ -69,6 +69,8 @@ class AccountBaseline:
     account: Account
     type_slug: str | None
     balance: Decimal
+    # Day 0's opening: ``balance`` less the future-dated settled rows laid back on their dates.
+    seed: Decimal
     pending_delta: Decimal
     # (date, amount) lines behind the projection; amounts are signed for
     # recurring, and positive outflows for the CC and loan payments.
@@ -91,6 +93,8 @@ class Baseline:
     accounts: list[AccountBaseline]
     # currency -> points, summed over that currency's accounts only.
     currencies: dict[str, list[Point]]
+    # recurring id -> dates of its un-materialised occurrences the walk booked (TBD-562).
+    series_dates: dict[int, list[datetime.date]]
 
 
 async def baseline(
@@ -252,6 +256,7 @@ async def baseline(
     # legs as ``(key, date, amount)`` credits.
     charges_by_account: dict[int, list[Point]] = {}
     transfer_in_by_account: dict[int, list[tuple]] = {}
+    series_dates: dict[int, list[datetime.date]] = {}
     for r in recurring_items:
         legs = [(a, d) for a, d in _recurring_legs(r) if a in accounts_by_id]
         if not legs:
@@ -262,6 +267,7 @@ async def baseline(
         ):
             if (r.id, d) in materialised:
                 continue
+            series_dates.setdefault(r.id, []).append(d)
             for account_id, delta in legs:
                 _add_day_delta(day_deltas, account_id, d, delta, walk_start)
                 recurring_lines_by_account.setdefault(account_id, []).append((d, delta))
@@ -534,6 +540,7 @@ async def baseline(
             account=account,
             type_slug=type_slug,
             balance=balance,
+            seed=seed,
             pending_delta=pending_by_account.get(account.id, Decimal("0")),
             cc_payments=cc_payments_by_account.get(account.id, []),
             loan_payments=loan_payments_by_account.get(account.id, []),
@@ -553,6 +560,7 @@ async def baseline(
         horizon_end=horizon_end,
         accounts=accounts,
         currencies=currencies,
+        series_dates=series_dates,
     )
 
 
