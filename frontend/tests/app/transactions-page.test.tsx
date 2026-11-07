@@ -338,6 +338,69 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     expect(body.description).toBe("Linked out edited");
   }, 20000);
 
+  // TBD-791
+  it("Saving a pending row's new expected settlement PUTs it and keeps it pending", async () => {
+    const tx = makeTx({
+      id: 70, account_id: ACCT_A.id, account_name: ACCT_A.name,
+      type: "expense", amount: 40, description: "Card payment",
+      status: "pending", settled_date: "2026-05-03",
+    });
+    setupApiFetch([tx]);
+
+    render(<TransactionsPage />);
+    await screen.findAllByText("Card payment");
+    await openEditForm(/^Edit: Card payment$/);
+
+    const fields = screen.getAllByLabelText("Expected settlement date");
+    expect((fields[0] as HTMLInputElement).value).toBe("2026-05-03");
+    fireEvent.change(fields[0], { target: { value: "2026-05-09" } });
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Save$/i }))[0]);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    const findPut = () =>
+      apiFetchMock.mock.calls.find(
+        (call) =>
+          call[0] === "/api/v1/transactions/70" &&
+          (call[1] as RequestInit | undefined)?.method === "PUT",
+      );
+    await waitFor(() => expect(findPut()).toBeTruthy());
+    const body = JSON.parse((findPut()![1] as RequestInit).body as string);
+    expect(body.status).toBe("pending");
+    expect(body.settled_date).toBe("2026-05-09");
+  }, 20000);
+
+  it("Says the expected settlement moves both legs only while both are pending", async () => {
+    const both = /expected settlement date moves both rows too/i;
+    const legs = (partnerStatus: "pending" | "settled") => [
+      makeTx({
+        id: 80, account_id: ACCT_A.id, account_name: ACCT_A.name,
+        type: "expense", amount: 50, description: "Pending out", status: "pending",
+        linked_transaction_id: 81, linked_account_name: ACCT_B.name,
+      }),
+      makeTx({
+        id: 81, account_id: ACCT_B.id, account_name: ACCT_B.name,
+        type: "income", amount: 50, description: "Pending in", status: partnerStatus,
+        linked_transaction_id: 80, linked_account_name: ACCT_A.name,
+      }),
+    ];
+
+    const pending = legs("pending");
+    setupApiFetch([pending[0]], pending);
+    const { unmount } = render(<TransactionsPage />);
+    await screen.findAllByText("Pending out");
+    await openEditForm(/^Edit: Pending out$/);
+    expect((await screen.findAllByText(both)).length).toBeGreaterThan(0);
+    unmount();
+
+    const mixed = legs("settled");
+    setupApiFetch([mixed[0]], mixed);
+    render(<TransactionsPage />);
+    await screen.findAllByText("Pending out");
+    await openEditForm(/^Edit: Pending out$/);
+    await screen.findAllByText(/Changes to amount apply to both rows/i);
+    expect(screen.queryByText(both)).toBeNull();
+  }, 20000);
+
   it("Editing a regular row keeps the plain Category label and no transfer helper text", async () => {
     const tx = makeTx({
       id: 60, account_id: ACCT_A.id, account_name: ACCT_A.name,

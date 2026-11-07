@@ -1137,6 +1137,22 @@ async def update_transaction(
                 # clear the historical actual so it doesn't leak as an
                 # "expected" date for the now-pending row.
                 tx.settled_date = None
+        # TBD-791: a pending transfer's expected settlement moves both legs
+        # together while both are pending (the partner is hidden in the list).
+        # Only on a real change: the edit form re-sends the field every save.
+        # A settled partner keeps its own date, as before.
+        if (
+            pair_partner is not None
+            and settled_date_supplied
+            and tx.status == TransactionStatus.PENDING
+            and pair_partner.status == TransactionStatus.PENDING
+            and tx.settled_date != old_settled_date
+        ):
+            if tx.settled_date is not None and tx.settled_date < pair_partner.date:
+                raise ValidationError(
+                    "settled_date must be on or after the other leg's date"
+                )
+            pair_partner.settled_date = tx.settled_date
         # TBD-756: on a "this and future" move, a still-pending row's expected
         # settlement keeps its offset, exactly as each moved sibling's does.
         # Only when the request left it as it was (the form re-sends it); a
@@ -2154,7 +2170,8 @@ async def bulk_update_transactions(
     counts as updated; a row that can apply nothing is returned in ``skipped``
     with a human reason. Transfer legs only accept ``category_id`` (which
     cascades to the partner via update_transaction); ``status``/``account_id``/
-    ``tags``/``date``/``settled_date`` are skipped for them. Reuses
+    ``tags``/``date`` are skipped for them (``settled_date`` too, unless both
+    legs are pending, TBD-791). Reuses
     update_transaction for all balance, transfer-guard, and partner-cascade
     logic (it commits per row, so this is naturally partial-success).
 
@@ -2170,12 +2187,14 @@ async def bulk_update_transactions(
       row whose new date would pass its settled_date keeps its date unless the
       batch sets settled_date too: it is never auto-shifted, that would move
       its cash period silently.
-    - ``settled_date`` applies only to rows that are SETTLED, or are being
-      settled in this batch (they settle on that date instead of today). On a
-      row that stays pending it is only an expectation the auto-settle sweep
-      overwrites, so it is not applied. On a row that keeps its date (the
-      skips above) a settled_date before that date is dropped with a note,
-      so the row's other fields still land.
+    - ``settled_date`` applies to rows that are SETTLED, or are being
+      settled in this batch (they settle on that date instead of today), and
+      (TBD-791) to rows that stay PENDING, as their expected settlement; the
+      row stays pending and no balance moves. Not to a row being set to
+      pending. A transfer leg takes it only while both legs are pending
+      (``update_transaction`` moves the partner too). On a row that keeps
+      its date (the skips above) a settled_date before that date is dropped
+      with a note, so the row's other fields still land.
     - A row settled in this batch onto a date after today without a
       settled_date is skipped with that reason (settling stamps today).
 
@@ -2189,6 +2208,8 @@ async def bulk_update_transactions(
     updated = 0
     skipped: list[tuple[int, str]] = []
     notes: list[tuple[int, str]] = []
+    # TBD-791: transfer legs whose settled_date a partner's update moved.
+    moved_with_partner: set[int] = set()
 
     def _reason(exc: Exception) -> str:
         return getattr(exc, "detail", None) or str(exc)
@@ -2280,23 +2301,46 @@ async def bulk_update_transactions(
             else:
                 update_kwargs["date"] = date
         if settled_date is not None:
-            if is_transfer:
+            # TBD-791: a row that stays pending takes it as its expected
+            # settlement. A transfer leg only while both legs are pending:
+            # update_transaction then moves the partner with it.
+            stays_pending = not settles and row.status == TransactionStatus.PENDING
+            if is_transfer and not stays_pending:
                 row_notes.append("settlement date not applied to transfers")
-            elif not settles:
+            elif is_transfer and linked_row.status != TransactionStatus.PENDING:
                 row_notes.append(
-                    "settlement date not applied: set status to settled to apply"
+                    "settlement date not applied: the other leg of this transfer "
+                    "is settled"
+                )
+            elif not settles and not stays_pending:
+                row_notes.append(
+                    "settlement date not applied to rows being set to pending"
+                )
+            elif is_transfer and tx_id in moved_with_partner:
+                # Its leg earlier in this batch already moved it; not a second
+                # update.
+                row_notes.append(
+                    "settlement date already moved with the other leg of this "
+                    "transfer"
                 )
             elif (
-                date is not None
+                (date is not None or stays_pending)
                 and "date" not in update_kwargs
                 and settled_date < row.date
             ):
-                # Chosen for the new date, but this row keeps its old one: it
-                # would fail the ordering check and take the rest of the row
-                # down with it. Drop it so category/status/... still land.
+                # Before the date this row keeps (chosen for a new date it
+                # does not take, or a pending row's own date): it would fail
+                # the ordering check and take the rest of the row down with
+                # it. Drop it so category/status/... still land.
                 row_notes.append(
                     "settlement date not applied: before the unchanged date "
                     f"{row.date.isoformat()}"
+                )
+            elif is_transfer and settled_date < linked_row.date:
+                # TBD-791: update_transaction refuses it for the partner.
+                row_notes.append(
+                    "settlement date not applied: before the other leg's date "
+                    f"{linked_row.date.isoformat()}"
                 )
             else:
                 update_kwargs["settled_date"] = settled_date
@@ -2329,6 +2373,8 @@ async def bulk_update_transactions(
                     db, org_id, tx_id, TransactionUpdate(**update_kwargs)
                 )
                 applied = True
+                if is_transfer and "settled_date" in update_kwargs:
+                    moved_with_partner.add(linked_row.id)
             except (
                 ValidationError,
                 ConflictError,
@@ -2386,7 +2432,8 @@ async def bulk_update_transactions(
         else:
             # Nothing applied — every requested field was one this row does
             # not take (a transfer leg's status/account/tags/dates, a
-            # recurring occurrence's date, a pending row's settled_date...).
+            # recurring occurrence's date, the settled_date of a row being set
+            # to pending...).
             reason = (
                 "; ".join(row_notes)
                 if row_notes

@@ -702,8 +702,10 @@ async def bulk_update_transactions(
     together: if that update fails (e.g. a settled_date before the row's date)
     none of them land and the row is skipped with the reason (TBD-763).
     ``date`` and ``settled_date`` set a date, they do not shift one; ``date``
-    is not applied to recurring occurrences or transfer legs, and
-    ``settled_date`` only to rows that are, or are being, settled.
+    is not applied to recurring occurrences or transfer legs. ``settled_date``
+    applies to rows that are, or are being, settled, and to rows that stay
+    pending as their expected settlement (TBD-791; a transfer only while both
+    legs are pending, and both move).
     """
     updated_count, skipped, notes = await svc.bulk_update_transactions(
         db,

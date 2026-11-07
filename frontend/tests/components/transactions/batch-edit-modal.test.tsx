@@ -211,7 +211,7 @@ describe("BatchEditModal", () => {
       screen.getByText(/not applied to recurring occurrences or transfers/i),
     ).toBeTruthy();
     expect(
-      screen.getByText(/applied only to settled transactions, or ones you set to settled above/i),
+      screen.getByText(/pending ones stay pending and expect to settle on it/i),
     ).toBeTruthy();
   });
 
