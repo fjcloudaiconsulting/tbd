@@ -1,13 +1,27 @@
 import ipaddress
 import logging
+import os
 
 from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 logger = logging.getLogger(__name__)
 
 # Cloudflare Turnstile's always-pass test secret, which .env.example ships for dev.
 TURNSTILE_ALWAYS_PASS_SECRET = "1x0000000000000000000000000000000AA"
+# All of Cloudflare's published Turnstile test secrets (always pass, always fail, token spent).
+TURNSTILE_TEST_SECRETS = frozenset(
+    {
+        TURNSTILE_ALWAYS_PASS_SECRET,
+        "2x0000000000000000000000000000000AA",
+        "3x0000000000000000000000000000000AA",
+    }
+)
+
+# INF-04: the only APP_ENV values the settings accept; unset means production.
+APP_ENVS = ("production", "development", "test")
 
 # INF-03: every secret-bearing setting. In production none may hold a value from
 # ``_PUBLIC_SECRET_VALUES`` or one starting "dev-only".
@@ -43,6 +57,11 @@ _PUBLIC_SECRET_VALUES = frozenset(
     }
 )
 
+# Database passwords committed for the dev compose stack (.env.example, the database_url default)
+# and CI's service container. Production refuses a DSN that uses one. The release smoke
+# generates its own per run (compose.smoke.yaml); "smoke" and "smoke-root" are its old literals.
+_PUBLIC_DB_PASSWORDS = frozenset({"pfv2_secret", "root_secret", "ci_root_secret", "smoke", "smoke-root"})
+
 
 def _parse_forwarded_allow_ips(
     value: str,
@@ -65,7 +84,9 @@ def _parse_forwarded_allow_ips(
 class Settings(BaseSettings):
     # App
     app_name: str = "The Better Decision"
-    app_env: str = "development"
+    # INF-04: unset means production, so a workload that forgets APP_ENV gets the production checks
+    # instead of Swagger and lifespan migrations. Dev compose, CI and conftest set it explicitly.
+    app_env: str = "production"
     log_level: str = "INFO"
     # Baked at image build time (backend/Dockerfile ARGs, env TBD_APP_VERSION /
     # TBD_APP_REVISION); /health reports them. "dev" outside a published image.
@@ -602,16 +623,15 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _warn_app_env_not_chosen(self) -> "Settings":
-        # INF-04: unset, APP_ENV means development (Swagger, lifespan migrations, none of the
-        # production checks). The backend image then fails its boot on the migration branch
-        # guard, but mcp_main has no such guard. A production default waits on cloud-infra
-        # confirming every component sets APP_ENV, so for now each process only says so. At
-        # import this precedes logs.configure() and reaches stderr through logging's last resort.
+    def _check_app_env(self) -> "Settings":
+        # INF-04: unset, APP_ENV means production (the fail-safe default); every process says so,
+        # because a dev or CI run that forgot it now refuses its dev secrets. At import this
+        # precedes logs.configure() and reaches stderr through logging's last resort. Any other
+        # value ("prod", "Production", "staging") would skip every production check, so it refuses.
         if "app_env" not in self.model_fields_set:
             logger.warning("config.app_env_unset", extra={"default": self.app_env})
-        elif self.app_env not in ("development", "test", "production"):
-            logger.warning("config.app_env_unrecognised", extra={"app_env": self.app_env})
+        elif self.app_env not in APP_ENVS:
+            raise ValueError(f"APP_ENV must be one of: {', '.join(APP_ENVS)}")
         return self
 
     @model_validator(mode="after")
@@ -628,6 +648,42 @@ class Settings(BaseSettings):
                     f"{name.upper()} is a value committed to this public repository; "
                     "set a real secret"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_production_db_password_not_public(self) -> "Settings":
+        # The dev compose password is public, so a production DSN that still uses it is open to
+        # anyone who can reach the database. MIGRATIONS_DATABASE_URL is read where the migrate
+        # job reads it (app.migration_url). The message names the variable, never the value.
+        if self.app_env != "production":
+            return self
+        dsns = {
+            "DATABASE_URL": self.database_url,
+            "MIGRATIONS_DATABASE_URL": os.getenv("MIGRATIONS_DATABASE_URL", ""),
+        }
+        for name, dsn in dsns.items():
+            try:
+                url = make_url(dsn.strip())
+            except ArgumentError:
+                continue  # not a URL; the connection fails on its own
+            # The MySQL drivers also take the password as a query argument.
+            passwords = {url.password or ""}
+            for key in ("password", "passwd"):
+                value = url.query.get(key, ())
+                passwords.update((value,) if isinstance(value, str) else value)
+            if passwords & _PUBLIC_DB_PASSWORDS:
+                raise ValueError(
+                    f"{name} uses a database password committed to this public repository; "
+                    "set a real one"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _require_captcha_by_default_in_production(self) -> "Settings":
+        # INF-05: unset, CAPTCHA_REQUIRED is on in production. An explicit false stays the rollback
+        # lever during a provider outage, and the API logs config.production_open_default for it.
+        if self.app_env == "production" and "captcha_required" not in self.model_fields_set:
+            self.captcha_required = True
         return self
 
     @model_validator(mode="after")
@@ -697,26 +753,46 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class OpenProductionCaptcha(RuntimeError):
+    """INF-05: production requires the captcha, but its settings would let any token through."""
+
+
+def refuse_open_production_captcha(settings_obj: Settings) -> None:
+    """INF-05: with the captcha required in production, refuse to boot on an empty or Cloudflare
+    test secret, or on an unset hostname or action pin. Names the variables, never a value.
+
+    Not a Settings validator: the migrate job and mcp load the same settings and get no CAPTCHA_*
+    value. The API lifespan calls this, so every workload that serves registration refuses.
+    """
+    if settings_obj.app_env != "production" or not settings_obj.captcha_required:
+        return
+    secret = settings_obj.captcha_secret.strip()
+    checks = (
+        ("CAPTCHA_SECRET", not secret or secret in TURNSTILE_TEST_SECRETS),
+        ("CAPTCHA_EXPECTED_HOSTNAME", not settings_obj.captcha_expected_hostname.strip()),
+        ("CAPTCHA_EXPECTED_ACTION", not settings_obj.captcha_expected_action.strip()),
+    )
+    open_fields = [name for name, is_open in checks if is_open]
+    if open_fields:
+        logger.error("config.production_captcha_open", extra={"fields": open_fields})
+        raise OpenProductionCaptcha(
+            f"{', '.join(open_fields)} must hold real values while the captcha is required in "
+            "production; CAPTCHA_REQUIRED=false is the rollback lever"
+        )
+
+
 def warn_open_production_defaults(settings_obj: Settings) -> list[str]:
     """INF-05: log each registration safeguard production runs without; return the reasons.
 
-    A warning, not a validator: ``CAPTCHA_REQUIRED=false`` is the documented rollback during a
-    provider outage, and a boot refusal would take production down over it. The backend lifespan
-    calls this once per worker.
+    A warning, not a refusal: ``CAPTCHA_REQUIRED=false`` is the documented rollback during a
+    provider outage. A required captcha that is open refuses instead
+    (``refuse_open_production_captcha``). The backend lifespan calls this once per worker.
     """
     if settings_obj.app_env != "production":
         return []
     reasons: list[str] = []
     if not settings_obj.captcha_required:
-        # The pins only matter once the captcha runs.
         reasons.append("captcha_not_required")
-    else:
-        if settings_obj.captcha_secret == TURNSTILE_ALWAYS_PASS_SECRET:
-            reasons.append("captcha_test_secret")
-        if not settings_obj.captcha_expected_hostname:
-            reasons.append("captcha_hostname_unpinned")
-        if not settings_obj.captcha_expected_action:
-            reasons.append("captcha_action_unpinned")
     for reason in reasons:
         logger.warning("config.production_open_default", extra={"reason": reason})
     for origin in settings_obj.cors_origins:

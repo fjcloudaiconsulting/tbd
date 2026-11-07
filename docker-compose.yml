@@ -34,6 +34,8 @@ services:
       - "8000"
     env_file: .env
     environment:
+      # INF-04: unset, APP_ENV means production; an older .env without it must still boot dev.
+      - APP_ENV=${APP_ENV:-development}
       # TBD-561: ONE explicit key shared with the `mcp` service. Without it
       # each derives its PAT pepper from its own JWT secret, and mcp has its
       # own (as in production), so tokens minted here would not authenticate
