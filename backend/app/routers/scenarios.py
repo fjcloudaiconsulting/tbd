@@ -180,6 +180,10 @@ async def _projection_inputs(
         plan = await _get_owned_scenario(db, user=user, scenario_id=pid)
         if plan.currency is None:
             raise HTTPException(status_code=422, detail=f"scenario {pid} is not a plan")
+        # A plan is in its org's currency scope (refused without one), so the
+        # selected plans can never mix currencies.
+        with http_errors():
+            await plan_draft_service.plan_currency(db, org_id=plan.org_id, requested=plan.currency)
         plans.append(plan)
         for goal in await plan_draft_service.list_goals(db, plan=plan):
             copy = PlanGoal(**{c.key: getattr(goal, c.key)
@@ -214,8 +218,14 @@ async def _project(
     return response
 
 
-@router.get("/projection", response_model=PlanProjectionResponse)
+@router.get(
+    "/projection",
+    response_model=PlanProjectionResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(dynamic_limit("scenarios.projection", "60/minute"), key_func=user_rate_limit_key)
 async def project_plans(
+    request: Request,
     plan_id: list[int] = Query(..., min_length=1, max_length=MAX_PROJECTED_PLANS),
     off: list[int] = Query(default=[]),
     on: list[int] = Query(default=[]),
@@ -234,8 +244,16 @@ async def project_plans(
                           return_pct=return_pct, inflation_pct=inflation_pct)
 
 
-@router.get("/projection/compare", response_model=list[PlanComparisonResponse])
+@router.get(
+    "/projection/compare",
+    response_model=list[PlanComparisonResponse],
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.limit(
+    dynamic_limit("scenarios.projection_compare", "30/minute"), key_func=user_rate_limit_key,
+)
 async def compare_plan_projections(
+    request: Request,
     plan_id: list[int] = Query(..., min_length=1, max_length=MAX_PROJECTED_PLANS),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

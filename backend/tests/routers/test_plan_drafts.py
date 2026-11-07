@@ -445,3 +445,39 @@ async def test_a_legacy_scenario_is_not_projected(factory, w):
     with _client(factory, "alice") as alice:
         res = alice.get(f"/api/v1/scenarios/projection?plan_id={pid}")
     assert res.status_code == 422 and "not a plan" in res.text
+
+
+async def test_projection_refuses_a_plan_outside_the_org_currency(factory, w):
+    pid, _ = await _seed_plan(factory, w["A"], "alice")
+    async with factory() as db:
+        (await db.get(Scenario, pid)).currency = "USD"
+        await db.commit()
+    with _client(factory, "alice") as alice:
+        res = alice.get(f"/api/v1/scenarios/projection?plan_id={pid}")
+    assert res.status_code == 422, res.text
+
+
+async def test_projection_refuses_an_org_without_a_currency_scope(factory, w):
+    pid, _ = await _seed_plan(factory, w["legacy"], "dave")
+    async with factory() as db:
+        (await db.get(Scenario, pid)).currency = "EUR"
+        await db.commit()
+    with _client(factory, "dave") as dave:
+        res = dave.get(f"/api/v1/scenarios/projection?plan_id={pid}")
+    assert res.status_code == 422 and "currency scope" in res.text
+
+
+async def test_projection_of_another_orgs_plan_beside_your_own_is_404(factory, w):
+    mine, _ = await _seed_plan(factory, w["A"], "alice")
+    theirs, _ = await _seed_plan(factory, w["B"], "carol")
+    with _client(factory, "alice") as alice:
+        res = alice.get(f"/api/v1/scenarios/projection?plan_id={mine}&plan_id={theirs}")
+    assert res.status_code == 404
+
+
+async def test_an_extreme_birth_year_still_projects(factory, w):
+    pid, _ = await _seed_plan(factory, w["A"], "alice")
+    with _client(factory, "alice") as alice:
+        res = alice.get(f"/api/v1/scenarios/projection?plan_id={pid}&lifetime=true&birth_year=32767")
+    assert res.status_code == 200, res.text
+    assert len(res.json()["lifetime"]["months"]) == 1000

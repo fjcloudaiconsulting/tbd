@@ -129,6 +129,8 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("reports", "run_query"): ("reports.query", "60/minute"),
     ("reports", "run_sankey_query"): ("reports.sankey_query", "60/minute"),
     ("scenarios", "compare_scenarios"): ("scenarios.compare", "30/minute"),  # per user (TBD-726)
+    ("scenarios", "compare_plan_projections"): ("scenarios.projection_compare", "30/minute"),  # per user
+    ("scenarios", "project_plans"): ("scenarios.projection", "60/minute"),  # per user (TBD-601)
     ("scenarios", "simulate_scenario"): ("scenarios.simulate", "60/minute"),  # per user (TBD-726)
     ("security", "csp_report"): ("security.csp_report", "60/minute"),
     ("tags", "create_tag_endpoint"): ("tags.create", "30/minute"),
