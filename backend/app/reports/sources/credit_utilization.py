@@ -68,6 +68,7 @@ from app.schemas.reports_query import (
     MeasureField,
     ReportsQuery,
 )
+from app.services.transaction_filters import account_currency_key
 
 _DIMENSIONS = [
     SourceDimension("account", "Card", "account"),
@@ -108,7 +109,8 @@ _DECLARED_AGG = {
 
 _DIM_EXPR = {
     Dimension.ACCOUNT: ("account", Account.name),
-    Dimension.CURRENCY: ("currency", Account.currency),
+    # TBD-550: canonical key, never the bare column (legacy lowercase rows).
+    Dimension.CURRENCY: ("currency", account_currency_key()),
     # Verbatim from accounts.py so the two sources cannot drift on the label
     # strings, and so we never depend on the driver returning a Python bool.
     Dimension.ACCOUNT_ACTIVE: (
@@ -145,9 +147,9 @@ def _apply_filter(stmt, f):
         raise ValueError(f"credit_utilization: account_id does not support op {op!r}")
     if field is FilterField.CURRENCY:
         if op == "eq":
-            return stmt.where(Account.currency == f.value)
+            return stmt.where(account_currency_key() == f.value)
         if op == "in":
-            return stmt.where(Account.currency.in_(list(f.value)))
+            return stmt.where(account_currency_key().in_(list(f.value)))
         raise ValueError(f"credit_utilization: currency does not support op {op!r}")
     if field is FilterField.ACCOUNT_ACTIVE:
         if op == "eq":
@@ -227,7 +229,7 @@ class CreditUtilizationSource:
         # carries a duplicate column when the user requested it explicitly.
         currency_requested = "currency" in requested_keys
         if not currency_requested:
-            dim_exprs.append(("currency", Account.currency.label("currency")))
+            dim_exprs.append(("currency", _DIM_EXPR[Dimension.CURRENCY][1].label("currency")))
 
         base = (
             select(
@@ -253,7 +255,7 @@ class CreditUtilizationSource:
 
         raw_group_cols = [_DIM_EXPR[d][1] for d in query.dimensions]
         if not currency_requested:
-            raw_group_cols.append(Account.currency)
+            raw_group_cols.append(_DIM_EXPR[Dimension.CURRENCY][1])
         base = base.group_by(*raw_group_cols)
 
         result = await db.execute(base)
