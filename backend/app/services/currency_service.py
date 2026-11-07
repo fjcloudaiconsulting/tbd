@@ -145,7 +145,7 @@ async def assert_org_currency_allows(
     # (an empty range), and a gap lock conflicts with the other transaction's
     # insert-intention lock. Two concurrent ``POST /accounts`` on a fresh org
     # therefore deadlock: MySQL error 1213, and the loser gets a 500. Measured
-    # 2026-09-12 on MySQL 8.4.11 -- 3 of 12 concurrent trials before this PR,
+    # 2026-09-12 on real MySQL -- 3 of 12 concurrent trials before this PR,
     # and 6 of 12 with PR 2's ``UPDATE organizations`` added to the same
     # transaction, because that second exclusive lock widens the window.
     #

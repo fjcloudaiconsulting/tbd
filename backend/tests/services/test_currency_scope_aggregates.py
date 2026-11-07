@@ -926,7 +926,7 @@ def test_f4_seed_demo_does_not_add_a_second_currency(seed_client):
 
     Two ordinary calls. Pre-fix this produced ``['EUR', 'USD']`` and a forecast
     ``executed_expense`` of 1215.30 that was a EUR+USD sum with no label —
-    measured on real MySQL 8.4.11 over real HTTP, 2026-09-12.
+    measured on real MySQL over real HTTP, 2026-09-12.
 
     ⚠ ``accounts_created == 2`` is asserted alongside, and is load-bearing:
     without it, "refuse to seed whenever the org already has an account"
