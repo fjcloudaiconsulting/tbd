@@ -255,10 +255,14 @@ commit are refused like the others.
 
 The same processes refuse a `DATABASE_URL` or `MIGRATIONS_DATABASE_URL` whose password is a dev or
 CI database password committed here (`_PUBLIC_DB_PASSWORDS`, fenced by
-`backend/tests/test_public_db_password.py`). The release smoke's throwaway database password is
-not on that list. `./tbd prod` rehearses production, so it needs a `.env` whose `MYSQL_PASSWORD`,
-`MYSQL_ROOT_PASSWORD` and `DATABASE_URL` are not the `.env.example` values (on an existing volume,
-change the MySQL users' passwords too, or start from `./tbd reset`).
+`backend/tests/test_public_db_password.py`), whether in the DSN's password or in a `password` or
+`passwd` query argument. The release smoke generates its database password per run into its
+`smoke-db` volume, and its old literals are refused too. `./tbd prod` rehearses production, so it
+needs a `.env` whose `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD` and `DATABASE_URL` are not the
+`.env.example` values (on an existing volume, change the MySQL users' passwords too, or start from
+`./tbd reset`). It also needs a real captcha setup or an explicit `CAPTCHA_REQUIRED=false`: an
+older `.env` that omits the line now gets the production default (`true`), and the API refuses to
+boot on the Turnstile test secret.
 
 ---
 

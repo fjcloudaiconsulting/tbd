@@ -1,10 +1,11 @@
 import ipaddress
 import logging
 import os
-import urllib.parse
 
 from pydantic import ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +58,9 @@ _PUBLIC_SECRET_VALUES = frozenset(
 )
 
 # Database passwords committed for the dev compose stack (.env.example, the database_url default)
-# and CI's service container. Production refuses a DSN that uses one. The release smoke's
-# throwaway pair (compose.smoke.yaml) is left out: the smoke runs production on purpose.
-_PUBLIC_DB_PASSWORDS = frozenset({"pfv2_secret", "root_secret", "ci_root_secret"})
+# and CI's service container. Production refuses a DSN that uses one. The release smoke
+# generates its own per run (compose.smoke.yaml); "smoke" and "smoke-root" are its old literals.
+_PUBLIC_DB_PASSWORDS = frozenset({"pfv2_secret", "root_secret", "ci_root_secret", "smoke", "smoke-root"})
 
 
 def _parse_forwarded_allow_ips(
@@ -662,10 +663,15 @@ class Settings(BaseSettings):
         }
         for name, dsn in dsns.items():
             try:
-                password = urllib.parse.unquote(urllib.parse.urlsplit(dsn.strip()).password or "")
-            except ValueError:
+                url = make_url(dsn.strip())
+            except ArgumentError:
                 continue  # not a URL; the connection fails on its own
-            if password in _PUBLIC_DB_PASSWORDS:
+            # The MySQL drivers also take the password as a query argument.
+            passwords = {url.password or ""}
+            for key in ("password", "passwd"):
+                value = url.query.get(key, ())
+                passwords.update((value,) if isinstance(value, str) else value)
+            if passwords & _PUBLIC_DB_PASSWORDS:
                 raise ValueError(
                     f"{name} uses a database password committed to this public repository; "
                     "set a real one"

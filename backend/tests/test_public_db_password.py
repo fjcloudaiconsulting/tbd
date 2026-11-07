@@ -63,11 +63,25 @@ def test_production_refuses_the_shipped_default(monkeypatch):
         _settings(app_env="production")
 
 
-def test_production_boots_on_a_real_password_and_the_release_smoke_dsn(monkeypatch):
+@pytest.mark.parametrize("key", ["password", "passwd"])
+def test_production_refuses_it_as_a_query_argument(monkeypatch, key):
+    monkeypatch.delenv("MIGRATIONS_DATABASE_URL", raising=False)
+    dsn = f"mysql+aiomysql://pfv2@db.internal:3306/pfv2?{key}=pfv2_secret"
+    with pytest.raises(ValidationError, match="DATABASE_URL uses a database password"):
+        _settings(app_env="production", database_url=dsn)
+
+
+def test_production_boots_on_a_real_password(monkeypatch):
     monkeypatch.delenv("MIGRATIONS_DATABASE_URL", raising=False)
     assert _settings(app_env="production", database_url=_REAL).database_url == _REAL
-    smoke = re.search(r"DATABASE_URL: (\S+)", (REPO / "compose.smoke.yaml").read_text()).group(1)
-    assert _settings(app_env="production", database_url=smoke).database_url == smoke
+
+
+def test_the_release_smoke_commits_no_database_password():
+    """The smoke runs production, so it generates its password per run into the smoke-db volume."""
+    text = (REPO / "compose.smoke.yaml").read_text()
+    assert not re.findall(r"mysql(?:\+\w+)?://[^:/\s]+:([^@\s$]+)@", text)
+    assert not re.findall(r"MYSQL_(?:ROOT_)?PASSWORD[=:]\s*([^\s$\"'{}]+)", text)
+    assert "DATABASE_URL=mysql+aiomysql://tbd:$$(cat /smoke-db/password)@mysql:3306/tbd" in text
 
 
 def test_every_committed_dev_and_ci_database_password_is_refused():
