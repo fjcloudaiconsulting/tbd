@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.models import Account, AccountType, Category, Organization, Transaction
+from app.models.account import PaymentStrategy
 from app.models.base import Base
 from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
@@ -366,3 +367,223 @@ async def test_a_funded_lump_is_spent_from_its_account_and_its_funding_is_not_ad
     assert dict(result.goal_accounts[books["savings"]])[sep30] == D("0.00")
     june = _month(result, JUNE)
     assert june.under_over == june.free_pool_net == D("-100.00")
+
+
+# ── card-charged plan spend (TBD-793) ────────────────────────────────────────
+
+async def _paid_card(db, books, *, strategy=PaymentStrategy.FULL_BALANCE, fixed=None,
+                     close=10, pay=5, relative=1):
+    """The books' card, paid from Main: by default it closes on the 10th and is
+    paid on the 5th of the next month."""
+    card = await db.get(Account, books["card"])
+    card.close_day, card.payment_day, card.payment_day_relative_month = close, pay, relative
+    card.payment_source_account_id = books["main"]
+    card.payment_strategy, card.fixed_payment_amount = strategy, fixed
+    await db.commit()
+
+
+async def _plan_and_food_on(db, books, account_id):
+    """The plan's series (100) and an unrelated one (50), both on the 15th."""
+    trip = _series(books["org_id"], account_id, books["trip"], "100.00", datetime.date(2026, 6, 15))
+    food = _series(books["org_id"], account_id, books["food"], "50.00", datetime.date(2026, 6, 15))
+    db.add_all([trip, food])
+    await db.commit()
+    return [trip, food]
+
+
+async def test_card_charged_plan_spend_reconciles_like_pool_spend(db_session):
+    """FENCE (TBD-793). A plan series charged to a card the free pool pays
+    leaves ``under_over`` equal, month by month, to the same series charged to
+    a free-pool account. Only the plan's share of the payment is added back,
+    in the month the payment leaves the pool. Wrong implementations: no
+    add-back (the payment month is over-allocated by 100), adding back the
+    whole payment (the food spend vanishes), or adding back at charge time.
+    The unrelated series stays on the card in both: it shares the payment."""
+    books = await _books(db_session)
+    await _paid_card(db_session, books)
+    series = await _plan_and_food_on(db_session, books, books["card"])
+    plan = [_plan(books["org_id"], budget=D("100.00"), category_id=books["trip"])]
+    on_card = await _project(db_session, books, plan, [])
+    series[0].account_id = books["main"]  # only the plan's series moves
+    await db_session.commit()
+    on_pool = await _project(db_session, books, plan, [])
+
+    assert [m.under_over for m in on_card.months] == [m.under_over for m in on_pool.months]
+    # The card really moves the outflow: June's spend leaves Main on Aug 5.
+    june, aug = JUNE, datetime.date(2026, 8, 1)
+    assert (_month(on_card, june).free_pool_net, _month(on_pool, june).free_pool_net) == (
+        D("0.00"), D("-100.00"))
+    assert _month(on_card, aug).free_pool_net == D("-150.00")
+    assert _month(on_card, aug).surplus_ex_plans == D("-50.00")
+
+
+async def test_a_partial_card_payment_settles_plan_spend_first(db_session):
+    """A fixed 30 a month pays less than the plan charges. The whole payment
+    is plan spend (plan first), so the surplus is untouched by it."""
+    books = await _books(db_session)
+    await _paid_card(db_session, books, strategy=PaymentStrategy.FIXED_AMOUNT, fixed=D("30.00"))
+    await _plan_and_food_on(db_session, books, books["card"])
+    result = await _project(db_session, books, [_plan(
+        books["org_id"], budget=D("100.00"), category_id=books["trip"])], [])
+    aug = _month(result, datetime.date(2026, 8, 1))
+    assert (aug.free_pool_net, aug.surplus_ex_plans) == (D("-30.00"), D("0.00"))
+
+
+async def _reconciles_like_pool(db, books, moved):
+    """Project with ``moved`` on the card, then with it on Main; return both."""
+    plan = [_plan(books["org_id"], budget=D("100.00"), category_id=books["trip"])]
+    on_card = await _project(db, books, plan, [])
+    for obj in moved:
+        obj.account_id = books["main"]
+    await db.commit()
+    on_pool = await _project(db, books, plan, [])
+    assert [m.under_over for m in on_card.months] == [m.under_over for m in on_pool.months]
+    return on_card, on_pool
+
+
+async def test_a_charge_its_own_cycle_skips_is_billed_by_the_next(db_session):
+    """FENCE (TBD-793 review). The card closes on the 3rd and is paid on the
+    25th of the same month. The May 2 occurrence's cycle is paid on May 25,
+    inside the first period, which bills real rows only. So June 25 pays May
+    and June together (200), and both are added back then."""
+    books = await _books(db_session)
+    await _paid_card(db_session, books, close=3, pay=25, relative=0)
+    trip = _series(books["org_id"], books["card"], books["trip"], "100.00", datetime.date(2026, 5, 2))
+    db_session.add(trip)
+    await db_session.commit()
+    on_card, _ = await _reconciles_like_pool(db_session, books, [trip])
+    june = _month(on_card, JUNE)
+    assert (june.free_pool_net, june.surplus_ex_plans) == (D("-200.00"), D("0.00"))
+
+
+async def test_a_plan_charge_settled_before_today_is_added_back_when_paid(db_session):
+    """FENCE (TBD-793 review). A plan row settled on the card on May 5, before
+    today (May 10), is paid on June 5. On Main it would sit in the seed; on the
+    card its payment lowers June, so June adds it back."""
+    books = await _books(db_session)
+    await _paid_card(db_session, books)
+    trip = _series(books["org_id"], books["card"], books["trip"], "100.00", datetime.date(2026, 6, 15))
+    db_session.add(trip)
+    await db_session.flush()
+    row = Transaction(
+        org_id=books["org_id"], account_id=books["card"], category_id=books["trip"],
+        amount=D("100.00"), type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=datetime.date(2026, 5, 5), settled_date=datetime.date(2026, 5, 5),
+        description="x", is_imported=False, is_manual_adjustment=False, recurring_id=trip.id,
+    )
+    db_session.add(row)
+    await db_session.commit()
+    on_card, _ = await _reconciles_like_pool(db_session, books, [trip, row])
+    june = _month(on_card, JUNE)
+    assert (june.free_pool_net, june.surplus_ex_plans) == (D("-100.00"), D("0.00"))
+
+
+async def test_a_plan_charge_paid_for_real_is_never_added_back_later(db_session):
+    """FENCE (TBD-793 review). The card closes on the 3rd and is paid on the
+    15th. An Apr 20 plan charge was really paid on May 15 by a linked transfer
+    from Main (a credit the kernel nets against that cycle), so the walk's
+    payments cover only the new trip (100) and food (50) charges: every month
+    from June keeps ``surplus_ex_plans`` at -50. Wrong implementation: credits
+    not counted as settling plan spend, so a later payment re-attributes the
+    paid Apr 20 charge."""
+    books = await _books(db_session)
+    await _paid_card(db_session, books, close=3, pay=15, relative=0)
+    trip = _series(books["org_id"], books["card"], books["trip"], "100.00", datetime.date(2026, 5, 25))
+    food = _series(books["org_id"], books["card"], books["food"], "50.00", datetime.date(2026, 5, 25))
+    db_session.add_all([trip, food])
+    await db_session.flush()
+
+    def row(account_id, tx_type, day, *, rid=None, cat=books["food"]):
+        return Transaction(
+            org_id=books["org_id"], account_id=account_id, category_id=cat, amount=D("100.00"),
+            type=tx_type, status=TransactionStatus.SETTLED, date=day, settled_date=day,
+            description="x", is_imported=False, is_manual_adjustment=False, recurring_id=rid)
+
+    db_session.add(row(books["card"], TransactionType.EXPENSE, datetime.date(2026, 4, 20),
+                       rid=trip.id, cat=books["trip"]))
+    out = row(books["main"], TransactionType.EXPENSE, datetime.date(2026, 5, 15))
+    into = row(books["card"], TransactionType.INCOME, datetime.date(2026, 5, 15))
+    db_session.add_all([out, into])
+    await db_session.flush()
+    out.linked_transaction_id, into.linked_transaction_id = into.id, out.id
+    await db_session.commit()
+    result = await pps.project(
+        db_session, books["org_id"], [_plan(books["org_id"], budget=D("100.00"),
+                                            category_id=books["trip"])], [],
+        today=datetime.date(2026, 5, 20), horizon_end=HORIZON, window_start=P_START)
+    assert {m.surplus_ex_plans for m in result.months if m.month >= JUNE} == {D("-50.00")}
+
+
+async def test_a_plan_charge_paid_before_its_close_is_never_added_back_later(db_session):
+    """FENCE (TBD-793 review). The card closes on the 10th and is paid on the
+    5th of the next month. An Apr 12 plan charge was really paid on May 8,
+    before the May 10 close, so the kernel bills nothing on Jun 5 and only the
+    new trip (100) and food (50) charges after that: every month from July
+    keeps ``surplus_ex_plans`` at -50. Wrong implementation: plan charges not
+    capped by what the card still owed at close, so the Jul 5 payment counts
+    the food spend as plan spend."""
+    books = await _books(db_session)
+    await _paid_card(db_session, books)
+    trip = _series(books["org_id"], books["card"], books["trip"], "100.00", datetime.date(2026, 5, 15))
+    food = _series(books["org_id"], books["card"], books["food"], "50.00", datetime.date(2026, 5, 15))
+    db_session.add_all([trip, food])
+    await db_session.flush()
+
+    def row(account_id, tx_type, day, *, rid=None, cat=books["food"]):
+        return Transaction(
+            org_id=books["org_id"], account_id=account_id, category_id=cat, amount=D("100.00"),
+            type=tx_type, status=TransactionStatus.SETTLED, date=day, settled_date=day,
+            description="x", is_imported=False, is_manual_adjustment=False, recurring_id=rid)
+
+    db_session.add(row(books["card"], TransactionType.EXPENSE, datetime.date(2026, 4, 12),
+                       rid=trip.id, cat=books["trip"]))
+    out = row(books["main"], TransactionType.EXPENSE, datetime.date(2026, 5, 8))
+    into = row(books["card"], TransactionType.INCOME, datetime.date(2026, 5, 8))
+    db_session.add_all([out, into])
+    await db_session.flush()
+    out.linked_transaction_id, into.linked_transaction_id = into.id, out.id
+    await db_session.commit()
+    result = await pps.project(
+        db_session, books["org_id"], [_plan(books["org_id"], budget=D("100.00"),
+                                            category_id=books["trip"])], [],
+        today=datetime.date(2026, 5, 20), horizon_end=HORIZON, window_start=P_START)
+    july = datetime.date(2026, 7, 1)
+    assert {m.surplus_ex_plans for m in result.months if m.month >= july} == {D("-50.00")}
+
+
+async def test_a_plan_charge_from_the_previous_statement_is_not_read(db_session):
+    """FENCE (TBD-793 review). The card closes on the 31st (Apr 30 in April)
+    and is paid on the 5th. A Mar 31 plan charge belongs to the statement
+    that closed on Mar 31, and was paid on Apr 3. The May 5 payment covers
+    only the Apr 15 food charge (150), so May adds nothing back. Wrong
+    implementation: reading rows from "a month before the close" (Mar 30),
+    which counts the paid Mar 31 charge as owed on the Apr 30 statement."""
+    books = await _books(db_session)
+    await _paid_card(db_session, books, close=31, pay=5, relative=1)
+    trip = _series(books["org_id"], books["card"], books["trip"], "100.00", datetime.date(2026, 7, 1))
+    db_session.add(trip)
+    await db_session.flush()
+
+    def row(account_id, tx_type, day, amount, *, rid=None, cat=books["food"]):
+        return Transaction(
+            org_id=books["org_id"], account_id=account_id, category_id=cat, amount=D(amount),
+            type=tx_type, status=TransactionStatus.SETTLED, date=day, settled_date=day,
+            description="x", is_imported=False, is_manual_adjustment=False, recurring_id=rid)
+
+    db_session.add_all([
+        row(books["card"], TransactionType.EXPENSE, datetime.date(2026, 3, 31), "100.00",
+            rid=trip.id, cat=books["trip"]),
+        row(books["card"], TransactionType.EXPENSE, datetime.date(2026, 4, 15), "150.00"),
+    ])
+    out = row(books["main"], TransactionType.EXPENSE, datetime.date(2026, 4, 3), "100.00")
+    into = row(books["card"], TransactionType.INCOME, datetime.date(2026, 4, 3), "100.00")
+    db_session.add_all([out, into])
+    await db_session.flush()
+    out.linked_transaction_id, into.linked_transaction_id = into.id, out.id
+    await db_session.commit()
+    result = await pps.project(
+        db_session, books["org_id"], [_plan(books["org_id"], budget=D("100.00"),
+                                            category_id=books["trip"])], [],
+        today=datetime.date(2026, 5, 1), horizon_end=HORIZON, window_start=P_START)
+    may = _month(result, MAY)
+    assert (may.free_pool_net, may.surplus_ex_plans) == (D("-150.00"), D("-150.00"))

@@ -29,7 +29,9 @@ day), the conservative side of a month's cash flow.
 
 Reconciliation per currency, per calendar month of the walk:
 ``surplus_ex_plans = free-pool net + the claimed series' flows on free-pool
-accounts``, ``allocated = budgets + goals' monthly amounts`` (until each
+accounts`` (a claimed charge on a card the free pool pays counts in the month
+its cycle's payment leaves the pool, up to that payment; TBD-793),
+``allocated = budgets + goals' monthly amounts`` (until each
 goal's ``target_date``),
 ``under_over = surplus_ex_plans - allocated`` (negative: over-allocated), and
 ``annualised = under_over x 12``. Month 0's net runs from the walk's opening
@@ -57,6 +59,7 @@ from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
     non_reverted_transaction_filter,
+    signed_amount_expr,
 )
 
 _ZERO = Decimal("0")
@@ -205,21 +208,28 @@ async def project(
     # Per series and month: F (its magnitude) and its signed free-pool effect.
     funded: dict[tuple[int, datetime.date], Decimal] = {}
     pool_effect: dict[datetime.date, Decimal] = {}
+    # Cards the free pool pays (the kernel synthesises their payments), and the
+    # claimed charges on them: card -> [(day, amount, is a projected occurrence)].
+    pool_paid_cards = {a.account.id: a for a in base.accounts
+                       if a.type_slug == "credit_card" and a.account.id in in_currency
+                       and a.account.close_day is not None
+                       and a.account.payment_source_account_id in pool}
+    card_charges: dict[int, list[tuple[datetime.date, Decimal, bool]]] = {}
 
-    def book(rid, account_id, primary, day, delta):
+    def book(rid, account_id, primary, day, delta, projected=False):
         month = _month_of(max(day, base.walk_start))
         if primary:
             funded[rid, month] = funded.get((rid, month), _ZERO) + abs(delta)
-        # shortcut: plan spend charged to a card is never added back, so the
-        # card payment that settles it understates under/over; upgrade when card
-        # payments carry the charges they settle.
         if rid in claimed and account_id in pool:
             pool_effect[month] = pool_effect.get(month, _ZERO) + delta
+        elif projected and rid in claimed and account_id in pool_paid_cards and delta < 0:
+            # Real card rows come from the card's ledger below.
+            card_charges.setdefault(account_id, []).append((day, -delta, True))
 
     for r in series:
         for day in base.series_dates.get(r.id, []):
             for account_id, delta in _recurring_legs(r):
-                book(r.id, account_id, account_id == r.account_id, day, delta)
+                book(r.id, account_id, account_id == r.account_id, day, delta, projected=True)
     if series:
         # The rows the kernel lays on the walk: pending ones in the window, and
         # future-dated settled ones inside the first period.
@@ -251,6 +261,55 @@ async def project(
                 delta = -delta
             book(rid, account_id, account_id == source[rid],
                  projection_kernel._as_date(day), delta)
+
+    # A claimed card charge leaves the free pool with the payment that settles it
+    # (TBD-793), so it is added back in that payment's month. Each due cycle is
+    # read as the kernel's synthesis billed it (``AccountBaseline.cc_cycles``):
+    # claimed charges up to its close, less those already settled, are paid
+    # first, but never beyond what the card still owed at close (a real payment,
+    # a refund or a credit before the close already paid the rest), then by the
+    # cycle's payment-in credits (never added back), then by its projected
+    # payment (added back). A charge a cycle did not bill (a projected
+    # occurrence before the first period ends) is carried to the next one.
+    paid_cards = {cid: c for cid, c in pool_paid_cards.items() if c.cc_cycles}
+    claimed_on_cards = [r.id for r in series if r.id in claimed]
+    if paid_cards and claimed_on_cards:
+        eff = effective_period_date_expr()
+        since = {cid: c.cc_cycles[0].period_start for cid, c in paid_cards.items()}
+        # The card ledger's rows (``load_cc_ledgers``), for the claimed series,
+        # from the first statement the walk pays: an earlier row is the previous
+        # statement's, and reading it would re-attribute plan spend already paid.
+        rows = await db.execute(select(Transaction.account_id, eff, signed_amount_expr()).where(
+            Transaction.org_id == org_id,
+            Transaction.account_id.in_(list(paid_cards)),
+            Transaction.recurring_id.in_(claimed_on_cards),
+            balance_contribution_filter(),
+            eff >= min(since.values()),
+        ))
+        for card_id, day, amount in rows.all():
+            day, amount = projection_kernel._as_date(day), Decimal(str(amount))
+            if amount < 0 and day >= since[card_id]:
+                card_charges.setdefault(card_id, []).append((day, -amount, False))
+    for card_id, charges in card_charges.items():
+        settled = _ZERO
+        for bill in paid_cards[card_id].cc_cycles if card_id in paid_cards else []:
+            billed_projected = bill.payment_date > base.first_period_end
+            open_ = max(_ZERO, sum((amount for day, amount, projected in charges
+                                    if day <= bill.close
+                                    and (billed_projected or not projected)), _ZERO) - settled)
+            unpaid = min(open_, bill.owed)
+            by_credit = min(unpaid, bill.credits)
+            # shortcut: a partial payment settles plan spend before other charges,
+            # plan spend still unpaid from before the first statement is not
+            # attributed, and plan spend a credit settles (a real payment, a
+            # recurring transfer in) is never added back; upgrade to a pro-rata
+            # share, attribute carried debt, and add back credits that leave the
+            # free pool inside the walk, if those cards need it.
+            share = min(unpaid - by_credit, bill.outflow)
+            settled += open_ - unpaid + by_credit + share
+            if share:
+                month = _month_of(max(bill.payment_date, base.walk_start))
+                pool_effect[month] = pool_effect.get(month, _ZERO) - share
 
     def f(series_ids, month):
         return sum((funded.get((rid, month), _ZERO) for rid in series_ids), _ZERO)
