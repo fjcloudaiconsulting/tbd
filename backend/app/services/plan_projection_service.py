@@ -351,8 +351,8 @@ class Lifetime:
 def _lifetime_months(walk_start: datetime.date, birth_year: int | None, end_age: int) -> int:
     if birth_year is None:
         return NO_BIRTH_YEAR_MONTHS
-    last = datetime.date(birth_year + end_age, 12, 1)
-    n = (last.year - walk_start.year) * 12 + last.month - walk_start.month + 1
+    # Through December of the year they turn end_age; no date is built, so any year is safe.
+    n = (birth_year + end_age - walk_start.year) * 12 + 12 - walk_start.month + 1
     return max(DETAILED_MONTHS, min(n, MAX_LIFETIME_MONTHS))
 
 

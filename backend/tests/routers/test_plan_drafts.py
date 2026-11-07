@@ -182,6 +182,8 @@ def _every_route_call(pid: int, gid: int) -> list[tuple[str, str, dict | None]]:
         ("POST", f"{base}/goals", _GOAL),
         ("PATCH", f"{base}/goals/{gid}", {"name": "x"}),
         ("DELETE", f"{base}/goals/{gid}", None),
+        ("GET", f"/api/v1/scenarios/projection?plan_id={pid}&lifetime=true", None),
+        ("GET", f"/api/v1/scenarios/projection/compare?plan_id={pid}", None),
     ]
 
 
@@ -189,7 +191,7 @@ def test_the_call_table_covers_every_route():
     """Keeps the two tables below honest when a route is added."""
     routes = {(m, r.path) for router in (scenarios_router, goals_router)
               for r in router.routes if isinstance(r, APIRoute) for m in r.methods}
-    called = {(m, p.replace("/1/", "/{scenario_id}/").replace("/goals/2", "/goals/{goal_id}")
+    called = {(m, p.split("?")[0].replace("/1/", "/{scenario_id}/").replace("/goals/2", "/goals/{goal_id}")
                .replace("/scenarios/1", "/scenarios/{scenario_id}"))
               for m, p, _ in _every_route_call(1, 2)}
     assert called == routes
@@ -421,3 +423,61 @@ async def test_a_goal_funding_series_must_be_in_the_plan_currency(factory, w):
         assert res.status_code == 422 and "USD" in res.json()["detail"]
         res = alice.post(f"/api/v1/scenarios/{pid}/goals", json={**_GOAL, "funding_recurring_id": a["recurring"]})
         assert res.status_code == 201
+
+
+async def test_a_second_member_projects_plans_and_toggles_are_never_saved(factory, w):
+    pid, gid = await _seed_plan(factory, w["A"], "alice")
+    with _client(factory, "bob") as bob:
+        on = bob.get(f"/api/v1/scenarios/projection?plan_id={pid}&lifetime=true")
+        off = bob.get(f"/api/v1/scenarios/projection?plan_id={pid}&off={gid}")
+        compare = bob.get(f"/api/v1/scenarios/projection/compare?plan_id={pid}&plan_id={pid}")
+    assert on.status_code == off.status_code == compare.status_code == 200, on.text
+    body = on.json()
+    assert body["currency"] == "EUR" and body["months"] and body["lifetime"]["months"]
+    assert off.json()["lifetime"] is None
+    assert [c["plan_id"] for c in compare.json()] == [pid]
+    async with factory() as db:
+        assert (await db.get(PlanGoal, gid)).enabled is True
+
+
+async def test_a_legacy_scenario_is_not_projected(factory, w):
+    pid, _ = await _seed_plan(factory, w["A"], "alice", legacy=True)
+    with _client(factory, "alice") as alice:
+        res = alice.get(f"/api/v1/scenarios/projection?plan_id={pid}")
+    assert res.status_code == 422 and "not a plan" in res.text
+
+
+async def test_projection_refuses_a_plan_outside_the_org_currency(factory, w):
+    pid, _ = await _seed_plan(factory, w["A"], "alice")
+    async with factory() as db:
+        (await db.get(Scenario, pid)).currency = "USD"
+        await db.commit()
+    with _client(factory, "alice") as alice:
+        res = alice.get(f"/api/v1/scenarios/projection?plan_id={pid}")
+    assert res.status_code == 422, res.text
+
+
+async def test_projection_refuses_an_org_without_a_currency_scope(factory, w):
+    pid, _ = await _seed_plan(factory, w["legacy"], "dave")
+    async with factory() as db:
+        (await db.get(Scenario, pid)).currency = "EUR"
+        await db.commit()
+    with _client(factory, "dave") as dave:
+        res = dave.get(f"/api/v1/scenarios/projection?plan_id={pid}")
+    assert res.status_code == 422 and "currency scope" in res.text
+
+
+async def test_projection_of_another_orgs_plan_beside_your_own_is_404(factory, w):
+    mine, _ = await _seed_plan(factory, w["A"], "alice")
+    theirs, _ = await _seed_plan(factory, w["B"], "carol")
+    with _client(factory, "alice") as alice:
+        res = alice.get(f"/api/v1/scenarios/projection?plan_id={mine}&plan_id={theirs}")
+    assert res.status_code == 404
+
+
+async def test_an_extreme_birth_year_still_projects(factory, w):
+    pid, _ = await _seed_plan(factory, w["A"], "alice")
+    with _client(factory, "alice") as alice:
+        res = alice.get(f"/api/v1/scenarios/projection?plan_id={pid}&lifetime=true&birth_year=32767")
+    assert res.status_code == 200, res.text
+    assert len(res.json()["lifetime"]["months"]) == 1000
