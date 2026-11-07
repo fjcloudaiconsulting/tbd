@@ -154,6 +154,15 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _run_and_dispose(args: argparse.Namespace) -> int:
+    try:
+        return await _run(args)
+    finally:
+        # Dispose in the same loop: a second asyncio.run() closes aiomysql
+        # connections owned by the dead loop ("Event loop is closed").
+        await engine.dispose()
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="export_org", description="Export one org's data as NDJSON."
@@ -180,10 +189,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.out and args.stdout:
         parser.error("--out and --stdout are mutually exclusive")
 
-    try:
-        return asyncio.run(_run(args))
-    finally:
-        asyncio.run(engine.dispose())
+    return asyncio.run(_run_and_dispose(args))
 
 
 if __name__ == "__main__":  # pragma: no cover
