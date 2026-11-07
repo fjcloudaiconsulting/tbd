@@ -102,6 +102,9 @@ LEFT_TO_ONDELETE: dict[str, str] = {
     "rate_limit_overrides.user_id": (
         "CASCADE: a per-user limit is not granted to another identity silently"
     ),
+    "transaction_batch_keys.user_id": (
+        "CASCADE: a replay record of one user's submit, kept at most 24 hours"
+    ),
     "user_dismissed_announcements.user_id": (
         "CASCADE: one row per (user, announcement); the target keeps its own"
     ),

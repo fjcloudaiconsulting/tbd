@@ -76,6 +76,41 @@ const TOOL_LABELS: Record<string, string> = {
   categories_batch_move: "Move subcategories",
   categories_delete: "Delete a category",
   categories_restore_recommended: "Restore recommended categories",
+  reports_list: "Looked up reports",
+  reports_get: "Read a report",
+  report_versions_list: "Looked up a report's saved versions",
+  reports_query: "Ran a report query",
+  reports_sankey_query: "Ran a cash-flow query",
+  reports_update: "Rename a report",
+  reports_update_layout: "Change a report's layout or sharing",
+  reports_create: "Create a report",
+  reports_duplicate: "Copy a report",
+  reports_reset: "Reset a report to its original layout",
+  report_version_restore: "Restore a saved report version",
+  reports_delete: "Delete a report",
+  notification_preferences_get: "Read notification preferences",
+  notification_preferences_update: "Change notification preferences",
+  forecast_plan_get: "Read the forecast plan",
+  forecast_plan_populate: "Fill the forecast plan from your history",
+  forecast_plan_refresh: "Refresh the forecast plan",
+  forecast_plan_copy: "Copy a forecast plan",
+  forecast_plan_item_add: "Set a forecast item",
+  forecast_plan_items_bulk: "Set forecast items",
+  forecast_plan_item_update: "Change a forecast item",
+  forecast_plan_item_delete: "Delete a forecast item",
+  forecast_plan_activate: "Finalise the forecast plan",
+  forecast_plan_revert: "Reopen the forecast plan",
+  forecast_plan_discard: "Clear the forecast plan",
+  scenarios_list: "Looked up plans",
+  scenarios_get: "Read a plan",
+  scenarios_simulate: "Projected a plan",
+  scenarios_compare: "Compared plans",
+  scenarios_create: "Create a plan",
+  scenarios_update: "Edit a plan",
+  scenarios_delete: "Delete a plan",
+  plan_goal_create: "Add a plan goal",
+  plan_goal_update: "Edit a plan goal",
+  plan_goal_delete: "Delete a plan goal",
 };
 
 export function toolLabel(name: string): string {
@@ -102,6 +137,38 @@ const FIELD_LABELS: Record<string, string> = {
   "recurring_transactions.category_id": "Category",
   "forecast_plan_items.category_id": "Category",
   "forecast_plan_items.planned_amount": "Planned amount",
+  "forecast_plan_items.type": "Type",
+  "forecast_plan_items.source": "Set by",
+  "forecast_plan_items.plan_id": "Forecast plan",
+  "forecast_plans.status": "Plan status",
+  "forecast_plans.billing_period_id": "Billing period",
+  "scenarios.name": "Plan name",
+  "scenarios.scenario_type": "Plan type",
+  "scenarios.params_json": "Plan details",
+  "scenarios.horizon_months": "Horizon (months)",
+  "scenarios.is_active": "Active",
+  "scenarios.user_id": "Owner",
+  "plan_goals.name": "Goal",
+  "scenarios.currency": "Plan currency",
+  "scenarios.monthly_budget": "Monthly budget",
+  "scenarios.birth_year": "Birth year",
+  "scenarios.return_pct": "Yearly return (%)",
+  "scenarios.inflation_pct": "Yearly inflation (%)",
+  "scenarios.funding_account_id": "Funding account",
+  "scenarios.category_id": "Category",
+  "scenarios.tag_id": "Tag",
+  "plan_goals.scenario_id": "Plan",
+  "plan_goals.tier": "Tier",
+  "plan_goals.kind": "Kind",
+  "plan_goals.target_amount": "Target amount",
+  "plan_goals.target_date": "Target date",
+  "plan_goals.monthly_amount": "Monthly amount",
+  "plan_goals.enabled": "Enabled",
+  "plan_goals.sort_order": "Order",
+  "plan_goals.category_id": "Category",
+  "plan_goals.account_id": "Account",
+  "plan_goals.start_balance": "Starting balance",
+  "plan_goals.funding_recurring_id": "Funding recurring item",
   "transactions.category_id": "Category",
   "transactions.description": "Description",
   "transactions.date": "Date",
@@ -160,6 +227,26 @@ const FIELD_LABELS: Record<string, string> = {
   "recurring_transactions.occurrences_elapsed": "Occurrences so far",
   "budgets.period_end": "Budget period end",
   "organizations.billing_cycle_day": "Billing cycle day",
+  "reports.name": "Report name",
+  "reports.description": "Description",
+  "reports.visibility": "Shared with",
+  "reports.layout_json": "Layout",
+  "reports.canvas_filters_json": "Canvas filters",
+  "reports.owner_user_id": "Owner",
+  "report_versions.report_id": "Report",
+  "report_versions.is_original": "Original version",
+  "report_versions.layout_json": "Saved layout",
+  "report_versions.canvas_filters_json": "Saved canvas filters",
+  "user_notification_preferences.email_security": "Security emails",
+  "user_notification_preferences.email_account": "Account emails",
+  "user_notification_preferences.email_org_admin": "Organization admin emails",
+  "user_notification_preferences.email_org_activity": "Organization activity emails",
+  "user_notification_preferences.email_cc_statement": "Card statement emails",
+  "user_notification_preferences.in_app_security": "Security alerts in the app",
+  "user_notification_preferences.in_app_account": "Account alerts in the app",
+  "user_notification_preferences.in_app_org_admin": "Organization admin alerts in the app",
+  "user_notification_preferences.in_app_org_activity": "Organization activity in the app",
+  "user_notification_preferences.in_app_cc_statement": "Card statement alerts in the app",
 };
 
 export function changeLabel(c: ActionChange): string {
@@ -175,7 +262,9 @@ const ROW_NOUN: Record<string, string> = {
   transactions: "Transaction", accounts: "Account", import_batches: "Import",
   recurring_transactions: "Recurring transaction", billing_periods: "Billing period", budgets: "Budget",
   account_types: "Account type", cc_cycle_payments: "Card payment", categories: "Category",
-  forecast_plan_items: "Forecast item",
+  forecast_plan_items: "Forecast item", forecast_plans: "Forecast plan", scenarios: "Plan",
+  plan_goals: "Plan goal",
+  reports: "Report", report_versions: "Saved version", user_notification_preferences: "Notification preferences",
 };
 
 // Which row a change is on, for a preview that touches several rows of one
@@ -235,10 +324,21 @@ export function changeValue(
     return `${n < 0 ? "−" : "+"}${amount}`;
   }
   if (c.currency) return formatMoney(text(v), c.currency);
+  // A report layout or filter set arrives as its JSON text, wrapped (TBD-669):
+  // named by its size, never shown raw.
+  if (c.field === "layout_json" || c.field === "canvas_filters_json") {
+    let doc: Record<string, unknown> = {};
+    try { doc = JSON.parse(text(v)) ?? {}; } catch { /* not a document: treated as empty */ }
+    if (c.field === "canvas_filters_json") return Object.keys(doc).length ? "Custom filters" : "No filters";
+    const n = Array.isArray(doc.widgets) ? doc.widgets.length : 0;
+    return n === 1 ? "1 widget" : `${n} widgets`;
+  }
+  if (c.entity === "user_notification_preferences") return v === true ? "On" : "Off";
   if (c.field === "linked_transaction_id") return isNew(v) ? "the other new transaction" : `transaction #${text(v)}`;
   if (c.field === "account_id") return `account #${text(v)}`;
   if (c.field === "recurring_id") return `recurring transaction #${text(v)}`;
   if (c.field === "tag_id") return `tag #${text(v)}`;
+  if (c.field === "plan_id") return isNew(v) ? "the new forecast plan" : `forecast plan #${text(v)}`;
   if (c.field === "parent_id") return isNew(v) ? `new category ${text(v).slice(4)}` : `category #${text(v)}`;
   if (c.field === "category_id") {
     const named = (k: "from" | "to") =>
@@ -259,6 +359,10 @@ export function drillDown(c: ActionChange | undefined): { href: string; label: s
   if (c.entity === "budgets") return { href: "/budgets", label: "Open budgets" };
   if (c.entity === "recurring_transactions") return { href: "/recurring", label: "Open recurring" };
   if (c.entity === "billing_periods") return { href: "/settings/billing", label: "Open billing periods" };
+  if (c.entity === "reports") return { href: `/reports/${encodeURIComponent(text(c.id))}`, label: "Open the report" };
+  if (c.entity === "user_notification_preferences") {
+    return { href: "/settings/notifications", label: "Open notification settings" };
+  }
   return null;
 }
 

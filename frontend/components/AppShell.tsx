@@ -318,6 +318,7 @@ const NON_RETURNABLE_PREFIXES = [
   "/verify-email",
   "/accept-invite",
   "/mfa-verify",
+  "/signup",
 ];
 
 function isReturnablePath(pathname: string): boolean {

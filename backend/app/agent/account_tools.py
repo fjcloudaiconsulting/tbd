@@ -237,13 +237,13 @@ async def _type_change(ctx: ToolContext, acct: Account, args, after: dict) -> li
     if target.id != acct.account_type_id and slug in _LIABILITY and await ctx.db.scalar(
         select(RecurringTransaction.id).where(
             RecurringTransaction.org_id == ctx.org_id, RecurringTransaction.type == "transfer",
-            or_(RecurringTransaction.account_id == acct.id, RecurringTransaction.to_account_id == acct.id),
+            RecurringTransaction.account_id == acct.id,
         ).limit(1)
     ):
         raise HTTPException(status_code=400, detail=(
-            "This account is used by a recurring transfer, which cannot use a "
-            "credit card or loan account. Delete that recurring transfer or "
-            "change its accounts first."
+            "This account is the source of a recurring transfer, which cannot "
+            "come from a credit card or loan account. Delete that recurring "
+            "transfer or change its accounts first."
         ))
     validate_close_day_cascade(
         source_slug=acct.account_type.slug if acct.account_type else None, target_slug=slug,

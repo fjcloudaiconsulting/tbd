@@ -1897,6 +1897,8 @@ function TransactionsPageContent() {
                           {editPartner && (
                             <div className="mb-3 text-xs text-accent" data-testid={`edit-mirror-notice-${tx.id}`}>
                               Editing a transfer leg. Changes to amount apply to both rows.
+                              {editStatus === "pending" && editPartner.status === "pending" &&
+                                " While both are pending, the expected settlement date moves both rows too."}
                             </div>
                           )}
                           <div className="flex items-center gap-3 mb-3">
@@ -2514,6 +2516,8 @@ function TransactionsPageContent() {
                             {editPartner && (
                               <div className="text-xs text-accent" data-testid={`edit-mirror-notice-mobile-${tx.id}`}>
                                 Editing a transfer leg. Changes to amount apply to both rows.
+                                {editStatus === "pending" && editPartner.status === "pending" &&
+                                  " While both are pending, the expected settlement date moves both rows too."}
                               </div>
                             )}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

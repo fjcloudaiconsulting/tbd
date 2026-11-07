@@ -830,6 +830,22 @@ jobs:
             exit 1
           fi
 
+      # TBD-784. Simultaneous batch creates with one Idempotency-Key must write
+      # the rows once; that rests on the InnoDB unique-key wait on
+      # transaction_batch_keys, so the fences run here. A skip is red, as above.
+      - name: Run the batch create idempotency fences against MySQL
+        working-directory: backend
+        env:
+          BATCH_KEY_MYSQL_URL: ${{ env.DATABASE_URL }}
+          BATCH_KEY_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/services/test_transaction_batch_key_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/batch-key.log
+          if grep -q '^SKIPPED' /tmp/batch-key.log; then
+            echo "a batch create idempotency fence did not run"
+            exit 1
+          fi
+
       # TBD-583. The users cutoff columns are DATETIME(0) on MySQL and a
       # fraction is rounded on insert, which SQLite does not reproduce. Fences
       # both directions of the whole-second session cutoff. A skip is red, as above.

@@ -38,9 +38,10 @@ from pydantic import BaseModel, ConfigDict
 from dateutil.relativedelta import relativedelta
 from types import SimpleNamespace
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import JSON, delete, func, select, update
 
 from app.agent import actions, registry
+from app.config import settings as app_settings
 from app.agent.registry import Change, Preview, ToolSpec
 from app.models import Account, AccountType, Organization
 from app.models.cc_cycle_payment import CcCyclePayment
@@ -50,7 +51,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem
+from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem, ItemSource, PlanStatus
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
@@ -60,8 +61,9 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Role, User
 from app.services import org_bootstrap_service
 from app.services.category_rules_service import normalize_description
+from app.models.report import Report, ReportVersion
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    P_START, _confirm, _invoke, _refused, engine, factory, w,
+    P_START, PREFS_ON, _a_report, _confirm, _invoke, _prefs, _refused, engine, factory, reports_on, w,
 )
 
 # Counters are named only as signed nonzero deltas, never as absolutes.
@@ -164,6 +166,8 @@ def windows(monkeypatch):
 def _norm(col, v):
     if v is None:
         return None
+    if isinstance(col.type, JSON):  # a JSON document is named as its canonical text (TBD-668)
+        return json.dumps(v, sort_keys=True)
     if isinstance(v, enum.Enum):
         return v.value
     if isinstance(v, Decimal):
@@ -233,8 +237,9 @@ def _locate(table, id_, pre, post, org_id):
 
 
 def _unwrap(v):
-    """Rule 6: user text is disclosed wrapped (F-R10); the row holds the string."""
-    if isinstance(v, dict):
+    """Rule 6: user text is disclosed wrapped (F-R10); the row holds the string.
+    Any other dict is a JSON column's value (a report layout, TBD-669)."""
+    if isinstance(v, dict) and "untrusted" in v:
         assert set(v) == {"untrusted"} and isinstance(v["untrusted"], str), f"rule 6: value {v!r}"
         return v["untrusted"]
     return v
@@ -476,7 +481,8 @@ def _tx_dates(a):
 
 
 def _tx_clear_expected(a):
-    return "transactions_update", {"transaction_id": a["tx"], "settled_date": None}
+    # TBD-791: a pending row's expected settlement is the sensitive tool's.
+    return "transactions_update_money", {"transaction_id": a["tx"], "settled_date": None}
 
 
 async def _pending(f, a):
@@ -894,6 +900,11 @@ SENSITIVE_SCENARIOS = [
     ("money-settled-to-pending", _money(status="pending"), _none, False),
     ("money-pending-to-settled-with-a-new-amount", _money(status="settled", amount="12.00"), _pending, False),
     ("money-account-move", _money(account_id="@savings"), _savings, False),
+    ("money-moves-a-pending-expected-date",
+     _money(settled_date=(P_START + datetime.timedelta(days=9)).isoformat()), _pending, False),
+    ("money-settles-a-pending-row-on-a-chosen-date",
+     _money(status="settled", settled_date=(P_START + datetime.timedelta(days=2)).isoformat()),
+     _pending, False),
     ("money-on-a-skipped-import-row-moves-no-money", _money(amount="30.00"), _skipped_import, False),
     ("create-settled-learns-a-new-rule", _create(), _none, False),
     ("create-pending-onto-an-existing-rule",
@@ -1189,8 +1200,152 @@ PLAN_LINK_SCENARIOS = [
      _seq(_cc, _doomed, _plan({"funding_account_id": "old"}, {"account_id": "old"})), False),
     ("recurring-delete-unlinks-the-goal-it-funds", _rec("recurring_delete"),
      _seq(_series_matched, _plan({}, {"funding_recurring_id": "rec"})), False),
-    ("category-delete-unlinks-the-plans-and-goals-on-it", _tool("categories_delete", category_id="@c2"),
+    # TBD-601: they follow a deleted category to its target, as transactions do.
+    ("category-delete-carries-the-plans-and-goals-on-it",
+     _tool("categories_delete", category_id="@c2", target_category_id="@c1"),
      _seq(_floor, _rule_to_c2, _plan({"category_id": "c2"}, {"category_id": "c2"})), False),
+]
+
+# ── the report and notification-preference tools (TBD-669, TBD-787) ─────
+
+KPI = {"version": 1, "widgets": [{
+    "id": "k1", "type": "kpi", "title": "Net", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+    "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"}},
+}]}
+THIS_MONTH = {"date_range": {"preset": "this_month"}}
+
+
+async def _report(f, a):
+    await _a_report(f, a)
+
+
+async def _versions(f, a, n, **live):
+    """``n`` saved (non-original) versions on the report, then ``live`` on it."""
+    await _a_report(f, a)
+    async with f() as db:
+        db.add_all([ReportVersion(report_id=a["report"], is_original=False, canvas_filters_json={},
+                                  layout_json={"version": 1, "widgets": [], "n": k}) for k in range(n)])
+        await db.flush()
+        a["version"] = (await db.scalars(select(ReportVersion.id).where(
+            ReportVersion.report_id == a["report"], ReportVersion.is_original.is_(False),
+        ).order_by(ReportVersion.id))).first()
+        if live:
+            await db.execute(update(Report).where(Report.id == a["report"]).values(**live))
+        await db.commit()
+
+
+async def _full_history(f, a):
+    await _versions(f, a, 4)
+
+
+async def _edited(f, a):
+    await _versions(f, a, 1, layout_json=KPI, canvas_filters_json=THIS_MONTH)
+
+
+REPORT_SCENARIOS = [
+    ("report-rename", _t("reports_update", report_id="@report", name="Monthly spend"), _report, False),
+    ("report-clear-description", _t("reports_update", report_id="@report", description=None), _report, False),
+    ("report-layout-saves-a-version",
+     _t("reports_update_layout", report_id="@report", layout_json=KPI, canvas_filters_json=THIS_MONTH),
+     _report, False),
+    ("report-layout-evicts-the-oldest-version",
+     _t("reports_update_layout", report_id="@report", layout_json=KPI), _full_history, False),
+    ("report-share-with-the-org", _t("reports_update_layout", report_id="@report", visibility="org"),
+     _report, False),
+    ("report-create-blank", _t("reports_create", name="  Blank "), reports_on, False),
+    ("report-create-with-a-layout",
+     _t("reports_create", name="KPIs", description="Net", visibility="org", layout_json=KPI,
+        canvas_filters_json=THIS_MONTH), reports_on, False),
+    ("report-duplicate", _t("reports_duplicate", report_id="@report"), _edited, False),
+    ("report-reset-to-the-original", _t("reports_reset", report_id="@report"), _edited, False),
+    ("report-restore-a-version", _t("report_version_restore", report_id="@report", version_id="@version"),
+     _edited, False),
+    ("report-delete-takes-its-versions", _t("reports_delete", report_id="@report"), _edited, False),
+    ("prefs-turn-one-off", _t("notification_preferences_update", **{**PREFS_ON, "email_org_activity": False}),
+     _prefs, False),
+    ("prefs-first-save-inserts-the-row",
+     _t("notification_preferences_update", **{**PREFS_ON, "in_app_cc_statement": False}), _none, False),
+]
+
+
+# ── the forecast plan and Plans tools (TBD-668) ───────────────────────────
+
+async def _fplan(f, a, status=PlanStatus.DRAFT):
+    """A plan for the open period with one generated item (Fun, 50.00)."""
+    async with f() as db:
+        pid = await db.scalar(select(BillingPeriod.id).where(BillingPeriod.org_id == a["org"]))
+    [a["plan"]] = await _ids(f, ForecastPlan(org_id=a["org"], billing_period_id=pid, status=status))
+    [a["item"]] = await _ids(f, ForecastPlanItem(
+        plan_id=a["plan"], org_id=a["org"], category_id=a["c2"], type=ForecastItemType.EXPENSE,
+        planned_amount=Decimal("50.00"), source=ItemSource.HISTORY))
+
+
+async def _fplan_with_manual(f, a):
+    """Plus a hand-set Rent item after it (a refresh keeps it)."""
+    await _seq(_fplan, _rent)(f, a)
+    await _add(f, ForecastPlanItem(plan_id=a["plan"], org_id=a["org"], category_id=a["rent"],
+                                   type=ForecastItemType.EXPENSE, planned_amount=Decimal("800.00")))
+
+
+async def _fplan_active(f, a):
+    await _fplan(f, a, PlanStatus.ACTIVE)
+
+
+async def _own_plan(f, a):
+    [a["scn"]] = await _ids(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
+        params_json={}, horizon_months=24))
+    [a["goal"]] = await _ids(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], name="Fund",
+                                         tier=PlanGoalTier.WANT, kind=PlanGoalKind.SAVINGS_TARGET))
+
+
+_TRIP = {"scenario_type": "trip", "destination": "Lisbon", "start_date": (P_START + relativedelta(months=2)).isoformat(),
+         "duration_days": 5, "currency": "EUR", "transport_cost": "200.00", "accommodation_per_night": "90.00",
+         "daily_budget": "60.00", "source_account_id": "@acct"}
+
+FORECAST_PLAN_SCENARIOS = [
+    ("forecast-plan-populate-creates-the-plan", _tool("forecast_plan_populate"), _none, False),
+    ("forecast-plan-populate-adds-to-a-draft", _tool("forecast_plan_populate", period_start=P_START.isoformat()),
+     _fplan, False),
+    ("forecast-plan-refresh-replaces-generated-items", _tool("forecast_plan_refresh"), _fplan_with_manual, False),
+    ("forecast-plan-copy-into-a-new-plan", _tool("forecast_plan_copy", source_period_start=P_START.isoformat(),
+                                                 target_period_start=NEXT.isoformat()),
+     _seq(_fplan, _next_period), False),
+    ("forecast-plan-item-add-inserts", _tool("forecast_plan_item_add", plan_id="@plan", category_id="@c1",
+                                             type="expense", planned_amount="120.00"), _fplan, False),
+    ("forecast-plan-item-add-replaces", _tool("forecast_plan_item_add", plan_id="@plan", category_id="@c2",
+                                              type="expense", planned_amount="70.00"), _fplan, False),
+    ("forecast-plan-items-bulk", lambda a: ("forecast_plan_items_bulk", {"plan_id": a["plan"], "items": [
+        {"category_id": a["c1"], "type": "expense", "planned_amount": "10.00"},
+        {"category_id": a["c2"], "type": "expense", "planned_amount": "60.00"},
+        {"category_id": a["c1"], "type": "expense", "planned_amount": "15.00"},
+    ]}), _fplan, False),
+    ("forecast-plan-item-update", _tool("forecast_plan_item_update", plan_id="@plan", item_id="@item",
+                                        planned_amount="55.00"), _fplan, False),
+    ("forecast-plan-item-delete", _tool("forecast_plan_item_delete", plan_id="@plan", item_id="@item"),
+     _fplan, False),
+    ("forecast-plan-activate", _tool("forecast_plan_activate", plan_id="@plan"), _fplan, False),
+    ("forecast-plan-revert", _tool("forecast_plan_revert", plan_id="@plan"), _fplan_active, False),
+    ("forecast-plan-discard", _tool("forecast_plan_discard", plan_id="@plan"), _fplan, False),
+    ("scenario-create-a-trip", lambda a: ("scenarios_create", {
+        "name": "  Lisbon ", "scenario_type": "trip", "params": _resolve(a, _TRIP)}), _none, False),
+    ("scenario-update-name-and-horizon", _tool("scenarios_update", scenario_id="@scn", name="Porto",
+                                               horizon_months=36, is_active=False), _own_plan, False),
+    ("scenario-update-params", lambda a: ("scenarios_update", {
+        "scenario_id": a["scn"], "params": _resolve(a, _TRIP)}), _own_plan, False),
+    ("scenario-delete-removes-its-goals", _tool("scenarios_delete", scenario_id="@scn"), _own_plan, False),
+    # TBD-601 plan fields and goals: the currency is the org's, every link in the org.
+    ("scenario-create-with-plan-fields", lambda a: ("scenarios_create", {
+        "name": "Lisbon", "scenario_type": "trip", "params": _resolve(a, _TRIP), "monthly_budget": "500.00",
+        "return_pct": "4.00", "funding_account_id": a["acct"]}), _none, False),
+    ("scenario-update-plan-fields", _tool("scenarios_update", scenario_id="@scn", category_id="@c1",
+                                          inflation_pct="2.50"), _own_plan, False),
+    ("plan-goal-create", _tool("plan_goal_create", scenario_id="@scn", name="Car", tier="want",
+                               kind="savings_target", target_amount="1000.00", account_id="@acct"),
+     _own_plan, False),
+    ("plan-goal-update", _tool("plan_goal_update", scenario_id="@scn", goal_id="@goal", target_amount="250.00",
+                               enabled=False), _own_plan, False),
+    ("plan-goal-delete", _tool("plan_goal_delete", scenario_id="@scn", goal_id="@goal"), _own_plan, False),
 ]
 
 
@@ -1205,7 +1360,7 @@ SCENARIOS = [
     ("tx-update-description", _tx_description, _none, False),
     ("tx-update-description-auto", _tx_description, _none, True),
     ("tx-update-dates-of-a-settled-row", _tx_dates, _none, False),
-    ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
+    ("money-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
     *SENSITIVE_SCENARIOS,
     *RECURRING_SCENARIOS,
@@ -1213,15 +1368,18 @@ SCENARIOS = [
     *MONEY_ACCOUNT_SCENARIOS,
     *PLAN_LINK_SCENARIOS,
     *PLANNING_SCENARIOS,
+    *REPORT_SCENARIOS,
+    *FORECAST_PLAN_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
 
 @pytest.mark.parametrize("sid,build,setup,auto", SCENARIOS, ids=[s[0] for s in SCENARIOS])
-async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, build, setup, auto):
+async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeypatch, sid, build, setup, auto):
     """FENCE T-A9 / GUARD T-A9c. Wrong implementation: any preview whose
     Changes differ from what execute writes (see the T-A10 mutants), or this
     fence going vacuous (window counts are asserted)."""
+    monkeypatch.setattr(app_settings, "feature_plans", True)  # Plans is off by default
     a = w["A"]
     await setup(factory, a)
     tool, args = build(a)
@@ -1280,6 +1438,9 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
                     if c["entity"] in ("scenarios", "plan_goals") and c["after"] is None}
         assert {e for e, _ in unlinked} == ({"plan_goals"} if sid.startswith("recurring") else
                                              {"plan_goals", "scenarios"}), unlinked
+    if sid == "category-delete-carries-the-plans-and-goals-on-it":
+        carried = {c["entity"]: c["after"] for c in changes if c["entity"] in ("scenarios", "plan_goals")}
+        assert carried == {"scenarios": a["c1"], "plan_goals": a["c1"]}, carried
     if sid.startswith("account-money-"):
         fields = {(c["entity"], c["field"]) for c in changes}
         moved = ("accounts", "balance_delta") in fields
@@ -1291,6 +1452,18 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
     if sid == "account-money-card-to-loan-with-an-opening-balance":
         assert named[("accounts", "balance_delta")] == "-300.00"
         assert ("accounts", "payment_source_account_id") not in named  # a loan keeps it
+    if sid == "report-layout-evicts-the-oldest-version":
+        gone = [c["id"] for c in changes if c["entity"] == "report_versions" and c["after"] is None]
+        assert gone == [a["version"]], gone
+    if sid in ("report-reset-to-the-original", "report-restore-a-version", "report-share-with-the-org"):
+        assert {c["entity"] for c in changes} == {"reports"}  # no version is saved
+    if sid == "report-delete-takes-its-versions":
+        assert sum(c["entity"] == "report_versions" for c in changes) == 2
+    if sid.startswith("prefs-"):
+        assert [c["field"] for c in changes] == (
+            ["email_org_activity"] if sid == "prefs-turn-one-off" else list(PREFS_ON))
+    if sid == "scenario-create-with-plan-fields":
+        assert named[("scenarios", "currency")] == "EUR"  # the org's scope, named though not sent
     if sid == "category-restore-recommended":
         parents = [c["after"] for c in changes if c["field"] == "parent_id"]
         assert any(isinstance(p, str) for p in parents) and any(isinstance(p, int) for p in parents)

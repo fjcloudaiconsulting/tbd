@@ -325,12 +325,16 @@ def test_f5_every_dynamic_route_loads_overrides_and_sets_line_up():
     assert seen == set(OVERRIDABLE_ENDPOINT_PATTERNS), seen ^ OVERRIDABLE_ENDPOINT_PATTERNS
 
     # No OVERRIDABLE pattern may still sit on a static (never-consulted) limit.
-    from tests.test_rate_limit_catalogue_drift import DECORATOR_PATTERNS
+    # A pinned backstop stacked under the route's dynamic limit is not that
+    # limit (TBD-669: a per-address one beside the per-user one).
+    from tests.test_rate_limit_catalogue_drift import DECORATOR_PATTERNS, STACKED_LIMITS
 
     static = []
     for name in limiter._route_limits:
         mod, func = name.rsplit(".", 2)[-2:]
         pattern = DECORATOR_PATTERNS.get((mod, func), (None,))[0]
+        if (mod, func) in STACKED_LIMITS and name in limiter._dynamic_route_limits:
+            continue
         if pattern in OVERRIDABLE_ENDPOINT_PATTERNS:
             static.append(name)
     assert not static, static

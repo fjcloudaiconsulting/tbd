@@ -47,6 +47,37 @@ describe("present (TBD-664)", () => {
     expect(changeValue(c({ field: "account_id", after: 3 }), "after", undefined, {})).toBe("account #3");
   });
 
+  it("TBD-669: report layouts read by their size, the tools have headlines", () => {
+    const layout = { untrusted: JSON.stringify({ version: 1, widgets: [{ id: "k1" }, { id: "k2" }] }) };
+    const ch = c({ entity: "reports", id: 4, field: "layout_json", before: { untrusted: "{}" }, after: layout });
+    expect(changeLabel(ch)).toBe("Layout");
+    expect(changeValue(ch, "after", undefined, {})).toBe("2 widgets");
+    expect(changeValue(ch, "before", undefined, {})).toBe("0 widgets");
+    expect(changeValue(c({ field: "canvas_filters_json", after: { untrusted: "{}" } }), "after", undefined, {}))
+      .toBe("No filters");
+    expect(changeValue(c({ field: "canvas_filters_json", after: { untrusted: '{"date_range": {}}' } }),
+      "after", undefined, {})).toBe("Custom filters");
+    expect(rowLabel(c({ entity: "report_versions", id: "new:1" }))).toBe("New saved version 1");
+    expect(drillDown(ch)).toEqual({ href: "/reports/4", label: "Open the report" });
+    expect(actionHeadline("reports_update_layout", "s", [])).toBe("Change a report's layout or sharing");
+    expect(toolLabel("reports_query")).toBe("Ran a report query");
+  });
+
+  it("TBD-601: plan fields and goals have labels and headlines", () => {
+    expect(changeLabel(c({ entity: "scenarios", field: "funding_account_id" }))).toBe("Funding account");
+    expect(changeLabel(c({ entity: "plan_goals", field: "target_amount" }))).toBe("Target amount");
+    expect(actionHeadline("plan_goal_create", "s", [])).toBe("Add a plan goal");
+  });
+
+  it("TBD-787: a notification toggle reads On or Off", () => {
+    const ch = c({ entity: "user_notification_preferences", id: 2, field: "email_org_activity",
+      before: true, after: false });
+    expect(changeLabel(ch)).toBe("Organization activity emails");
+    expect([changeValue(ch, "before", undefined, {}), changeValue(ch, "after", undefined, {})])
+      .toEqual(["On", "Off"]);
+    expect(actionHeadline("notification_preferences_update", "s", [])).toBe("Change notification preferences");
+  });
+
   it("TBD-788: loading a domain's tools reads like a lookup", () => {
     expect(toolLabel("load_tools")).toBe("Got the tools for a change");
   });
@@ -95,6 +126,20 @@ describe("present (TBD-664)", () => {
       .toBe("new category 3");
     expect(changeValue(c({ entity: "categories", field: "parent_id", before: 4 }), "before", undefined, {}))
       .toBe("category #4");
+  });
+
+  it("TBD-668: forecast plan and Plans rows read by their kind, a new plan by name", () => {
+    expect(actionHeadline("forecast_plan_populate", "s", [])).toBe("Fill the forecast plan from your history");
+    expect(actionHeadline("scenarios_delete", "s", [])).toBe("Delete a plan");
+    expect(toolLabel("scenarios_simulate")).toBe("Projected a plan");
+    const item = c({ entity: "forecast_plan_items", id: "new:2", field: "plan_id", after: "new:1" });
+    expect(rowLabel(item)).toBe("New forecast item 2");
+    expect(changeValue(item, "after", undefined, {})).toBe("the new forecast plan");
+    expect(changeValue(c({ entity: "forecast_plan_items", field: "plan_id", after: 7 }), "after", undefined, {}))
+      .toBe("forecast plan #7");
+    expect(changeLabel(c({ entity: "forecast_plans", field: "status" }))).toBe("Plan status");
+    expect(rowLabel(c({ entity: "scenarios", id: 3 }))).toBe("Plan #3");
+    expect(changeLabel(c({ entity: "plan_goals", field: "name" }))).toBe("Goal");
   });
 
   it("a summarised group reads by the stated count, its one change and its total (TBD-786)", () => {

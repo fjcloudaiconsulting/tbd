@@ -40,6 +40,7 @@ from app.models.import_batch import ImportBatch
 from app.models.recurring import RecurringTransaction
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction
+from app.models.transaction_batch_key import TransactionBatchKey
 from app.models.usage_counter import UsageCounter
 from app.services.org_bootstrap_service import seed_org_defaults
 from app.services import category_rules_service, tag_service
@@ -97,6 +98,12 @@ async def wipe_org_data(
     counts["agent_pending_actions"] = (
         await db.execute(
             delete(AgentPendingAction).where(AgentPendingAction.org_id == org_id)
+        )
+    ).rowcount or 0
+    # TBD-784: replay records name transactions; a key must not replay a wiped batch.
+    counts["transaction_batch_keys"] = (
+        await db.execute(
+            delete(TransactionBatchKey).where(TransactionBatchKey.org_id == org_id)
         )
     ).rowcount or 0
     counts["transactions"] = (
@@ -284,6 +291,9 @@ async def reset_org_data(
 
     counts["agent_pending_actions"] = await _batch_delete_by_pk(
         db, AgentPendingAction, org_id, "agent_pending_actions", batch_size
+    )
+    counts["transaction_batch_keys"] = await _batch_delete_by_pk(
+        db, TransactionBatchKey, org_id, "transaction_batch_keys", batch_size
     )
     counts["transactions"] = await _batch_delete_by_pk(
         db, Transaction, org_id, "transactions", batch_size

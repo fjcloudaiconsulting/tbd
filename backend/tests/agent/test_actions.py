@@ -33,6 +33,8 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
+from app.models.notification import UserNotificationPreferences
+from app.models.report import Report, ReportVersion
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
@@ -869,6 +871,39 @@ _WRITE_CASES = {
     ]},
     "categories_update": lambda a: {"category_id": a["c1"], "name": "Groceries"},
 }
+
+PREFS_ON = dict.fromkeys((
+    "email_security", "email_account", "email_org_admin", "email_org_activity", "email_cc_statement",
+    "in_app_security", "in_app_account", "in_app_org_admin", "in_app_org_activity", "in_app_cc_statement",
+), True)
+
+
+async def reports_on(f, a):
+    """Reports v2 is off by default outside production: switch it on for the org."""
+    async with f() as db:
+        db.add(OrgSetting(org_id=a["org"], key="feature.reports", value="on"))
+        await db.commit()
+
+
+async def _a_report(f, a, *, owner="member", visibility="private"):
+    if not a.get("reports_on"):
+        await reports_on(f, a)
+        a["reports_on"] = True
+    async with f() as db:
+        r = Report(org_id=a["org"], owner_user_id=a[owner], visibility=visibility, name="Spend",
+                   description="By category", layout_json={}, canvas_filters_json={})
+        db.add(r)
+        await db.flush()
+        db.add(ReportVersion(report_id=r.id, is_original=True, layout_json={}, canvas_filters_json={}))
+        await db.commit()
+        a["report"] = r.id
+    return r.id
+
+
+async def _prefs(f, a):
+    async with f() as db:
+        db.add(UserNotificationPreferences(user_id=a["member"], **PREFS_ON))
+        await db.commit()
 
 
 async def _a_template(f, a):

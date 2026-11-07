@@ -91,6 +91,12 @@ class RecurringTransaction(Base):
     occurrences_elapsed: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # The latest occurrence the frontier has consumed (TBD-509). A moved
+    # ``next_due_date`` must land after it, so a rewind never re-covers a spent
+    # occurrence. Rows cannot say this: stop NULLs their ``recurring_id`` and a
+    # user may delete them, so it is stored, by ``_advance_frontier``. NULL on a
+    # template that has spent nothing, and on those that spent before it existed.
+    last_spent_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
