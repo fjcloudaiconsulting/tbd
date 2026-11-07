@@ -128,13 +128,16 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # two are separately addressable.
     "reports.query",
     "reports.sankey_query",
-    # scenarios router (TBD-726): the two engine routes. Keyed per user
-    # (``user_rate_limit_key``), not per IP. Simulate carries
-    # ``{scenario_id}``, so it uses ``shared_limit``.
+    # scenarios router (TBD-726): the engine routes, and the lifecycle's
+    # start and finish (TBD-602). Keyed per user (``user_rate_limit_key``),
+    # not per IP. Simulate, start and finish carry ``{scenario_id}``, so they
+    # use ``shared_limit``.
     "scenarios.compare",
+    "scenarios.finish",
     "scenarios.projection",
     "scenarios.projection_compare",
     "scenarios.simulate",
+    "scenarios.start",
     # tags router (BE-18): the two routes that create tags. The transaction
     # route carries ``{transaction_id}``, so it uses ``shared_limit``.
     "tags.create",

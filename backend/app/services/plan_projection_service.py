@@ -123,6 +123,12 @@ def compose(points: Sequence[Point], deltas: Iterable[Point]) -> list[Point]:
     return out
 
 
+def default_horizon_end(today: datetime.date) -> datetime.date:
+    """The end of the 24 calendar months from ``today``'s month: the
+    projection routes' horizon, and the one a plan's baseline is frozen over."""
+    return today.replace(day=1) + relativedelta(months=24) - datetime.timedelta(days=1)
+
+
 def _month_of(day: datetime.date) -> datetime.date:
     return day.replace(day=1)
 

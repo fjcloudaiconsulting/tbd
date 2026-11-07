@@ -250,6 +250,10 @@ register(route_tool(
 async def _owner_check(ctx: ToolContext, row: Scenario, args) -> None:
     with refusals():
         await R._get_owned_scenario(ctx.db, user=ctx.user, scenario_id=row.id, write=True)
+    # Deleting a started plan also stops its series and drops its later
+    # Budgets (TBD-602), which this preview does not disclose: TBD-604's.
+    with refusals():
+        plan_draft_service.assert_draft(row)
 
 
 async def _goals(ctx: ToolContext, row: Scenario, args) -> list[Change]:
@@ -270,7 +274,8 @@ async def _delete_present(ctx: ToolContext, row: Scenario, args, changes: list[C
 register(route_tool(
     name="scenarios_delete", risk="sensitive", router=ROUTER, method="DELETE",
     path="/api/v1/scenarios/{scenario_id}", fields=(), product_area=PLANS, min_role=Role.MEMBER,
-    description=f"Delete a plan and its goals (to archive instead, scenarios_update is_active=false). {CONFIRM}",
+    description=(f"Delete a draft plan and its goals (to archive instead, scenarios_update "
+                 f"is_active=false). {CONFIRM}"),
     entity=Scenario, describe=("name", "scenario_type"), check=_owner_check, present=_delete_present,
     cascade=CascadeDisclosure(covers=frozenset({"plan_goals.scenario_id"}), disclose=_goals),
 ))
