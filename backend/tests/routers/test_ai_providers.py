@@ -583,3 +583,112 @@ async def test_f12_config_writes_do_not_need_the_ai_switch(session_factory):
         json={"credential_id": cred_id, "model": "gpt-5"},
     )
     assert put.status_code == 200, put.text
+
+
+# ---------------------------------------------------------------------------
+# TBD-609: a password stored in base_url (rows saved before DB-02) never
+# leaves the server in a response or audit row, and still reaches the adapter.
+# ---------------------------------------------------------------------------
+
+_URL_SECRET = "s3cr3t-pw-tbd609"
+_REAL_URL = f"https://user:{_URL_SECRET}@llm.example.com/v1"
+_MASKED_URL = "https://user:***@llm.example.com/v1"
+
+
+async def _userinfo_row(session_factory):
+    from fastapi.exceptions import RequestValidationError
+
+    from app.main import request_validation_handler
+    from app.models.org_ai_credential import AiProvider, OrgAICredential
+    from app.services.ai_credential_crypto import encrypt
+
+    ids = await _seed(session_factory)
+    async with session_factory() as db:
+        row = OrgAICredential(
+            org_id=ids["org_a"], provider=AiProvider.OPENAI_COMPATIBLE,
+            encrypted_api_key=encrypt("sk-legacy-abcd"), last_four="abcd",
+            base_url=_REAL_URL, base_url_is_api_root=True, label="legacy",
+        )
+        db.add(row)
+        await db.commit()
+        cred_id = row.id
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    app = _make_app(session_factory, resolver)
+    app.add_exception_handler(RequestValidationError, request_validation_handler)
+    return TestClient(app), cred_id
+
+
+async def _stored_url(session_factory, cred_id):
+    from app.models.org_ai_credential import OrgAICredential
+
+    async with session_factory() as db:
+        return (await db.get(OrgAICredential, cred_id)).base_url
+
+
+async def test_url_password_is_in_no_credential_response(session_factory, caplog):
+    from sqlalchemy import select
+
+    from app.models.audit_event import AuditEvent
+
+    caplog.set_level("DEBUG", logger="app")  # sqlalchemy/httpx stay at WARNING in prod (app.logs)
+    client, cred_id = await _userinfo_row(session_factory)
+    base = "/api/v1/settings/ai-providers"
+    with _patch_adapter(_ok_validate()):
+        responses = {
+            "create": client.post(base, json={
+                "provider": "openai_compatible", "api_key": "sk-new-abcd",
+                "base_url": _REAL_URL,
+            }),
+            "list": client.get(base),
+            "get": client.get(f"{base}/{cred_id}"),
+            "update": client.patch(f"{base}/{cred_id}", json={"label": "renamed"}),
+            "rotate": client.post(f"{base}/{cred_id}/rotate", json={"api_key": "sk-rot-wxyz"}),
+            "validate": client.post(f"{base}/{cred_id}/validate"),
+        }
+    assert responses["create"].status_code == 422  # DB-02 refuses new userinfo
+    for name, resp in responses.items():
+        assert _URL_SECRET not in resp.text, (name, resp.text)
+    for name in ("get", "update", "rotate", "validate"):
+        assert responses[name].status_code == 200, (name, responses[name].text)
+        assert responses[name].json()["base_url"] == _MASKED_URL, name
+    assert responses["list"].json()["items"][0]["base_url"] == _MASKED_URL
+
+    async with session_factory() as db:
+        events = (await db.execute(select(AuditEvent))).scalars().all()
+    assert events  # the writes above were audited
+    for ev in events:
+        assert _URL_SECRET not in repr(ev.detail), ev.event_type
+    assert _URL_SECRET not in caplog.text
+    assert await _stored_url(session_factory, cred_id) == _REAL_URL
+
+
+async def test_masked_base_url_sent_back_never_overwrites_the_stored_one(session_factory):
+    """Round trip: the edit route is label-only (extra=forbid), so a client that
+    echoes the masked URL gets a 422 and the stored password survives."""
+    client, cred_id = await _userinfo_row(session_factory)
+    resp = client.patch(
+        f"/api/v1/settings/ai-providers/{cred_id}",
+        json={"label": "renamed", "base_url": _MASKED_URL},
+    )
+    assert resp.status_code == 422
+    assert _URL_SECRET not in resp.text
+    assert await _stored_url(session_factory, cred_id) == _REAL_URL
+
+
+async def test_adapter_still_gets_the_real_base_url(session_factory):
+    client, cred_id = await _userinfo_row(session_factory)
+    validate = _ok_validate()
+    adapter = type("FakeAdapter", (), {"validate": validate})()
+    with patch(
+        "app.services.ai_credential_service.get_adapter", return_value=adapter
+    ) as get_adapter:
+        assert client.post(f"/api/v1/settings/ai-providers/{cred_id}/validate").status_code == 200
+        assert client.post(
+            f"/api/v1/settings/ai-providers/{cred_id}/rotate", json={"api_key": "sk-rot-wxyz"}
+        ).status_code == 200
+    assert get_adapter.call_count == 2
+    for call in get_adapter.call_args_list:
+        assert call.kwargs["base_url"] == _REAL_URL
