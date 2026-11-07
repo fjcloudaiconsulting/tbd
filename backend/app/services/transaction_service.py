@@ -38,6 +38,7 @@ from app.services.category_rules_service import learn_from_choice
 from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
+from app.services.recurring_filters import has_remaining_occurrences
 from app.services.transaction_filters import (
     REVERTED_RECONCILIATION_STATES,
     balance_contribution_filter,
@@ -485,10 +486,11 @@ async def _series_sync_targets(
 class SeriesDateMove:
     """A validated "this and future" date move (TBD-756). ``moves`` maps a
     sibling id to its new (date, settled_date); ``next_due_date`` is the new
-    frontier."""
+    frontier and ``last_spent_date`` the grid date just before it (TBD-509)."""
 
     moves: dict[int, tuple[datetime.date, datetime.date | None]]
     next_due_date: datetime.date
+    last_spent_date: datetime.date
 
 
 async def _plan_series_date_move(
@@ -595,7 +597,7 @@ async def _plan_series_date_move(
             f"its next occurrence would move ({new_frontier.isoformat()}). Change only "
             f"this occurrence."
         )
-    return SeriesDateMove(moves=moves, next_due_date=new_frontier)
+    return SeriesDateMove(moves=moves, next_due_date=new_frontier, last_spent_date=d)
 
 
 async def _propagate_fields_to_series(
@@ -758,6 +760,7 @@ async def _propagate_fields_to_series(
             template_values["amount"] = amount
         if date_move is not None:
             template_values["next_due_date"] = date_move.next_due_date
+            template_values["last_spent_date"] = date_move.last_spent_date
         await db.execute(
             update(RecurringTransaction)
             .where(
@@ -808,6 +811,37 @@ async def _propagate_fields_to_series(
                 .where(Transaction.id == tx_id, Transaction.org_id == org_id)
                 .values(date=new_date, settled_date=new_settled_date)
             )
+
+
+async def refuse_row_date_at_frontier(
+    db: AsyncSession, org_id: int, recurring_id: int, new_date: datetime.date,
+) -> None:
+    """Refuse moving one series row onto or past where generation will probe
+    next (TBD-509): its ``exists`` branch would find the row and spend that
+    occurrence without writing one. Shared by ``update_transaction`` and the
+    import inbox's edits (``reconciliation_service._apply_edits``).
+
+    A paused template resumes on a frontier re-anchored to at least ``p_start``,
+    so its bound is the later of the two. An exhausted plan generates nothing
+    more, so nothing is refused.
+    """
+    # Local import: recurring_service imports this module at load.
+    from app.services.recurring_service import frontier_lower_bound
+
+    r = await db.scalar(select(RecurringTransaction).where(
+        RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id,
+    ))
+    if r is None or not has_remaining_occurrences(r):
+        return
+    bound = r.next_due_date
+    if not r.is_active:
+        bound = max(bound, await frontier_lower_bound(db, org_id))
+    if new_date >= bound:
+        raise ConflictError(
+            f"The series' next occurrence is due {bound.isoformat()}, so this "
+            f"transaction's date must be before it. Choose an earlier date, or "
+            f"change the series' next due date first."
+        )
 
 
 async def update_transaction(
@@ -870,6 +904,15 @@ async def update_transaction(
         raise ValidationError(
             f"The date of a {tx.reconciliation_state} transaction cannot be changed"
         )
+
+    # "This and future" re-keys the frontier with the row (``_plan_series_date_move``).
+    if (
+        body.date is not None
+        and body.date != tx.date
+        and tx.recurring_id is not None
+        and body.series_scope != "future"
+    ):
+        await refuse_row_date_at_frontier(db, org_id, tx.recurring_id, body.date)
 
     # Race detection: the unlocked preview saw an unlinked row, but a concurrent
     # pair_existing_transactions may have linked it. If the locked tx now has a
@@ -1427,6 +1470,8 @@ async def promote_to_recurring(
             # is also in the past, and a client is not where this invariant
             # belongs.
             occurrences_elapsed=0 if body.next_due_date <= tx.date else 1,
+            # TBD-509: the source row is the spent instalment 1 in that arm.
+            last_spent_date=None if body.next_due_date <= tx.date else tx.date,
         )
         db.add(template)
         await db.flush()

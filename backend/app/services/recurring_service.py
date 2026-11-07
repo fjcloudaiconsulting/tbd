@@ -615,6 +615,16 @@ async def _check_frontier_clears_series(
     the latest one, or no earlier than the frontier it replaces: a later move
     adds no occurrence to a period that did not already have one coming.
 
+    TBD-509: the same rule holds against ``last_spent_date``, the latest
+    occurrence generation consumed, as if its row still existed. A frontier
+    moved back onto a spent date would make generation spend that instalment
+    again: through the ``exists`` branch while the row is linked, and by
+    re-creating it once the row is deleted or unlinked by a stop. A template
+    that spent before the column existed (NULL with ``occurrences_elapsed``)
+    is bounded by the day before the frontier it replaces: no move earlier.
+    That lifts only when a generation run spends an occurrence and sets the
+    column, so a paused or exhausted legacy template keeps it.
+
     Runs only when the frontier MOVES. A frequency change that keeps it, e.g.
     monthly -> yearly with Nov 1 materialised and Dec 1 next, is accepted
     although Nov 1 and Dec 1 then share a yearly period: the user means "yearly
@@ -640,18 +650,28 @@ async def _check_frontier_clears_series(
         .limit(1)
         .with_for_update(read=True)
     )
-    if latest is None:
+    spent = r.last_spent_date
+    if spent is None and r.occurrences_elapsed:
+        spent = old_next_due - datetime.timedelta(days=1)
+    bound = max((d for d in (latest, spent) if d is not None), default=None)
+    if bound is None:
         return
     new = r.next_due_date
-    floor = advance_date(latest, r.frequency)
-    if new > latest and (new >= floor or new >= old_next_due):
+    floor = advance_date(bound, r.frequency)
+    if new > bound and (new >= floor or new >= old_next_due):
         return
     # Exactly the earliest date the rule above accepts.
-    earliest = max(latest + datetime.timedelta(days=1), min(floor, old_next_due))
+    earliest = max(bound + datetime.timedelta(days=1), min(floor, old_next_due))
+    if bound == latest:
+        raise ConflictError(
+            f"The series has a transaction on {latest.isoformat()}, so its next due "
+            f"date cannot be {new.isoformat()}. Choose {earliest.isoformat()} or later, "
+            f"or move or delete that transaction first."
+        )
     raise ConflictError(
-        f"The series has a transaction on {latest.isoformat()}, so its next due "
-        f"date cannot be {new.isoformat()}. Choose {earliest.isoformat()} or later, "
-        f"or move or delete that transaction first."
+        f"The series has already generated its occurrences through "
+        f"{bound.isoformat()}, so its next due date cannot be {new.isoformat()}. "
+        f"Choose {earliest.isoformat()} or later."
     )
 
 
@@ -717,9 +737,12 @@ async def _reanchor_frontier_on_resume(
     ``validate_frontier`` now floors every ``next_due_date`` write at
     ``p_start``, so a backward write can no longer reach the closed history
     where most of the un-probed rows sit. A rewind onto a date inside the OPEN
-    cycle that was already materialised before the pause still re-creates that
-    row. The blast radius is one cycle's occurrences instead of the template's
-    whole lifetime.
+    cycle that was already materialised before the pause re-created that row
+    until TBD-509: ``update_recurring`` now refuses a next due date on or before
+    ``last_spent_date``, which ``_advance_frontier`` writes and neither the stop
+    nor this re-anchor touches, so the rewind is refused although the rows are
+    unlinked. A template that spent before that column existed is bounded by
+    the frontier the edit replaces instead.
 
     ⚠ Never ``next_due_date = today``. That stops the duplication too, so the
     row-count and balance fences cannot tell the two implementations apart --
@@ -1020,6 +1043,7 @@ def _advance_frontier(r: RecurringTransaction, due: datetime.date) -> None:
     """
     r.next_due_date = advance_date(due, r.frequency)
     r.occurrences_elapsed = (r.occurrences_elapsed or 0) + 1
+    r.last_spent_date = due
 
 
 async def _create_occurrence(

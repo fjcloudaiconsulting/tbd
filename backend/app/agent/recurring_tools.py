@@ -228,6 +228,7 @@ async def _update_present(ctx: ToolContext, r: RecurringTransaction, args, chang
     post = SimpleNamespace(
         id=r.id, next_due_date=new["next_due_date"], frequency=Frequency(new["frequency"]),
         occurrence_count=new["occurrence_count"], occurrences_elapsed=r.occurrences_elapsed,
+        last_spent_date=r.last_spent_date,
     )
     resumed = getattr(args, "is_active", None) is True and not r.is_active
     if resumed or (has_remaining_occurrences(post) and not has_remaining_occurrences(r)):
@@ -528,6 +529,7 @@ def _next_preview(skipped: bool):
         changes = _occurrence(r, due, PENDING, cur, **extra) + [
             Change(TEMPLATE, r.id, "next_due_date", _iso(due), _iso(advance_date(due, r.frequency))),
             Change(TEMPLATE, r.id, "occurrences_elapsed", r.occurrences_elapsed, r.occurrences_elapsed + 1),
+            Change(TEMPLATE, r.id, "last_spent_date", _iso(r.last_spent_date), _iso(due)),
         ]
         verb = "Skip" if skipped else "Write"
         return Preview(
@@ -611,12 +613,13 @@ async def _generate_preview(ctx: ToolContext, args) -> Preview:
                 if settled:
                     for account_id, leg_type in _legs(r):
                         _add(deltas, account_id, _signed(r.amount, leg_type))
-            due = advance_date(due, r.frequency)
+            spent, due = due, advance_date(due, r.frequency)
             walk.occurrences_elapsed += 1
         if due != r.next_due_date:
             changes += [
                 Change(TEMPLATE, r.id, "next_due_date", _iso(r.next_due_date), _iso(due)),
                 Change(TEMPLATE, r.id, "occurrences_elapsed", r.occurrences_elapsed, walk.occurrences_elapsed),
+                Change(TEMPLATE, r.id, "last_spent_date", _iso(r.last_spent_date), _iso(spent)),
             ]
     money = await _balance_changes(ctx, deltas)
     if not changes:
