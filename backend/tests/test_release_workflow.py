@@ -5,6 +5,7 @@ the vX.Y.Z image tag). What this repo owns, and these fences pin, is that a
 release is cut only on a push to main, after both gates, through the shared
 release workflow (release-please, GHCR promote and smoke of that version).
 """
+import os
 from pathlib import Path
 
 
@@ -15,6 +16,10 @@ def _find_repo_root(start: Path) -> Path:
     inside the backend container (this file lives at `/app/tests/`, with the
     repo's `.github` mounted at `/app/.github`). Walking upward handles both.
     """
+    # TBD-612: the dev container mounts the checkout at $REPO_ROOT; /app is only
+    # the backend. Unset in CI (plain checkout), so the walk below applies there.
+    if os.environ.get("REPO_ROOT"):
+        return Path(os.environ["REPO_ROOT"])
     for candidate in [start, *start.parents]:
         if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate

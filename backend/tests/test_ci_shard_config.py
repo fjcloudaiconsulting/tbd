@@ -25,6 +25,7 @@ who reverts to literals -- which is the likelier failure, because literals read
 more obviously.
 """
 import json
+import os
 import re
 from pathlib import Path
 
@@ -32,6 +33,10 @@ import yaml
 
 
 def _find_repo_root(start: Path) -> Path:
+    # TBD-612: the dev container mounts the checkout at $REPO_ROOT; /app is only
+    # the backend. Unset in CI (plain checkout), so the walk below applies there.
+    if os.environ.get("REPO_ROOT"):
+        return Path(os.environ["REPO_ROOT"])
     for candidate in [start, *start.parents]:
         if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
