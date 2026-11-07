@@ -594,6 +594,7 @@ async def _apply_edits(
     from app.services.transaction_service import (
         apply_balance,
         get_account_for_update,
+        refuse_row_date_at_frontier,
         revert_balance,
         validate_category_for_type,
     )
@@ -680,6 +681,8 @@ async def _apply_edits(
     # ── Date: mirror to settled_date when SETTLED so the model
     # invariant (and the period-bucket query) stay coherent ──
     if edits.date is not None:
+        if tx.recurring_id is not None and edits.date != tx.date:
+            await refuse_row_date_at_frontier(db, org_id, tx.recurring_id, edits.date)
         tx.date = edits.date
         if tx.status.value == "settled":
             tx.settled_date = edits.date

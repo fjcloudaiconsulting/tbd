@@ -141,5 +141,8 @@ class BatchTransactionsResponse(BaseModel):
     error_count: int = Field(ge=0)
     results: list[BatchRowResult] = Field(default_factory=list)
     errors: list[BatchRowError] = Field(default_factory=list)
+    # TBD-784: True when this answers a repeat of an earlier request with the
+    # same ``Idempotency-Key``; nothing was written by this call.
+    replayed: bool = False
 
     model_config = ConfigDict(extra="forbid")

@@ -8,7 +8,7 @@ point schedule, the per-currency series, ``exclude_recurring_ids`` and loans
 across several months.
 """
 import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 import pytest_asyncio
@@ -794,20 +794,24 @@ async def test_org_forecast_ignores_the_transfer(db_session):
 
 
 @pytest.mark.parametrize("side", ["card", "loan"])
-async def test_card_or_loan_on_either_side_is_refused(db_session, side):
-    """T6. Not yet supported: a card or a loan as source or destination, on
-    create and on update."""
+async def test_card_or_loan_is_refused_as_source_only(db_session, side):
+    """T6 (TBD-789). A card or a loan as SOURCE is refused (a cash advance is
+    not supported), on create and on update; as destination it is accepted,
+    on create and on update."""
     seed = await _two_accounts(db_session)
     org_id, main, savings, other = seed["org_id"], seed["main"], seed["savings"], seed[side]
-    for source, dest in ((other, savings), (main, other)):
-        with pytest.raises(ValidationError, match="credit card or loan"):
-            await _transfer_series(db_session, org_id, source, dest)
-        await db_session.rollback()
+    with pytest.raises(ValidationError, match="credit card or loan"):
+        await _transfer_series(db_session, org_id, other, savings)
+    await db_session.rollback()
     rid = await _transfer_series(db_session, org_id, main, savings)
-    for body in (RecurringUpdate(to_account_id=other), RecurringUpdate(account_id=other)):
-        with pytest.raises(ValidationError, match="credit card or loan"):
-            await recurring_service.update_recurring(db_session, org_id, rid, body, today=TODAY)
-        await db_session.rollback()
+    with pytest.raises(ValidationError, match="credit card or loan"):
+        await recurring_service.update_recurring(
+            db_session, org_id, rid, RecurringUpdate(account_id=other), today=TODAY)
+    await db_session.rollback()
+    r = await recurring_service.update_recurring(
+        db_session, org_id, rid, RecurringUpdate(to_account_id=other), today=TODAY)
+    assert r.to_account_id == other
+    await _transfer_series(db_session, org_id, main, other)
 
 
 async def test_scenario_org_total_is_unchanged_by_the_transfer(db_session):
@@ -857,3 +861,224 @@ async def test_destination_archived_later_projects_the_source_leg_only(db_sessio
     rows = {a.account.id: a for a in kb.accounts}
     assert seed["savings"] not in rows
     assert (datetime.date(2026, 5, 20), Decimal("-100.00")) in rows[seed["main"]].recurring_lines
+
+
+# ── Recurring transfers into a card or a loan (TBD-789) ─────────────────────
+
+
+async def _bill_card(db, seed, *, fixed=None):
+    """Seed's card closes on the 5th and is due on the 25th of the same month,
+    paid from Main, with 500.00 charged before the May close."""
+    card = await db.get(Account, seed["card"])
+    card.balance, card.opening_balance = Decimal("-500.00"), Decimal("0.00")
+    card.close_day, card.payment_day, card.payment_day_relative_month = 5, 25, 0
+    card.payment_source_account_id = seed["main"]
+    card.payment_strategy = PaymentStrategy.FIXED_AMOUNT if fixed else PaymentStrategy.FULL_BALANCE
+    card.fixed_payment_amount = fixed
+    food = await db.scalar(select(Category).where(
+        Category.org_id == seed["org_id"], Category.slug == "food"))
+    db.add(_tx(seed["org_id"], card, food, "500.00", datetime.date(2026, 4, 28), settled=True))
+    await db.commit()
+
+
+async def _amortise_loan(db, seed, *, owed, principal=Decimal("10000.00")):
+    """Seed's loan: ``principal`` at 6% over 60 months, due on the 15th from
+    May, paid from Main, ``owed`` still owed."""
+    loan = await db.get(Account, seed["loan"])
+    loan.balance = loan.opening_balance = -owed
+    loan.payment_source_account_id = seed["main"]
+    loan.principal_amount, loan.interest_rate_apr, loan.term_months = (
+        principal, Decimal("6.00"), 60)
+    loan.origination_date = datetime.date(2026, 4, 15)
+    loan.first_payment_date = datetime.date(2026, 5, 15)
+    await db.commit()
+
+
+async def _before_after_without(db, seed, rid, horizon_end, *, legs=2):
+    """The kernel before generation, after it, and without the series."""
+    kw = dict(today=TODAY, horizon_end=horizon_end, window_start=P_START)
+    before = await projection_kernel.baseline(db, seed["org_id"], **kw)
+    without = await projection_kernel.baseline(db, seed["org_id"], exclude_recurring_ids=[rid], **kw)
+    await recurring_service.generate_due_transactions(db, seed["org_id"], today=TODAY)
+    rows = (await db.scalars(select(Transaction).where(Transaction.recurring_id == rid))).all()
+    assert len(rows) == legs  # anti-vacuity: May's occurrences are generated
+    after = await projection_kernel.baseline(db, seed["org_id"], **kw)
+    return before, after, without
+
+
+def _row(kb, account_id):
+    return next(a for a in kb.accounts if a.account.id == account_id)
+
+
+@pytest.mark.parametrize("fixed, expected", [
+    # Full balance: May owes 500, the 100 transfer pays part, and nothing is
+    # left for June once May's payment and transfer are in.
+    (None, [(datetime.date(2026, 5, 25), Decimal("400.00"))]),
+    # Fixed 300: May pays 300 less the transfer; June pays what is still owed
+    # less June's transfer; then the card is paid off.
+    (Decimal("300.00"), [(datetime.date(2026, 5, 25), Decimal("200.00")),
+                         (datetime.date(2026, 6, 25), Decimal("100.00"))]),
+])
+async def test_transfer_into_a_card_lowers_its_payment_and_never_jumps(db_session, fixed, expected):
+    """100.00 a month from Main into a card owing 500.00 that Main also pays.
+    The transfer is a payment toward the card: the synthesized payment of its
+    cycle is lowered by it from the first period (not paid twice), the
+    forecast is identical before and after generation, and the EUR total is
+    the same with the series as without it (conservation)."""
+    seed = await _two_accounts(db_session)
+    await _bill_card(db_session, seed, fixed=fixed)
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["card"])
+    before, after, without = await _before_after_without(
+        db_session, seed, rid, datetime.date(2026, 8, 31))
+
+    assert _row(without, seed["card"]).cc_payments[0] == (
+        datetime.date(2026, 5, 25), fixed or Decimal("500.00"))
+    assert _row(before, seed["card"]).cc_payments == expected
+    assert _row(after, seed["card"]).cc_payments == expected
+    assert _points_by_account(before) == _points_by_account(after)
+    assert before.currencies["EUR"] == without.currencies["EUR"] == after.currencies["EUR"]
+    # The strategy never pays past zero; only June's own transfer takes the
+    # full-balance card into credit.
+    assert _at(_row(before, seed["card"]).points, datetime.date(2026, 6, 25)) == (
+        Decimal("100.00") if fixed is None else Decimal("0.00"))
+
+
+@pytest.mark.parametrize("size", ["below", "equal", "above"])
+async def test_transfer_into_a_loan_is_the_payment_or_extra_principal(db_session, size):
+    """A monthly transfer from Main into a loan Main also pays. Below the PMT
+    it is extra principal on top of the scheduled payment; at or above the PMT
+    it IS the scheduled payment (the excess is extra principal), so nothing
+    else is paid. The forecast is the same before generation, after it, after
+    a stop and after a delete (``recurring_id`` is cleared by both); the legs
+    lower the interest basis; and only interest leaves the EUR total."""
+    seed = await _two_accounts(db_session)
+    owed = Decimal("10000.00")
+    await _amortise_loan(db_session, seed, owed=owed)
+    pmt = compute_pmt(Decimal("10000.00"), Decimal("6.00"), 60)
+    amount = {"below": Decimal("100.00"), "equal": pmt, "above": pmt + Decimal("100.00")}[size]
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                                 amount=amount)
+    before, after, without = await _before_after_without(
+        db_session, seed, rid, datetime.date(2026, 8, 31))
+
+    scheduled = [(datetime.date(2026, m, 15), pmt) for m in (5, 6, 7, 8)]
+    assert _row(without, seed["loan"]).loan_payments == scheduled
+    expected = scheduled if size == "below" else []
+    assert _row(before, seed["loan"]).loan_payments == expected
+    assert _row(after, seed["loan"]).loan_payments == expected
+    assert _points_by_account(before) == _points_by_account(after)
+    assert _row(before, seed["loan"]).loan_interest == _row(after, seed["loan"]).loan_interest
+    # June accrues on what is owed after everything May paid in.
+    paid_in_may = pmt + amount if size == "below" else amount
+    rate = Decimal("6.00") / Decimal("100") / Decimal("12")
+    june = ((owed - paid_in_may) * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    assert _row(before, seed["loan"]).loan_interest[0] == (datetime.date(2026, 6, 15), june)
+    interest = {id(kb): sum(i for _, i in _row(kb, seed["loan"]).loan_interest)
+                for kb in (before, without)}
+    assert before.currencies["EUR"][-1][1] - without.currencies["EUR"][-1][1] == (
+        interest[id(without)] - interest[id(before)])
+
+    # The May pair outlives a stop and a delete (it is dated before the wall
+    # clock, so neither removes it) and keeps reading the same way.
+    async def may():
+        kb = await projection_kernel.baseline(
+            db_session, seed["org_id"], today=TODAY, horizon_end=P_END, window_start=P_START)
+        return _points_by_account(kb), _row(kb, seed["loan"]).loan_payments
+
+    generated = await may()
+    assert generated[1] == expected[:1]
+    await recurring_service.stop_recurring(db_session, seed["org_id"], rid)
+    legs = (await db_session.scalars(select(Transaction).where(
+        Transaction.recurring_origin_id == rid).execution_options(populate_existing=True))).all()
+    assert len(legs) == 2 and all(t.recurring_id is None for t in legs)  # anti-vacuity
+    assert await may() == generated
+    await recurring_service.delete_recurring(db_session, seed["org_id"], rid)
+    assert await may() == generated
+
+
+async def test_extra_principal_never_pays_a_loan_past_zero(db_session):
+    """The last scheduled payment is capped at what the period's extra
+    principal leaves owed, so the loan closes at zero, not in credit."""
+    seed = await _two_accounts(db_session)
+    pmt = compute_pmt(Decimal("10000.00"), Decimal("6.00"), 60)
+    await _amortise_loan(db_session, seed, owed=pmt + Decimal("50.00"))
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"])
+    kb = await projection_kernel.baseline(
+        db_session, seed["org_id"], today=TODAY, horizon_end=P_END, window_start=P_START,
+    )
+    loan = _row(kb, seed["loan"])
+    assert loan.loan_payments == [(datetime.date(2026, 5, 15), pmt - Decimal("50.00"))]
+    assert loan.end_balance == Decimal("0.00")
+
+
+# 20,000.00 at 6% over 60 months: a PMT of 386.66, two legs of 193.33.
+_BIG = Decimal("20000.00")
+
+
+@pytest.mark.parametrize("delta, paid_by_legs", [
+    (Decimal("0.00"), True), (Decimal("10.00"), True), (Decimal("-10.00"), False),
+])
+async def test_biweekly_legs_into_a_loan_are_summed_against_the_pmt(db_session, delta, paid_by_legs):
+    """Two biweekly legs a month (May 12 and 26, ...). Summed, at or above the
+    PMT they are the scheduled payment; below it they are extra principal on
+    top of it. Judged one by one, every case would also book the PMT. The
+    forecast is the same before and after generation."""
+    seed = await _two_accounts(db_session)
+    await _amortise_loan(db_session, seed, owed=_BIG, principal=_BIG)
+    pmt = compute_pmt(_BIG, Decimal("6.00"), 60)
+    assert pmt == Decimal("386.66")
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                                 amount=pmt / 2 + delta / 2, frequency="biweekly",
+                                 next_due_date=datetime.date(2026, 5, 12))
+    before, after, without = await _before_after_without(
+        db_session, seed, rid, datetime.date(2026, 8, 31), legs=4)
+    scheduled = _row(without, seed["loan"]).loan_payments
+    assert len(scheduled) == 4
+    expected = [] if paid_by_legs else scheduled
+    assert _row(before, seed["loan"]).loan_payments == expected
+    assert _row(after, seed["loan"]).loan_payments == expected
+    assert _points_by_account(before) == _points_by_account(after)
+
+
+async def test_a_generated_and_a_projected_leg_are_summed_together(db_session):
+    """Two monthly series of 200.00 into a loan with a 386.66 PMT. With one
+    May occurrence generated and the other still projected, May is paid by
+    the two (no PMT booked), exactly as with both projected."""
+    seed = await _two_accounts(db_session)
+    await _amortise_loan(db_session, seed, owed=_BIG, principal=_BIG)
+    one = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                                 amount=Decimal("200.00"))
+    await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"],
+                           amount=Decimal("200.00"), next_due_date=datetime.date(2026, 5, 25))
+    kw = dict(today=TODAY, horizon_end=P_END, window_start=P_START)
+    projected = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    await recurring_service.materialise_next(
+        db_session, seed["org_id"], one, occurrence_date=datetime.date(2026, 5, 20),
+        skipped=False, today=TODAY)
+    assert len((await db_session.scalars(select(Transaction).where(
+        Transaction.recurring_id == one))).all()) == 2  # anti-vacuity
+    mixed = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    assert _row(projected, seed["loan"]).loan_payments == []
+    assert _row(mixed, seed["loan"]).loan_payments == []
+    assert _points_by_account(mixed) == _points_by_account(projected)
+
+
+async def test_a_leg_without_an_origin_still_counts_as_recurring(db_session):
+    """A leg written before ``recurring_origin_id`` existed (an old pod during
+    the rollout, or a row the backfill missed) is still read through
+    ``recurring_id``: a 100.00 leg stays extra principal and the PMT is still
+    booked, rather than reading as a manual payment."""
+    seed = await _two_accounts(db_session)
+    await _amortise_loan(db_session, seed, owed=Decimal("10000.00"))
+    rid = await _transfer_series(db_session, seed["org_id"], seed["main"], seed["loan"])
+    kw = dict(today=TODAY, horizon_end=P_END, window_start=P_START)
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=TODAY)
+    with_origin = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    legs = (await db_session.scalars(select(Transaction).where(Transaction.recurring_id == rid))).all()
+    assert len(legs) == 2
+    for t in legs:
+        t.recurring_origin_id = None
+    await db_session.commit()
+    without_origin = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
+    assert len(_row(with_origin, seed["loan"]).loan_payments) == 1
+    assert _points_by_account(without_origin) == _points_by_account(with_origin)

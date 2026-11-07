@@ -380,6 +380,7 @@ Triage shortcuts:
 | `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm the `deploy-worker` job of `apex-deploy.yml` ran for the SHA (it skips green while `CLOUDFLARE_API_TOKEN` is unset in the `landing` environment); `curl https://thebetterdecision.com/_meta.json` |
 | App can't reach MySQL | Check the `data` namespace pods and the `DATABASE_URL` key in the `tbd-prod` secret (cloud-infra) |
+| `/admin` 403s for everyone, or `platform.superadmin.none` fired | No active platform superadmin: [`SUPERADMIN_RECOVERY.md`](SUPERADMIN_RECOVERY.md) |
 | Secret env var missing or wrong after a rollout | `clusters/hetzner/tbd-prod/*.secret.yaml` in cloud-infra; the runbook's "Write or rotate a Kubernetes Secret" |
 
 For the env var matrix and common per-variable failures (Google SSO button missing, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".

@@ -20,6 +20,7 @@ from app.models.usage_counter import UsageCounter  # noqa: F401
 from app.models.org_data_reset_lock import OrgDataResetLock  # noqa: F401
 from app.models.audit_event import AuditEvent, AuditOutcome  # noqa: F401
 from app.models.agent_pending_action import AgentPendingAction  # noqa: F401
+from app.models.transaction_batch_key import TransactionBatchKey  # noqa: F401
 from app.models.role import PlatformRole, RolePermission  # noqa: F401
 from app.models.tag import (  # noqa: F401
     Tag,

@@ -40,6 +40,7 @@ from app.models import (
 )
 from app.models.base import Base
 from app.models.category import CategoryType
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import (
     Transaction,
     TransactionStatus,
@@ -424,6 +425,40 @@ async def test_edited_transition_applies_edits(db_session):
     )
     assert refreshed.description == "Corrected"
     assert refreshed.reconciliation_state == "edited"
+
+
+@pytest.mark.asyncio
+async def test_edited_date_cannot_reach_the_recurring_frontier(db_session):
+    """TBD-509: an imported row promoted to recurring (next due Jun 1), back in
+    review and edited onto Jun 1, would be found by generation's ``exists``
+    probe, which then spends June without writing its row. The inbox edit
+    takes the same guard as ``update_transaction``."""
+    seed = await _seed(db_session)
+    rt = RecurringTransaction(
+        org_id=seed["org_id"], account_id=seed["account_id"],
+        category_id=seed["category_id"], description="Row 0",
+        amount=Decimal("12.50"), type="expense", frequency=Frequency.MONTHLY,
+        next_due_date=date(2026, 6, 1), occurrences_elapsed=1,
+        last_spent_date=date(2026, 5, 10),
+    )
+    db_session.add(rt)
+    await db_session.flush()
+    tx_id = seed["tx_ids"][0]
+    tx = await db_session.get(Transaction, tx_id)
+    tx.recurring_id = rt.id
+    await db_session.commit()
+
+    body = ReconcileBatchRequest(transitions=[ReconciliationTransition(
+        transaction_id=tx_id, to_state=ReconciliationState.EDITED,
+        edits=ReconciliationEdits(date=date(2026, 6, 1)),
+    )])
+    with pytest.raises(ConflictError, match="due 2026-06-01"):
+        await reconciliation_service.reconcile_request(
+            db_session, org_id=seed["org_id"], batch_id=seed["batch_id"], request=body,
+        )
+    await db_session.rollback()
+    db_session.expire_all()
+    assert (await db_session.get(Transaction, tx_id)).date == date(2026, 5, 10)
 
 
 # ── Cross-org isolation ─────────────────────────────────────────────────────

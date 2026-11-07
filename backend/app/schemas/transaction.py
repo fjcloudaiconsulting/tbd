@@ -232,8 +232,9 @@ class BulkUpdateRequest(BaseModel):
     # per-transaction max for the number you can add in one batch call.
     tags: Optional[list[str]] = Field(default=None, max_length=MAX_TAGS_PER_TRANSACTION)
     # TBD-763: both SET a date on every eligible row (no shift). ``date`` skips
-    # recurring occurrences and transfer legs; ``settled_date`` applies only to
-    # rows that are, or are being, settled. See bulk_update_transactions.
+    # recurring occurrences and transfer legs; ``settled_date`` applies to
+    # rows that are, or are being, settled, and (TBD-791) to rows that stay
+    # pending. See bulk_update_transactions.
     date: Optional[datetime.date] = None
     settled_date: Optional[datetime.date] = None
 
