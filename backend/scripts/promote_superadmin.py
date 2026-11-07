@@ -80,6 +80,15 @@ async def _run(args: argparse.Namespace, *, confirm=input) -> int:
     return EXIT_OK
 
 
+async def _run_and_dispose(args: argparse.Namespace) -> int:
+    try:
+        return await _run(args)
+    finally:
+        # Dispose in the same loop: a second asyncio.run() closes aiomysql
+        # connections owned by the dead loop ("Event loop is closed").
+        await engine.dispose()
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="promote_superadmin", description="Grant the platform superadmin flag."
@@ -103,10 +112,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not args.reason.strip() or len(args.reason) > REASON_MAX_LENGTH:
         parser.error(f"--reason must be 1 to {REASON_MAX_LENGTH} characters")
 
-    try:
-        return asyncio.run(_run(args))
-    finally:
-        asyncio.run(engine.dispose())
+    return asyncio.run(_run_and_dispose(args))
 
 
 if __name__ == "__main__":  # pragma: no cover
