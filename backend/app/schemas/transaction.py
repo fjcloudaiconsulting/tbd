@@ -216,9 +216,16 @@ class BulkDeleteResponse(BaseModel):
 
     requested_count: int
     deleted_count: int
-    skipped_ids: list[int]  # IDs that were requested but not found in this org
+    # Every requested ID that was NOT deleted, whatever the reason: not found
+    # in this org, or refused (see skipped_adjustment_ids). Kept as the union
+    # so ``requested_count - len(skipped_ids)`` stays the selected rows removed.
+    skipped_ids: list[int]
     # TBD-294 -- see DeleteTransactionResponse.
     demoted_ids: list[int] = Field(default_factory=list)
+    # TBD-491: the subset of skipped_ids refused because the row is a manual
+    # balance adjustment. Those rows still exist; the rest of skipped_ids do
+    # not (as far as this org can see).
+    skipped_adjustment_ids: list[int] = Field(default_factory=list)
 
 
 class BulkUpdateRequest(BaseModel):

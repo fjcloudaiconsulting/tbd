@@ -2048,11 +2048,15 @@ async def delete_transaction(
 
 async def bulk_delete_transactions(
     db: AsyncSession, org_id: int, ids: list[int]
-) -> tuple[int, list[int], list[int]]:
+) -> tuple[int, list[int], list[int], list[int]]:
     """Delete multiple transactions in one atomic commit.
 
-    Returns (deleted_count, skipped_ids, demoted_ids) -- the third element is
-    TBD-294's match-orphan demotion, see ``_settle_batch_counters_and_demote_orphans``.
+    Returns (deleted_count, skipped_ids, demoted_ids, skipped_adjustment_ids)
+    -- the third element is TBD-294's match-orphan demotion, see
+    ``_settle_batch_counters_and_demote_orphans``. ``skipped_ids`` is every
+    requested id that was not deleted; ``skipped_adjustment_ids`` is the
+    subset refused because it is a manual balance adjustment (TBD-491), so
+    the rest of ``skipped_ids`` is rows that are not there.
     Cross-org IDs are silently
     skipped. TRANSFER-pair halves cascade: deleting one half also deletes
     the linked half -- but only when the link is MUTUAL (TBD-280). A one-way
@@ -2062,7 +2066,7 @@ async def bulk_delete_transactions(
     order to prevent lost updates and deadlocks.
     """
     if not ids:
-        return (0, [], [])
+        return (0, [], [], [])
 
     # Dedupe input — caller may select both halves of a transfer
     requested = list(dict.fromkeys(ids))
@@ -2100,7 +2104,7 @@ async def bulk_delete_transactions(
         )
 
     if not all_ids_to_lock:
-        return (0, list(requested), [])
+        return (0, list(requested), [], [])
 
     # populate_existing=True refreshes the preview's ORM instances with the
     # locked DB state — otherwise SQLAlchemy returns the identity-map copy
@@ -2126,8 +2130,9 @@ async def bulk_delete_transactions(
     #
     # Track E (architect override): manual balance adjustment rows are
     # immutable, but bulk delete skips them silently rather than aborting the
-    # whole batch. Their IDs land in skipped_ids so the caller can surface
-    # "N rows skipped" in the UI. That skip applies to REQUESTED rows only:
+    # whole batch. Their IDs land in skipped_ids, and again in
+    # skipped_adjustment_ids so the caller can say they were refused rather
+    # than missing (TBD-491). That skip applies to REQUESTED rows only:
     # the cascaded partner is NOT adjustment-filtered, matching
     # ``delete_transaction``, which has no such filter either. An adjustment
     # can never BE a reciprocal partner anyway -- ``adjust_account_balance``
@@ -2193,7 +2198,7 @@ async def bulk_delete_transactions(
             await db.delete(r)
 
     await db.commit()
-    return (len(delete_set), skipped_ids, demoted_ids)
+    return (len(delete_set), skipped_ids, demoted_ids, skipped_adjustments)
 
 
 async def bulk_update_transactions(

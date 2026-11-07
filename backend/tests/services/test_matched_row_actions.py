@@ -946,7 +946,7 @@ async def test_bulk_delete_of_both_rows_demotes_nothing(db_session):
         db_session, seed, amount="8.00",
     )
 
-    deleted, skipped, demoted = await transaction_service.bulk_delete_transactions(
+    deleted, skipped, demoted, _adj = await transaction_service.bulk_delete_transactions(
         db_session, seed["org_id"], [dup.id, canonical.id],
     )
 
@@ -967,7 +967,7 @@ async def test_bulk_delete_demotes_too(db_session):
         db_session, seed, amount="128.00",
     )
 
-    deleted, skipped, demoted = await transaction_service.bulk_delete_transactions(
+    deleted, skipped, demoted, _adj = await transaction_service.bulk_delete_transactions(
         db_session, seed["org_id"], [canonical.id],
     )
 
@@ -1510,7 +1510,7 @@ async def test_bulk_deleting_the_last_pending_batch_row_settles_counters_and_clo
     seed = await _seed(db_session)
     rows = await _batch_of_three(db_session, seed)
 
-    deleted_count, skipped_ids, demoted = (
+    deleted_count, skipped_ids, demoted, _adj = (
         await transaction_service.bulk_delete_transactions(
             db_session, seed["org_id"], [rows[2].id],
         )

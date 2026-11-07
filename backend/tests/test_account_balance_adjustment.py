@@ -1004,7 +1004,7 @@ async def test_bulk_delete_skips_adjustment_rows(session_factory, seeded):
         await db.commit()
 
     async with session_factory() as db:
-        deleted, skipped, _demoted = await bulk_delete_transactions(
+        deleted, skipped, _demoted, _adj = await bulk_delete_transactions(
             db, seeded["org_id"], [adj_id, regular_id]
         )
         assert deleted == 1
@@ -1017,6 +1017,74 @@ async def test_bulk_delete_skips_adjustment_rows(session_factory, seeded):
         )).scalars().all()
         # Adjustment row survives, regular row is gone.
         assert {r.id for r in rows} == {adj_id}
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_route_tells_a_refused_adjustment_from_an_absent_row(
+    session_factory, seeded
+):
+    """TBD-491. ``skipped_ids`` mixes two causes: rows that are not there and
+    adjustments the server refused. The client said "already gone" for both,
+    while the adjustment repainted on screen. ``skipped_adjustment_ids`` names
+    the refused ones.
+
+    The set is MIXED in one request -- one adjustment, one absent id, one
+    ordinary row -- so the absent id fences the over-reach: reporting every
+    skip as an adjustment would fail here.
+    """
+    import datetime
+
+    from app.routers.transactions import router as transactions_router
+    from app.schemas.transaction import TransactionCreate
+    from app.services.transaction_service import _create_transaction_no_commit
+
+    async with session_factory() as db:
+        adj, _, _, _ = await adjust_account_balance(
+            db,
+            seeded["org_id"],
+            seeded["account_id"],
+            target_balance=Decimal("150.00"),
+            reason=None,
+            actor_user_id=seeded["admin_id"],
+            actor_email="admin@test.io",
+            actor_org_name="Test Org",
+            request_id=None,
+            ip_address=None,
+        )
+        adj_id = adj.id
+        regular = await _create_transaction_no_commit(
+            db,
+            seeded["org_id"],
+            TransactionCreate(
+                account_id=seeded["account_id"],
+                category_id=seeded["category_id"],
+                description="Regular",
+                amount=Decimal("10.00"),
+                type="expense",
+                status="settled",
+                date=datetime.date.today(),
+            ),
+        )
+        regular_id = regular.id
+        await db.commit()
+    absent_id = regular_id + 1000
+
+    app = _make_app(session_factory, _resolver_for(Role.ADMIN))
+    app.include_router(transactions_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/transactions/bulk-delete",
+            json={"ids": [adj_id, absent_id, regular_id]},
+        )
+
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["requested_count"] == 3
+    assert body["deleted_count"] == 1
+    # skipped_ids keeps its meaning: every requested row that was not deleted.
+    assert sorted(body["skipped_ids"]) == sorted([adj_id, absent_id])
+    # The refused subset names the adjustment and only the adjustment.
+    assert body["skipped_adjustment_ids"] == [adj_id]
 
 
 @pytest.mark.asyncio

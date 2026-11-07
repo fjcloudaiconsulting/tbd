@@ -221,13 +221,20 @@ const ADJUSTMENT_READ_ONLY_NOTE =
 // Every sentence gates itself. TBD-317: the whole banner does too. A plain
 // delete (nothing skipped, no cascade) returns "", so the call site needs no
 // gate of its own and a pure cascade with zero skips still explains itself.
+//
+// TBD-491: `skipped_ids` is every selected row not deleted. Its
+// `skipped_adjustment_ids` subset was refused and repaints on screen right
+// after, so only the remainder may be called "already gone".
 function bulkDeleteNotice(res: {
   requested_count: number;
   deleted_count: number;
   skipped_ids: number[];
+  skipped_adjustment_ids?: number[];
 }): string {
   const selected = res.requested_count;
   const skipped = res.skipped_ids.length;
+  const refused = res.skipped_adjustment_ids?.length ?? 0;
+  const gone = skipped - refused;
   const removed = Math.max(0, selected - skipped);
   // "of the 1 transaction you selected" reads badly, so the article is dropped
   // in the singular and the sentence stays natural at either count.
@@ -244,8 +251,13 @@ function bulkDeleteNotice(res: {
       ? `Deleted ${selected === 1 ? "the transaction" : `the ${selected} transactions`} you selected.`
       : `Deleted ${removed} of ${selection} you selected.`;
   const parts = [lead];
-  if (skipped > 0) {
-    parts.push(`${skipped} ${skipped === 1 ? "was" : "were"} already gone.`);
+  if (gone > 0) {
+    parts.push(`${gone} ${gone === 1 ? "was" : "were"} already gone.`);
+  }
+  if (refused > 0) {
+    parts.push(
+      `${refused} balance ${refused === 1 ? "adjustment was" : "adjustments were"} not deleted: balance adjustments are read-only.`,
+    );
   }
   if (cascaded) {
     parts.push(
@@ -908,6 +920,7 @@ function TransactionsPageContent() {
         deleted_count: number;
         skipped_ids: number[];
         demoted_ids: number[];
+        skipped_adjustment_ids?: number[];
       }>("/api/v1/transactions/bulk-delete", {
         method: "POST",
         body: JSON.stringify(body),

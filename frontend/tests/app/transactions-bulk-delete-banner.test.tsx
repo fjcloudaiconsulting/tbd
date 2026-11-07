@@ -102,6 +102,7 @@ interface BulkDeleteResponse {
   deleted_count: number;
   skipped_ids: number[];
   demoted_ids: number[];
+  skipped_adjustment_ids?: number[];
 }
 
 // Pass an Error to make the bulk-delete request itself fail.
@@ -301,6 +302,61 @@ describe("TransactionsPage — bulk-delete banner counts (TBD-290)", () => {
     expect(text).not.toMatch(/transactions/);
     expect(text).not.toMatch(/of the 1\b/);
     expectNoInvertedCount(text);
+  });
+});
+
+describe("TransactionsPage — bulk-delete banner tells refused from gone (TBD-491)", () => {
+  const useAuthMock = vi.mocked(useAuth);
+
+  beforeEach(() => {
+    useAuthMock.mockReturnValue({
+      user: USER as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+  });
+
+  it("a mixed skip: the adjustment is refused, the absent row is still gone", async () => {
+    // 3 selected: row 3 is a balance adjustment the server refused, row 4 is
+    // not there, row 2 was deleted. The adjustment repaints on screen right
+    // after, so calling it "already gone" contradicts the table. The absent
+    // row fences the over-reach: renaming every skip to "not deleted" fails.
+    setupApiFetch({
+      requested_count: 3,
+      deleted_count: 1,
+      skipped_ids: [4, 3],
+      demoted_ids: [],
+      skipped_adjustment_ids: [3],
+    });
+
+    const text = await bulkDeleteAndReadBanner([2, 3, 4]);
+
+    expect(text).toBe(
+      "Deleted 1 of the 3 transactions you selected. 1 was already gone. " +
+        "1 balance adjustment was not deleted: balance adjustments are read-only.",
+    );
+  });
+
+  it("only adjustments skipped: no row is called gone, and the sentence pluralises", async () => {
+    setupApiFetch({
+      requested_count: 4,
+      deleted_count: 2,
+      skipped_ids: [3, 4],
+      demoted_ids: [],
+      skipped_adjustment_ids: [3, 4],
+    });
+
+    const text = await bulkDeleteAndReadBanner();
+
+    expect(text).toMatch(/\b2 of (?:the )?4\b/);
+    expect(text).toMatch(
+      /2 balance adjustments were not deleted: balance adjustments are read-only\./,
+    );
+    expect(text).not.toMatch(/already gone/);
   });
 });
 
