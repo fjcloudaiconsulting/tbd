@@ -55,6 +55,7 @@ import ThemeToggle from "@/components/ui/ThemeToggle";
 import TrialBanner from "@/components/ui/TrialBanner";
 import { hasPlatformPermission } from "@/lib/auth";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
+import { useMediaQuery } from "@/lib/hooks/use-is-mobile";
 import { startKeepWarm } from "@/lib/keep-warm";
 import { logger } from "@/lib/logger";
 import {
@@ -355,6 +356,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
+  // Tailwind's `max-lg` (default lg = 64rem, not overridden in globals.css):
+  // the sidebar is an off-screen drawer here, so when closed it must be
+  // inert or Tab walks its invisible links (TBD-536, WCAG 2.4.3 / 2.4.7).
+  const drawerViewport = useMediaQuery("(width < 64rem)");
 
   useFocusTrap({ active: sidebarOpen, containerRef: sidebarRef });
 
@@ -585,7 +590,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       )}
 
       {/* Dark sidebar — fixed height, never scrolls */}
-      <aside ref={sidebarRef} data-chrome="navy" className={`fixed inset-y-0 left-0 z-50 flex w-56 flex-col bg-sidebar-bg transition-transform duration-200 lg:relative lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+      <aside ref={sidebarRef} inert={drawerViewport && !sidebarOpen} data-chrome="navy" className={`fixed inset-y-0 left-0 z-50 flex w-56 flex-col bg-sidebar-bg transition-transform duration-200 lg:relative lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
         <div className="flex items-center justify-between px-5 pt-5 pb-6">
           <Link
             href="/dashboard"
