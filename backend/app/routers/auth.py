@@ -3,6 +3,8 @@ import re
 import secrets
 import time
 import hmac as _hmac
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -11,7 +13,7 @@ import httpx
 import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, Cookie, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -329,6 +331,8 @@ async def auth_status(
     )
     return {
         "needs_setup": needs_setup,
+        # INF-05. Only ever true while needs_setup is, which is already public.
+        "setup_token_required": needs_setup and not _setup_token_exempt(),
         "captcha_required": app_settings.captcha_required,
         "billing_ui_enabled": app_settings.billing_ui_enabled,
         "feature_reports_v2": app_settings.feature_reports_v2,
@@ -363,6 +367,60 @@ async def check_username(
     return UsernameCheckResponse(available=False, suggestion=suggestion)
 
 
+def _setup_token_exempt() -> bool:
+    """INF-05: only development and test skip the bootstrap token. An allowlist,
+    so an unset, misspelled or new APP_ENV (``staging``) still needs it."""
+    return app_settings.app_env in ("development", "test")
+
+
+BOOTSTRAP_LOCK_NAME = "tbd_bootstrap"
+BOOTSTRAP_LOCK_TIMEOUT_S = 10
+
+
+@asynccontextmanager
+async def _bootstrap_lock(db: AsyncSession) -> AsyncIterator[None]:
+    """Serialise first-user setup across workers and replicas.
+
+    Two concurrent requests on an empty install would both count zero users
+    and both mint a superadmin. On MySQL a named lock (``GET_LOCK``), held on
+    its own connection until the caller's commit is done, makes the second
+    one wait and then see the first user. SQLite serialises writers itself,
+    and tests run one request at a time, so there it is a no-op.
+    """
+    engine = db.bind
+    if engine is None or engine.dialect.name != "mysql":
+        yield
+        return
+    async with engine.connect() as conn:
+        got = await conn.scalar(
+            text("SELECT GET_LOCK(:name, :timeout)"),
+            {"name": BOOTSTRAP_LOCK_NAME, "timeout": BOOTSTRAP_LOCK_TIMEOUT_S},
+        )
+        if got != 1:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Setup is busy, please try again",
+            )
+        try:
+            yield
+        finally:
+            await conn.scalar(text("SELECT RELEASE_LOCK(:name)"), {"name": BOOTSTRAP_LOCK_NAME})
+
+
+def _setup_token_ok(supplied: str | None) -> bool:
+    """INF-05: the first user must present ``SETUP_TOKEN`` outside development
+    and test. An unset token refuses setup, so an install never boots with an
+    open bootstrap.
+    """
+    if _setup_token_exempt():
+        return True
+    expected = app_settings.setup_token
+    if not expected:
+        _LOGGER.warning("auth.setup_token_unset")
+        return False
+    return _hmac.compare_digest((supplied or "").encode(), expected.encode())
+
+
 @router.post("/register", response_model=UserResponse, status_code=201)
 @limiter.limit("5/hour")
 async def register(
@@ -372,108 +430,82 @@ async def register(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    # Bot gate (Cloudflare Turnstile by default). Verify BEFORE any DB
-    # lookup, user creation, or verification email so a flood of bad
-    # tokens never reaches the database layer or the email provider.
-    # Fail-closed on any non-OK result.
-    #
-    # First-run setup exception: when zero users exist the /setup flow
-    # hits the same endpoint and the operator has no way to obtain a
-    # token yet (no widget rendered before the app has finished
-    # bootstrapping). Skip captcha for the first user only; every
-    # subsequent registration goes through the gate.
-    is_first_user_setup = await _is_first_user_setup(db)
-    if is_first_user_setup:
-        captcha_result = None
-    else:
-        captcha_result = await verify_captcha(body.captcha_token, get_client_ip(request))
-    if captcha_result is not None and not captcha_result.ok:
-        await audit_service.record_audit_event(
-            session_factory,
-            event_type="auth.register.captcha_failed",
-            actor_user_id=None,
-            actor_email=normalize_email(body.email),
-            target_org_id=None,
-            target_org_name=None,
-            # TBD-291: contextvars, NOT the raw header. `RequestContextMiddleware`
-            # length-caps and character-set-validates the inbound `X-Request-Id`
-            # and substitutes a fresh UUID4 when it fails, but it does NOT rewrite
-            # the header — so reading `request.headers` bypasses what that module's
-            # own docstring calls "the real trust boundary". `audit_events.request_id`
-            # is `String(64)`, and `record_audit_event` swallows every exception:
-            # an oversized inbound header therefore silently DROPPED this row on
-            # MySQL, letting a client suppress its own refusals from the numerator.
-            request_id=logs.CONTEXT.get({}).get("request_id"),
-            ip_address=get_client_ip(request),
-            outcome="failure",
-            detail={
-                "reason": captcha_result.reason,
-                "provider_error_codes": list(captcha_result.provider_error_codes),
-            },
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "captcha_failed",
-                "message": "Could not verify you are human. Please try again.",
-            },
-        )
+    """First-user setup only (TBD-654). Everyone else signs up through
+    ``/signup/start`` and ``/signup/complete``.
 
-    email_norm = normalize_email(body.email)
-    existing = await db.execute(
-        select(User).where(or_(User.username == body.username, User.email == email_norm))
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Username or email already taken",
-        )
+    Once any user exists every request gets the same 403 ``setup_complete``,
+    before anything reads the body's email or username, so this route says
+    nothing about any account. On an empty install there is no account to
+    attack, so it skips the captcha (the operator has no widget yet), and
+    outside development and test it demands ``SETUP_TOKEN`` instead (INF-05).
+    The check and the user's commit run under ``_bootstrap_lock``, so two
+    concurrent setups make one superadmin and one ``setup_complete``.
+    """
+    async with _bootstrap_lock(db):
+        is_first_user_setup = await _is_first_user_setup(db)
+        if not is_first_user_setup:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "setup_complete",
+                    "message": "This install is already set up. Sign up from the sign-up page.",
+                },
+            )
+        if not _setup_token_ok(body.setup_token):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "setup_token_invalid",
+                    "message": "The setup token is missing or wrong. Use the SETUP_TOKEN set on the server.",
+                },
+            )
 
-    org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
+        email_norm = normalize_email(body.email)
+        org = await _create_org_with_defaults(db, body.org_name or None, username=body.username)
 
-    user = User(
-        org_id=org.id,
-        username=body.username,
-        email=email_norm,
-        first_name=body.first_name,
-        last_name=body.last_name,
-        password_hash=await run_bcrypt(hash_password, body.password),
-        role=Role.OWNER,
-        is_superadmin=is_first_user_setup,
-        is_founder=True,
-        # TBD-344: the bootstrap account is verified at creation. The column is
-        # `server_default="0"` with no Python default, so omitting it here made
-        # EVERY user unverified, and `/login` below 403s an unverified user
-        # unconditionally. That broke both documented register-then-login
-        # callers — the first-user `/setup` bootstrap (README, CONTRIBUTING) and
-        # `seed.py` — on 100% of fresh installs. The operator of a brand-new
-        # install has no mailbox wired up yet and no second account to let them
-        # back in, so the one account that cannot be locked out is this one.
-        #
-        # ⚠ ONE predicate, `_is_first_user_setup` (user_count == 0), drives
-        # this AND `is_superadmin` above AND the captcha bypass. Until TBD-365
-        # the superadmin grant keyed on `count(is_superadmin) == 0` instead,
-        # so on any deployment whose superadmins had been deleted the next
-        # public self-signup from the open internet received superadmin, a
-        # verified email, and an immediately usable session. Only an EMPTY
-        # `users` table earns the bypass, because only then is there provably
-        # no one else to attack.
-        #
-        # The fix is at the mint, not at the check: `/login`'s gate is
-        # untouched, and no environment or role exempts anyone from it.
-        email_verified=is_first_user_setup,
-    )
-    db.add(user)
-    try:
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Registration conflict, please try again",
+        user = User(
+            org_id=org.id,
+            username=body.username,
+            email=email_norm,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            password_hash=await run_bcrypt(hash_password, body.password),
+            role=Role.OWNER,
+            is_superadmin=is_first_user_setup,
+            is_founder=True,
+            # TBD-344: the bootstrap account is verified at creation. The column is
+            # `server_default="0"` with no Python default, so omitting it here made
+            # EVERY user unverified, and `/login` below 403s an unverified user
+            # unconditionally. That broke both documented register-then-login
+            # callers — the first-user `/setup` bootstrap (README, CONTRIBUTING) and
+            # `seed.py` — on 100% of fresh installs. The operator of a brand-new
+            # install has no mailbox wired up yet and no second account to let them
+            # back in, so the one account that cannot be locked out is this one.
+            #
+            # ⚠ ONE predicate, `_is_first_user_setup` (user_count == 0), drives
+            # this AND `is_superadmin` above AND the captcha bypass. Until TBD-365
+            # the superadmin grant keyed on `count(is_superadmin) == 0` instead,
+            # so on any deployment whose superadmins had been deleted the next
+            # public self-signup from the open internet received superadmin, a
+            # verified email, and an immediately usable session. Only an EMPTY
+            # `users` table earns the bypass, because only then is there provably
+            # no one else to attack.
+            #
+            # The fix is at the mint, not at the check: `/login`'s gate is
+            # untouched, and no environment or role exempts anyone from it.
+            email_verified=is_first_user_setup,
         )
-    await db.refresh(user)
-    await db.refresh(org)
+        db.add(user)
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Registration conflict, please try again",
+            )
+        await db.refresh(user)
+        await db.refresh(org)
 
     # Create trial subscription for the new org
     await subscription_service.create_trial(db, org.id)
@@ -4801,6 +4833,10 @@ async def google_callback(
         # TBD-365: the SAME single predicate as `register`. See
         # `_is_first_user_setup` for why the flag count was removed.
         sso_first_user_setup = await _is_first_user_setup(db)
+        if sso_first_user_setup and not _setup_token_exempt():
+            # INF-05: outside dev and test the first user (the superadmin)
+            # comes only from /setup with SETUP_TOKEN, never from Google.
+            return _google_error_redirect("setup_required")
 
         base_username = _suggest_username(first_name, last_name, email)
         username = await _find_available_username(db, base_username)

@@ -34,7 +34,7 @@ python -c "import secrets; print(secrets.token_urlsafe(64))"
 open http://localhost
 ```
 
-The first user to register becomes the org owner and superadmin. No seed data required.
+The first user, created on the `/setup` page, becomes the org owner and superadmin. No seed data required. Everyone after that signs up at `/register` with an emailed link. Outside development and test, `/setup` also asks for the `SETUP_TOKEN` secret (see `docs/operations/ENVIRONMENT.md`).
 
 Want a realistic dataset (5 accounts, 100+ transactions, recurring templates, budgets)?
 
@@ -149,7 +149,7 @@ Two dataset regimes are worth knowing when reading seeded data. Both are fully d
 | 1-24      | 2                      | 24th of the previous month |
 | 25-31     | 3                      | 25th of the anchor's month |
 
-Before each login attempt the script marks that user's email verified with a direct `UPDATE` on `users` (`ensure_verified()` in `backend/seed.py`). `POST /api/v1/auth/login` refuses any account with an unverified email and a dev stack has no mailbox to click the link in, so without that step the script cannot sign in at all. It is the one thing seeding does outside the API, and it is a precondition rather than data — everything the script actually seeds still goes through the HTTP endpoints. A `SEED_USERNAME=alice` run creates a *second* user, which is not covered by the first-user verification bypass on `/register`, so it depends on this step.
+Before each login attempt the script marks that user's email verified with a direct `UPDATE` on `users` (`ensure_verified()` in `backend/seed.py`). `POST /api/v1/auth/login` refuses any account with an unverified email and a dev stack has no mailbox to click the link in, so without that step the script cannot sign in at all. It is the one thing seeding does outside the API, and it is a precondition rather than data — everything the script actually seeds still goes through the HTTP endpoints. A `SEED_USERNAME=alice` run creates a *second* user. `/register` is first-user setup only, so the script mints a signup link from the dev `.env` secret and redeems it at `/auth/signup/complete`, which creates the account verified, the same way a person who clicked the emailed link would.
 
 `SEED_*` env var reference:
 
@@ -374,7 +374,7 @@ Exactly **32** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /health/dependencies` | Per-dependency readiness (TBD-413): the database (which also holds sessions), 503 when it is unusable. Anonymous because an uptime monitor holds no bearer token. Reports a closed vocabulary of coarse states and never exception text, hostnames or ports. |
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
-| `POST /api/v1/auth/register` | Account creation. Nothing to authenticate yet. |
+| `POST /api/v1/auth/register` | First-user setup only (TBD-654). Nothing to authenticate yet. Once any user exists it answers the same 403 `setup_complete` to every body; outside development and test the first user also needs `SETUP_TOKEN` (INF-05). |
 | `POST /api/v1/auth/signup/start` | Email-first sign-up, step 1 (TBD-654). Nothing to authenticate yet. Answers the same 202 for every address that passes the captcha, stores nothing, and queues the email for the address's state in the background. |
 | `POST /api/v1/auth/forgot-password` | Password reset request. Answers uniformly whether or not the address exists, so it leaks no account inventory. |
 | `POST /api/v1/auth/resend-verification-public` | Targets an unverified account, which cannot hold a usable session. The non-`-public` sibling `POST /api/v1/auth/resend-verification` **is** authenticated. |

@@ -23,7 +23,6 @@ from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -38,7 +37,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers import auth as auth_module
 from app.routers.auth import router as auth_router
-from app.security import hash_password
+from app.security import create_signup_token, hash_password
 
 PASSWORD = "correct-horse-battery-1"
 DEFAULT_NAME_RE = re.compile(r"^(?P<user>.+)'s Organization [0-9a-f]{6}$")
@@ -148,9 +147,10 @@ def _names(*names: str):
 
 
 def _register(client: TestClient, username: str, **extra: Any):
-    return client.post("/api/v1/auth/register", json={
-        "username": username, "email": f"{username}@example.com",
-        "password": PASSWORD, "captcha_token": "ok", **extra,
+    # TBD-654: a password sign-up after setup goes through /signup/complete.
+    return client.post("/api/v1/auth/signup/complete", json={
+        "token": create_signup_token(f"{username}@example.com"),
+        "username": username, "password": PASSWORD, **extra,
     })
 
 
@@ -167,14 +167,14 @@ def test_default_name_carries_a_random_suffix():
         assert match and match["user"] == "alice", name
 
 
-# ── password registration ────────────────────────────────────────────────────
+# ── password sign-up (/signup/complete) ─────────────────────────────────────
 
 
 async def test_register_ignores_a_claimed_bare_default_name(session_factory):
     await _claim(session_factory, "alice's Organization")
     with TestClient(_make_app(session_factory)) as client:
         res = _register(client, "alice")
-    assert res.status_code == 201, res.text
+    assert res.status_code == 200, res.text
     assert DEFAULT_NAME_RE.match(await _org_of(session_factory, "alice"))
 
 
@@ -186,7 +186,7 @@ async def test_register_retries_when_the_suffixed_name_is_taken(session_factory,
     before = await _org_count(session_factory)
     with TestClient(_make_app(session_factory)) as client:
         res = _register(client, "alice")
-    assert res.status_code == 201, res.text
+    assert res.status_code == 200, res.text
     assert await _org_of(session_factory, "alice") == "alice's Organization bbbbbb"
     assert calls == ["alice", "alice"]
     assert await _org_count(session_factory) == before + 1
@@ -203,8 +203,9 @@ async def test_register_retries_are_bounded(session_factory, monkeypatch):
 
     monkeypatch.setattr(auth_module, "_default_org_name", _always_taken)
     with TestClient(_make_app(session_factory)) as client:
-        with pytest.raises(IntegrityError):
-            _register(client, "alice")
+        res = _register(client, "alice")
+    # The link is not spent by the collision: the person can retry it.
+    assert res.status_code == 409, res.text
     assert len(calls) == auth_module._DEFAULT_ORG_NAME_ATTEMPTS
     assert await _org_of(session_factory, "alice") is None
 
@@ -217,7 +218,7 @@ async def test_register_with_a_taken_chosen_name_answers_409(session_factory):
     with TestClient(_make_app(session_factory)) as client:
         res = _register(client, "alice", org_name="household")
     assert res.status_code == 409, res.text
-    assert res.json()["detail"] == "An organization with that name already exists"
+    assert res.json()["detail"]["code"] == "org_name_taken"
     assert await _org_of(session_factory, "alice") is None
     assert await _org_count(session_factory) == before
 
@@ -225,7 +226,7 @@ async def test_register_with_a_taken_chosen_name_answers_409(session_factory):
 async def test_register_with_a_free_chosen_name_keeps_it(session_factory):
     with TestClient(_make_app(session_factory)) as client:
         res = _register(client, "alice", org_name="Household")
-    assert res.status_code == 201, res.text
+    assert res.status_code == 200, res.text
     assert await _org_of(session_factory, "alice") == "Household"
 
 

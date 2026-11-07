@@ -56,7 +56,7 @@ PASSWORD = "S3cret-Pass-1!"
 
 # ── harness ──────────────────────────────────────────────────────────────────
 #
-# Copied from `tests/routers/test_auth_register_captcha.py`, which already
+# Copied from `tests/routers/test_auth_register_setup_only.py`, which already
 # solves everything a register-driving test needs: the `get_session_factory`
 # override (without it the `auth.register.success` audit write opens a REAL
 # engine and the request 500s — a failure that looks exactly like a fence
@@ -207,7 +207,7 @@ async def _register_success_detail(factory) -> dict:
     """The `detail` dict off the single `auth.register.success` audit row.
 
     Read by KEY at the call sites, never by dict equality — the same posture
-    `tests/routers/test_auth_register_captcha.py` takes with
+    `tests/routers/test_auth_register_setup_only.py` takes with
     `detail["is_first_user"]` / `["granted_superadmin"]`, so that adding a
     field to this event stays a purely additive change.
     """
@@ -325,23 +325,34 @@ async def test_f1_bootstrap_register_then_login_succeeds(session_factory) -> Non
         == detail["email_verified_on_create"]
         is True
     )
+    # No stray keys. Asserted as an exact key set rather than by naming one
+    # forbidden string: a named-absence check only rules out the one spelling
+    # somebody happened to think of.
+    assert set(detail) == {
+        "method",
+        "is_first_user",
+        "granted_superadmin",
+        "email_verified_on_create",
+        "captcha_required",
+    }, f"unexpected key set on auth.register.success: {sorted(detail)}"
 
 
 # ── F2 ───────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_f2_second_user_is_not_auto_verified(session_factory) -> None:
+async def test_f2_second_user_cannot_register(session_factory) -> None:
     """FENCE — the exemption is the BOOTSTRAP, not registration in general.
 
-    Wrong implementation killed: `email_verified=True` unconditional in the
-    `User(...)` constructor. That passes F1 perfectly and silently disables
-    email verification for every public self-signup on the internet.
+    Wrong implementations killed: `email_verified=True` unconditional in the
+    `User(...)` constructor (it passes F1 and would disable verification for
+    every public signup), and, since TBD-654, any second account created
+    through `/register` at all. Later accounts come only from
+    `/signup/complete`, which the emailed link gates.
 
     A superadmin already exists here. Since TBD-365 there is one predicate,
-    so this state and F3's divergent state now produce the SAME outcome — this
-    test therefore cannot separate a correct predicate from a reintroduced
-    flag count. F3 is the only one that can.
+    so this state and F3's divergent state produce the SAME outcome; F3 is
+    the only one that separates a correct predicate from a flag count.
     """
     await _seed_default_plan(session_factory)
     await _seed_user(session_factory, is_superadmin=True, email_verified=True)
@@ -349,16 +360,13 @@ async def test_f2_second_user_is_not_auto_verified(session_factory) -> None:
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = _register(client, username="newuser", email="new@example.com")
-        assert res.status_code == 201, res.text
-        assert res.json()["email_verified"] is False, (
-            "an ordinary public signup was auto-verified; email verification "
-            "is effectively off"
-        )
+        assert res.status_code == 403, res.text
+        assert res.json()["detail"]["code"] == "setup_complete"
 
         login = _login(client, login="newuser")
 
-    assert login.status_code == 403, login.text
-    assert login.json()["detail"]["code"] == "email_not_verified"
+    assert login.status_code == 401, login.text
+    assert await _counts(session_factory) == (1, 1)
 
 
 # ── F3 (TBD-365: converted from the divergence fence) ────────────────────────
@@ -368,7 +376,7 @@ async def test_f2_second_user_is_not_auto_verified(session_factory) -> None:
 async def test_f3_bootstrap_grant_keys_on_empty_table_not_flag_count(
     session_factory,
 ) -> None:
-    """FENCE — with users present and ZERO superadmins, register grants nothing.
+    """FENCE — with users present and ZERO superadmins, register refuses.
 
     Before TBD-365 the handler carried two first-ness predicates:
 
@@ -388,19 +396,11 @@ async def test_f3_bootstrap_grant_keys_on_empty_table_not_flag_count(
       * `email_verified=(existing_superadmin == 0)` — the TBD-344 half of it
       * `user_count == 0 or existing_superadmin == 0` — the "defensive" merge
 
-    ⚠ CONTROL NOTE — why the controls are DB-level and not on the response.
-    This fence previously used `body["is_superadmin"] is True` as its control,
-    which was valid only while the divergent state had an observable
-    consequence. The fix REMOVES that consequence — that is the fix. Post-fix,
-    `is_superadmin: False` is produced identically by this state and by F2's
-    state, so a body assertion can no longer prove the fixture built anything.
-    Worse, a 409 from a username collision, a 500 from a missing `Plan`, or any
-    swallowed exception leaves "the new account is not a superadmin" trivially
-    true with the handler never having run.
-
-    The post-condition `(2, 0)` is the load-bearing assertion: it proves in one
-    step that register EXECUTED (a second row exists) and that it minted no
-    superadmin. No no-op fixture and no swallowed exception can produce it.
+    Since TBD-654 `/register` refuses every state but the empty table with
+    403 `setup_complete`, so the outcome under test is the refusal itself.
+    The post-condition `(1, 0)` with no `auth.register.success` row is the
+    load-bearing assertion: each wrong predicate treats this state as the
+    bootstrap, creates a second row and records it.
 
     ⚠ Injection leg is *implement the wrong predicate -> confirm RED -> restore*,
     never *revert to main* — see the note this fence inherited from its
@@ -419,62 +419,26 @@ async def test_f3_bootstrap_grant_keys_on_empty_table_not_flag_count(
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = _register(client, username="newuser", email="new@example.com")
-        # (b) LIVENESS — the handler ran to completion.
-        assert res.status_code == 201, res.text
-        body = res.json()
-
-        # (c) POST-CONDITION CONTROL — the load-bearing one.
-        after = await _counts(session_factory)
-        assert after == (2, 0), (
-            "register either did not run or minted a superadmin in a state "
-            f"that is not the bootstrap. before={before} after={after}"
-        )
-
-        # (d) the flags under test, on the wire
-        assert body["is_superadmin"] is False, (
-            "a public self-signup received superadmin on an install that "
-            "merely lacks one — the escalation TBD-365 removed"
-        )
-        assert body["email_verified"] is False, (
-            "verification was granted on the superadmin-count predicate "
-            "rather than the empty-table predicate"
-        )
-
-        # (e) and it is not merely response shaping
+        # (b) the handler refused: this state is not the bootstrap.
+        assert res.status_code == 403, res.text
+        assert res.json()["detail"]["code"] == "setup_complete"
         login = _login(client, login="newuser")
 
-    assert login.status_code == 403, login.text
-    assert login.json()["detail"]["code"] == "email_not_verified"
-
-    # (f) THE AUDIT ROW: one decision against two outcomes read off the row.
-    #
-    # This is the state where a payload that RESTATES the local predicate in
-    # the outcome slots is indistinguishable from one that reads the row — so
-    # each outcome is compared against the account's real stored value, never
-    # against a literal. A rekey of either constructor keyword breaks the
-    # equality and this fence reports it.
-    detail = await _register_success_detail(session_factory)
-    assert detail["is_first_user"] is False
-    assert detail["granted_superadmin"] == body["is_superadmin"] is False, (
-        "the audit row disagrees with the account it describes — "
-        f"detail={detail}, body={body}"
+    # (c) POST-CONDITION CONTROL — the load-bearing one. Every wrong predicate
+    # above treats this state as the bootstrap, answers 201 and writes a row.
+    after = await _counts(session_factory)
+    assert after == (1, 0), (
+        "register ran in a state that is not the bootstrap. "
+        f"before={before} after={after}"
     )
-    assert detail["email_verified_on_create"] == body["email_verified"] is False
-    assert (
-        detail["is_first_user"]
-        == detail["granted_superadmin"]
-        == detail["email_verified_on_create"]
-    ), f"three-way invariant violated on a correct row: {detail}"
-    # No stray keys. Asserted as an exact key set rather than by naming one
-    # forbidden string: a named-absence check only rules out the one spelling
-    # somebody happened to think of, and the key it named never existed.
-    assert set(detail) == {
-        "method",
-        "is_first_user",
-        "granted_superadmin",
-        "email_verified_on_create",
-        "captcha_required",
-    }, f"unexpected key set on auth.register.success: {sorted(detail)}"
+    assert login.status_code == 401, login.text
+    async with session_factory() as db:
+        rows = await db.scalar(
+            select(func.count()).select_from(AuditEvent).where(
+                AuditEvent.event_type == "auth.register.success"
+            )
+        )
+    assert rows == 0
 
 
 # ── F4 ───────────────────────────────────────────────────────────────────────
@@ -545,11 +509,10 @@ async def test_f5_guard_bootstrap_still_sends_exactly_one_verification_email(
         assert stub_send_verification_email[0][0] == "founder@example.com"
 
         second = _register(client, username="second", email="second@example.com")
-        assert second.status_code == 201, second.text
+        assert second.status_code == 403, second.text
 
-    # Exactly one more — the ordinary path is unchanged too.
-    assert len(stub_send_verification_email) == 2, stub_send_verification_email
-    assert stub_send_verification_email[1][0] == "second@example.com"
+    # TBD-654: a refused second register sends nothing.
+    assert len(stub_send_verification_email) == 1, stub_send_verification_email
 
 
 # ── F6 (guard, not a fence) ──────────────────────────────────────────────────

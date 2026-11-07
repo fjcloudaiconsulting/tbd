@@ -121,7 +121,8 @@ async def _count_users(factory) -> int:
 
 @pytest.mark.asyncio
 async def test_register_duplicate_email_rejected(session_factory) -> None:
-    """Posting /register with an email that already exists → 409."""
+    """Posting /register with an email that already exists is refused, with
+    the same 403 every caller gets once the install is set up (TBD-654)."""
     await _seed_local_user(session_factory, email="flamarion@example.com")
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -133,14 +134,14 @@ async def test_register_duplicate_email_rejected(session_factory) -> None:
                 "password": "another-password-1",
             },
         )
-    assert res.status_code == 409, res.text
+    assert res.status_code == 403, res.text
+    assert res.json()["detail"]["code"] == "setup_complete"
     assert await _count_users(session_factory) == 1
 
 
 @pytest.mark.asyncio
 async def test_register_duplicate_email_different_case_rejected(session_factory) -> None:
-    """Mixed-case duplicate is still rejected — Python normalization
-    runs before the DB ever sees the value."""
+    """Mixed-case duplicate is still rejected, with no account created."""
     await _seed_local_user(session_factory, email="flamarion@example.com")
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -152,7 +153,8 @@ async def test_register_duplicate_email_different_case_rejected(session_factory)
                 "password": "another-password-1",
             },
         )
-    assert res.status_code == 409, res.text
+    assert res.status_code == 403, res.text
+    assert res.json()["detail"]["code"] == "setup_complete"
     assert await _count_users(session_factory) == 1
 
 

@@ -504,6 +504,28 @@ async def test_tbd365_sso_cold_install_still_bootstraps(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("app_env", ["production", "staging", "Production", "prod", ""])
+async def test_inf05_production_cold_install_refuses_google_bootstrap(
+    session_factory, google_config, monkeypatch, app_env
+) -> None:
+    """FENCE — outside development and test the first user comes only from /setup.
+
+    Wrong implementation killed: a SETUP_TOKEN on /register alone, which an
+    anonymous Google sign-in on an empty install walks around to the
+    superadmin. Dev and test keep the Google bootstrap (the fence above).
+    """
+    monkeypatch.setattr(app_settings, "app_env", app_env)
+    await _seed_default_plan(session_factory)
+
+    _patch_httpx(monkeypatch, userinfo_email="founder@example.com")
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = _drive_callback(client)
+    assert res.headers["location"].endswith("/login?sso_error=setup_required"), res.headers
+    assert await _counts(session_factory) == (0, 0)
+
+
+@pytest.mark.asyncio
 async def test_tbd365_sso_warm_install_with_superadmin_grants_nothing(
     session_factory, google_config, monkeypatch
 ) -> None:

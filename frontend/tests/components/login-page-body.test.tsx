@@ -190,6 +190,7 @@ describe("LoginPageBody — SSO error banner", () => {
       code: "provider_error",
       needle: /Google returned an error during sign-in/i,
     },
+    { code: "setup_required", needle: /isn't set up yet/i },
   ];
 
   it.each(cases)("renders friendly copy for ?sso_error=$code", ({ code, needle }) => {

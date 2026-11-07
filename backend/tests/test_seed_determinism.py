@@ -688,3 +688,20 @@ def test_accounts_are_seeded_with_opening_balance_not_balance():
             "would default to the run date, breaking determinism and bucketing "
             "the whole opening balance outside the seeded window in Net Worth"
         )
+
+
+@pytest.mark.parametrize("app_env", ["production", "staging", ""])
+def test_seed_refuses_outside_development_and_test(monkeypatch, app_env):
+    """KILLS: seeding (and minting signup links from the secret) against a
+    production or unknown environment. Refuses before any HTTP call."""
+    import asyncio
+
+    monkeypatch.setattr(seed.settings, "app_env", app_env)
+
+    def _no_http(*a, **kw):
+        raise AssertionError("seed reached the API")
+
+    monkeypatch.setattr(seed.httpx, "AsyncClient", _no_http)
+    with pytest.raises(SystemExit) as exc:
+        asyncio.run(seed.main(assume_yes=True))
+    assert exc.value.code == 1

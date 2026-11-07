@@ -141,6 +141,11 @@ def test_sensitive_field_set_covers_review_required_names():
     assert required <= _SENSITIVE_FIELD_NAMES
 
 
+def test_setup_token_is_redacted():
+    """INF-05: a 422 on /auth/register must never echo the bootstrap secret."""
+    assert "setup_token" in _SENSITIVE_FIELD_NAMES
+
+
 # ── unit: _loc_targets_sensitive_field ─────────────────────────────────────
 
 

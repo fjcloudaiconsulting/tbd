@@ -48,6 +48,9 @@ const SSO_ERROR_COPY: Record<string, string> = {
     "You cancelled the Google sign-in. Try again whenever you're ready.",
   provider_error:
     "Google returned an error during sign-in. Try again, or sign in with a password.",
+  // INF-05: on an empty install the first account comes only from /setup.
+  setup_required:
+    "This install isn't set up yet. Its operator must create the first account on the setup page before anyone can sign in with Google.",
 };
 const SSO_ERROR_FALLBACK = "Google sign-in didn't complete. Try again.";
 
