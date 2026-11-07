@@ -239,6 +239,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // straight to /login. Calls go through the shared withAuthRetry
     // helper hoisted to module scope so restore() and fetchMe() share
     // exactly one retry / classification contract.
+    //
+    // TBD-625: withAuthRetry's budget is under a second, a backend restart
+    // takes several. Once it ran out, restore stopped for good: the user sat
+    // on the spinner (or on the /login form, which never bounced back)
+    // until a manual reload. So a persistent transient schedules another
+    // full pass, backing off to every 10s, until the backend answers.
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let round = 0;
     const restore = async () => {
       try {
         // Check if system needs initial setup. Also captures the
@@ -318,13 +327,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // on next interaction AND, more importantly, dropping
           // loading=false here would let AppShell redirect to /login
           // even though the session is healthy. Keep loading=true
-          // so the user sees the AppShell spinner and can reload to
-          // retry; the next mount runs restore() afresh against a
-          // (probably) recovered backend.
+          // so the user sees the AppShell spinner, and run restore()
+          // again once the backend has had time to come back.
+          if (!cancelled) {
+            retryTimer = setTimeout(restore, Math.min(1000 * 2 ** round++, 10_000));
+          }
         }
       }
     };
     restore();
+    return () => {
+      cancelled = true;
+      clearTimeout(retryTimer);
+    };
   }, []);
 
   // Listen for terminal 401s dispatched by apiFetch so we clear React state
