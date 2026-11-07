@@ -711,6 +711,7 @@ def _migration_081_backfill_sql() -> str:
     """
     import importlib.util
     from pathlib import Path
+    from types import SimpleNamespace
 
     path = (
         Path(__file__).resolve().parents[2]
@@ -728,8 +729,9 @@ def _migration_081_backfill_sql() -> str:
     def _execute(sql):
         captured["sql"] = sql
 
-    module.op.add_column = _add_column
-    module.op.execute = _execute
+    # Rebind this module's own ``op``: ``module.op`` is the shared ``alembic.op``,
+    # and patching its attributes stubs every later migration test in the process.
+    module.op = SimpleNamespace(add_column=_add_column, execute=_execute)
     module.upgrade()
     return captured["sql"], captured["column"]
 
