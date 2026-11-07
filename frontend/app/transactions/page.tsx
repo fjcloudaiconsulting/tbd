@@ -2196,7 +2196,7 @@ function TransactionsPageContent() {
                             tx.status === "pending"
                               ? "[&>*:not(.tx-status-cell)]:opacity-60"
                               : ""
-                          } ${isTarget ? "bg-accent-dim ring-2 ring-accent ring-inset" : ""}`}
+                          } ${isTarget ? "ring-2 ring-accent ring-inset" : ""}`}
                         >
                           {/* Pending rows dim every cell except the status pill
                               via the [&>*:not(.tx-status-cell)] selector above.
@@ -2778,7 +2778,7 @@ function TransactionsPageContent() {
                           id={`transaction-mobile-${tx.id}`}
                           data-testid={`tx-row-mobile-${tx.id}`}
                           className={`flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 ${
-                            isTarget ? "bg-accent-dim ring-2 ring-accent" : ""
+                            isTarget ? "ring-2 ring-accent" : ""
                           }`}
                         >
                           {/* Pending rows dim the row contents but keep the
