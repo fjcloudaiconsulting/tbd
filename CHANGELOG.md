@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.308.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.307.0...v0.308.0) (2026-11-07)
+
+
+### Features
+
+* **plans:** compose goal overlays, per-currency reconciliation and toggles (TBD-562) ([#1098](https://github.com/fjcloudaiconsulting/tbd/issues/1098)) ([b7b69e2](https://github.com/fjcloudaiconsulting/tbd/commit/b7b69e226729ba927c2bfab8dc949bc1a163d93a))
+* **plans:** lifetime tier on an age axis, depletion age and required contribution (TBD-563) ([#1101](https://github.com/fjcloudaiconsulting/tbd/issues/1101)) ([f047054](https://github.com/fjcloudaiconsulting/tbd/commit/f04705442689fef875213546a6956f801e3a7e69))
+
 ## [0.307.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.306.0...v0.307.0) (2026-11-07)
 
 
