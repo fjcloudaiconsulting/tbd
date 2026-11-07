@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Optional
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from pydantic import (
     BaseModel,
@@ -89,19 +89,15 @@ def _validate_base_url(value: str) -> str:
 
 
 def _mask_userinfo(value: Optional[str]) -> Optional[str]:
-    """``value`` with a URL password replaced by ``***`` (rows stored before
-    DB-02 may still carry one, TBD-609). The username stays visible unless it
-    stands alone, where it is often the token itself; the rest of the URL is
-    byte-identical."""
+    """``value`` with any URL userinfo replaced by ``***`` (rows stored
+    before DB-02 may still carry it)."""
     if not value:
         return value
-    netloc = urlsplit(value).netloc
-    if "@" not in netloc:
+    parts = urlsplit(value)
+    if "@" not in parts.netloc:
         return value
-    userinfo, host = netloc.rsplit("@", 1)
-    user, sep, _ = userinfo.partition(":")
-    masked = f"{user}:***" if sep else "***"
-    return value.replace(netloc, f"{masked}@{host}", 1)
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parts._replace(netloc=f"***@{host}"))
 
 
 class OrgAICredentialCreate(BaseModel):

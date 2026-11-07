@@ -592,10 +592,20 @@ async def test_f12_config_writes_do_not_need_the_ai_switch(session_factory):
 
 _URL_SECRET = "s3cr3t-pw-tbd609"
 _REAL_URL = f"https://user:{_URL_SECRET}@llm.example.com/v1"
-_MASKED_URL = "https://user:***@llm.example.com/v1"
+_MASKED_URL = "https://***@llm.example.com/v1"
+# Stored base_url -> fragments that must reach no response, audit row or log.
+_LEGACY_URLS = [
+    (_REAL_URL, [_URL_SECRET]),
+    # urlsplit drops tab/CR/LF before parsing, so the parsed netloc is not a
+    # substring of the raw value (security review of #1121).
+    ("https://user:s3cr3t\t-pw@llm.example.com/v1", ["s3cr3t"]),
+    ("https://user\n:s3cr3t-pw@llm.example.com/v1", ["s3cr3t"]),
+    # The username can be the secret and the password a dummy.
+    ("https://apikey:x@llm.example.com/v1", ["apikey", ":x@"]),
+]
 
 
-async def _userinfo_row(session_factory):
+async def _userinfo_row(session_factory, base_url=_REAL_URL):
     from fastapi.exceptions import RequestValidationError
 
     from app.main import request_validation_handler
@@ -607,7 +617,7 @@ async def _userinfo_row(session_factory):
         row = OrgAICredential(
             org_id=ids["org_a"], provider=AiProvider.OPENAI_COMPATIBLE,
             encrypted_api_key=encrypt("sk-legacy-abcd"), last_four="abcd",
-            base_url=_REAL_URL, base_url_is_api_root=True, label="legacy",
+            base_url=base_url, base_url_is_api_root=True, label="legacy",
         )
         db.add(row)
         await db.commit()
@@ -628,19 +638,20 @@ async def _stored_url(session_factory, cred_id):
         return (await db.get(OrgAICredential, cred_id)).base_url
 
 
-async def test_url_password_is_in_no_credential_response(session_factory, caplog):
+@pytest.mark.parametrize(("stored", "secrets"), _LEGACY_URLS)
+async def test_url_password_is_in_no_credential_response(session_factory, caplog, stored, secrets):
     from sqlalchemy import select
 
     from app.models.audit_event import AuditEvent
 
     caplog.set_level("DEBUG", logger="app")  # sqlalchemy/httpx stay at WARNING in prod (app.logs)
-    client, cred_id = await _userinfo_row(session_factory)
+    client, cred_id = await _userinfo_row(session_factory, stored)
     base = "/api/v1/settings/ai-providers"
     with _patch_adapter(_ok_validate()):
         responses = {
             "create": client.post(base, json={
                 "provider": "openai_compatible", "api_key": "sk-new-abcd",
-                "base_url": _REAL_URL,
+                "base_url": stored,
             }),
             "list": client.get(base),
             "get": client.get(f"{base}/{cred_id}"),
@@ -650,7 +661,8 @@ async def test_url_password_is_in_no_credential_response(session_factory, caplog
         }
     assert responses["create"].status_code == 422  # DB-02 refuses new userinfo
     for name, resp in responses.items():
-        assert _URL_SECRET not in resp.text, (name, resp.text)
+        for secret in secrets:
+            assert secret not in resp.text, (name, resp.text)
     for name in ("get", "update", "rotate", "validate"):
         assert responses[name].status_code == 200, (name, responses[name].text)
         assert responses[name].json()["base_url"] == _MASKED_URL, name
@@ -659,10 +671,11 @@ async def test_url_password_is_in_no_credential_response(session_factory, caplog
     async with session_factory() as db:
         events = (await db.execute(select(AuditEvent))).scalars().all()
     assert events  # the writes above were audited
-    for ev in events:
-        assert _URL_SECRET not in repr(ev.detail), ev.event_type
-    assert _URL_SECRET not in caplog.text
-    assert await _stored_url(session_factory, cred_id) == _REAL_URL
+    for secret in secrets:
+        for ev in events:
+            assert secret not in repr(ev.detail), ev.event_type
+        assert secret not in caplog.text
+    assert await _stored_url(session_factory, cred_id) == stored
 
 
 async def test_masked_base_url_sent_back_never_overwrites_the_stored_one(session_factory):
