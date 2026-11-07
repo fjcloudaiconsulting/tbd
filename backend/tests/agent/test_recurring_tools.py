@@ -236,20 +236,27 @@ async def test_a_transfer_with_no_destination_is_refused_at_preview(factory, w):
     assert err.detail == "Only a transfer has a destination account"
 
 
-async def test_a_card_or_loan_on_a_transfer_is_refused_at_preview(factory, w):
-    """On create, and on an update that moves the destination onto a card."""
+async def test_a_card_is_refused_as_transfer_source_and_accepted_as_destination(factory, w):
+    """TBD-789, at preview: a card source is refused on create and on an
+    update; a card destination is accepted on both, as the routes accept it."""
     a = w["A"]
     await _savings(factory, a)
     await _cc(factory, a)
-    err = await _refused(_invoke(factory, a["member"], "recurring_create", _transfer_args(a, to_account_id=a["cc"])))
+    err = await _refused(_invoke(factory, a["member"], "recurring_create", _transfer_args(
+        a, account_id=a["cc"], to_account_id=a["savings"])))
     assert err.code == "invalid_arguments" and "credit card or loan" in err.detail
+    out = await _invoke(factory, a["member"], "recurring_create", _transfer_args(a, to_account_id=a["cc"]))
+    assert out["action_id"]
     async with factory() as db:
         db.add(_template(a, type="transfer", to_account_id=a["savings"], category_id=a["transfer_cat"]))
         await db.commit()
         rid = (await db.scalars(select(RecurringTransaction.id))).one()
     err = await _refused(_invoke(factory, a["member"], "recurring_update_money",
-                                 {"recurring_id": rid, "to_account_id": a["cc"]}))
+                                 {"recurring_id": rid, "account_id": a["cc"]}))
     assert "credit card or loan" in err.detail
+    out = await _invoke(factory, a["member"], "recurring_update_money",
+                        {"recurring_id": rid, "to_account_id": a["cc"]})
+    assert out["action_id"]
 
 
 async def test_a_transfer_cannot_change_type(factory, w):
@@ -275,15 +282,19 @@ async def test_stop_warns_about_a_kept_half_settled_pair(factory, w):
     assert (kept.status.value, kept.linked_transaction_id) == ("pending", a["kept_exp"])
 
 
-async def test_an_account_a_transfer_uses_cannot_become_a_card_or_be_deleted(factory, w):
-    """The refusals the account routes make (TBD-600), at the money tool's and
-    the delete's preview."""
+async def test_a_transfer_source_cannot_become_a_card_or_an_account_it_uses_be_deleted(factory, w):
+    """The refusals the account routes make (TBD-600/789), at the money tool's
+    and the delete's preview. The destination may become a card."""
     a = w["A"]
     await _transfer_series(factory, a)
     await _cc(factory, a)
     err = await _refused(_invoke(factory, a["member"], "accounts_update_money",
-                                 {"account_id": a["savings"], "account_type_id": a["cc_type"]}))
-    assert err.code == "invalid_arguments" and "used by a recurring transfer" in err.detail
+                                 {"account_id": a["acct"], "account_type_id": a["cc_type"],
+                                  "close_day": 20}))
+    assert err.code == "invalid_arguments" and "source of a recurring transfer" in err.detail
+    out = await _invoke(factory, a["member"], "accounts_update_money",
+                        {"account_id": a["savings"], "account_type_id": a["cc_type"], "close_day": 20})
+    assert out["action_id"]
     async with factory() as db:
         acct = await db.get(Account, a["savings"])
         acct.balance = Decimal("0.00")
