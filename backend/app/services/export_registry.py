@@ -43,7 +43,7 @@ from typing import Union
 # Bumped whenever a disposition, a scope, or a redact set changes. Recorded
 # in the export header and in the ``org.data.exported`` audit row so an
 # artifact handed to a data subject can be tied to the rules that built it.
-REGISTRY_VERSION = 4
+REGISTRY_VERSION = 5
 
 
 # ── Scoping ────────────────────────────────────────────────────────────────
@@ -356,6 +356,12 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         "other orgs' contributions"
     ),
     "tags": Include(OrgColumn(), "tags the subject created"),
+    # ``request_hash`` fingerprints a request body the subject already has as
+    # rows; it tells them nothing.
+    "transaction_batch_keys": Include(
+        OrgColumn(), "the subject's recent batch submits, kept 24 hours for replay",
+        redact=frozenset({"request_hash"}),
+    ),
     # ⚠ No org_id. The lazy fix for that is to skip the filter, which would
     # emit every tag link on the platform.
     "transaction_tags": Include(

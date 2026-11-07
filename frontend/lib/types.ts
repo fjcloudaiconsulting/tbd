@@ -486,6 +486,9 @@ export interface BatchTransactionsResponse {
   error_count: number;
   results: BatchRowResult[];
   errors: BatchRowError[];
+  // TBD-784: true when the server answered a repeat of the same
+  // Idempotency-Key with the first result; nothing was written again.
+  replayed?: boolean;
 }
 
 export interface Plan {

@@ -2,7 +2,7 @@ import datetime
 from typing import Literal, Optional
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -66,6 +66,7 @@ def _request_id() -> Optional[str]:
 # contract: we log only org_id, type, query_length, result_count,
 # never the raw ``q`` or returned descriptions.
 suggestions_logger = logging.getLogger("app.routers.transactions.suggestions")
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
@@ -379,6 +380,11 @@ async def batch_create_transactions(
     session_factory: async_sessionmaker[AsyncSession] = Depends(
         get_session_factory
     ),
+    # TBD-784: optional so older clients keep working, without repeat detection.
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key",
+        min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",
+    ),
 ):
     """Manual batch transaction entry (L3.2 Wave 2A).
 
@@ -405,11 +411,23 @@ async def batch_create_transactions(
     Frozen contract: see spec at
     ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
     §0.2 and ``app/schemas/import_batch.py``.
+
+    TBD-784: with an ``Idempotency-Key`` header, a repeat of the same key by
+    the same user within 24 hours returns the first response with
+    ``replayed=true`` and writes nothing (no audit event either); the same key
+    with a different body is a 409.
     """
-    response = await transaction_batch_service.create_batch(
-        db, current_user.org_id, body
-    )
+    org_id = current_user.org_id
+    if idempotency_key is None:
+        response = await transaction_batch_service.create_batch(db, org_id, body)
+    else:
+        response = await transaction_batch_service.create_batch_with_key(
+            db, org_id, current_user.id, body, idempotency_key
+        )
     await db.commit()
+    if response.replayed:
+        logger.info("transactions.batch.replayed", extra={"org_id": org_id})
+        return response
 
     # One audit event per batch invocation. Carries counters + the
     # length of the input list so a future regression in the request
