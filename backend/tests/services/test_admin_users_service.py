@@ -29,6 +29,7 @@ from app.models.category import Category, CategoryType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.invitation import Invitation
 from app.models.report import Report, ReportVersion, ReportVisibility
+from app.models.scenario import Scenario, ScenarioType
 from app.models.tag import Tag
 from app.models.transaction import Transaction, TransactionType
 from app.models.user import Organization, Role, User
@@ -356,6 +357,34 @@ async def test_delete_user_handles_owned_reports(session_factory):
         shared_after = await db.get(Report, shared_id)
         assert shared_after is not None
         assert shared_after.owner_user_id == seed["actor_id"]
+
+
+@pytest.mark.asyncio
+async def test_delete_user_transfers_their_plans_to_the_org_owner(session_factory):
+    """TBD-601: a plan is org-shared, so it moves to the org's active OWNER
+    instead of going down the ``scenarios.user_id`` CASCADE. A legacy
+    scenario (no currency) is private to the deleted user and goes with them."""
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        plan, legacy = (
+            Scenario(org_id=seed["org_id"], user_id=seed["inactive_id"], name=n,
+                     scenario_type=ScenarioType.CUSTOM, params_json={}, currency=c)
+            for n, c in (("Plan", "EUR"), ("Legacy", None))
+        )
+        db.add_all([plan, legacy])
+        await db.commit()
+        plan_id, legacy_id = plan.id, legacy.id
+
+    async with session_factory() as db:
+        result = await admin_users_service.delete_user(
+            db, target_user_id=seed["inactive_id"], actor_user_id=seed["actor_id"],
+        )
+        await db.commit()
+
+    assert result["fk_cleanup_counts"]["plans_transferred"] == 1
+    async with session_factory() as db:
+        assert (await db.get(Scenario, plan_id)).user_id == seed["actor_id"]
+        assert await db.get(Scenario, legacy_id) is None
 
 
 @pytest.mark.asyncio

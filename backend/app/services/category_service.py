@@ -42,6 +42,7 @@ from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule
 from app.models.forecast_plan import ForecastItemType, ForecastPlanItem
 from app.models.recurring import RecurringTransaction
+from app.models.scenario import PlanGoal, Scenario
 from app.models.transaction import Transaction, TransactionType
 from app.schemas.category import (
     BatchMoveItem,
@@ -304,10 +305,16 @@ class _DependentBreakdown:
     transaction_count: int
     recurring_count: int
     forecast_item_count: int
+    # TBD-601: plans and plan goals on the category. Typeless, so they need a
+    # migration target but never decide its type.
+    plan_link_count: int = 0
 
     @property
     def total(self) -> int:
-        return self.transaction_count + self.recurring_count + self.forecast_item_count
+        return (
+            self.transaction_count + self.recurring_count
+            + self.forecast_item_count + self.plan_link_count
+        )
 
     @property
     def is_empty(self) -> bool:
@@ -387,6 +394,14 @@ async def _dependent_breakdown(
         )
     ) or 0
 
+    plan_links = 0
+    for model in (Scenario, PlanGoal):
+        plan_links += await db.scalar(
+            select(func.count())
+            .select_from(model)
+            .where(model.org_id == org_id, model.category_id == category_id)
+        ) or 0
+
     income = tx_income + rec_income + rec_transfer + fpi_income
     expense = tx_expense + rec_expense + rec_transfer + fpi_expense
     return _DependentBreakdown(
@@ -395,6 +410,7 @@ async def _dependent_breakdown(
         transaction_count=tx_income + tx_expense,
         recurring_count=rec_income + rec_expense + rec_transfer,
         forecast_item_count=fpi_income + fpi_expense,
+        plan_link_count=plan_links,
     )
 
 
@@ -1271,7 +1287,8 @@ async def plan_category_delete(
     if target_category_id is None:
         raise ValidationError(
             f"migration_target_required::{breakdown.transaction_count}::"
-            f"{breakdown.recurring_count}::{breakdown.forecast_item_count}"
+            f"{breakdown.recurring_count}::{breakdown.forecast_item_count}::"
+            f"{breakdown.plan_link_count}"
         )
 
     if target_category_id == cat.id:
@@ -1393,6 +1410,15 @@ async def delete_category_with_migration(
         )
         .values(category_id=target.id)
     )
+    # TBD-601: plans and their goals follow the category, as transactions do.
+    migrated_plan_links = 0
+    for model in (Scenario, PlanGoal):
+        res = await db.execute(
+            update(model)
+            .where(model.org_id == org_id, model.category_id == cat.id)
+            .values(category_id=target.id)
+        )
+        migrated_plan_links += res.rowcount or 0
     # Forecast plan items carry a unique constraint on
     # (plan_id, category_id, type) (uq_forecast_item_plan_cat_type), so a
     # blind FK rewrite collides whenever the target already owns an item for
@@ -1455,6 +1481,7 @@ async def delete_category_with_migration(
             "migrated_transaction_count": migrated_tx,
             "migrated_recurring_count": migrated_rec,
             "migrated_forecast_item_count": migrated_fpi,
+            "migrated_plan_link_count": migrated_plan_links,
             "migrated_rule_count": migrated_rules,
             "deleted_rule_count": dropped_rules,
         },
@@ -1468,6 +1495,7 @@ async def delete_category_with_migration(
             "migrated_transaction_count": migrated_tx,
             "migrated_recurring_count": migrated_rec,
             "migrated_forecast_item_count": migrated_fpi,
+            "migrated_plan_link_count": migrated_plan_links,
             "migrated_rule_count": migrated_rules,
             "deleted_rule_count": dropped_rules,
         },
@@ -1479,6 +1507,7 @@ async def delete_category_with_migration(
         migrated_transaction_count=migrated_tx,
         migrated_recurring_count=migrated_rec,
         migrated_forecast_item_count=migrated_fpi,
+        migrated_plan_link_count=migrated_plan_links,
         migrated_rule_count=migrated_rules,
         deleted_rule_count=dropped_rules,
     ), True

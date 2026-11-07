@@ -44,6 +44,7 @@ from app.models.forecast_plan import (
     PlanStatus,
 )
 from app.models.recurring import Frequency, RecurringTransaction
+from app.models.scenario import PlanGoal, Scenario, ScenarioType
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
 from app.routers.categories import router as categories_router
@@ -348,6 +349,44 @@ async def test_delete_subcategory_with_dependents_no_target_returns_422(session_
     body = resp.json()["detail"]
     assert body["detail"] == "migration_target_required"
     assert body["dependent_counts"]["transactions"] == 1
+
+
+async def _add_plan_and_goal(factory, *, seed: dict, category_id: int) -> tuple[int, int]:
+    async with factory() as db:
+        plan = Scenario(org_id=seed["org_id"], user_id=seed["user_id"], name="Trip",
+                        scenario_type=ScenarioType.CUSTOM, params_json={}, category_id=category_id)
+        db.add(plan)
+        await db.flush()
+        goal = PlanGoal(org_id=seed["org_id"], scenario_id=plan.id, name="Flights",
+                        tier="want", kind="lump", category_id=category_id)
+        db.add(goal)
+        await db.commit()
+        return plan.id, goal.id
+
+
+@pytest.mark.asyncio
+async def test_delete_carries_plan_and_goal_links_to_the_target(session_factory):
+    """TBD-601: a plan and a goal on the category count as dependents (no
+    target is a 422 listing them) and follow it to the target, where before
+    the FK quietly set them NULL."""
+    seed = await _seed_basic(session_factory)
+    plan_id, goal_id = await _add_plan_and_goal(
+        session_factory, seed=seed, category_id=seed["groceries_id"])
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.delete(f"/api/v1/categories/{seed['groceries_id']}")
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"]["dependent_counts"] == {
+            "transactions": 0, "recurring": 0, "forecast_items": 0, "plans": 2}
+        resp = client.delete(
+            f"/api/v1/categories/{seed['groceries_id']}"
+            f"?target_category_id={seed['restaurants_id']}"
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["migrated_plan_link_count"] == 2
+    async with session_factory() as db:
+        assert (await db.get(Scenario, plan_id)).category_id == seed["restaurants_id"]
+        assert (await db.get(PlanGoal, goal_id)).category_id == seed["restaurants_id"]
 
 
 @pytest.mark.asyncio
