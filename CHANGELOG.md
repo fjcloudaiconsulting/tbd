@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.307.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.306.0...v0.307.0) (2026-11-07)
+
+
+### Features
+
+* **admin:** recover and detect a missing platform superadmin (TBD-443) ([#1091](https://github.com/fjcloudaiconsulting/tbd/issues/1091)) ([5100686](https://github.com/fjcloudaiconsulting/tbd/commit/5100686e31aa94fdc1b5c3dc9edcad9fa7ccdca0))
+* **agent:** agent parity for forecast plans, scenarios, reports and notification preferences (TBD-668, TBD-669, TBD-787) ([#1094](https://github.com/fjcloudaiconsulting/tbd/issues/1094)) ([0faa6d0](https://github.com/fjcloudaiconsulting/tbd/commit/0faa6d0434d03ccaeb621ed854302050962475cb))
+* **auth:** email-first sign-up, frontend (TBD-654) ([#1087](https://github.com/fjcloudaiconsulting/tbd/issues/1087)) ([cddbaf0](https://github.com/fjcloudaiconsulting/tbd/commit/cddbaf0f4d24e65e97c30badb6b7a0b605a81a2c))
+* **plans:** org-scoped plan and goal draft CRUD (TBD-601) ([#1090](https://github.com/fjcloudaiconsulting/tbd/issues/1090)) ([66e78e1](https://github.com/fjcloudaiconsulting/tbd/commit/66e78e1a90d70c7d6ee89289a877716e19005376))
+* **recurring:** recurring transfers into credit cards and loans (TBD-789) ([#1084](https://github.com/fjcloudaiconsulting/tbd/issues/1084)) ([c8233da](https://github.com/fjcloudaiconsulting/tbd/commit/c8233da5de5c11cf4725ef5c55882dccaff07e27))
+* **transactions:** move a pending row's expected settlement date (TBD-791) ([#1092](https://github.com/fjcloudaiconsulting/tbd/issues/1092)) ([7f1ac4c](https://github.com/fjcloudaiconsulting/tbd/commit/7f1ac4cb4b0011b30c2d9e9aadc82fa78310f684))
+
+
+### Bug Fixes
+
+* **recurring:** refuse moving the next due date back onto a spent occurrence (TBD-509) ([#1083](https://github.com/fjcloudaiconsulting/tbd/issues/1083)) ([f452c86](https://github.com/fjcloudaiconsulting/tbd/commit/f452c863714c8c9dfcc45f691924edb606591f26))
+* **security:** remove the deprecated GET invitation preview (TBD-751) ([#1093](https://github.com/fjcloudaiconsulting/tbd/issues/1093)) ([d212b20](https://github.com/fjcloudaiconsulting/tbd/commit/d212b20311a26e0833895f388a009fc6d1b1c2b0))
+* **transactions:** idempotency key on batch create (TBD-784) ([#1088](https://github.com/fjcloudaiconsulting/tbd/issues/1088)) ([eea6864](https://github.com/fjcloudaiconsulting/tbd/commit/eea686461b2561ebe93fa43f0f27beb740a5dc67))
+
 ## [0.306.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.305.0...v0.306.0) (2026-11-03)
 
 
