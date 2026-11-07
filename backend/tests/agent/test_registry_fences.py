@@ -21,6 +21,7 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.datastructures import QueryParams
 
 import app.agent.registry as registry
+from app.agent.route_tool import _without_none
 from app.agent.registry import (
     ROLE_RANK,
     ToolError,
@@ -82,6 +83,13 @@ def scratch_tool():
         registry._TOOLS.pop(name, None)
 
 
+FORECAST_PLAN_CHANGES = (
+    "forecast_plan_populate", "forecast_plan_refresh", "forecast_plan_copy", "forecast_plan_item_add",
+    "forecast_plan_items_bulk", "forecast_plan_item_update", "forecast_plan_item_delete",
+    "forecast_plan_activate", "forecast_plan_revert", "forecast_plan_discard",
+)
+
+
 def test_registry_ships_the_six_v1_reads_and_the_writes():
     assert sorted(t.name for t in TOOLS) == sorted([
         "accounts_list", "categories_list", "budgets_list",
@@ -104,6 +112,16 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "budgets_draft_next", "budgets_rebalance", "budgets_delete",
         "categories_create", "categories_update", "categories_move", "categories_batch_move",
         "categories_delete", "categories_restore_recommended",
+        # TBD-669
+        "reports_list", "reports_get", "report_versions_list", "reports_query", "reports_sankey_query",
+        "reports_update", "reports_update_layout", "reports_create", "reports_duplicate", "reports_reset",
+        "report_version_restore", "reports_delete",
+        # TBD-787
+        "notification_preferences_get", "notification_preferences_update",
+        # TBD-668
+        "forecast_plan_get", "scenarios_list", "scenarios_get", "scenarios_simulate", "scenarios_compare",
+        *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
+        "plan_goal_create", "plan_goal_update", "plan_goal_delete",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
@@ -131,6 +149,17 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "budgets_draft_next", "budgets_delete",
         "categories_create", "categories_move", "categories_batch_move", "categories_delete",
         "categories_restore_recommended",
+        # TBD-669: a layout edit saves a version and may evict one; a reset or
+        # restore has no inverse its own args could stage.
+        # TBD-669, TBD-787: a rename of a colleague's shared report and a
+        # silenced alert both need the person.
+        "reports_update", "notification_preferences_update",
+        "reports_update_layout", "reports_create", "reports_duplicate", "reports_reset",
+        "report_version_restore", "reports_delete",
+        # TBD-668: every forecast plan change states or freezes planned amounts;
+        # a plan's params carry amounts and funding accounts.
+        *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
+        "plan_goal_create", "plan_goal_update", "plan_goal_delete",
     }
 
 
@@ -316,6 +345,14 @@ def _valid_base(tool) -> dict:
     if tool.name.startswith("cycle_payments_"):
         base = {"account_id": 1, "year": 2026, "month": 1}
         return base if tool.name == "cycle_payments_delete" else {**base, "amount": "1.00"}
+    if tool.name == "notification_preferences_update":
+        return dict.fromkeys(tool.args.model_fields, True)
+    if tool.name in ("reports_query", "reports_sankey_query"):
+        return {"dataset": "transactions", "measure": {"agg": "sum", "field": "amount"}} if (
+            tool.name == "reports_query") else {}
+    if tool.name.startswith("report"):
+        return {k: 1 for k in ("report_id", "version_id") if k in tool.args.model_fields} | (
+            {"name": "x"} if tool.name == "reports_create" else {})
     return {
         "budgets_create": {"category_id": 1, "amount": "10.00"},
         "budgets_copy_from_period": {"source_period_start": "2026-01-01"},
@@ -327,6 +364,24 @@ def _valid_base(tool) -> dict:
         "categories_move": {"category_id": 1, "target_parent_id": 2},
         "categories_batch_move": {"moves": [{"subcategory_id": 1, "target_parent_id": 2}]},
         "categories_delete": {"category_id": 1},
+        # TBD-668
+        "forecast_plan_copy": {"source_period_start": "2026-01-01"},
+        "forecast_plan_item_add": {"plan_id": 1, "category_id": 1, "type": "expense", "planned_amount": "1.00"},
+        "forecast_plan_items_bulk": {"plan_id": 1, "items": []},
+        "forecast_plan_item_update": {"plan_id": 1, "item_id": 1, "planned_amount": "1.00"},
+        "forecast_plan_item_delete": {"plan_id": 1, "item_id": 1},
+        "forecast_plan_activate": {"plan_id": 1},
+        "forecast_plan_revert": {"plan_id": 1},
+        "forecast_plan_discard": {"plan_id": 1},
+        "scenarios_get": {"scenario_id": 1},
+        "scenarios_simulate": {"scenario_id": 1},
+        "scenarios_compare": {"scenario_ids": [1], "horizon_months": 12},
+        "scenarios_create": {"name": "x", "scenario_type": "custom", "params": {"scenario_type": "custom", "label": "x"}},
+        "scenarios_update": {"scenario_id": 1},
+        "plan_goal_create": {"scenario_id": 1, "name": "x", "tier": "want", "kind": "lump"},
+        "plan_goal_update": {"scenario_id": 1, "goal_id": 1},
+        "plan_goal_delete": {"scenario_id": 1, "goal_id": 1},
+        "scenarios_delete": {"scenario_id": 1},
     }.get(tool.name, {})
 
 
@@ -346,7 +401,7 @@ def _route_params(route) -> dict[str, object]:
     out: dict[str, object] = {}
     for f in route.dependant.query_params + route.dependant.path_params:
         out[f.alias] = f
-    models = [f.field_info.annotation for f in route.dependant.body_params]
+    models = [_without_none(f.field_info.annotation) for f in route.dependant.body_params]
     models += [m for (verb, path), m in _MANUAL_BODY.items() if path == route.path and verb in route.methods]
     for model in models:
         for n in getattr(model, "model_fields", {}):
@@ -444,6 +499,23 @@ def _agent_tool_modules() -> list[pathlib.Path]:
     return sorted((APP_DIR / "agent").rglob("*.py"))
 
 
+# Reviewed (TBD-787): the preference route's ``router`` and nothing else of
+# its module (``test_preference_tools`` pins the use). The route the tool runs
+# writes the caller's preference row and sends nothing.
+_EGRESS_REVIEWED = {("preference_tools.py", "app.routers.notifications", ("router",))}
+
+
+def _reviewed(path: pathlib.Path) -> set[str]:
+    """The modules of ``path``'s reviewed ``from X import names`` statements."""
+    out = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.ImportFrom):
+            names = tuple(a.name for a in node.names)
+            if (path.name, node.module, names) in _EGRESS_REVIEWED:
+                out |= {node.module, *(f"{node.module}.{n}" for n in names)}
+    return out
+
+
 def test_fr5_no_tool_module_imports_an_egress_path():
     """FENCE F-R5. Wrong implementation: an added "fetch URL" or "email the
     report" tool (``import httpx``, ``from app.services import email_service``,
@@ -452,7 +524,8 @@ def test_fr5_no_tool_module_imports_an_egress_path():
     modules = _agent_tool_modules()
     assert any(p.name == "tools.py" for p in modules)
     offenders = {
-        (p.name, m) for p in modules for m in _imported_modules(p) if _EGRESS.search(m)
+        (p.name, m) for p in modules for m in _imported_modules(p)
+        if _EGRESS.search(m) and m not in _reviewed(p)
     }
     assert not offenders, offenders
 
@@ -525,14 +598,15 @@ def test_every_change_tool_has_a_domain():
     no domain, which no ``load_tools`` call could ever reach."""
     assert [t.name for t in TOOLS if t.risk != "read" and not t.domain] == []
     assert registry.domains() == [
-        "accounts", "budgets_and_categories", "recurring_and_billing", "transactions",
+        "accounts", "budgets_and_categories", "forecasts_and_plans", "notifications",
+        "recurring_and_billing", "reports", "transactions",
     ]
     assert registry.get_tool("billing_cycle_update").domain == "recurring_and_billing"
     assert registry.get_tool("account_types_create").domain == "accounts"
 
 
 def test_a_change_tool_without_a_domain_is_refused(scratch_tool):
-    unmapped = ("PUT", "/api/v1/notifications/preferences")
+    unmapped = ("PUT", "/api/v1/unmapped/{thing_id}")
     with pytest.raises(ToolRegistrationError, match="needs a domain"):
         register(_spec(name="fixture_write", risk="write", run=None, preview=_noop,
                        execute=_noop, mirrors_route=unmapped))

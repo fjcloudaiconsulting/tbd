@@ -410,6 +410,28 @@ async def test_a_tool_of_an_unloaded_domain_is_refused(factory, w, client, provi
         assert (await db.scalars(select(AgentPendingAction))).all() == []
 
 
+async def test_a_report_query_runs_only_with_its_domain_loaded(factory, w, client, provider):
+    """FENCE (TBD-669). Wrong implementations: the report query schemas sent
+    every round (the five-round budget), or a query run unloaded."""
+    from app.models.settings import OrgSetting
+
+    await _add(factory, OrgSetting(org_id=w["org"], key="feature.reports", value="on"))
+    _as(factory, w["user"])
+    q = {"dataset": "transactions", "measure": {"agg": "sum", "field": "amount"}}
+    adapter = provider([
+        _resp([_call("reports_query", q)]),
+        _resp([_call("load_tools", {"domains": ["reports"]}, "c2")]),
+        _resp([_call("reports_query", q, "c3")]),
+        _resp(content="ok"),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    results = [d for e, d in ev if e == "tool_result" and d["name"] == "reports_query"]
+    assert [r.get("code") for r in results] == ["domain_not_loaded", None] and results[1]["ok"]
+    first, _, third = list(map(_names, adapter.tools))[:3]
+    assert "reports_query" not in first and "reports_list" in first and "reports_query" in third
+    assert "reports_query" in json.loads(adapter.seen[2][-1]["content"])["loaded"]
+
+
 async def test_roles_still_filter_inside_a_loaded_domain(factory, w, client, provider):
     """FENCE (TBD-788). Wrong implementation: a load that skips the role gate."""
     _as(factory, w["user"])
@@ -505,19 +527,30 @@ async def test_an_unloaded_tool_the_user_cannot_use_gets_the_gate_refusal(
 
 async def test_five_rounds_fit_the_default_budget_with_the_largest_domain(factory, w):
     """FENCE (TBD-788). The worst round ``load_tools`` allows is every read
-    plus the costliest single domain (one is loaded at a time), for the owner
-    (every tool). Five rounds of the base request must fit the default plan.
-    Fails when a domain grows past that: split it."""
+    plus one domain (one is loaded at a time), for the owner (every tool).
+    Five rounds of the base request must fit the default plan, for EVERY
+    domain. Fails when a domain grows past that: split it."""
     from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS
+    from app.models.settings import OrgSetting
 
     await _set_role(factory, w["user"], Role.OWNER)
+    # Reports v2 and Plans are on in production (off by default elsewhere).
+    for key in ("feature.reports", "feature.plans"):
+        await _add(factory, OrgSetting(org_id=w["org"], key=key, value="on"))
     async with factory._f() as db:
         user = await db.get(User, w["user"])
-        per_round = max([
-            chat._estimate(chat.opening(ASK["messages"]), await chat.tool_schemas(db, user, {d}))
+        per_domain = {
+            d: chat._estimate(chat.opening(ASK["messages"]), await chat.tool_schemas(db, user, {d}))
             for d in registry.domains()
-        ])
-    assert 5 * per_round <= DEFAULT_TURN_INPUT_TOKENS, per_round
+        }
+        base = {t["function"]["name"] for t in await chat.tool_schemas(db, user)}
+        reports = {t["function"]["name"] for t in await chat.tool_schemas(db, user, {"reports"})}
+    # TBD-669: the report queries load with their domain, not every round.
+    assert {"reports_query", "reports_sankey_query"} <= reports - base
+    assert {"scenarios_get", "reports_list"} <= base
+    assert set(per_domain) >= {"forecasts_and_plans", "reports", "notifications"}
+    over = {d: n for d, n in per_domain.items() if 5 * n > DEFAULT_TURN_INPUT_TOKENS}
+    assert not over, per_domain
 
 
 async def test_cap_reached_mid_turn_is_in_band(factory, w, client, provider):
