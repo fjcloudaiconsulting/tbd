@@ -256,7 +256,9 @@ export interface DashboardData {
   // it, looked up from the rollup rows already in memory.
   chartFilter: number | null;
   chartFilterName: string | null;
-  // TBD-339: each tile passes the `CategoryMatch` its figure was grouped by.
+  // TBD-339: each tile passes the `CategoryMatch` its figure was grouped by,
+  // and shows/toggles a selection only when BOTH the id and this mode match.
+  chartFilterMatch: CategoryMatch;
   setChartFilter: (c: number | null, match?: CategoryMatch) => void;
   // recent transactions tile (Phase 2c)
   transactions: Transaction[];
@@ -1388,6 +1390,7 @@ export function DashboardDataProvider({
     forecastChartRows,
     chartFilter,
     chartFilterName,
+    chartFilterMatch,
     setChartFilter,
     // Phase 2c recent transactions
     transactions,

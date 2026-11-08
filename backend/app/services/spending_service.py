@@ -229,9 +229,12 @@ async def compute_spending_by_category(
     meta = await load_category_meta(db, org_id, set(by_category))
     # TBD-339: the donut rolls subcategories up into their master client-side,
     # and a master with no direct spend has no row of its own to name it.
-    parent_meta = await load_category_meta(
-        db, org_id, {m["parent_id"] for m in meta.values() if m["parent_id"]}
-    )
+    # A master that has direct spend is already in ``meta``; look up only the rest.
+    parent_ids = {m["parent_id"] for m in meta.values() if m["parent_id"]}
+    parent_meta = {
+        **meta,
+        **await load_category_meta(db, org_id, parent_ids - set(meta)),
+    }
 
     categories = []
     for cid in sorted(by_category):

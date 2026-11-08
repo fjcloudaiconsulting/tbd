@@ -872,6 +872,9 @@ function LegacyDashboard() {
       ?? null
     );
   }, [chartFilter, donutDataRaw, dashBudgets, forecastExpenseItems]);
+  // A slice is selected only by a SUBTREE filter on its id: a forecast bar's
+  // exact filter on the same master is a different (90.00 vs 250.00) set.
+  const isDonutSelected = (id: number) => chartFilter === id && chartFilterMatch === "subtree";
 
 
   function toggleDashSort(field: DashTxSort) {
@@ -1195,12 +1198,12 @@ function LegacyDashboard() {
                             // never by name — names are not unique across
                             // subcategories.
                             const cid = donutData[idx]?.categoryId;
-                            if (cid != null) setChartFilter(chartFilter === cid ? null : cid, "subtree");
+                            if (cid != null) setChartFilter(isDonutSelected(cid) ? null : cid, "subtree");
                           }}
                         >
                           {donutData.map((d, i) => (
                             <Cell key={d.categoryId} fill={CHART_SERIES[i % CHART_SERIES.length]}
-                              opacity={chartFilter !== null && chartFilter !== d.categoryId ? 0.3 : 1} />
+                              opacity={chartFilter !== null && !isDonutSelected(d.categoryId) ? 0.3 : 1} />
                           ))}
                         </Pie>
                         {/* Single-series pie: recharts renders the slice
@@ -1333,8 +1336,8 @@ function LegacyDashboard() {
                       </div>
                     </div>
                     {sortedSpending.slice(0, 10).map((d) => (
-                      <button key={d.categoryId} onClick={() => setChartFilter(chartFilter === d.categoryId ? null : d.categoryId, "subtree")}
-                        className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.categoryId ? "bg-surface-overlay" : ""}`}>
+                      <button key={d.categoryId} onClick={() => setChartFilter(isDonutSelected(d.categoryId) ? null : d.categoryId, "subtree")}
+                        className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${isDonutSelected(d.categoryId) ? "bg-surface-overlay" : ""}`}>
                         <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_SERIES[d.origIdx % CHART_SERIES.length] }} />
                         <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
                         {/* %/amount carry data, so they ride text-secondary
@@ -1407,7 +1410,7 @@ function LegacyDashboard() {
                           // grouping.
                           const cid = dashBudgets[idx]?.category_id;
                           // TBD-339: a budget is master + subs -> subtree.
-                          if (cid != null) setChartFilter(chartFilter === cid ? null : cid, "subtree");
+                          if (cid != null) setChartFilter(chartFilter === cid && chartFilterMatch === "subtree" ? null : cid, "subtree");
                         }}
                       >
                         {dashBudgets.map((b) => (
@@ -1468,7 +1471,7 @@ function LegacyDashboard() {
                               // identity.
                               const cid = forecastExpenseItems[idx]?.category_id;
                               // TBD-339: forecast rows are per own category -> exact.
-                              if (cid != null) setChartFilter(chartFilter === cid ? null : cid, "exact");
+                              if (cid != null) setChartFilter(chartFilter === cid && chartFilterMatch === "exact" ? null : cid, "exact");
                             }}
                           />
                           <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={220}>

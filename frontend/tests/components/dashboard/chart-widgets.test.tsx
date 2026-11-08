@@ -129,6 +129,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   forecastExpenseItems: [],
   forecastChartRows: [],
   chartFilter: null,
+  chartFilterMatch: "exact",
   chartFilterName: null,
   setChartFilter: MOCK_SETFILTER,
   transactions: [],
@@ -256,6 +257,23 @@ describe("SpendingDonutWidget", () => {
     expect(screen.getByText(/Filtering: Food/)).toBeInTheDocument();
   });
 
+  it("an EXACT filter on the same id (forecast bar) is not this slice's selection: no highlight, and a click switches to subtree", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      donutData: [{ categoryId: 7, name: "Food", value: 200 }],
+      sortedSpending: [{ categoryId: 7, name: "Food", value: 200, pct: 100, origIdx: 0 }],
+      chartFilter: 7,
+      chartFilterMatch: "exact",
+      chartFilterName: "Food",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>);
+    const row = screen.getByRole("button", { name: /^Food/ });
+    expect(row.className).not.toContain("bg-surface-overlay");
+    fireEvent.click(row);
+    expect(setChartFilter).toHaveBeenCalledWith(7, "subtree");
+  });
+
   it("clicking filter badge clears chartFilter (calls setChartFilter(null))", () => {
     const setChartFilter = vi.fn();
     mockWith({
@@ -351,6 +369,7 @@ describe("BudgetBarsWidget", () => {
       dashBudgets: [MOCK_BUDGET],
       budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
       chartFilter: MOCK_BUDGET.category_id,
+      chartFilterMatch: "subtree",
       chartFilterName: "Groceries",
       setChartFilter,
     });
@@ -477,6 +496,22 @@ describe("ForecastBarsWidget", () => {
     fireEvent.click(screen.getByTestId("bar-planned"));
     // TBD-221: category_id, matching the rollup's identity.
     // TBD-339: forecast rows are per own category -> exact.
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_FORECAST_EXPENSE_ITEM.category_id, "exact");
+  });
+
+  it("a SUBTREE filter on the same id (budget bar) is not this bar's: a click switches to exact instead of clearing", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      forecast: MOCK_FORECAST,
+      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
+      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
+      chartFilter: MOCK_FORECAST_EXPENSE_ITEM.category_id,
+      chartFilterMatch: "subtree",
+      chartFilterName: "Transport",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
+    fireEvent.click(screen.getByTestId("bar-planned"));
     expect(setChartFilter).toHaveBeenCalledWith(MOCK_FORECAST_EXPENSE_ITEM.category_id, "exact");
   });
 

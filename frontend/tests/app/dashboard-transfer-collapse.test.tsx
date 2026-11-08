@@ -11,7 +11,7 @@
  * strips, so text-based counting would over-match.
  */
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 // Recharts' ResponsiveContainer measures its parent, and jsdom reports 0x0 —
 // so every chart in the page renders NOTHING and no bar can be clicked. F8d
@@ -112,6 +112,22 @@ const HOME_ROLLUP = [
 ];
 const HOME_DIRECT_ROW = tx({ id: 201, amount: "90.00", category_id: HOME_ID, category_name: "Home", description: "Home direct" });
 const UTILITIES_ROW = tx({ id: 202, amount: "160.00", category_id: 11, category_name: "Utilities", description: "Utilities sub" });
+const HOME_BUDGET = {
+  id: 1, category_id: HOME_ID, category_name: "Home",
+  amount: "300.00", spent: "250.00", percent_used: 83,
+  period_start: "2026-05-01", period_end: null,
+};
+// Forecast items are per OWN category: the Home item is the 90.00 direct spend.
+const HOME_PLAN = {
+  id: 1, billing_period_id: 1, period_start: "2026-05-01", period_end: null,
+  status: "active", total_planned_income: "0", total_planned_expense: "100.00",
+  total_actual_income: "0", total_actual_expense: "90.00",
+  items: [{
+    id: 1, plan_id: 1, category_id: HOME_ID, category_name: "Home", parent_id: null,
+    type: "expense", planned_amount: "100.00", source: "manual",
+    actual_amount: "90.00", variance: "10.00",
+  }],
+};
 
 let listUrls: string[] = [];
 let projectionCategories: Record<string, unknown>[] = [];
@@ -304,13 +320,7 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
   it("TBD-339: the Home budget bar opens the 250.00 subtree it reports, not the 90.00 direct rows", async () => {
     // The live bug: Budget Progress rolls Home up to 250.00 (90 direct + 160
     // Utilities) while the drilldown always sent `exact`, opening 90.00.
-    mockDashboard([tx()], [
-      {
-        id: 1, category_id: HOME_ID, category_name: "Home",
-        amount: "300.00", spent: "250.00", percent_used: 83,
-        period_start: "2026-05-01", period_end: null,
-      },
-    ], HOME_ROLLUP);
+    mockDashboard([tx()], [HOME_BUDGET], HOME_ROLLUP);
     const { container } = render(<DashboardPage />);
     await screen.findByTestId("dash-settled-1");
 
@@ -331,16 +341,7 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
   it("TBD-339: a Forecast bar still drills down with category_match=exact", async () => {
     // Forecast items are grouped by OWN category, so the Home item is the
     // 90.00 of direct spend and its drilldown must not pull Utilities in.
-    mockDashboard([tx()], [], HOME_ROLLUP, {
-      id: 1, billing_period_id: 1, period_start: "2026-05-01", period_end: null,
-      status: "active", total_planned_income: "0", total_planned_expense: "100.00",
-      total_actual_income: "0", total_actual_expense: "90.00",
-      items: [{
-        id: 1, plan_id: 1, category_id: HOME_ID, category_name: "Home", parent_id: null,
-        type: "expense", planned_amount: "100.00", source: "manual",
-        actual_amount: "90.00", variance: "10.00",
-      }],
-    });
+    mockDashboard([tx()], [], HOME_ROLLUP, HOME_PLAN);
     const { container } = render(<DashboardPage />);
     await screen.findByTestId("dash-settled-1");
 
@@ -360,6 +361,78 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     });
     await screen.findByTestId("dash-settled-201");
     expect(screen.queryByTestId("dash-settled-202")).toBeNull();
+  });
+
+  // ── Selection is id AND mode (PR 1129 review) ─────────────────────────────
+  // The exact Home filter (forecast, 90.00) and the subtree Home filter
+  // (donut / budget, 250.00) share an id. A tile that compared only the id
+  // highlighted its 250.00 slice over a 90.00 list, and a click on it CLEARED
+  // the filter instead of switching to the subtree.
+
+  const homeDrills = () => listUrls.filter((u) => u.includes(`category_id=${HOME_ID}&`));
+  const homeLegendRow = () =>
+    within(screen.getByTestId("spending-donut")).getByText("Home").closest("button")!;
+  // Budget Progress renders before Forecast by Category; each chart's first
+  // <Bar> is the clickable one (spent / planned).
+  const barChart = (container: HTMLElement, i: number) =>
+    Array.from(container.querySelectorAll(".recharts-wrapper"))
+      .filter((w) => w.querySelector(".recharts-bar"))[i]
+      ?.querySelector(".recharts-bar-rectangle") ?? null;
+
+  it("TBD-339: forecast bar then donut slice switches exact -> subtree, highlighting only the subtree", async () => {
+    mockDashboard([tx()], [], HOME_ROLLUP, HOME_PLAN);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    const planned = await waitFor(() => {
+      const rect = barChart(container, 0);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(planned);
+    await waitFor(() => expect(homeDrills().at(-1)).toContain("category_match=exact"));
+    await screen.findByTestId("dash-settled-201");
+    // The donut's 250.00 Home slice is NOT the 90.00 selection.
+    expect(homeLegendRow().className).not.toContain("bg-surface-overlay");
+
+    const before = homeDrills().length;
+    fireEvent.click(homeLegendRow());
+    await waitFor(() => expect(homeDrills().length).toBeGreaterThan(before));
+    expect(homeDrills().at(-1)).toContain("category_match=subtree");
+    await screen.findByTestId("dash-settled-202");
+    expect(homeLegendRow().className).toContain("bg-surface-overlay");
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
+  });
+
+  it("TBD-339: budget bar then forecast bar switches subtree -> exact instead of clearing", async () => {
+    mockDashboard([tx()], [HOME_BUDGET], HOME_ROLLUP, HOME_PLAN);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    const spent = await waitFor(() => {
+      const rect = barChart(container, 0);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(spent);
+    await waitFor(() => expect(homeDrills().at(-1)).toContain("category_match=subtree"));
+    await screen.findByTestId("dash-settled-202");
+    expect(homeLegendRow().className).toContain("bg-surface-overlay");
+
+    const before = homeDrills().length;
+    const planned = await waitFor(() => {
+      const rect = barChart(container, 1);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(planned);
+    await waitFor(() => expect(homeDrills().length).toBeGreaterThan(before));
+    expect(homeDrills().at(-1)).toContain("category_match=exact");
+    await waitFor(() => expect(screen.queryByTestId("dash-settled-202")).toBeNull());
+    expect(screen.getByTestId("dash-settled-201")).toBeInTheDocument();
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
+    // The donut no longer claims the selection.
+    expect(homeLegendRow().className).not.toContain("bg-surface-overlay");
   });
 
   it("TBD-505: the Budget Progress spent bars draw with real width", async () => {
