@@ -1,5 +1,6 @@
 # Production overrides — use with:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Needs Docker Compose 2.24.4 or newer for the `!reset` tags below (TBD-799).
 #
 # Key differences from dev:
 # - Frontend uses production Dockerfile (multi-stage, standalone build)
