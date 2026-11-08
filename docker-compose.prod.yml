@@ -1,5 +1,6 @@
 # Production overrides — use with:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Needs Docker Compose 2.24.4 or newer for the `!reset` tags below (TBD-799).
 #
 # Key differences from dev:
 # - Frontend uses production Dockerfile (multi-stage, standalone build)
@@ -41,7 +42,7 @@ services:
       migrate:
         condition: service_completed_successfully
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--workers", "2", "--proxy-headers"]
-    volumes: []  # Override dev volume mounts — immutable container
+    volumes: !reset []  # Clear the dev mounts (a plain [] would merge with them): immutable container
 
   # TBD-561: the MCP component with its OWN JWT and MFA recovery secrets
   # (never the backend's) and no dev defaults.
@@ -53,7 +54,7 @@ services:
       - JWT_SECRET_KEY=${MCP_JWT_SECRET_KEY:?set MCP_JWT_SECRET_KEY in .env}
       - MFA_RECOVERY_HMAC_KEY=${MCP_MFA_RECOVERY_HMAC_KEY:?set MCP_MFA_RECOVERY_HMAC_KEY in .env}
     command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--proxy-headers"]
-    volumes: []  # immutable container
+    volumes: !reset []  # immutable container
 
   frontend:
     build:
@@ -65,7 +66,7 @@ services:
       - HOSTNAME=0.0.0.0
     depends_on:
       - backend
-    volumes: []  # Override dev volume mounts — immutable container
+    volumes: !reset []  # Clear the dev mounts (a plain [] would merge with them): immutable container
 
   nginx:
     restart: unless-stopped
