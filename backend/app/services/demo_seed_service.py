@@ -39,6 +39,7 @@ from app.models.transaction import (
     TransactionStatus,
     TransactionType,
 )
+from app.models.user import Organization
 from app.services.currency_service import (
     assert_org_currency_allows,
     normalise_currency,
@@ -148,6 +149,13 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
       2. Commit on return.
       3. Catch :class:`DemoSeedAlreadyApplied` and map to HTTP 409.
     """
+    # TBD-508: lock the org row before anything else, in the same order as
+    # ``assert_org_currency_allows`` (organizations, then accounts). Without
+    # it the sentinel insert below takes a shared lock on this row through its
+    # foreign key, which the currency check later upgrades to exclusive.
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
     if await _has_real_data(db, org_id):
         raise DemoSeedAlreadyApplied("org already has user data")
     if await _has_sentinel(db, org_id):
@@ -191,6 +199,10 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
     existing_currency = (
         await db.execute(
             select(Account.currency).where(Account.org_id == org_id).limit(1)
+            # A locking read sees accounts committed since this transaction's
+            # snapshot, so the seed adopts a currency a concurrent create just
+            # wrote instead of picking EUR and being refused (TBD-508).
+            .with_for_update()
         )
     ).scalar_one_or_none()
     seed_currency = (

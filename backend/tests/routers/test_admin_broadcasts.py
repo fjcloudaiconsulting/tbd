@@ -624,6 +624,11 @@ async def test_audit_events_carry_no_recipient_email(session_factory):
         )
         await _wait_for_terminal_status(client, draft["id"])
         await await_broadcast_drains()
+        # The send left it COMPLETED, which is not resumable (TBD-348); mark it
+        # FAILED, as a crashed drain would, so the resume writes its audit row.
+        async with session_factory() as db:
+            (await db.get(EmailBroadcast, draft["id"])).status = BroadcastStatus.FAILED
+            await db.commit()
         assert (
             client.post(f"/api/v1/admin/broadcasts/{draft['id']}/resume").status_code
             == 200
@@ -974,27 +979,158 @@ async def test_resume_on_draft_returns_409_launches_nothing_and_send_still_works
     assert audits == []
 
 
+# TBD-348: the resume gate. Each case is (status, recipient rows as
+# (status, attempts, delivery_status), expected 409 code or None if resumable).
+# ``_AT_CAP``/``_OVER_CAP`` resolve against ``broadcast_max_attempts``. The
+# completeness check below makes a new ``BroadcastStatus`` fail here until
+# someone rules on it.
+_AT_CAP, _OVER_CAP = "at_cap", "over_cap"
+_RESUME_CASES = {
+    "draft": (BroadcastStatus.DRAFT, [], "broadcast_not_started"),
+    "sending": (BroadcastStatus.SENDING, [], None),
+    "failed": (BroadcastStatus.FAILED, [], None),
+    # TBD-637 F2: a rejected batch leaves the broadcast completed with failed
+    # rows below the cap, and resume is how those are retried.
+    "completed_with_retryable_failed": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.SENT, 1, None), (RecipientStatus.FAILED, 1, None)],
+        None,
+    ),
+    "completed_with_no_rows": (BroadcastStatus.COMPLETED, [], "broadcast_completed"),
+    "completed_all_sent_or_skipped": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.SENT, 1, None), (RecipientStatus.SKIPPED, 0, None)],
+        "broadcast_completed",
+    ),
+    "completed_failed_at_cap": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.SENT, 1, None), (RecipientStatus.FAILED, _AT_CAP, None)],
+        "broadcast_completed",
+    ),
+    "completed_failed_over_cap": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.FAILED, _OVER_CAP, None)],
+        "broadcast_completed",
+    ),
+    # A failed row a webhook already reported on is not retried (TBD-330), so
+    # it does not make a completed broadcast resumable either.
+    "completed_failed_but_reported": (
+        BroadcastStatus.COMPLETED,
+        [(RecipientStatus.FAILED, 1, "bounced_permanent")],
+        "broadcast_completed",
+    ),
+}
+
+
+def test_resume_cases_cover_every_broadcast_status():
+    assert {status for status, _rows, _code in _RESUME_CASES.values()} == set(
+        BroadcastStatus
+    )
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "status_",
-    [BroadcastStatus.SENDING, BroadcastStatus.FAILED, BroadcastStatus.COMPLETED],
-)
-async def test_resume_on_started_broadcast_is_still_accepted(
-    session_factory, monkeypatch, status_
-):
-    """TBD-637 F2: the draft gate must not over-tighten (COMPLETED can still
-    hold failed rows below the retry cap)."""
+@pytest.mark.parametrize("case", list(_RESUME_CASES))
+async def test_resume_gate_per_status(session_factory, monkeypatch, case):
+    """TBD-348: ``sending`` and ``failed`` are resumed, and ``completed`` only
+    while it holds rows the resume drain would retry. Everything else gets a
+    coded 409, launches nothing, writes no audit row and keeps its status. The
+    resumable cases are the control: a gate that refused everything fails them.
+    """
+    status_, rows, code = _RESUME_CASES[case]
+    cap = app_settings.broadcast_max_attempts
+    attempts_of = {_AT_CAP: cap, _OVER_CAP: cap + 1}
     await _seed(session_factory)
     launched: list[int] = []
     monkeypatch.setattr(
         admin_broadcasts_module, "launch_resume", lambda _sf, bid: launched.append(bid)
     )
     broadcast_id = await _seed_broadcast_with_status(session_factory, status_)
+    async with session_factory() as db:
+        for i, (rstatus, attempts, delivery_status) in enumerate(rows):
+            db.add(
+                EmailBroadcastRecipient(
+                    broadcast_id=broadcast_id,
+                    email=f"r{i}@customer.io",
+                    status=rstatus,
+                    attempts=attempts_of.get(attempts, attempts),
+                    delivery_status=delivery_status,
+                )
+            )
+        await db.commit()
+
     app = _make_app(session_factory, _superadmin_resolver())
     with TestClient(app) as client:
         res = client.post(f"/api/v1/admin/broadcasts/{broadcast_id}/resume")
-    assert res.status_code == 200
-    assert launched == [broadcast_id]
+
+    async with session_factory() as db:
+        audits = (
+            await db.execute(
+                select(AuditEvent).where(AuditEvent.event_type == "broadcast.resume")
+            )
+        ).scalars().all()
+        assert (await db.get(EmailBroadcast, broadcast_id)).status == status_
+
+    if code is None:
+        assert res.status_code == 200, res.text
+        assert launched == [broadcast_id]
+        assert len(audits) == 1
+    else:
+        assert res.status_code == 409
+        assert res.json()["detail"] == {"code": code}
+        assert launched == []
+        assert audits == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_", [BroadcastStatus.SENDING, BroadcastStatus.FAILED])
+async def test_resume_continues_the_send_without_resending_sent_rows(
+    session_factory, _mock_send_email, status_
+):
+    """TBD-348 control, end to end with the real drain: a stalled or failed
+    broadcast is resumed, its unsent rows go out and the already-sent row is
+    not mailed again."""
+    await _seed(session_factory)
+    broadcast_id = await _seed_broadcast_with_status(
+        session_factory, status_, total_recipients=3
+    )
+    async with session_factory() as db:
+        users = (
+            await db.execute(
+                select(User).where(User.email_verified.is_(True), User.is_active.is_(True))
+                .order_by(User.id)
+            )
+        ).scalars().all()
+        assert len(users) == 3
+        for user, rstatus in zip(
+            users,
+            [RecipientStatus.SENT, RecipientStatus.PENDING, RecipientStatus.FAILED],
+        ):
+            db.add(
+                EmailBroadcastRecipient(
+                    broadcast_id=broadcast_id,
+                    user_id=user.id,
+                    email=user.email,
+                    first_name=user.first_name,
+                    status=rstatus,
+                    attempts=1 if rstatus != RecipientStatus.PENDING else 0,
+                )
+            )
+        await db.commit()
+
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.post(f"/api/v1/admin/broadcasts/{broadcast_id}/resume")
+        assert res.status_code == 200, res.text
+        await await_broadcast_drains()
+
+    sent_to = [
+        addr for call in _mock_send_email["drain"].await_args_list for addr in call.args[0]
+    ]
+    assert sorted(sent_to) == ["cust1@customer.io", "cust2@customer.io"]
+    async with session_factory() as db:
+        b = await db.get(EmailBroadcast, broadcast_id)
+        assert b.status == BroadcastStatus.COMPLETED
+        assert b.sent_count == 3
 
 
 # ── a failed dry-run send must not unlock the send gate (TBD-266) ────────

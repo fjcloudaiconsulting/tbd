@@ -34,10 +34,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import Organization, Role, User
 from app.security import session_cutoff
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.invitation_service import CODE_TARGET_IS_SUPERADMIN
 
-# ``ConflictError.code`` of the platform-superadmin guard; the router answers
-# it with 403 (BE-30: branch on the code, never on the message text).
-CODE_TARGET_IS_SUPERADMIN = "target_is_superadmin"
+# ``CODE_TARGET_IS_SUPERADMIN`` is the ``ConflictError.code`` of the
+# platform-superadmin guard; the router answers it with 403 (BE-30: branch on
+# the code, never on the message text). It is TBD-364's constant, reused so the
+# fact has one spelling across both member surfaces (TBD-374).
 
 
 # Roles a superadmin can assign through this endpoint. Restricted to

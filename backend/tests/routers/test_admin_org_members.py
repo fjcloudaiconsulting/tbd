@@ -34,7 +34,7 @@ from app.models.user import Organization, Role, User
 from app.models.notification import UserNotificationPreferences
 from app.routers.admin_orgs import router as admin_orgs_router
 from app.security import hash_password
-from app.services import admin_org_members_service
+from app.services import admin_org_members_service, invitation_service
 from app.services.exceptions import ConflictError
 from app.services import notification_service
 
@@ -554,7 +554,11 @@ async def test_patch_cannot_target_superadmin(session_factory):
             json={"is_active": False},
         )
     assert res.status_code == 403
-    assert "superadmin" in res.json()["detail"].lower()
+    # One spelling of this fact across both member surfaces (TBD-364, TBD-374).
+    assert res.json()["detail"] == {
+        "code": invitation_service.CODE_TARGET_IS_SUPERADMIN,
+        "message": "Cannot modify a platform superadmin via org-member admin",
+    }
 
 
 @pytest.mark.asyncio

@@ -390,6 +390,29 @@ def contributes_to_cached_balance(
     return partner.linked_transaction_id == tx.id
 
 
+def account_currency_key():
+    """The canonical currency expression: ``UPPER(TRIM(accounts.currency))``.
+
+    ⚠ NOT the bare column, and not only for tidiness. ``accounts.currency`` was
+    FREE TEXT before TBD-325 PR 1, and ``AccountUpdate`` carries no currency
+    field (``schemas/account.py``), so a legacy ``'eur'`` or ``'EUR '`` row is
+    unrepairable through the product. MySQL's case-insensitive collation folds
+    case inside GROUP BY and comparisons; SQLite does not -- and every CI shard
+    but the migration checks runs on aiosqlite. A bare column therefore splits
+    ``'eur'`` and ``'EUR'`` into two partitions, and drops the lowercase row
+    from a filter, ON CI ONLY. The padded row is a defect on BOTH engines (the
+    MySQL collation is NO PAD). Same normalise-BOTH-sides rule as
+    ``currency_service.resolve_currency_scope``.
+
+    Every report source uses this ONE expression for its currency dimension,
+    its GROUP BY and its currency filter (TBD-507, TBD-550), so the group key
+    and the predicate cannot drift apart. The filter's other side is already
+    canonical: ``schemas/reports_query._coerce_filter_scalar`` strips,
+    uppercases and length-checks every currency filter value on construction.
+    """
+    return func.upper(func.trim(Account.currency))
+
+
 def org_currency_filter(
     org_id: int,
     currency_scope: dict | None,

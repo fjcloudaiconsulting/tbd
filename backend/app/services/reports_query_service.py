@@ -49,6 +49,7 @@ from app.schemas.reports_query import (
 )
 from app.services import currency_service
 from app.services.transaction_filters import (
+    account_currency_key,
     effective_period_date_expr,
     non_reverted_transaction_filter,
     org_currency_filter,
@@ -79,26 +80,6 @@ _DIM_KEYS: dict[Dimension, str] = {
 }
 
 
-def _currency_key():
-    """The canonical currency expression: ``UPPER(TRIM(accounts.currency))``.
-
-    ⚠ NOT the bare column, and not only for tidiness. ``accounts.currency`` was
-    FREE TEXT before TBD-325 PR 1, and ``AccountUpdate`` carries no currency
-    field (``schemas/account.py``), so a legacy ``'eur'`` row is unrepairable
-    through the product. MySQL's ``utf8mb4_0900_ai_ci`` folds case inside GROUP
-    BY and comparisons; SQLite does not -- and every CI shard except ``Migration
-    Checks`` runs on aiosqlite. A bare column therefore splits ``'eur'`` and
-    ``'EUR'`` into two partitions, and drops the lowercase row from a filter,
-    ON CI ONLY. The same normalise-BOTH-sides rule
-    ``currency_service.resolve_currency_scope`` spells out.
-
-    One function, used by the dimension AND the filter, so the group key and the
-    predicate cannot drift apart into the case where a filter matches rows the
-    grouping then splits.
-    """
-    return func.upper(func.trim(Account.currency))
-
-
 def _dimension_expr(dim: Dimension, dialect_name: str):
     """Return the SQLAlchemy expression for a dimension column.
 
@@ -119,7 +100,7 @@ def _dimension_expr(dim: Dimension, dialect_name: str):
     if dim is Dimension.ACCOUNT:
         return Account.name
     if dim is Dimension.CURRENCY:
-        return _currency_key()
+        return account_currency_key()
     if dim is Dimension.ACCOUNT_TYPE:
         # ⚠ ``AccountType.name``, never ``slug``. ``routers/account_types.py``
         # never assigns a slug, so every user-created type has ``slug IS NULL``
@@ -398,7 +379,7 @@ def _apply_currency_filter(stmt: Select, f: Filter, org_id: int) -> Select:
         Transaction.account_id.in_(
             select(Account.id).where(
                 Account.org_id == org_id,
-                _currency_key().in_(values),
+                account_currency_key().in_(values),
             )
         )
     )

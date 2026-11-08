@@ -879,6 +879,23 @@ jobs:
             exit 1
           fi
 
+      # TBD-508. Concurrent first accounts in a fresh org must not deadlock on
+      # the one-currency check's gap lock (a 500) and must leave the org in one
+      # currency; both rest on InnoDB locks, so the fences run here. A skip is
+      # red, as above.
+      - name: Run the first account currency fences against MySQL
+        working-directory: backend
+        env:
+          ACCOUNTS_CURRENCY_MYSQL_URL: ${{ env.DATABASE_URL }}
+          ACCOUNTS_CURRENCY_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/routers/test_first_account_currency_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/first-account-currency.log
+          if grep -q '^SKIPPED' /tmp/first-account-currency.log; then
+            echo "a first account currency fence did not run"
+            exit 1
+          fi
+
       # TBD-586 (R12, R16, R18). The platform reserve/settle race fences need a
       # real InnoDB: two connections, row locks, rowcount semantics. They live in
       # tests/services/test_platform_reserve_mysql.py and are not run anywhere

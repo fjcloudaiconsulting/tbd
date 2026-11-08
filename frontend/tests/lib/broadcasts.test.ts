@@ -54,6 +54,8 @@ describe("BROADCAST_ERROR_COPY", () => {
       "confirm_count_mismatch",
       "recipient_cap_exceeded",
       "broadcast_not_draft",
+      "broadcast_not_started",
+      "broadcast_completed",
       "invalid_template_token",
     ]) {
       expect(BROADCAST_ERROR_COPY[code]).toBeTruthy();
