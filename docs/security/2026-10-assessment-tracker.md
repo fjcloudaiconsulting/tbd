@@ -331,7 +331,7 @@ titles only; the detail is in Jira.
 | TBD-653 | Sign-in and MFA attempt limits (earlier audit) | BE-02, BE-26 | Checked 2026-10-25: all three items shipped in #1009; the remaining paths are in #1033. Close when #1033 merges |
 | TBD-611 | Login timing (earlier audit) | BE-25 | Confirmed shipped in #1009; closed 2026-10-25 |
 | TBD-654 | Auth hardening lows (earlier audit) | BE-25, FE-03 | Items 1 and 3 (backend) shipped in #1009; item 3 (frontend) in #1034; item 4 in #1033; item 2 (register response): email-first sign-up, PR 1 (backend) merged in #1077, PRs 2 to 4 to follow |
-| TBD-609 | AI credential base URL handling | DB-02 | Shipped in #1008; confirm and close |
+| TBD-609 | AI credential base URL handling | DB-02 | Confirmed: #1008 masks the stored URL; #1121 adds tests that keep it masked. Closed 2026-11-08 |
 | TBD-655 | Database user separation | DB-04 | Same work as DB-04; the app part is #1030, the user split follows in cloud-infra |
 | TBD-477, TBD-401, TBD-475 | CSP report writer, audit retention, audit UI | BE-10 | The writer is bounded by #1008, and CSP rows have a 30-day retention since #1019; check each, then narrow or close |
 | TBD-607 | AI adapter error handling | BE-09 | Related hardening in the same code; #1042, stacked on #1035 |
@@ -345,6 +345,16 @@ titles only; the detail is in Jira.
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-11-08, overnight round: coding session (Claude Code, with Jira access)
+
+- **Did:** merged #1103, #1109, #1111 to #1115, #1117 to #1119 and #1121 to
+  #1125 (independent review on each).
+- **Security-relevant:** #1121 (TBD-609) adds tests that lock in the DB-02
+  masking; #1125 (TBD-374) refuses superadmin targets by error code; #1122
+  (TBD-348) gates broadcast resume.
+- **Changed here:** the TBD-609 row.
+- **Next:** DB-02 stays Partial until the stored-URL clean-up (TBD-711).
 
 ### 2026-11-03, backlog round: coding session (Claude Code, with Jira access)
 
