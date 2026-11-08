@@ -187,17 +187,19 @@ def test_synth_consumed_credit_attributed_to_one_cycle():
     # May-25 close -> due Jul 1 (window (May25, Jul1]). The two windows OVERLAP
     # on (May25, Jun1]. A credit dated May 28 sits INSIDE that overlap, so it is
     # a candidate for BOTH cycles; the consumed-set must attribute it to the
-    # earliest owning cycle only. Without that guard cycle 2 would re-net 200
-    # (yielding outflow 0, dropped) and the assertion below would fail.
+    # earliest owning cycle only. Cycle 1: 1000 - 200 = 800. Cycle 2: 1500 at
+    # its close, less 800 projected and the 200 already paid (TBD-797) = 500.
+    # Without the guard cycle 2 would re-net the 200 and pay only 300.
     acct = _FakeAccount(close_day=25, payment_day=1, payment_day_relative_month=2,
                         payment_strategy="full_balance")
-    ledger = [(date(2026, 3, 10), Decimal("-1000.00"))]
     credits = [(7, date(2026, 5, 28), Decimal("200.00"))]
+    ledger = [(date(2026, 3, 10), Decimal("-1000.00")), (date(2026, 5, 20), Decimal("-500.00")),
+              (date(2026, 5, 28), Decimal("200.00"))]
     pays = svc.synthesize_account_cc_payments(
         acct, p_start=date(2026, 6, 1), p_end=date(2026, 7, 31),
         opening_balance=Decimal("0.00"), ledger=ledger, credits=credits, per_cycle_amounts={},
     )
-    assert pays == [(date(2026, 6, 1), Decimal("800.00")), (date(2026, 7, 1), Decimal("200.00"))]
+    assert pays == [(date(2026, 6, 1), Decimal("800.00")), (date(2026, 7, 1), Decimal("500.00"))]
 
 
 def test_synth_skips_degenerate_cycle_payment_on_or_before_close():
@@ -223,3 +225,91 @@ def test_synth_skips_degenerate_cycle_payment_on_or_before_close():
         opening_balance=Decimal("0.00"), ledger=ledger, credits=[], per_cycle_amounts={},
     )
     assert pays == []
+
+
+def test_synth_two_month_grace_real_payment_after_next_close_not_paid_twice():
+    """TBD-797. relative_month=2: Apr-25 close -> due Jun 1, May-25 close -> due
+    Jul 1. A 300 Apr charge (Apr bill) and a 200 May charge (May bill); the
+    owner pays the Apr bill for real on May 28, AFTER the May close, so the May
+    balance-at-close (-500) does not see it yet.
+
+    Apr cycle: owed 300, its own credit 300 -> outflow 0.
+    May cycle: owed 500 at close, less the 300 already paid on May 28 -> 200.
+    Total projected 200 = 500 charged - 300 paid. Before the fix the May cycle
+    paid the full 500 (the Apr 300 twice)."""
+    acct = _FakeAccount(close_day=25, payment_day=1, payment_day_relative_month=2,
+                        payment_strategy="full_balance")
+    pay_in = (7, date(2026, 5, 28), Decimal("300.00"))
+    ledger = [
+        (date(2026, 4, 10), Decimal("-300.00")),
+        (date(2026, 5, 10), Decimal("-200.00")),
+        (pay_in[1], pay_in[2]),  # the payment-in leg is a ledger row too
+    ]
+    bills = svc.synthesize_account_cc_cycles(
+        acct, p_start=date(2026, 6, 1), p_end=date(2026, 7, 31),
+        opening_balance=Decimal("0.00"), ledger=ledger, credits=[pay_in], per_cycle_amounts={},
+    )
+    assert [(b.payment_date, b.owed, b.credits, b.outflow) for b in bills] == [
+        (date(2026, 6, 1), Decimal("300.00"), Decimal("300.00"), Decimal("0.00")),
+        (date(2026, 7, 1), Decimal("200.00"), Decimal("0"), Decimal("200.00")),
+    ]
+
+
+def test_synth_two_month_grace_fixed_amount_capped_by_real_payment():
+    """TBD-797, fixed amount: same card and ledger as above, paying 400 a cycle.
+    The May cycle may pay at most what is still owed (500 - 300 = 200), not 400."""
+    acct = _FakeAccount(close_day=25, payment_day=1, payment_day_relative_month=2,
+                        payment_strategy="fixed_amount", fixed_payment_amount=Decimal("400.00"))
+    pay_in = (7, date(2026, 5, 28), Decimal("300.00"))
+    ledger = [(date(2026, 4, 10), Decimal("-300.00")), (date(2026, 5, 10), Decimal("-200.00")),
+              (pay_in[1], pay_in[2])]
+    pays = svc.synthesize_account_cc_payments(
+        acct, p_start=date(2026, 6, 1), p_end=date(2026, 7, 31),
+        opening_balance=Decimal("0.00"), ledger=ledger, credits=[pay_in], per_cycle_amounts={},
+    )
+    assert pays == [(date(2026, 7, 1), Decimal("200.00"))]
+
+
+def test_synth_one_month_grace_real_payment_output_unchanged():
+    """TBD-797 fence: with one-month grace a payment owned by the earlier cycle
+    is dated before the next close, so the next balance-at-close already holds
+    it and nothing more comes off. Close 25, due the 1st of the next month.
+
+    Apr cycle (due May 1): owed 1000, credit 300 (Apr 28) -> outflow 700.
+    May cycle (due Jun 1): balance at May 25 = -1000 + 300 - 400 = -1100;
+    owed 1100 - 700 paid = 400 -> outflow 400. Total 1100 = 1400 - 300."""
+    acct = _FakeAccount(close_day=25, payment_strategy="full_balance")
+    pay_in = (9, date(2026, 4, 28), Decimal("300.00"))
+    ledger = [(date(2026, 3, 10), Decimal("-1000.00")), (pay_in[1], pay_in[2]),
+              (date(2026, 5, 10), Decimal("-400.00"))]
+    bills = svc.synthesize_account_cc_cycles(
+        acct, p_start=date(2026, 5, 1), p_end=date(2026, 6, 30),
+        opening_balance=Decimal("0.00"), ledger=ledger, credits=[pay_in], per_cycle_amounts={},
+    )
+    assert [(b.payment_date, b.owed, b.credits, b.outflow) for b in bills] == [
+        (date(2026, 5, 1), Decimal("1000.00"), Decimal("300.00"), Decimal("700.00")),
+        (date(2026, 6, 1), Decimal("400.00"), Decimal("0"), Decimal("400.00")),
+    ]
+
+
+def test_synth_one_month_grace_payment_after_next_close_not_paid_twice():
+    """TBD-797 with relative_month=1: close the 5th, due the 28th of the next
+    month, so the windows overlap too (Apr-5 close -> due May 28, May-5 close ->
+    due Jun 28). A 300 Apr 1 charge, a 200 May 1 charge, and the Apr bill paid
+    for real on May 20, after the May close.
+
+    Apr cycle: owed 300, its own credit 300 -> outflow 0.
+    May cycle: owed 500 at close, less the 300 paid May 20 -> 200."""
+    acct = _FakeAccount(close_day=5, payment_day=28, payment_day_relative_month=1,
+                        payment_strategy="full_balance")
+    pay_in = (11, date(2026, 5, 20), Decimal("300.00"))
+    ledger = [(date(2026, 4, 1), Decimal("-300.00")), (date(2026, 5, 1), Decimal("-200.00")),
+              (pay_in[1], pay_in[2])]
+    bills = svc.synthesize_account_cc_cycles(
+        acct, p_start=date(2026, 5, 28), p_end=date(2026, 6, 30),
+        opening_balance=Decimal("0.00"), ledger=ledger, credits=[pay_in], per_cycle_amounts={},
+    )
+    assert [(b.payment_date, b.outflow) for b in bills] == [
+        (date(2026, 5, 28), Decimal("0.00")),
+        (date(2026, 6, 28), Decimal("200.00")),
+    ]

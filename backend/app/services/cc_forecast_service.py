@@ -17,8 +17,9 @@ architect review"):
 ``S_prev`` threads earlier synthesized outflows this horizon (stops a
 two-due-date horizon double-billing carried debt); ``P_k_owned``
 attributes each real payment-in credit to exactly ONE owning cycle (the
-earliest window), so overlapping windows (payment_day_relative_month>=2)
-don't double-net.
+earliest window), so overlapping windows (a payment date after the next close)
+don't double-net. A credit an earlier cycle owns but dated after a later
+cycle's close also comes off that later cycle, like ``S_prev`` (TBD-797).
 """
 from __future__ import annotations
 
@@ -187,6 +188,7 @@ def synthesize_account_cc_cycles(
     cycles = due_cycles_in_horizon(account, p_start=p_start, p_end=p_end)
     s_prev = Decimal("0")
     consumed: set[Hashable] = set()
+    owned_earlier: list[tuple[date, Decimal]] = []
     bills: list[CycleBill] = []
     for cycle in cycles:
         # Belt-and-suspenders: a payment date on or before the close date
@@ -223,7 +225,12 @@ def synthesize_account_cc_cycles(
         # target is capped at what is still owed. Subtracting ``s_prev`` from
         # the TARGET instead let a fixed-amount card pay once per horizon.
         # For full balance the two are the same number.
-        capped = min(target, outstanding - s_prev)
+        # A credit an earlier cycle owns but dated after THIS close (overlapping
+        # windows: a payment date after the next close) already paid debt
+        # ``outstanding`` still holds, so it comes off like ``s_prev`` (TBD-797).
+        paid = s_prev + sum((amt for eff, amt in owned_earlier
+                             if eff > cycle.period_end_inclusive), Decimal("0"))
+        capped = min(target, outstanding - paid)
         p_k_owned = Decimal("0")
         for cid, eff, amt in credits:
             if cid in consumed:
@@ -231,8 +238,9 @@ def synthesize_account_cc_cycles(
             if cycle.period_end_inclusive < eff <= cycle.payment_date:
                 p_k_owned += amt
                 consumed.add(cid)
+                owned_earlier.append((eff, amt))
         outflow = max(Decimal("0"), capped - p_k_owned)
         bills.append(CycleBill(cycle.period_start, cycle.period_end_inclusive, cycle.payment_date,
-                               max(Decimal("0"), outstanding - s_prev), p_k_owned, outflow))
+                               max(Decimal("0"), outstanding - paid), p_k_owned, outflow))
         s_prev += outflow
     return bills
