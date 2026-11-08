@@ -19,6 +19,7 @@ from app.models.user import Organization
 from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringUpdate
 from app.services.billing_service import current_cycle_window
 from app.services.date_utils import MAX_OCCURRENCE_ITERATIONS, advance_date
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.recurring_filters import (
     active_series_filter,
@@ -212,7 +213,7 @@ async def _validate_transfer_accounts(
     if not all(active for _, _, active in rows.values()):
         raise ValidationError("A recurring transfer needs two active accounts")
     _refuse_card_or_loan_source(rows[account_id][1])
-    if rows[account_id][0] != rows[to_account_id][0]:
+    if normalise_currency(rows[account_id][0]) != normalise_currency(rows[to_account_id][0]):
         raise ValidationError("Transfer accounts must have the same currency")
 
 

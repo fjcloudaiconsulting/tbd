@@ -44,7 +44,10 @@ class Transaction(Base):
       3. Opposite types (EXPENSE / INCOME).
       4. Equal absolute amounts.
       5. Different accounts.
-      6. Same currency, evaluated as A.account.currency == B.account.currency.
+      6. Same currency, evaluated on the normalised codes:
+         normalise_currency(A.account.currency) ==
+         normalise_currency(B.account.currency), so a legacy 'eur' or 'EUR '
+         account pairs with an 'EUR' one (TBD-798).
       7. Neither row may already be linked to a third row before pairing.
       8. The reserved TransactionType.TRANSFER value is not used by the
          pairing model; legs are typed by direction.

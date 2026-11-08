@@ -35,6 +35,7 @@ export default function ForecastBarsWidget() {
     forecastExpenseItems,
     forecastChartRows,
     chartFilter,
+    chartFilterMatch,
     setChartFilter,
     isPastSelectedPeriod,
     isFutureSelectedPeriod,
@@ -66,8 +67,9 @@ export default function ForecastBarsWidget() {
                     cursor="pointer"
                     onClick={(_, idx) => {
                       // TBD-221: category_id, matching the rollup's identity.
+                      // TBD-339: forecast rows are per own category -> exact.
                       const cid = forecastExpenseItems[idx]?.category_id;
-                      if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
+                      if (cid != null) setChartFilter(chartFilter === cid && chartFilterMatch === "exact" ? null : cid, "exact");
                     }}
                   />
                   <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={220}>

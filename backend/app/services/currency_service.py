@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.account import Account
 from app.models.user import Organization
 from app.services.exceptions import ConflictError
+from app.services.transaction_filters import account_currency_key
 
 # ISO 4217 codes a consumer bank account can actually be denominated in.
 #
@@ -222,14 +223,16 @@ async def resolve_currency_scope(db: AsyncSession, *, org_id: int) -> dict:
     response-model round-trip -- correctly. The predicate takes the whole dict
     and decides for itself; see ``transaction_filters.org_currency_filter``.
     """
+    # TBD-798: group on the canonical key, so ``'usd'`` and ``'USD'`` are one
+    # excluded currency on SQLite too, not two.
+    ccy = account_currency_key()
     rows = (
         await db.execute(
-            select(Organization.primary_currency, Account.currency,
-                   func.count(Account.id))
+            select(Organization.primary_currency, ccy, func.count(Account.id))
             .select_from(Organization)
             .outerjoin(Account, Account.org_id == Organization.id)
             .where(Organization.id == org_id)
-            .group_by(Organization.primary_currency, Account.currency)
+            .group_by(Organization.primary_currency, ccy)
         )
     ).all()
     # ⚠ NORMALISE BOTH SIDES. An earlier cut normalised only ``code`` and
@@ -259,7 +262,11 @@ async def resolve_currency_scope(db: AsyncSession, *, org_id: int) -> dict:
         for _, code, n in rows
         if code is not None
         and org_currency is not None
-        and normalise_currency(code) != org_currency
+        # ``code`` is already the SQL key. Compare it as-is, exactly as
+        # ``org_currency_filter`` will: re-folding it with Python's ``strip()``
+        # (which also drops tabs) would count an ``'EUR\t'`` account as in
+        # scope while the filter drops it (TBD-798).
+        and code != org_currency
     ]
     count = sum(n for _, n in excluded)
     return {

@@ -52,6 +52,7 @@ from app.models.scenario import PlanGoal, PlanGoalKind, Scenario
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services import projection_kernel
 from app.services.account_balance_forecast_service import LIABILITY_SLUGS
+from app.services.currency_service import normalise_currency
 from app.services.date_utils import occurrences_in_window
 from app.services.projection_kernel import _CENTS, Point, _recurring_legs
 from app.services.recurring_filters import active_series_filter, remaining_occurrences
@@ -175,7 +176,7 @@ async def project(
     months = sorted({_month_of(d) for d in dates})
 
     goal_account_ids = {g.account_id for g in goals if g.account_id is not None}
-    in_currency = {a.account.id for a in base.accounts if a.account.currency == currency}
+    in_currency = {a.account.id for a in base.accounts if normalise_currency(a.account.currency) == normalise_currency(currency)}
     pool = {a.account.id for a in base.accounts
             if a.account.id in in_currency and a.type_slug not in LIABILITY_SLUGS
             and a.account.id not in goal_account_ids}

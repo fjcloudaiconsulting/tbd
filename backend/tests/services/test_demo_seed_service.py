@@ -33,6 +33,7 @@ from app.services.demo_seed_service import (
     DemoSeedAlreadyApplied,
     seed_org,
 )
+from app.services.transaction_service import reconcile_account
 
 
 @pytest_asyncio.fixture
@@ -187,3 +188,33 @@ async def test_seed_org_isolation_does_not_touch_other_orgs(session_factory):
     assert b_accts == 0
     assert b_tx == 0
     assert b_sentinel == 0
+
+
+@pytest.mark.asyncio
+async def test_seed_org_accounts_satisfy_balance_invariant(session_factory):
+    """TBD-597: every seeded account must reconcile, using the product's own
+    check (``reconcile_account``), keep the balance the demo shows, and open on
+    or before its earliest seeded transaction (the net-worth replay start)."""
+    org_id = await _bootstrap_org(session_factory, "Org A")
+    async with session_factory() as db:
+        await seed_org(db, org_id)
+        await db.commit()
+
+    async with session_factory() as db:
+        accts = (
+            await db.execute(select(Account).where(Account.org_id == org_id))
+        ).scalars().all()
+        assert {a.name: a.balance for a in accts} == {
+            "Sample Checking": Decimal("3200.00"),
+            "Sample Savings": Decimal("8500.00"),
+        }
+        for acct in accts:
+            stored, computed, ok = await reconcile_account(db, org_id, acct)
+            assert ok, f"{acct.name}: stored {stored} != computed {computed}"
+            earliest = await db.scalar(
+                select(func.min(Transaction.date)).where(
+                    Transaction.account_id == acct.id
+                )
+            )
+            if earliest is not None:
+                assert acct.opening_balance_date <= earliest, acct.name
