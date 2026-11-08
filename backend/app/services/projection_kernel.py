@@ -24,7 +24,7 @@ currency's series.
 
 import datetime
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 
@@ -80,6 +80,8 @@ class AccountBaseline:
     loan_interest: list[Point]
     recurring_lines: list[Point]
     points: list[Point]
+    # A card's due cycles as the payment synthesis billed them (TBD-793).
+    cc_cycles: list[cc_forecast_service.CycleBill] = field(default_factory=list)
 
     @property
     def end_balance(self) -> Decimal:
@@ -306,6 +308,7 @@ async def baseline(
         and acct.payment_source_account_id is not None
     ]
     cc_payments_by_account: dict[int, list[Point]] = {}
+    cc_cycles_by_account: dict[int, list[cc_forecast_service.CycleBill]] = {}
 
     if cc_accounts:
         cc_ids = [a.id for a in cc_accounts]
@@ -350,7 +353,7 @@ async def baseline(
             if source.currency != cc.currency:
                 continue  # no FX in V1 -> would desync per-currency totals
             transfer_in = transfer_in_by_account.get(cc.id, [])
-            payments = cc_forecast_service.synthesize_account_cc_payments(
+            bills = cc_forecast_service.synthesize_account_cc_cycles(
                 cc, p_start=window_start, p_end=horizon_end,
                 opening_balance=Decimal(str(cc.opening_balance)),
                 ledger=ledger_by_account.get(cc.id, []) + [(d, a) for _, d, a in transfer_in],
@@ -359,7 +362,8 @@ async def baseline(
                 projected=charges_by_account.get(cc.id, []),
                 projected_after=first_period_end,
             )
-            for pay_date, outflow in payments:
+            cc_cycles_by_account[cc.id] = bills
+            for pay_date, outflow in ((b.payment_date, b.outflow) for b in bills if b.outflow > 0):
                 _add_day_delta(day_deltas, source.id, pay_date, -outflow, walk_start)
                 _add_day_delta(day_deltas, cc.id, pay_date, outflow, walk_start)
                 cc_payments_by_account.setdefault(cc.id, []).append((pay_date, outflow))
@@ -547,6 +551,7 @@ async def baseline(
             seed=seed,
             pending_delta=pending_by_account.get(account.id, Decimal("0")),
             cc_payments=cc_payments_by_account.get(account.id, []),
+            cc_cycles=cc_cycles_by_account.get(account.id, []),
             loan_payments=loan_payments_by_account.get(account.id, []),
             loan_interest=loan_interest_by_account.get(account.id, []),
             recurring_lines=recurring_lines_by_account.get(account.id, []),
