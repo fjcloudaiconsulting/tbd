@@ -38,6 +38,7 @@ from app.models.scenario import PlanGoal, Scenario, ScenarioStatus
 from app.models.tag import Tag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization, Role, User
+from app.schemas.recurring import RecurringCreate
 from app.services import billing_service, plan_lifecycle_service, recurring_service
 from app.services.scheduler.jobs.billing_close import BillingCloseJob
 from tests.routers.test_plan_drafts import _client
@@ -460,6 +461,9 @@ async def test_edit_after_start_needs_confirmation_and_runs_starts_steps(factory
                            json={"monthly_budget": "400.00"}).status_code == 200
         assert alice.patch(f"/api/v1/scenarios/{pid}?confirm=true",
                            json={"funding_account_id": w["pot"]}).status_code == 409
+        # Hiding a running plan waits for Archive (TBD-606): the rollover keys on status.
+        assert alice.patch(f"/api/v1/scenarios/{pid}?confirm=true",
+                           json={"is_active": False}).status_code == 409
         before = await _rows(factory, w["org"])
         new = {"name": "Hotel", "tier": "want", "kind": "monthly_spend", "monthly_amount": "70.00"}
         assert alice.post(f"/api/v1/scenarios/{pid}/goals", json=new).status_code == 409
@@ -725,3 +729,45 @@ async def test_a_plan_that_needs_attention_is_not_owed_a_budget(factory, w, monk
     async with factory() as db:
         assert len(await billing_service.ensure_future_periods(db, w["org"], count=1)) == 1
     assert calls == [] and await _budget_periods(factory, w["org"]) == [PERIOD_START]
+
+
+async def test_start_refuses_a_series_the_user_linked_to_a_goal(factory, w):
+    """Ruling on #1120: Start makes each goal its own series. Adopting the
+    user's series would flag the plan at once (its category is not the goal's),
+    and Finish or Delete would stop it."""
+    async with factory() as db:
+        mine = await recurring_service.create_recurring_no_commit(db, w["org"], RecurringCreate(
+            type="transfer", account_id=w["main"], to_account_id=w["savings"], amount=Decimal("500.00"),
+            category_id=w["other_cat"], frequency="monthly", next_due_date=TODAY,
+            description="My savings"))
+        await db.commit()
+        sid = mine.id
+    fund = {**_goals(w)[2], "funding_recurring_id": sid}
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, goals=[fund])
+        before = await _rows(factory, w["org"])
+        res = alice.post(f"/api/v1/scenarios/{pid}/start")
+        assert _refused(res, "plan_series_linked", "unlink"), res.text
+    assert await _rows(factory, w["org"]) == before
+
+
+async def test_delete_of_a_finished_plan_leaves_what_the_user_did_after_finish(factory, w):
+    """Ruling on #1120: Finish already wound the plan down. A series the user
+    resumed, and a Budget they set later, are theirs."""
+    pid = await _start(factory, w)
+    with _client(factory, "alice") as alice:
+        assert alice.post(f"/api/v1/scenarios/{pid}/finish").status_code == 200
+    food = await _goal(factory, pid, "Food")
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, w["org"], count=1)
+        series = await db.get(RecurringTransaction, food.funding_recurring_id)
+        series.is_active = True
+        plan = await db.get(Scenario, pid)
+        later = max(p.start_date for p in (await db.scalars(select(BillingPeriod))).all())
+        db.add(Budget(org_id=w["org"], category_id=plan.category_id, amount=Decimal(250), period_start=later))
+        await db.commit()
+    with _client(factory, "alice") as alice:
+        assert alice.delete(f"/api/v1/scenarios/{pid}").status_code == 204
+    async with factory() as db:
+        assert (await db.get(RecurringTransaction, food.funding_recurring_id)).is_active
+    assert later in await _budget_periods(factory, w["org"])

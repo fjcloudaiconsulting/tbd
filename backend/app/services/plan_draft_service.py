@@ -147,8 +147,9 @@ def assert_draft(plan: Scenario) -> None:
 # What a started plan may still change (TBD-602): nothing that a series, a
 # category or a tag Start made depends on. ``monthly_budget`` reaches its
 # Budgets; a new or newly enabled goal gets Start's steps (the routers).
+# Not ``is_active``: hiding a running plan waits for Archive (TBD-606).
 STARTED_PLAN_FIELDS = frozenset({
-    "name", "params", "horizon_months", "is_active", "monthly_budget", "birth_year",
+    "name", "params", "horizon_months", "monthly_budget", "birth_year",
     "return_pct", "inflation_pct",
 })
 STARTED_GOAL_FIELDS = frozenset({"name", "tier", "sort_order", "enabled"})

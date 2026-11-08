@@ -91,6 +91,7 @@ _SPEND_KINDS = {PlanGoalKind.LUMP.value, PlanGoalKind.MONTHLY_SPEND.value}
 
 # Coded 409s: a claim another plan (or another goal) already holds.
 ACCOUNT_TAKEN, TAG_TAKEN, CATEGORY_TAKEN = "plan_account_taken", "plan_tag_taken", "plan_category_taken"
+SERIES_LINKED = "plan_series_linked"
 
 
 async def lock_plans(db: AsyncSession, org_id: int, *, skip_locked: bool = False) -> bool:
@@ -336,7 +337,10 @@ async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, to
     if goal.account_id is not None and goal.start_balance is None:
         goal.start_balance = await _expected_balance(db, goal.account_id)
     if goal.funding_recurring_id is not None:
-        return
+        # Only a draft link gets here: Start's own series come after the status flips.
+        # Adopting it would flag the plan (its category is not the goal's) and Finish would stop it.
+        raise ConflictError(f"goal {goal.id} is linked to an existing recurring item: unlink it and "
+                            "Start creates the goal's own series", code=SERIES_LINKED)
     spec = _series_spec(plan, goal, today)
     if spec is None:
         return
@@ -480,11 +484,12 @@ async def finish(db: AsyncSession, *, plan: Scenario) -> Scenario:
 
 
 async def delete_plan(db: AsyncSession, *, plan: Scenario) -> None:
-    """Any state. A started plan gets Finish's side effects first; its
+    """Any state. An active plan gets Finish's side effects first; its
     category, tag, accounts, current and past Budgets and transactions stay
     as ordinary rows."""
     plan = await lock(db, plan)
-    if plan.status != ScenarioStatus.DRAFT:
+    # A finished plan was wound down at Finish: what the user did since is theirs.
+    if plan.status == _ACTIVE:
         await _wind_down(db, plan)
     # Explicit, though ``plan_goals`` cascades: SQLite runs without FK enforcement.
     await db.execute(delete(PlanGoal).where(PlanGoal.scenario_id == plan.id))
