@@ -11,7 +11,8 @@ import Pagination from "@/components/ui/Pagination";
 import TourAnchor from "@/components/tour/TourAnchor";
 import { useAuth } from "@/components/auth/AuthProvider";
 import CustomDashboard from "@/components/dashboard/CustomDashboard";
-import type { SpendingByCategoryResponse } from "@/components/dashboard/DashboardDataProvider";
+import type { CategoryMatch, SpendingByCategoryResponse } from "@/components/dashboard/DashboardDataProvider";
+import { donutSlices } from "@/lib/dashboard/donut-slices";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatLocalDate, maskMoneyText, projectedPeriodEnd, todayISO } from "@/lib/format";
@@ -279,6 +280,8 @@ function LegacyDashboard() {
 
   // TBD-221: a category_id (the rollup's identity), not a category name.
   const [chartFilterId, setChartFilterId] = useState<number | null>(null);
+  // TBD-339: the clicked tile's grouping — see `txQueryTail`.
+  const [chartFilterMatch, setChartFilterMatch] = useState<CategoryMatch>("exact");
   // Item 6 (system-wide sort persistence): the dashboard transactions table
   // and the Spending by Category card both persist their sort state via
   // localStorage so a navigate-away-and-back lands the user where they were.
@@ -367,8 +370,9 @@ function LegacyDashboard() {
   // it. With no rollup for this period the filter reads null and the tile falls
   // back to the plain period page, rather than guessing a bound from `monthTo`.
   const chartFilter = rollupFrom && rollupTo ? chartFilterId : null;
-  const setChartFilter = useCallback((c: number | null) => {
+  const setChartFilter = useCallback((c: number | null, match: CategoryMatch = "exact") => {
     setChartFilterId(c);
+    setChartFilterMatch(match);
     // The drilldown is its own paginated result set.
     setPage(0);
   }, []);
@@ -414,17 +418,17 @@ function LegacyDashboard() {
   //    slice's WHERE clause exactly so the list cannot show a row the slice
   //    excluded, nor sum past the number the user clicked.
   //
-  //    ⚠ `category_match=exact` is NOT optional. `category_id` on the list
-  //    endpoint is master-includes-subs (a 2026-05-13 regression guard) while
-  //    the rollup groups by the row's OWN category_id. Without it a master
-  //    slice opens a list summing to more than itself.
+  //    ⚠ `category_match` is the CLICKED TILE's grouping (TBD-339), never a
+  //    constant: the donut and Budget Progress roll a master up with its
+  //    subcategories (`subtree`), Forecast by Category is per own category
+  //    (`exact`). A fixed `exact` opened 90.00 of rows under a 250.00 budget bar.
   //
   //    ⚠ `collapse_transfers` is deliberately ABSENT: `reportable=true`
   //    already excludes every non-null `linked_transaction_id`, a strict
   //    superset of it.
   const txQueryTail =
     chartFilter !== null && rollupFrom && rollupTo
-      ? `&category_id=${chartFilter}&category_match=exact&reportable=true`
+      ? `&category_id=${chartFilter}&category_match=${chartFilterMatch}&reportable=true`
         + `&type=expense&status=settled`
         + `&date_from=${rollupFrom}&date_to=${rollupTo}`
       : `&collapse_transfers=true&date_from=${monthFrom}`
@@ -766,25 +770,15 @@ function LegacyDashboard() {
   // donutData drives both the donut chart (always rendered in amount-desc
   // order so the largest slice starts at 12 o'clock) and the legend list
   // (sortable by name | percent | amount, persisted via spendingSort).
-  const donutDataRaw = useMemo(() => {
-    // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
-    // user has since navigated away from must not render under the new one.
-    const rows = activeRollup?.categories;
-    if (!Array.isArray(rows)) return [];
-    return rows
-      .map((r) => ({
-        categoryId: r.category_id,
-        name: r.category_name,
-        value: Number(r.executed),
-      }))
-      // A defensive finite/positive guard, NOT a negative-expense handler: no
-      // reachable state produces one. `TransactionCreate/Update.amount` and
-      // `ImportConfirmRow.amount` are `Field(gt=0)`, the OFX path writes
-      // `amount_abs`, sign is carried by `type`, and the rollup groups only
-      // `type == EXPENSE` — a refund is an INCOME row, never a negative EXPENSE.
-      .filter((d) => Number.isFinite(d.value) && d.value > 0)
-      .sort((a, b) => b.value - a.value);
-  }, [activeRollup]);
+  //
+  // TBD-339: slices are MASTERS (subcategories summed in), so the donut agrees
+  // with Budget Progress. `donutSlices` is shared with the provider shell.
+  // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
+  // user has since navigated away from must not render under the new one.
+  const donutDataRaw = useMemo(
+    () => donutSlices(activeRollup?.categories),
+    [activeRollup],
+  );
   const donutData = donutDataRaw;
   // The sum of the RENDERED slices, so the percentages below add to 100 by
   // construction. Server-side `executed_expense` is itself the sum of the same
@@ -866,8 +860,9 @@ function LegacyDashboard() {
   // label and the slice it describes have ONE source of truth. Budget and
   // Forecast bars can filter a category with no settled spend this period and
   // therefore no rollup row, so those two in-memory lists back the LABEL up;
-  // the NUMBER always comes from the server. Two same-named subcategories
-  // rendering one label is deliberately TBD-326.
+  // the NUMBER always comes from the server. A master with spend only on its
+  // subcategories is still named, by its slice's `parent_name` (TBD-339).
+  // Two same-named categories rendering one label is deliberately TBD-326.
   const chartFilterName = useMemo(() => {
     if (chartFilter === null) return null;
     return (
@@ -877,6 +872,9 @@ function LegacyDashboard() {
       ?? null
     );
   }, [chartFilter, donutDataRaw, dashBudgets, forecastExpenseItems]);
+  // A slice is selected only by a SUBTREE filter on its id: a forecast bar's
+  // exact filter on the same master is a different (90.00 vs 250.00) set.
+  const isDonutSelected = (id: number) => chartFilter === id && chartFilterMatch === "subtree";
 
 
   function toggleDashSort(field: DashTxSort) {
@@ -1142,7 +1140,9 @@ function LegacyDashboard() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {/* Spending by category (donut) */}
             <div className={`${card} p-5`} data-testid="spending-donut">
-              <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
+              <h2 className={cardTitle}>Spending by Category</h2>
+              {/* TBD-339: slices are main categories, as in Budget Progress. */}
+              <p className="mb-3 mt-1 text-xs text-text-muted">Subcategories are counted in their main category.</p>
               {chartFilter !== null && (
                 <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised">
                   {/* The fallback is reachable: a category can be filtered from
@@ -1198,12 +1198,12 @@ function LegacyDashboard() {
                             // never by name — names are not unique across
                             // subcategories.
                             const cid = donutData[idx]?.categoryId;
-                            if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
+                            if (cid != null) setChartFilter(isDonutSelected(cid) ? null : cid, "subtree");
                           }}
                         >
                           {donutData.map((d, i) => (
                             <Cell key={d.categoryId} fill={CHART_SERIES[i % CHART_SERIES.length]}
-                              opacity={chartFilter !== null && chartFilter !== d.categoryId ? 0.3 : 1} />
+                              opacity={chartFilter !== null && !isDonutSelected(d.categoryId) ? 0.3 : 1} />
                           ))}
                         </Pie>
                         {/* Single-series pie: recharts renders the slice
@@ -1336,8 +1336,8 @@ function LegacyDashboard() {
                       </div>
                     </div>
                     {sortedSpending.slice(0, 10).map((d) => (
-                      <button key={d.categoryId} onClick={() => setChartFilter(chartFilter === d.categoryId ? null : d.categoryId)}
-                        className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.categoryId ? "bg-surface-overlay" : ""}`}>
+                      <button key={d.categoryId} onClick={() => setChartFilter(isDonutSelected(d.categoryId) ? null : d.categoryId, "subtree")}
+                        className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${isDonutSelected(d.categoryId) ? "bg-surface-overlay" : ""}`}>
                         <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_SERIES[d.origIdx % CHART_SERIES.length] }} />
                         <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
                         {/* %/amount carry data, so they ride text-secondary
@@ -1409,7 +1409,8 @@ function LegacyDashboard() {
                           // now, so the drilldown can reproduce the rollup's
                           // grouping.
                           const cid = dashBudgets[idx]?.category_id;
-                          if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
+                          // TBD-339: a budget is master + subs -> subtree.
+                          if (cid != null) setChartFilter(chartFilter === cid && chartFilterMatch === "subtree" ? null : cid, "subtree");
                         }}
                       >
                         {dashBudgets.map((b) => (
@@ -1469,7 +1470,8 @@ function LegacyDashboard() {
                               // TBD-221: category_id, matching the rollup's
                               // identity.
                               const cid = forecastExpenseItems[idx]?.category_id;
-                              if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
+                              // TBD-339: forecast rows are per own category -> exact.
+                              if (cid != null) setChartFilter(chartFilter === cid && chartFilterMatch === "exact" ? null : cid, "exact");
                             }}
                           />
                           <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={220}>

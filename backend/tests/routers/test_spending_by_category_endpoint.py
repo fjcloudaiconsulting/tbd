@@ -488,7 +488,8 @@ def test_fb_spending_carries_executed_only(bulk):
     }
     for row in body["categories"]:
         assert set(row) == {
-            "category_id", "category_name", "parent_id", "executed",
+            "category_id", "category_name", "parent_id", "parent_name",
+            "executed",
         }
     assert "Travel" not in {r["category_name"] for r in body["categories"]}
     assert Decimal(body["executed_expense"]) == BULK_EXECUTED
@@ -558,6 +559,50 @@ async def test_fd_master_and_sub_are_separate_rows_keyed_by_id(session_factory):
         Decimal(r["executed"]) != Decimal("33.00") for r in body["categories"]
     )
     assert Decimal(body["executed_expense"]) == Decimal("33.00")
+
+
+@pytest.mark.asyncio
+async def test_fd_sub_row_names_its_master_in_parent_name(session_factory):
+    """F-D (TBD-339). Home is a master with 90.00 of DIRECT spend and
+    Utilities is its subcategory with 160.00. The dashboard donut sums rows
+    under ``parent_id ?? category_id`` and labels the slice
+    ``parent_name ?? category_name``, so a master with no direct spend still
+    gets its name. Rows stay keyed by their OWN category (the forecast and the
+    agent tool read them that way); ``parent_name`` is the only addition.
+
+    Mutant killed: ``parent_name`` filled from the row's own name — the
+    Utilities row would then read "Utilities", and the rolled-up donut slice
+    would be labelled with a subcategory.
+    """
+    async with session_factory() as db:
+        org, user, acct = await _base_org(db, name="Parent Name Org")
+        db.add(BillingPeriod(org_id=org.id, start_date=P_START, end_date=P_END))
+        home = Category(org_id=org.id, name="Home", slug="home",
+                        type=CategoryType.EXPENSE)
+        db.add(home)
+        await db.flush()
+        util = Category(org_id=org.id, name="Utilities", slug="utilities",
+                        type=CategoryType.EXPENSE, parent_id=home.id)
+        db.add(util)
+        await db.flush()
+        db.add_all([
+            _tx(org.id, acct.id, home.id, "home-direct", "90.00", day=3),
+            _tx(org.id, acct.id, util.id, "power", "160.00", day=4),
+        ])
+        await db.commit()
+        user_id, home_id, util_id = user.id, home.id, util.id
+
+    app = _app(session_factory, user_id)
+    with TestClient(app) as client:
+        body = client.get(f"{SPEND_URL}?period_start={P_START}").json()
+
+    rows = {r["category_id"]: r for r in body["categories"]}
+    assert set(rows) == {home_id, util_id}
+    assert Decimal(rows[home_id]["executed"]) == Decimal("90.00")
+    assert Decimal(rows[util_id]["executed"]) == Decimal("160.00")
+    assert rows[util_id]["parent_id"] == home_id
+    assert rows[util_id]["parent_name"] == "Home"
+    assert rows[home_id]["parent_name"] is None
 
 
 # ── F-E — the four excluded row kinds, one category each ───────────────────
@@ -897,6 +942,8 @@ async def test_fg_category_name_lookup_is_org_scoped(session_factory):
     rows = {r["category_id"]: r for r in body["categories"]}
     assert rows[seed["decoy_id"]]["category_name"] == "Unknown"
     assert rows[seed["decoy_id"]]["parent_id"] is None
+    # TBD-339: the parent's name goes through the same org-scoped lookup.
+    assert rows[seed["decoy_id"]]["parent_name"] is None
     names = {r["category_name"] for r in body["categories"]}
     assert DECOY_NAME not in names, names
     assert "DECOY-PARENT" not in names, names
@@ -926,6 +973,7 @@ async def test_fg_control_each_org_reads_its_own_rollup(session_factory):
     assert Decimal(body["executed_expense"]) == DECOY_EXECUTED
     assert rows[seed["decoy_id"]]["category_name"] == DECOY_NAME
     assert rows[seed["decoy_id"]]["parent_id"] == seed["decoy_parent_id"]
+    assert rows[seed["decoy_id"]]["parent_name"] == "DECOY-PARENT"
 
 
 # ── F-H — the route requires authentication ────────────────────────────────

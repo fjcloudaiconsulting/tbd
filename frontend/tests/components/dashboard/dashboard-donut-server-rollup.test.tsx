@@ -30,8 +30,16 @@
  *        (sub of Home), Bulk 205.00 (205 rows)
  *   GET /api/v1/transactions?...&category_id=<Home>&category_match=exact&...
  *     -> total 1, sum 90.00
- *   the same URL WITHOUT category_match=exact
- *     -> total 2, sum 250.00      <- the defect F-B fences
+ *   the same URL with category_match=subtree
+ *     -> total 2, sum 250.00
+ *
+ * TBD-339: the donut now rolls each row up into its master
+ * (`parent_id ?? category_id`), so it agrees with Budget Progress: ONE Home
+ * slice of 250.00 and no Utilities slice. Its drilldown therefore sends
+ * `category_match=subtree` and opens 250.00 of rows. Under the old per-own-
+ * category donut the same click sent `exact` and opened 90.00. F-B fences the
+ * new pairing; either half on its own opens a list that disagrees with the
+ * slice.
  */
 import React from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -102,22 +110,24 @@ const BULK_ID = 12;
 /**
  * ⚠ THE FIXTURE MUST MAKE `exact` AND `subtree` DISAGREE, or F-B pins nothing.
  * Home is a MASTER with 90.00 of DIRECT spend and Utilities is its SUBCATEGORY
- * with 160.00. Two slices here; one master-includes-subs drilldown returning
- * 250.00 under a slice labelled 90.00. A fixture whose master had no direct
- * spend, or whose master had no children, makes both implementations agree and
- * the fence go green against the defect.
+ * with 160.00. Rolled up they are one 250.00 slice; an `exact` drilldown on it
+ * returns only the 90.00 direct row. A fixture whose master had no direct
+ * spend, or whose master had no children, makes the rolled-up and per-own-
+ * category donuts agree and the fence go green against either defect.
  *
  * Bulk carries 205.00 across 205 rows — past the list endpoint's `le=200` cap,
  * which is TBD-221's original defect ("200-transaction cap breaks heavy users").
  */
 const ROLLUP_CATEGORIES = [
-  { category_id: HOME_ID, category_name: "Home", parent_id: null, executed: "90.00" },
-  { category_id: UTILITIES_ID, category_name: "Utilities", parent_id: HOME_ID, executed: "160.00" },
-  { category_id: BULK_ID, category_name: "Bulk", parent_id: null, executed: "205.00" },
+  { category_id: HOME_ID, category_name: "Home", parent_id: null, parent_name: null, executed: "90.00" },
+  { category_id: UTILITIES_ID, category_name: "Utilities", parent_id: HOME_ID, parent_name: "Home", executed: "160.00" },
+  { category_id: BULK_ID, category_name: "Bulk", parent_id: null, parent_name: null, executed: "205.00" },
 ];
 
 const ROLLUP_TOTAL = 455; // 90 + 160 + 205
-const HOME_SLICE = 90;
+// TBD-339: the Home slice is the master rolled up with its subcategory.
+const HOME_DIRECT = 90;
+const HOME_SLICE = 250; // 90 direct + 160 Utilities
 
 function rollup(over: Record<string, unknown> = {}) {
   return {
@@ -187,15 +197,14 @@ const CAPPED_SNAPSHOT = Array.from({ length: 200 }, (_, i) =>
 const CAPPED_SNAPSHOT_SUM = 600;
 
 // The Home drilldown's answer WITH `category_match=exact`: the master's direct
-// row, summing to exactly the slice the user clicked.
+// row only. That is what a forecast bar (grouped by own category) opens.
 const HOME_EXACT_ROWS = [
   tx({ id: 1, amount: "90.00", category_id: HOME_ID, category_name: "Home", description: "Home direct" }),
 ];
 
-// What the SAME query returns WITHOUT it: master-includes-subs, so the
-// Utilities row rides along and the list sums to 250 against a 90 slice. This
-// is the landmine PR A's `category_match` param exists for, reproduced live
-// against the real backend.
+// What the SAME query returns under `subtree` (the list endpoint's default):
+// master-includes-subs, so the Utilities row rides along and the list sums to
+// 250, exactly the rolled-up Home slice (TBD-339).
 const HOME_SUBTREE_ROWS = [
   ...HOME_EXACT_ROWS,
   tx({ id: 2, amount: "160.00", category_id: UTILITIES_ID, category_name: "Utilities", description: "Utilities sub" }),
@@ -323,6 +332,9 @@ function Probe() {
       <span data-testid="donut-names">
         {ctx.donutData.map((d) => d.name).join("|")}
       </span>
+      <span data-testid="donut-slice-home">
+        {ctx.donutData.find((d) => d.categoryId === HOME_ID)?.value ?? "none"}
+      </span>
       <span data-testid="total-spend">{ctx.totalSpend}</span>
       <span data-testid="slice-sum">
         {ctx.donutData.reduce((s, d) => s + d.value, 0)}
@@ -337,17 +349,19 @@ function Probe() {
       <button
         data-testid="click-home-slice"
         onClick={() => {
+          // The donut widget's call: a rolled-up slice drills down as a subtree.
           const slice = ctx.donutData.find((d) => d.name === "Home");
-          if (slice) ctx.setChartFilter(slice.categoryId);
+          if (slice) ctx.setChartFilter(slice.categoryId, "subtree");
         }}
       />
       {/* A click from a NON-DONUT tile. BudgetBarsWidget and ForecastBarsWidget
           call the same `setChartFilter` with a category_id off their OWN data,
           which they have whether or not the rollup is in hand — so this button
-          deliberately does NOT read `ctx.donutData`. */}
+          deliberately does NOT read `ctx.donutData`. It stands for a budget
+          bar, which rolls the master up and so drills down as a subtree. */}
       <button
         data-testid="click-external-filter"
-        onClick={() => ctx.setChartFilter(HOME_ID)}
+        onClick={() => ctx.setChartFilter(HOME_ID, "subtree")}
       />
     </div>
   );
@@ -392,11 +406,10 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     mountProvider();
 
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
-    expect(screen.getByTestId("donut-names").textContent).toBe(
-      "Bulk|Utilities|Home",
-    );
+    // TBD-339: Utilities is counted inside Home (90 + 160 = 250 > Bulk 205).
+    expect(screen.getByTestId("donut-names").textContent).toBe("Home|Bulk");
     expect(screen.getByTestId("total-spend").textContent).toBe(
       String(ROLLUP_TOTAL),
     );
@@ -423,7 +436,7 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     mountProvider();
 
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
     expect(screen.getByTestId("total-spend").textContent).toBe(
       String(ROLLUP_TOTAL),
@@ -438,19 +451,34 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     expect(screen.getByTestId("total-spend").textContent).not.toBe("999");
   });
 
-  // ── F-B: the master-includes-subs landmine ────────────────────────────────
+  // ── F-B: the slice and its drilldown agree (TBD-339) ──────────────────────
 
-  it("F-B: the drilldown passes category_match=exact, so a 90.00 slice opens 90.00 of rows", async () => {
+  it("F-B: one Home slice of 250.00 (no Utilities slice), and clicking it sends category_match=subtree and opens 250.00 of rows", async () => {
     vi.mocked(apiFetch).mockImplementation(makeHandler({ urls }) as never);
 
-    mountProvider();
-
-    await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+    // Through the REAL widget: the mode is the widget's to pass, so a Probe
+    // calling `setChartFilter` itself would not fence it.
+    renderWithSWR(
+      <DashboardDataProvider>
+        <SpendingDonutWidget />
+        <Probe />
+      </DashboardDataProvider>,
     );
 
+    await waitFor(() =>
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
+    );
+    const tile = screen.getByTestId("spending-donut");
+    expect(within(tile).queryByText("Utilities")).toBeNull();
+    // 250 / 455 = 55%, Bulk 205 / 455 = 45%.
+    expect(within(tile).getByText("55%")).toBeInTheDocument();
+    expect(within(tile).getByText("45%")).toBeInTheDocument();
+    expect(
+      within(tile).getByText("Subcategories are counted in their main category."),
+    ).toBeInTheDocument();
+
     act(() => {
-      screen.getByTestId("click-home-slice").click();
+      within(tile).getByText("Home").closest("button")!.click();
     });
 
     await waitFor(() =>
@@ -467,8 +495,8 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
       return found!;
     });
 
-    // The rollup's WHERE clause, reproduced exactly.
-    expect(drill).toContain("category_match=exact");
+    // The rollup's WHERE clause, reproduced exactly — over the master's subtree.
+    expect(drill).toContain("category_match=subtree");
     expect(drill).toContain("reportable=true");
     expect(drill).toContain("type=expense");
     expect(drill).toContain("status=settled");
@@ -484,16 +512,51 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
 
     // …and the list the click opened sums to the slice it opened.
     await waitFor(() =>
-      expect(screen.getByTestId("list-count").textContent).toBe("1"),
+      expect(screen.getByTestId("list-count").textContent).toBe("2"),
     );
     expect(screen.getByTestId("list-sum").textContent).toBe(String(HOME_SLICE));
+    expect(screen.getByTestId("donut-slice-home").textContent).toBe(
+      String(HOME_SLICE),
+    );
 
-    // The fixture genuinely separates the two implementations: without `exact`
-    // the same query returns the subcategory row too and sums to 250 against a
-    // 90.00 slice. Verified live against the real endpoint.
-    expect(sumAmounts(HOME_SUBTREE_ROWS)).toBe(250);
-    expect(sumAmounts(HOME_EXACT_ROWS)).toBe(HOME_SLICE);
+    // The fixture genuinely separates the two modes: `exact` returns only the
+    // direct row and sums to 90 against a 250.00 slice.
+    expect(sumAmounts(HOME_SUBTREE_ROWS)).toBe(HOME_SLICE);
+    expect(sumAmounts(HOME_EXACT_ROWS)).toBe(HOME_DIRECT);
     expect(sumAmounts(HOME_SUBTREE_ROWS)).not.toBe(sumAmounts(HOME_EXACT_ROWS));
+  });
+
+  it("F-B2: a master with NO direct spend still gets its own slice, named after it", async () => {
+    // The badge and the legend read the name off `parent_name`: with no Home
+    // row on the wire, a donut keyed on the sub's own name says "Utilities".
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({
+        urls,
+        rollupResponse: rollup({
+          executed_expense: "365.00",
+          categories: ROLLUP_CATEGORIES.filter((c) => c.category_id !== HOME_ID),
+        }),
+      }) as never,
+    );
+
+    renderWithSWR(
+      <DashboardDataProvider>
+        <SpendingDonutWidget />
+        <Probe />
+      </DashboardDataProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("donut-names").textContent).toBe("Bulk|Home"),
+    );
+    const tile = screen.getByTestId("spending-donut");
+    act(() => {
+      within(tile).getByText("Home").closest("button")!.click();
+    });
+    await waitFor(() =>
+      expect(within(tile).getByText(/Filtering: Home/)).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("chart-filter").textContent).toBe(String(HOME_ID));
   });
 
   // ── F-C: the two failure flags are independent ────────────────────────────
@@ -511,7 +574,7 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     // The donut is untouched by it.
     expect(screen.getByTestId("rollup-failed").textContent).toBe("false");
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
     expect(screen.getByTestId("total-spend").textContent).toBe(
       String(ROLLUP_TOTAL),
@@ -545,7 +608,7 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     mountProvider();
 
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
     const total = screen.getByTestId("total-spend").textContent;
     expect(total).toBe(screen.getByTestId("slice-sum").textContent);
@@ -617,7 +680,7 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     mountProvider();
 
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
     // Prove the request really did carry the other date, or this fence is
     // asserting against a value nothing ever disagreed with.
@@ -664,7 +727,7 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     mountProvider();
 
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
 
     // A post-write refresh: the rollup refetches and is HELD open.
@@ -696,8 +759,8 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
       return found!;
     });
     // The drilldown carries the LAST GOOD window, which is the same window the
-    // numbers on screen were computed over.
-    expect(drill).toContain("category_match=exact");
+    // numbers on screen were computed over, and a budget bar's subtree mode.
+    expect(drill).toContain("category_match=subtree");
     expect(drill).toContain(`date_from=${ROLLUP_START}`);
     expect(drill).toContain(`date_to=${ROLLUP_END}`);
 
@@ -724,7 +787,7 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     mountProvider();
 
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
     act(() => {
       screen.getByTestId("click-home-slice").click();
@@ -790,7 +853,7 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     mountProvider();
 
     await waitFor(() =>
-      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+      expect(screen.getByTestId("donut-count").textContent).toBe("2"),
     );
     act(() => {
       screen.getByTestId("click-home-slice").click();
@@ -921,12 +984,14 @@ describe("TBD-221 — LegacyDashboard shell (app/dashboard/page.tsx)", () => {
     await waitFor(() =>
       expect(within(tile).getByText("Home")).toBeInTheDocument(),
     );
-    expect(within(tile).getByText("Utilities")).toBeInTheDocument();
     expect(within(tile).getByText("Bulk")).toBeInTheDocument();
-    // 205/455 = 45%, 160/455 = 35%, 90/455 = 20%.
+    // TBD-339: Utilities is counted in Home. 250/455 = 55%, 205/455 = 45%.
+    expect(within(tile).queryByText("Utilities")).toBeNull();
+    expect(within(tile).getByText("55%")).toBeInTheDocument();
     expect(within(tile).getByText("45%")).toBeInTheDocument();
-    expect(within(tile).getByText("35%")).toBeInTheDocument();
-    expect(within(tile).getByText("20%")).toBeInTheDocument();
+    expect(
+      within(tile).getByText("Subcategories are counted in their main category."),
+    ).toBeInTheDocument();
     // Not the "unavailable" state, and not the empty state.
     expect(within(tile).queryByText(/No expense data yet/i)).toBeNull();
     expect(
@@ -936,7 +1001,7 @@ describe("TBD-221 — LegacyDashboard shell (app/dashboard/page.tsx)", () => {
     expect(forecastUrls(urls)).toEqual([]);
   });
 
-  it("F-B: clicking a legend row issues the exact drilldown and the list agrees with the slice", async () => {
+  it("F-B: clicking the rolled-up Home row issues the subtree drilldown and the list agrees with the 250.00 slice", async () => {
     vi.mocked(apiFetch).mockImplementation(makeHandler({ urls }) as never);
 
     render(<DashboardPage />);
@@ -958,19 +1023,20 @@ describe("TBD-221 — LegacyDashboard shell (app/dashboard/page.tsx)", () => {
       expect(found).toBeTruthy();
       return found!;
     });
-    expect(drill).toContain("category_match=exact");
+    expect(drill).toContain("category_match=subtree");
     expect(drill).toContain("reportable=true");
     expect(drill).toContain("type=expense");
     expect(drill).toContain("status=settled");
     expect(drill).toContain(`date_to=${ROLLUP_END}`);
     expect(drill).not.toContain("collapse_transfers");
 
-    // The one row the server returned for that slice, and nothing else.
+    // Both rows behind the 250.00 slice: the master's direct one AND the sub's.
     await waitFor(() =>
-      expect(screen.getAllByTestId(/^dash-settled-\d+$/)).toHaveLength(1),
+      expect(screen.getAllByTestId(/^dash-settled-\d+$/)).toHaveLength(2),
     );
     expect(screen.getByText("Home direct")).toBeInTheDocument();
-    expect(screen.queryByText("Utilities sub")).toBeNull();
+    expect(screen.getByText("Utilities sub")).toBeInTheDocument();
+    expect(sumAmounts(HOME_SUBTREE_ROWS)).toBe(HOME_SLICE);
   });
 
   it("F-C1: a forecast failure leaves the donut rendering", async () => {
@@ -1103,7 +1169,10 @@ describe("TBD-221 — LegacyDashboard shell (app/dashboard/page.tsx)", () => {
         .slice(before)
         .every((u) => u.includes(`category_id=${HOME_ID}`)),
     ).toBe(true);
-    expect(screen.queryByText("Utilities sub")).toBeNull();
+    // Still the subtree drilldown: the sub's row is in the list.
+    await waitFor(() =>
+      expect(screen.getByText("Utilities sub")).toBeInTheDocument(),
+    );
 
     await act(async () => {
       gate.resolve();

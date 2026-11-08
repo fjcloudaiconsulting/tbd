@@ -359,6 +359,9 @@ class SpendingCategoryRow(BaseModel):
     category_id: int
     category_name: str
     parent_id: Optional[int] = None
+    # TBD-339: the master's name, so the dashboard can label a rolled-up slice
+    # even when the master has no direct spend (and so no row of its own).
+    parent_name: Optional[str] = None
     executed: str
 
 
@@ -377,15 +380,18 @@ class SpendingByCategoryResponse(BaseModel):
     docstring in ``routers/transactions.py``.
 
     ⚠⚠ **Rows are keyed by the transaction's OWN ``category_id``**, so a master
-    category and its subcategory are two separate slices and ``parent_id``
-    carries the link between them. A drilldown from a slice into
-    ``GET /api/v1/transactions`` **must pass ``category_match=exact``**:
-    ``category_id`` there is master-includes-subs (a deliberate 2026-05-13
-    regression guard), so without it a slice showing the master's DIRECT spend
-    opens a list that also contains every subcategory's rows, and the list
-    total exceeds the slice it was opened from — Home 90.00 direct + Utilities
-    160.00 gives two slices here, and an unqualified drilldown on the 90.00
-    Home slice returns 250.00 of rows.
+    category and its subcategory are two separate rows; ``parent_id`` and
+    ``parent_name`` carry the link. The forecast and the agent tool read them
+    per own category. The dashboard donut (TBD-339) sums them under
+    ``parent_id ?? category_id`` so it agrees with Budget Progress, which rolls
+    masters up the same way.
+
+    A drilldown into ``GET /api/v1/transactions`` must pass the
+    ``category_match`` that matches the figure it was opened from: ``subtree``
+    for a rolled-up master (donut slice, budget bar), ``exact`` for a figure
+    grouped by own category (forecast bar). Home 90.00 direct + Utilities
+    160.00 is one 250.00 donut slice, and its drilldown returns 250.00 of rows
+    only under ``subtree``.
     """
 
     period_start: datetime.date
