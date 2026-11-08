@@ -435,6 +435,34 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     expect(homeLegendRow().className).not.toContain("bg-surface-overlay");
   });
 
+  it("TBD-339: forecast bar then budget bar switches exact -> subtree instead of clearing", async () => {
+    mockDashboard([tx()], [HOME_BUDGET], HOME_ROLLUP, HOME_PLAN);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    const planned = await waitFor(() => {
+      const rect = barChart(container, 1);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(planned);
+    await waitFor(() => expect(homeDrills().at(-1)).toContain("category_match=exact"));
+    await screen.findByTestId("dash-settled-201");
+    expect(screen.queryByTestId("dash-settled-202")).toBeNull();
+
+    const before = homeDrills().length;
+    const spent = await waitFor(() => {
+      const rect = barChart(container, 0);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(spent);
+    await waitFor(() => expect(homeDrills().length).toBeGreaterThan(before));
+    expect(homeDrills().at(-1)).toContain("category_match=subtree");
+    await screen.findByTestId("dash-settled-202");
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
+  });
+
   it("TBD-505: the Budget Progress spent bars draw with real width", async () => {
     // The page's own copy of the BudgetSpentBarShape chart (the widget and
     // /budgets copies are fenced in tests/components/charts/budget-bar-geometry).

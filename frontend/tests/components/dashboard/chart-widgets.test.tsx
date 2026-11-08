@@ -362,6 +362,22 @@ describe("BudgetBarsWidget", () => {
     expect(setChartFilter).toHaveBeenCalledWith(MOCK_BUDGET.category_id, "subtree");
   });
 
+  it("an EXACT filter on the same id (forecast bar) is not this bar's: a click switches to subtree instead of clearing", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      budgets: [MOCK_BUDGET],
+      dashBudgets: [MOCK_BUDGET],
+      budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
+      chartFilter: MOCK_BUDGET.category_id,
+      chartFilterMatch: "exact",
+      chartFilterName: "Groceries",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
+    fireEvent.click(screen.getByTestId("bar-spent"));
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_BUDGET.category_id, "subtree");
+  });
+
   it("clicking spent bar when already active toggles filter to null", () => {
     const setChartFilter = vi.fn();
     mockWith({
