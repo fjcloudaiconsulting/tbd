@@ -242,6 +242,13 @@ describe("resolvePriorWindow — whole months compare against whole months (TBD-
     ).toEqual({ prior: ["2025-01-01", "2025-11-08"], refusal: null });
   });
 
+  it("a quarter cut short on a month's last day compares through the earlier month's last day", () => {
+    // Nov 30 is November's end, so the prior end is August's end, not Aug 30.
+    expect(
+      resolvePriorWindow(between("2026-10-01", "2026-12-31"), "2026-11-30"),
+    ).toEqual({ prior: ["2026-07-01", "2026-08-31"], refusal: null });
+  });
+
   it("a range that is not whole months keeps the same-length slide", () => {
     // Starts on the 2nd: not a whole month, so 30 days back.
     expect(

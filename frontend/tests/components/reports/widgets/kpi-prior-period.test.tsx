@@ -526,9 +526,9 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
     renderWithSWR(<>{renderReportWidget(w, NO_CANVAS, false)}</>);
     const delta = await screen.findByTestId("kpi-widget-delta");
 
-    // The exact window is the assertion. An unclamped implementation asks for
-    // 2026-08-01..08-31 and the responder throws on it, so this cannot pass by
-    // decaying into "no delta".
+    // The exact window is the assertion: an unclamped implementation asks for
+    // 2026-08-01..08-31, which shares the responder's start key, so only this
+    // `toEqual` catches it.
     const prior = runQueryMock.mock.calls.map((c) => c[0]).filter(isPriorWindowFor("2026-08-01"));
     expect(prior).toHaveLength(1);
     expect(dateFilterOf(prior[0])).toEqual({
@@ -594,7 +594,7 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
     vi.setSystemTime(new Date(2026, 8, 1, 9, 0, 0));
     respondByWindowStart({
       "2026-09-01": 100, // day one
-      "2026-08-01": 100, // August's day one
+      "2026-08-01..2026-08-01": 100, // August's day one (the full window: an unclamped Aug 1-31 shares the start)
     });
     const w = makeKpi({ date_range: SEPTEMBER }, true);
 

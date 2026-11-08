@@ -177,8 +177,9 @@ function monthDay(y: number, m: number, d: number): number {
  *     a clamped September 1-2 to August 1-2. Personal cashflow repeats by day
  *     of month (rent, salary on the 1st), so a same-length window would drop
  *     those days; a 28-day month against a 31-day one is the smaller error.
- *     An effective end past the target month's last day clamps to it (March
- *     29-31 all map to February's last day).
+ *     An effective end on its month's last day maps to the target month's
+ *     last day; any other day past the target's end clamps to it (March 29-31
+ *     all map to February's last day).
  *   - ANY OTHER WINDOW: the same REACHED length, immediately before:
  *     prior.end = window.start - 1 day, prior.start = prior.end - (effective.length - 1 day).
  *     `ytd` and `last_12_months` end today, so they slide, except on a
@@ -265,7 +266,7 @@ export function resolvePriorWindow(
     return {
       prior: [
         fromEpochDay(monthDay(sy, sm - 1 - months, 1)),
-        fromEpochDay(monthDay(cy, cm - 1 - months, effectiveEnd === end ? 31 : cd)),
+        fromEpochDay(monthDay(cy, cm - 1 - months, effectiveEnd === monthDay(cy, cm - 1, 31) ? 31 : cd)),
       ],
       refusal: null,
     };
