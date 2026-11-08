@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.309.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.308.0...v0.309.0) (2026-11-08)
+
+
+### Features
+
+* **plans:** Plans needs the paid plans entitlement as well as its switch (TBD-564) ([#1109](https://github.com/fjcloudaiconsulting/tbd/issues/1109)) ([173c2b7](https://github.com/fjcloudaiconsulting/tbd/commit/173c2b7586b5c3de18d7a743133d469e380ffa9d))
+
+
+### Bug Fixes
+
+* **a11y:** keep the closed mobile drawer out of the tab order (TBD-536) ([#1119](https://github.com/fjcloudaiconsulting/tbd/issues/1119)) ([bc728f3](https://github.com/fjcloudaiconsulting/tbd/commit/bc728f34e78d31c76f62409817c47e8634e91077))
+* **accounts:** lock the org before the one-currency check so concurrent first accounts don't deadlock (TBD-508) ([#1118](https://github.com/fjcloudaiconsulting/tbd/issues/1118)) ([efed703](https://github.com/fjcloudaiconsulting/tbd/commit/efed7036d3aa7769645cbaf45fc50b77ec534020))
+* **admin:** dispatch the superadmin-target refusal on its code, not its message (TBD-374) ([#1125](https://github.com/fjcloudaiconsulting/tbd/issues/1125)) ([53f5a8e](https://github.com/fjcloudaiconsulting/tbd/commit/53f5a8eeda8f848a6f6a3c47c1675fcded2c10ab))
+* **auth:** clear the SWR cache when the signed-in user leaves or changes (TBD-620) ([#1114](https://github.com/fjcloudaiconsulting/tbd/issues/1114)) ([6323e8a](https://github.com/fjcloudaiconsulting/tbd/commit/6323e8a63b5fcac6a78ec86d6560c11744ac6be2))
+* **auth:** keep restoring the session through a backend restart (TBD-625) ([#1113](https://github.com/fjcloudaiconsulting/tbd/issues/1113)) ([5f9f0cc](https://github.com/fjcloudaiconsulting/tbd/commit/5f9f0ccea32efb7cb5de3f716df796ee303ddef9))
+* **broadcasts:** refuse to resume a completed broadcast (TBD-348) ([#1122](https://github.com/fjcloudaiconsulting/tbd/issues/1122)) ([4924d77](https://github.com/fjcloudaiconsulting/tbd/commit/4924d776a185efff816bfff89f7b45ed3c1920d6))
+* **dashboard:** roll the spending donut up to main categories so it agrees with Budget Progress (TBD-339) ([#1129](https://github.com/fjcloudaiconsulting/tbd/issues/1129)) ([2e635cd](https://github.com/fjcloudaiconsulting/tbd/commit/2e635cde182402645de89000753069d23b3e3161))
+* **demo:** seed opening balances that satisfy the balance invariant (TBD-597) ([#1116](https://github.com/fjcloudaiconsulting/tbd/issues/1116)) ([2edfd5a](https://github.com/fjcloudaiconsulting/tbd/commit/2edfd5a23b004b5895f4f290c8bf2c8ba38b70c0))
+* **dev:** clear the dev mounts in the local prod rehearsal with !reset (TBD-799) ([#1130](https://github.com/fjcloudaiconsulting/tbd/issues/1130)) ([aa44e2c](https://github.com/fjcloudaiconsulting/tbd/commit/aa44e2ceb7300ef3603271489741e2a2ca939ff4))
+* **dev:** mount the checkout at /repo so the full backend suite passes in the dev container (TBD-612) ([#1124](https://github.com/fjcloudaiconsulting/tbd/issues/1124)) ([58b22e7](https://github.com/fjcloudaiconsulting/tbd/commit/58b22e7ca5353adbed134f6cd94e4f32431bf1cb))
+* **forecast:** stop a two-month-grace card paying a real payment twice (TBD-797) ([#1128](https://github.com/fjcloudaiconsulting/tbd/issues/1128)) ([62d918b](https://github.com/fjcloudaiconsulting/tbd/commit/62d918bbddbf3f69b7806844e835a4a73e3db01f))
+* **plans:** add card-charged plan spend back when its card payment leaves the pool (TBD-793) ([#1115](https://github.com/fjcloudaiconsulting/tbd/issues/1115)) ([85871e9](https://github.com/fjcloudaiconsulting/tbd/commit/85871e90038f407d30d5dada02d0439a8d1558c8))
+* **reports:** compare a whole-month window against the whole previous months (TBD-488) ([#1127](https://github.com/fjcloudaiconsulting/tbd/issues/1127)) ([9e321e3](https://github.com/fjcloudaiconsulting/tbd/commit/9e321e310472f79d2050ba232028dfcae2ba5e2a))
+* **reports:** fold currency case in the accounts, recurring and net-worth sources (TBD-550) ([#1117](https://github.com/fjcloudaiconsulting/tbd/issues/1117)) ([c39f3f0](https://github.com/fjcloudaiconsulting/tbd/commit/c39f3f0981ae9ed3142b2df67c397d951acf07c3))
+* **scripts:** dispose the engine in the CLI's own event loop (TBD-795) ([#1103](https://github.com/fjcloudaiconsulting/tbd/issues/1103)) ([7301657](https://github.com/fjcloudaiconsulting/tbd/commit/73016579f23e93f0399d37599b2c0ac086735976))
+* **tests:** stop the 081 currency test leaking an alembic.op stub into the plans migration tests (TBD-796) ([#1123](https://github.com/fjcloudaiconsulting/tbd/issues/1123)) ([2e96955](https://github.com/fjcloudaiconsulting/tbd/commit/2e96955df381392f741f60a1a34fa6519917435a))
+* **transactions:** drop the deep-link highlight tint that failed contrast (TBD-511) ([#1111](https://github.com/fjcloudaiconsulting/tbd/issues/1111)) ([c92095d](https://github.com/fjcloudaiconsulting/tbd/commit/c92095dc126dece2d30b70a90e918b7333913d39))
+* **transactions:** say a skipped balance adjustment was refused, not gone (TBD-491) ([#1112](https://github.com/fjcloudaiconsulting/tbd/issues/1112)) ([f3815fe](https://github.com/fjcloudaiconsulting/tbd/commit/f3815fe120d4f222665ccaa22472cf896e2cd753))
+
 ## [0.308.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.307.0...v0.308.0) (2026-11-07)
 
 
