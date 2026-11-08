@@ -412,9 +412,17 @@ def account_currency_key():
 
     TBD-798: ``org_currency_filter``, ``resolve_currency_scope``'s GROUP BY and
     the transfer/duplicate detectors in ``transaction_service`` use it too; a
-    caller comparing against a raw value runs it through ``normalise_currency``.
+    caller comparing against a raw value uses ``account_currency_matches``.
     """
     return func.upper(func.trim(Account.currency))
+
+
+def account_currency_matches(currency: str):
+    """``account_currency_key() == currency``, with ``currency`` folded by the
+    SAME SQL ``UPPER(TRIM())`` rather than by ``normalise_currency``: Python's
+    ``strip()`` also drops tabs and newlines, SQL ``TRIM`` only spaces, so a
+    Python-folded value could miss its own account's key (TBD-798)."""
+    return account_currency_key() == func.upper(func.trim(currency))
 
 
 def org_currency_filter(

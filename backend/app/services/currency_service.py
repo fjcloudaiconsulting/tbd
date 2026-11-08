@@ -262,7 +262,11 @@ async def resolve_currency_scope(db: AsyncSession, *, org_id: int) -> dict:
         for _, code, n in rows
         if code is not None
         and org_currency is not None
-        and normalise_currency(code) != org_currency
+        # ``code`` is already the SQL key. Compare it as-is, exactly as
+        # ``org_currency_filter`` will: re-folding it with Python's ``strip()``
+        # (which also drops tabs) would count an ``'EUR\t'`` account as in
+        # scope while the filter drops it (TBD-798).
+        and code != org_currency
     ]
     count = sum(n for _, n in excluded)
     return {

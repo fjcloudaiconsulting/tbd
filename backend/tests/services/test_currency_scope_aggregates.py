@@ -1755,3 +1755,22 @@ async def test_tbd798_transfer_candidates_and_pairing_fold_legacy_spellings(
         db, org_id, source.id, partners["eur"].id
     )
     assert expense.linked_transaction_id == income.id
+
+
+async def test_tbd798_the_scope_counts_what_the_filter_drops(db):
+    """Kills re-folding the SQL key with Python's ``normalise_currency`` in
+    ``resolve_currency_scope``. SQL ``TRIM`` strips spaces only, ``strip()``
+    also tabs, so an ``'EUR\\t'`` account was reported in scope while
+    ``org_currency_filter`` dropped its money: a figure silently short with no
+    banner. SQLite only; MySQL's VARCHAR(3) refuses the 4-character value.
+    """
+    bones = await _bones(db, primary_currency="EUR")
+    for code in ("EUR", "EUR\t"):
+        await _money(db, bones, await _account(db, bones, repr(code), code), eur_leg=True)
+    await db.commit()
+    org_id = bones["org"].id
+    out = await spending_service.compute_spending_by_category(
+        db, org_id, P_START, today=TODAY
+    )
+    assert Decimal(out["executed_expense"]) == EUR_EXECUTED
+    assert out["currency_scope"]["excluded_account_count"] == 1, out["currency_scope"]

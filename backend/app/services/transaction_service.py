@@ -42,7 +42,7 @@ from app.services.list_query import resolve_order_by
 from app.services.recurring_filters import has_remaining_occurrences
 from app.services.transaction_filters import (
     REVERTED_RECONCILIATION_STATES,
-    account_currency_key,
+    account_currency_matches,
     balance_contribution_filter,
     contributes_to_cached_balance,
     effective_period_date_expr,
@@ -2646,7 +2646,7 @@ async def find_match_candidates(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
-            account_currency_key() == normalise_currency(currency),  # TBD-798
+            account_currency_matches(currency),  # TBD-798
         )
         # NOTE: no SQL .limit() — the ±3-day window + strict filter set keeps
         # the result set naturally tiny. Sort in Python, then slice.
@@ -2697,7 +2697,7 @@ async def find_duplicate_of_linked_leg(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
-            account_currency_key() == normalise_currency(currency),  # TBD-798
+            account_currency_matches(currency),  # TBD-798
         )
         # NOTE: no SQL .limit() — see find_match_candidates for rationale.
     )
@@ -2779,7 +2779,7 @@ async def find_duplicate_of_linked_leg_batch(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
             Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
-            account_currency_key() == normalise_currency(currency),  # TBD-798
+            account_currency_matches(currency),  # TBD-798
         )
     )
     fetched = list((await db.execute(q)).scalars().all())
@@ -2824,7 +2824,7 @@ async def find_match_candidates_batch(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
             Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
-            account_currency_key() == normalise_currency(currency),  # TBD-798
+            account_currency_matches(currency),  # TBD-798
         )
     )
     fetched = list((await db.execute(q)).scalars().all())
