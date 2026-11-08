@@ -132,6 +132,8 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("scenarios", "compare_plan_projections"): ("scenarios.projection_compare", "30/minute"),  # per user
     ("scenarios", "project_plans"): ("scenarios.projection", "60/minute"),  # per user (TBD-601)
     ("scenarios", "simulate_scenario"): ("scenarios.simulate", "60/minute"),  # per user (TBD-726)
+    ("scenarios", "start_plan"): ("scenarios.start", "30/minute"),  # per user (TBD-602)
+    ("scenarios", "finish_plan"): ("scenarios.finish", "30/minute"),  # per user (TBD-602)
     ("security", "csp_report"): ("security.csp_report", "60/minute"),
     ("tags", "create_tag_endpoint"): ("tags.create", "30/minute"),
     ("tags", "replace_transaction_tags_endpoint"): (
@@ -393,6 +395,8 @@ _KNOWN_PATH_PARAM_LIMITED: frozenset = frozenset({
     "app.routers.org_members.remove_member",
     "app.routers.orgs.rename_org_endpoint",
     "app.routers.scenarios.simulate_scenario",
+    "app.routers.scenarios.start_plan",
+    "app.routers.scenarios.finish_plan",
 })
 
 

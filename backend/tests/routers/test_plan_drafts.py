@@ -188,6 +188,9 @@ def _every_route_call(pid: int, gid: int) -> list[tuple[str, str, dict | None]]:
         ("DELETE", f"{base}/goals/{gid}", None),
         ("GET", f"/api/v1/scenarios/projection?plan_id={pid}&lifetime=true", None),
         ("GET", f"/api/v1/scenarios/projection/compare?plan_id={pid}", None),
+        ("POST", f"{base}/start", None),
+        ("POST", f"{base}/finish", None),
+        ("GET", f"{base}/progress", None),
     ]
 
 
@@ -388,8 +391,8 @@ async def test_a_goal_of_another_plan_is_not_found_through_this_one(factory, w):
 
 
 async def test_only_a_draft_is_edited_here(factory, w):
-    """Editing a started plan belongs to TBD-602; until then no field of a
-    started plan, nor its goals, is editable here. Delete works in any state."""
+    """Without ``confirm=true`` no field of a started plan, nor its goals, is
+    editable (TBD-602, ``test_plan_lifecycle.py``). Delete works in any state."""
     pid, gid = await _seed_plan(factory, w["A"], "alice")
     async with factory() as db:
         (await db.get(Scenario, pid)).status = ScenarioStatus.ACTIVE

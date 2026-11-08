@@ -9,8 +9,10 @@ and changes what follows the reports precedent (``routers/reports.py``):
   or ADMIN, edits or deletes it and writes its goals; another member gets 403.
 - Another org's row is a 404 either way, so a probe cannot tell it exists.
 
-Lifecycle transitions are the lifecycle ticket's. A draft has no real-data
-side effects: nothing here writes outside ``scenarios`` and ``plan_goals``.
+Lifecycle transitions are ``plan_lifecycle_service``'s (TBD-602). A draft has
+no real-data side effects: nothing here writes outside ``scenarios`` and
+``plan_goals``. A started plan is edited only with a confirmation, and only in
+the fields ``assert_editable`` allows; a finished one is a read-only record.
 
 The schema does not stop a plan or goal pointing at another org's rows, so
 every link is checked here, and a goal's ``org_id`` is always its plan's.
@@ -142,6 +144,39 @@ def assert_draft(plan: Scenario) -> None:
         raise ConflictError("only a draft plan can be edited here")
 
 
+# What a started plan may still change (TBD-602): nothing that a series, a
+# category or a tag Start made depends on. ``monthly_budget`` reaches its
+# Budgets; a new or newly enabled goal gets Start's steps (the routers).
+# Not ``is_active``: hiding a running plan waits for Archive (TBD-606).
+STARTED_PLAN_FIELDS = frozenset({
+    "name", "params", "horizon_months", "monthly_budget", "birth_year",
+    "return_pct", "inflation_pct",
+})
+STARTED_GOAL_FIELDS = frozenset({"name", "tier", "sort_order", "enabled"})
+CONFIRM_TO_EDIT = (
+    "this plan has started: changing it is discouraged, so resend with confirm=true to go ahead"
+)
+
+
+def assert_editable(
+    plan: Scenario, *, confirm: bool, changes: dict[str, Any], allowed: frozenset[str] | None,
+) -> None:
+    """A draft takes any change. An active plan takes the ``allowed`` fields
+    (``None``: any, a new goal) with ``confirm``, and never clears its budget
+    or disables a goal: Start's rows would be left behind. A finished plan
+    takes none."""
+    if plan.status == ScenarioStatus.DRAFT:
+        return
+    if plan.status != ScenarioStatus.ACTIVE:
+        raise ConflictError("a finished plan is a read-only record")
+    if not confirm:
+        raise ConflictError(CONFIRM_TO_EDIT)
+    refused = sorted(k for k, v in changes.items() if allowed is not None and (
+        k not in allowed or (k in ("monthly_budget", "enabled") and (v is None or v is False))))
+    if refused:
+        raise ConflictError(f"a started plan cannot change {', '.join(refused)} this way")
+
+
 async def apply_plan_fields(db: AsyncSession, row: Scenario, changes: dict[str, Any]) -> None:
     """Validate and set the plan fields a request sent (``changes``), which
     makes the row a plan in the org's currency; with no currency scope that
@@ -159,7 +194,7 @@ async def apply_plan_fields(db: AsyncSession, row: Scenario, changes: dict[str, 
 
 
 async def create_goal(db: AsyncSession, *, plan: Scenario, fields: dict[str, Any]) -> PlanGoal:
-    assert_draft(plan)
+    """The caller has run ``assert_editable``, as for ``update_goal``."""
     currency = await plan_currency(db, org_id=plan.org_id, requested=plan.currency)
     await _check_links(db, org_id=plan.org_id, currency=currency, changes=fields)
     plan.currency = currency  # a legacy row with a goal is a plan
@@ -172,7 +207,6 @@ async def create_goal(db: AsyncSession, *, plan: Scenario, fields: dict[str, Any
 async def update_goal(
     db: AsyncSession, *, plan: Scenario, goal: PlanGoal, changes: dict[str, Any]
 ) -> None:
-    assert_draft(plan)
     currency = await plan_currency(db, org_id=plan.org_id, requested=plan.currency)
     await _check_links(db, org_id=plan.org_id, currency=currency, changes=changes)
     for key, value in changes.items():

@@ -262,8 +262,10 @@ async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory
         await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
         await db.execute(update(Organization).where(Organization.id == a["org"]).values(primary_currency=None))
         await db.commit()
+    # A started plan is changed or deleted in the app only (its lifecycle tools are TBD-604).
     for tool, args in (("scenarios_update", {"scenario_id": a["scn"], "return_pct": "3.00"}),
-                       ("plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]})):
+                       ("plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]}),
+                       ("scenarios_delete", {"scenario_id": a["scn"]})):
         assert (await _refused(_invoke(factory, a["member"], tool, args))).code == "conflict", tool
     err = await _refused(_invoke(factory, a["member"], "scenarios_create", {**create, "monthly_budget": "10.00"}))
     assert err.detail == plan_draft_service.NO_CURRENCY_SCOPE
