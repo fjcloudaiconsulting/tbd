@@ -465,8 +465,31 @@ class ScenarioResponse(BaseModel):
     funding_account_id: Optional[int] = None
     category_id: Optional[int] = None
     tag_id: Optional[int] = None
+    # TBD-602: the lifecycle. The baseline is the projection frozen at Start.
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    baseline_projection_json: Optional[dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
+
+
+class GoalProgress(BaseModel):
+    goal_id: int
+    # The goal account's balance less its start balance.
+    saved: Optional[Decimal] = None
+    # A spend goal's settled spending in its category, from Start to Finish.
+    spent: Optional[Decimal] = None
+
+
+class PlanProgressResponse(BaseModel):
+    """``GET /api/v1/scenarios/{id}/progress`` (TBD-602)."""
+
+    plan_id: int
+    status: ScenarioStatus
+    # Empty when healthy; else why the plan needs attention (a broken link).
+    # The budget rollover skips a plan that needs attention.
+    needs_attention: list[str]
+    goals: list[GoalProgress]
 
 
 class SimulateRequest(BaseModel):

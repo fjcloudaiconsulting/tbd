@@ -35,7 +35,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 18
+MAX_GAPS = 23
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -55,6 +55,14 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("PUT", "/api/v1/transactions/{transaction_id}/tags"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/unpair"): "TBD-664",
+    # TBD-604 (the Plans lifecycle, TBD-602). The edit tools cover every field
+    # but `confirm`: editing a started plan stays off the agent until a preview
+    # discloses what Start's steps would write.
+    ("POST", "/api/v1/scenarios/{scenario_id}/start"): "TBD-604",
+    ("POST", "/api/v1/scenarios/{scenario_id}/finish"): "TBD-604",
+    ("PATCH", "/api/v1/scenarios/{scenario_id}"): "TBD-604",
+    ("POST", "/api/v1/scenarios/{scenario_id}/goals"): "TBD-604",
+    ("PATCH", "/api/v1/scenarios/{scenario_id}/goals/{goal_id}"): "TBD-604",
     # TBD-670
     ("POST", "/api/v1/import/confirm"): "TBD-670",
     ("POST", "/api/v1/import/ofx/preview"): "TBD-670",

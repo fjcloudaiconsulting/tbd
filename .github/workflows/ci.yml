@@ -896,6 +896,22 @@ jobs:
             exit 1
           fi
 
+      # TBD-602. Two concurrent Starts of one plan must create one set of rows;
+      # that rests on the plan row's InnoDB lock, so the fence runs here. A skip
+      # is red, as above.
+      - name: Run the plan lifecycle fences against MySQL
+        working-directory: backend
+        env:
+          PLAN_LIFECYCLE_MYSQL_URL: ${{ env.DATABASE_URL }}
+          PLAN_LIFECYCLE_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/services/test_plan_lifecycle_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/plan-lifecycle.log
+          if grep -q '^SKIPPED' /tmp/plan-lifecycle.log; then
+            echo "a plan lifecycle fence did not run"
+            exit 1
+          fi
+
       # TBD-586 (R12, R16, R18). The platform reserve/settle race fences need a
       # real InnoDB: two connections, row locks, rowcount semantics. They live in
       # tests/services/test_platform_reserve_mysql.py and are not run anywhere

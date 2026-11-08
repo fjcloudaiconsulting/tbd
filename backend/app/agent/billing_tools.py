@@ -102,6 +102,9 @@ register(route_tool(
 
 # ── billing_periods_ensure_future ─────────────────────────────────────────
 
+# Known gap (TBD-604): ensure_future_periods also writes the active plans'
+# Budgets for these stubs (plan_lifecycle_service.rollover); this preview does
+# not name them yet.
 async def _ensure_preview(ctx: ToolContext, args) -> Preview:
     sent = "count" in args.model_fields_set
     count = billing_service.clamp_future_count(args.count if sent else billing_service.FUTURE_PERIODS_DEFAULT)

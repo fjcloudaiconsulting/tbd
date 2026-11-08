@@ -22,15 +22,17 @@ Mounted at ``/api/v1/scenarios``. Architect-locked:
 - ``ai_enhanced`` engine routes through ``scenario_engine_ai.run_ai_simulation``
   which gate-checks ``ai.smart_plan`` + smart_plan routing and falls
   back to the analytic baseline on any failure (PR4).
+- Lifecycle (TBD-602, ``plan_lifecycle_service``): ``start`` and ``finish``,
+  ``DELETE`` in any state, and ``progress``. Same rights as an edit. Editing a
+  started plan needs ``confirm=true``; a finished plan is read-only.
 """
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -41,7 +43,7 @@ from app.deps import get_current_user, get_session_factory
 from app.models.account import Account
 from app.models.category import Category
 from app.models.recurring import RecurringTransaction
-from app.models.scenario import PlanGoal, Scenario, ScenarioType
+from app.models.scenario import PlanGoal, Scenario, ScenarioStatus, ScenarioType
 from app.models.user import User
 from app.rate_limit import get_client_ip, limiter, user_rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
@@ -50,19 +52,20 @@ from app.schemas.scenario import (
     CompareRequest,
     CompareResponse,
     CompareProjection,
+    PlanProgressResponse,
     ScenarioCreate,
     ScenarioResponse,
     ScenarioUpdate,
     SimulateRequest,
     validate_horizon,
 )
-from app.routers.plan_goals import http_errors
+from app.routers.plan_goals import CONFIRM, http_errors
 from app.schemas.plan_projection import (
     LifetimeResponse,
     PlanComparisonResponse,
     PlanProjectionResponse,
 )
-from app.services import plan_draft_service, plan_projection_service
+from app.services import plan_draft_service, plan_lifecycle_service, plan_projection_service
 from app.services.feature_gate import Feature, require_feature
 from app.services.scenario_engine import (
     SimulationRequest,
@@ -203,7 +206,7 @@ async def _project(
     org_id = plans[0].org_id
     result = await plan_projection_service.project(
         db, org_id, plans, goals, today=today,
-        horizon_end=today.replace(day=1) + relativedelta(months=24) - timedelta(days=1),
+        horizon_end=plan_projection_service.default_horizon_end(today),
     )
     response = PlanProjectionResponse.model_validate(result)
     if lifetime:
@@ -282,20 +285,26 @@ async def get_scenario(
 async def update_scenario(
     scenario_id: int,
     body: ScenarioUpdate,
+    confirm: bool = CONFIRM,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Partial update: name, params, horizon_months, is_active, plan fields.
 
     scenario_type is immutable post-create (the params blob's
-    discriminator pins it).
+    discriminator pins it). A started plan (TBD-602) takes the fields
+    ``plan_draft_service.STARTED_PLAN_FIELDS`` names, with ``confirm=true``,
+    under its row lock; a new ``monthly_budget`` reaches its Budgets.
     """
     row = await _get_owned_scenario(
         db, user=current_user, scenario_id=scenario_id, write=True
     )
-    # Editing a started plan is the lifecycle ticket's (TBD-602).
     with http_errors():
-        plan_draft_service.assert_draft(row)
+        row = await plan_lifecycle_service.lock(db, row)
+        plan_draft_service.assert_editable(
+            row, confirm=confirm, changes={k: getattr(body, k) for k in body.model_fields_set},
+            allowed=plan_draft_service.STARTED_PLAN_FIELDS,
+        )
 
     # Re-check horizon cap against the EXISTING row's scenario_type.
     if body.horizon_months is not None:
@@ -332,6 +341,8 @@ async def update_scenario(
 
     with http_errors():
         await plan_draft_service.apply_plan_fields(db, row, body.plan_changes())
+    if row.status == ScenarioStatus.ACTIVE and "monthly_budget" in body.model_fields_set:
+        await plan_lifecycle_service.budget_changed(db, plan=row)
 
     await db.commit()
     await db.refresh(row)
@@ -348,15 +359,86 @@ async def delete_scenario(
     db: AsyncSession = Depends(get_db),
 ):
     """Hard delete a scenario row. (Soft-delete is the ``is_active``
-    flag set via PATCH; this endpoint is the hard remove.) No draft check:
-    the lifecycle allows Delete in any state (TBD-548), and what deleting a
-    started plan also removes is the lifecycle ticket's (TBD-602).
+    flag set via PATCH; this endpoint is the hard remove.) Any state
+    (TBD-548): a started plan's series are stopped and its later Budgets
+    dropped first; what Start made otherwise stays as ordinary rows (TBD-602).
     """
     row = await _get_owned_scenario(
         db, user=current_user, scenario_id=scenario_id, write=True
     )
-    await db.delete(row)
+    with http_errors():
+        await plan_lifecycle_service.delete_plan(db, plan=row)
     await db.commit()
+
+
+# TBD-602: Start runs the projection to freeze the baseline, and both write
+# real rows; limited per user like the engine routes, ``shared_limit`` because
+# of ``{scenario_id}``.
+@router.post(
+    "/{scenario_id}/start",
+    response_model=ScenarioResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.shared_limit(
+    dynamic_limit("scenarios.start", "30/minute"), scope="scenarios.start",
+    key_func=user_rate_limit_key,
+)
+async def start_plan(
+    scenario_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Draft -> active: the master category, a child per enabled goal, the
+    tag, the funding series, the current Budget and the frozen baseline. On an
+    active plan, a no-op."""
+    row = await _get_owned_scenario(db, user=current_user, scenario_id=scenario_id, write=True)
+    with http_errors():
+        row = await plan_lifecycle_service.start(db, plan=row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+@router.post(
+    "/{scenario_id}/finish",
+    response_model=ScenarioResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
+)
+@limiter.shared_limit(
+    dynamic_limit("scenarios.finish", "30/minute"), scope="scenarios.finish",
+    key_func=user_rate_limit_key,
+)
+async def finish_plan(
+    scenario_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Active -> finished: the series stopped, later Budgets dropped; the
+    current Budget and all history stay. On a finished plan, a no-op."""
+    row = await _get_owned_scenario(db, user=current_user, scenario_id=scenario_id, write=True)
+    with http_errors():
+        row = await plan_lifecycle_service.finish(db, plan=row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+@router.get("/{scenario_id}/progress", response_model=PlanProgressResponse)
+async def plan_progress(
+    scenario_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Each goal's progress, keyed on its category and account, and why the
+    plan needs attention (empty when healthy). Read-only."""
+    row = await _get_owned_scenario(db, user=current_user, scenario_id=scenario_id)
+    return PlanProgressResponse(
+        plan_id=row.id, status=row.status,
+        needs_attention=await plan_lifecycle_service.attention(db, row),
+        goals=await plan_lifecycle_service.progress(db, plan=row),
+    )
 
 
 # TBD-726: both engine routes are limited per user, not per address
