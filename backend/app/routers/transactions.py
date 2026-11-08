@@ -560,19 +560,17 @@ async def spending_by_category(
     IDEMPOTENCE — two calls, one period row — and deliberately does NOT fence
     the write, which would bless it as contract.
 
-    ⚠⚠ **Drilldown callers must pass ``category_match=exact``.** This rollup
-    groups by the row's **own** ``category_id`` and returns ``parent_id``
-    alongside — the same shape ``GET /api/v1/forecast`` returns — so a master
-    category and its subcategory are two separate slices. But ``category_id``
-    on ``GET /api/v1/transactions`` is **master-includes-subs**, a deliberate
-    2026-05-13 regression guard. Wiring a donut slice straight to the list
-    endpoint without ``category_match=exact`` (the parameter added for exactly
-    this — see the ``category_match`` ``Query`` on ``list_transactions``
-    above) therefore opens a slice labelled with the master's DIRECT total and
-    fills it with the master's rows PLUS every subcategory's: Home 90.00 direct
-    + Utilities 160.00 renders two slices, and clicking the 90.00 Home slice
-    returns 250.00 of rows. Both endpoints are correct on their own; only the
-    unqualified pairing is wrong.
+    ⚠⚠ **Drilldown callers pass the ``category_match`` of the figure they
+    were opened from.** This rollup groups by the row's **own**
+    ``category_id`` and returns ``parent_id`` / ``parent_name`` alongside — the
+    forecast and the agent tool read it that way. The dashboard donut
+    (TBD-339) sums the rows under their master so it agrees with Budget
+    Progress: Home 90.00 direct + Utilities 160.00 is ONE 250.00 slice. Its
+    drilldown, and a budget bar's, therefore sends ``category_match=subtree``
+    (master-includes-subs, the list endpoint's default). A forecast bar is
+    still grouped by own category and sends ``category_match=exact``. Pairing
+    a figure with the other mode opens a list that disagrees with the number
+    the user clicked: 90.00 of rows under a 250.00 slice, or the reverse.
     """
     return await spending_service.compute_spending_by_category(
         db, current_user.org_id, period_start=period_start

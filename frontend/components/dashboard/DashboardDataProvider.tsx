@@ -57,6 +57,7 @@ import {
   selectCurrentPeriodIndex,
 } from "@/lib/billingPeriodStatus";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { donutSlices } from "@/lib/dashboard/donut-slices";
 import { useAccounts } from "@/lib/hooks/use-accounts";
 import { useBillingPeriods } from "@/lib/hooks/use-billing-periods";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
@@ -133,17 +134,26 @@ export interface SortedSpendingRow {
  * have not materialised, which IS the Forecast product, and re-exporting them
  * would re-gate this surface by the back door.
  *
- * ⚠ Rows are keyed by the transaction's OWN `category_id`, so a master
- * category and its subcategory are two separate slices and `parent_id` carries
- * the link. That is why the drilldown must pass `category_match=exact` — see
- * `txQueryTail` below.
+ * ⚠ Rows are keyed by the transaction's OWN `category_id`; `parent_id` and
+ * `parent_name` carry the link to the master. The donut rolls them up into
+ * masters (`donutSlices`, TBD-339) so it agrees with Budget Progress.
  */
 export interface SpendingCategoryRow {
   category_id: number;
   category_name: string;
   parent_id: number | null;
+  parent_name: string | null;
   executed: string;
 }
+
+/**
+ * The drilldown mode for `category_id` on `GET /api/v1/transactions`, chosen
+ * per tile (TBD-339). The donut and Budget Progress show a master rolled up
+ * with its subcategories, so they open `subtree`; Forecast by Category is
+ * grouped by own category, so it opens `exact`. Any other pairing opens a list
+ * that disagrees with the number the user clicked.
+ */
+export type CategoryMatch = "exact" | "subtree";
 
 /**
  * `GET /api/v1/transactions/spending-by-category?period_start=…`.
@@ -246,7 +256,8 @@ export interface DashboardData {
   // it, looked up from the rollup rows already in memory.
   chartFilter: number | null;
   chartFilterName: string | null;
-  setChartFilter: (c: number | null) => void;
+  // TBD-339: each tile passes the `CategoryMatch` its figure was grouped by.
+  setChartFilter: (c: number | null, match?: CategoryMatch) => void;
   // recent transactions tile (Phase 2c)
   transactions: Transaction[];
   txTotal: number;
@@ -380,6 +391,7 @@ export function DashboardDataProvider({
   // TBD-221: a category_id. The old string filter compared `tx.category_name`
   // client-side, which is neither the rollup's identity nor unique.
   const [chartFilterId, setChartFilterId] = useState<number | null>(null);
+  const [chartFilterMatch, setChartFilterMatch] = useState<CategoryMatch>("exact");
 
   // ── Spending sort (persisted) ───────────────────────────────────────────────
   const spendingSort = usePersistedSort<SpendingSort>(
@@ -592,8 +604,9 @@ export function DashboardDataProvider({
   // disagreement this ticket removes.
   const chartFilter = rollupFrom && rollupTo ? chartFilterId : null;
 
-  const setChartFilter = useCallback((c: number | null) => {
+  const setChartFilter = useCallback((c: number | null, match: CategoryMatch = "exact") => {
     setChartFilterId(c);
+    setChartFilterMatch(match);
     // The drilldown is its own paginated result set — landing on page 4 of a
     // three-row slice would render an empty tile.
     setPage(0);
@@ -654,18 +667,18 @@ export function DashboardDataProvider({
   //    slice's WHERE clause exactly, so the list cannot show a row the slice
   //    excluded, nor sum past the number the user clicked.
   //
-  //    ⚠ `category_match=exact` is NOT optional. `category_id` on the list
-  //    endpoint is master-includes-subs (a 2026-05-13 regression guard) while
-  //    the rollup groups by the row's OWN category_id. Without it a master
-  //    slice opens a list summing to more than itself — silently, and only
-  //    for orgs that put transactions directly on a master.
+  //    ⚠ `category_match` is the CLICKED TILE's grouping (TBD-339), never a
+  //    constant. The donut and Budget Progress roll a master up with its
+  //    subcategories (`subtree`); Forecast by Category is per own category
+  //    (`exact`). A fixed `exact` opened 90.00 of rows under a 250.00 budget
+  //    bar — silently, and only for orgs that spend directly on a master.
   //
   //    ⚠ `collapse_transfers` is deliberately ABSENT. `reportable=true`
   //    already excludes every non-null `linked_transaction_id`, a strict
   //    superset of it; sending both would be a contradiction in one URL.
   const txQueryTail =
     chartFilter !== null && rollupFrom && rollupTo
-      ? `&category_id=${chartFilter}&category_match=exact&reportable=true` +
+      ? `&category_id=${chartFilter}&category_match=${chartFilterMatch}&reportable=true` +
         `&type=expense&status=settled` +
         `&date_from=${rollupFrom}&date_to=${rollupTo}`
       : `&collapse_transfers=true&date_from=${monthFrom}` +
@@ -1095,26 +1108,13 @@ export function DashboardDataProvider({
   // calendar window instead of the org's billing-period boundaries. Those are
   // aggregation errors, and they are invisible in the same way the original
   // defect was.
-  const donutDataRaw = useMemo<DonutDatum[]>(() => {
-    // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
-    // user has since navigated away from must not render under the new one.
-    const rows = activeRollup?.categories;
-    if (!Array.isArray(rows)) return [];
-    return rows
-      .map((r) => ({
-        categoryId: r.category_id,
-        name: r.category_name,
-        value: Number(r.executed),
-      }))
-      // A defensive finite/positive guard, NOT a negative-expense handler: no
-      // reachable state produces one. `TransactionCreate/Update.amount` and
-      // `ImportConfirmRow.amount` are `Field(gt=0)`, the OFX path writes
-      // `amount_abs`, sign is carried by `type`, and the rollup groups only
-      // `type == EXPENSE` — so a refund is an INCOME row, never a negative
-      // EXPENSE, and every group sum is strictly positive.
-      .filter((d) => Number.isFinite(d.value) && d.value > 0)
-      .sort((a, b) => b.value - a.value);
-  }, [activeRollup]);
+  //
+  // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
+  // user has since navigated away from must not render under the new one.
+  const donutDataRaw = useMemo<DonutDatum[]>(
+    () => donutSlices(activeRollup?.categories),
+    [activeRollup],
+  );
 
   // The sum of the RENDERED slices, which is the figure the percentages below
   // are taken against — so they add to 100 by construction. Server-side
@@ -1191,9 +1191,12 @@ export function DashboardDataProvider({
   // label and the slice it describes have ONE source of truth. Budget and
   // Forecast bars can filter a category with no settled spend this period and
   // therefore no rollup row, so those two in-memory lists back the LABEL up;
-  // the NUMBER always comes from the server.
+  // the NUMBER always comes from the server. A master with spend only on its
+  // subcategories is still named here: its slice takes `parent_name`
+  // (TBD-339). A forecast bar on a subcategory has no slice and falls through
+  // to `forecastExpenseItems`.
   //
-  // Two same-named subcategories now render as two slices sharing one label —
+  // Two same-named categories can render as two slices sharing one label —
   // deliberately TBD-326, split out so a label question cannot gate a
   // correctness fix. A correct number under an ambiguous label beats a wrong
   // number under a unique one.

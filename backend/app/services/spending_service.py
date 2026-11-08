@@ -227,14 +227,21 @@ async def compute_spending_by_category(
         db, org_id, p_start, window_end, currency_scope=currency_scope
     )
     meta = await load_category_meta(db, org_id, set(by_category))
+    # TBD-339: the donut rolls subcategories up into their master client-side,
+    # and a master with no direct spend has no row of its own to name it.
+    parent_meta = await load_category_meta(
+        db, org_id, {m["parent_id"] for m in meta.values() if m["parent_id"]}
+    )
 
     categories = []
     for cid in sorted(by_category):
         info = meta.get(cid, {"name": "Unknown", "parent_id": None})
+        parent = parent_meta.get(info["parent_id"])
         categories.append({
             "category_id": cid,
             "category_name": info["name"],
             "parent_id": info["parent_id"],
+            "parent_name": parent["name"] if parent else None,
             "executed": str(by_category[cid]),
         })
 
