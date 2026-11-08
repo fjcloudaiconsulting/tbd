@@ -51,6 +51,7 @@ from app.schemas.reports_query import (
 )
 from app.services.reports_query_service import QUERY_TIMEOUT_MS
 from app.services.transaction_filters import (
+    account_currency_key,
     balance_contribution_filter,
     effective_period_date_expr,
     signed_amount_expr,
@@ -180,22 +181,27 @@ class NetWorthSource:
                 if f.op is FilterOp.IN:
                     account_ids = list(f.value)
 
+        # TBD-550: ONE canonical currency key for both streams' SELECT, GROUP BY
+        # and filter. The merge below keys a Python dict on the emitted string
+        # and does not fold case itself, so the SQL key must already be canonical.
+        ccy = account_currency_key()
+
         # ── Stream 1: opening events (over accounts) ──
-        open_stmt = select(Account.currency.label("currency")).where(Account.org_id == org_id)
+        open_stmt = select(ccy.label("currency")).where(Account.org_id == org_id)
         if time_dim is not None:
             period = _bucket_sql(Account.opening_balance_date, time_dim, dialect)
             open_stmt = select(
                 period.label("period"),
-                Account.currency.label("currency"),
+                ccy.label("currency"),
                 func.sum(Account.opening_balance).label("delta"),
-            ).where(Account.org_id == org_id).group_by(period, Account.currency)
+            ).where(Account.org_id == org_id).group_by(period, ccy)
         else:
             open_stmt = select(
-                Account.currency.label("currency"),
+                ccy.label("currency"),
                 func.sum(Account.opening_balance).label("delta"),
-            ).where(Account.org_id == org_id).group_by(Account.currency)
+            ).where(Account.org_id == org_id).group_by(ccy)
         if currency_vals is not None:
-            open_stmt = open_stmt.where(Account.currency.in_(currency_vals))
+            open_stmt = open_stmt.where(ccy.in_(currency_vals))
         if account_ids is not None:
             open_stmt = open_stmt.where(Account.id.in_(account_ids))
         if hi is not None:
@@ -213,16 +219,16 @@ class NetWorthSource:
             period = _bucket_sql(eff, time_dim, dialect)
             delta_stmt = select(
                 period.label("period"),
-                Account.currency.label("currency"),
+                ccy.label("currency"),
                 _signed_delta().label("delta"),
-            ).select_from(Transaction).join(Account, Account.id == Transaction.account_id).where(*base_where).group_by(period, Account.currency)
+            ).select_from(Transaction).join(Account, Account.id == Transaction.account_id).where(*base_where).group_by(period, ccy)
         else:
             delta_stmt = select(
-                Account.currency.label("currency"),
+                ccy.label("currency"),
                 _signed_delta().label("delta"),
-            ).select_from(Transaction).join(Account, Account.id == Transaction.account_id).where(*base_where).group_by(Account.currency)
+            ).select_from(Transaction).join(Account, Account.id == Transaction.account_id).where(*base_where).group_by(ccy)
         if currency_vals is not None:
-            delta_stmt = delta_stmt.where(Account.currency.in_(currency_vals))
+            delta_stmt = delta_stmt.where(ccy.in_(currency_vals))
         if account_ids is not None:
             delta_stmt = delta_stmt.where(Transaction.account_id.in_(account_ids))
         if hi is not None:
