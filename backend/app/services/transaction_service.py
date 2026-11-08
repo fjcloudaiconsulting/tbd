@@ -36,11 +36,13 @@ from app.schemas.transaction import (
 )
 from app.services.category_rules_service import learn_from_choice
 from app.services.date_utils import advance_date
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.recurring_filters import has_remaining_occurrences
 from app.services.transaction_filters import (
     REVERTED_RECONCILIATION_STATES,
+    account_currency_matches,
     balance_contribution_filter,
     contributes_to_cached_balance,
     effective_period_date_expr,
@@ -991,7 +993,7 @@ async def update_transaction(
                 raise ValidationError("Account not found")
             if new_acct.id == pair_partner.account_id:
                 raise ValidationError("Account must differ from partner's account")
-            if new_acct.currency != pair_partner.account.currency:
+            if normalise_currency(new_acct.currency) != normalise_currency(pair_partner.account.currency):
                 raise ValidationError("New account currency must match partner's currency")
 
     # Validate references regardless of linked status
@@ -1245,7 +1247,7 @@ async def update_transaction(
                 raise ValidationError("Pair amount mismatch after edit")
             if {tx.type, pair_partner.type} != {TransactionType.EXPENSE, TransactionType.INCOME}:
                 raise ValidationError("Pair must have opposite types after edit")
-            if tx.account.currency != pair_partner.account.currency:
+            if normalise_currency(tx.account.currency) != normalise_currency(pair_partner.account.currency):
                 raise ValidationError("Pair currencies differ after edit")
 
         if amount_was_changed and pair_partner is not None:
@@ -2551,7 +2553,7 @@ async def _link_pair(
     expense_account = expense_tx.__dict__.get("account")
     income_account = income_tx.__dict__.get("account")
     if expense_account is not None and income_account is not None:
-        if expense_account.currency != income_account.currency:
+        if normalise_currency(expense_account.currency) != normalise_currency(income_account.currency):
             raise ValidationError("Transfer legs must have the same currency")
     # If account relationship is not loaded, fall back to a query
     else:
@@ -2561,7 +2563,7 @@ async def _link_pair(
                 Account.org_id == expense_tx.org_id,
             )
         )
-        currencies = {row.id: row.currency for row in result.all()}
+        currencies = {row.id: normalise_currency(row.currency) for row in result.all()}
         if currencies.get(expense_tx.account_id) != currencies.get(income_tx.account_id):
             raise ValidationError("Transfer legs must have the same currency")
 
@@ -2644,7 +2646,7 @@ async def find_match_candidates(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
         # NOTE: no SQL .limit() — the ±3-day window + strict filter set keeps
         # the result set naturally tiny. Sort in Python, then slice.
@@ -2695,7 +2697,7 @@ async def find_duplicate_of_linked_leg(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
         # NOTE: no SQL .limit() — see find_match_candidates for rationale.
     )
@@ -2777,7 +2779,7 @@ async def find_duplicate_of_linked_leg_batch(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
             Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
     )
     fetched = list((await db.execute(q)).scalars().all())
@@ -2822,7 +2824,7 @@ async def find_match_candidates_batch(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
             Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
     )
     fetched = list((await db.execute(q)).scalars().all())
@@ -2971,7 +2973,7 @@ async def convert_and_create_leg(
     )
     if dst_account_pre is None:
         raise NotFoundError("Account")
-    if src_account_pre.currency != dst_account_pre.currency:
+    if normalise_currency(src_account_pre.currency) != normalise_currency(dst_account_pre.currency):
         raise ValidationError("Source and destination accounts must have the same currency")
 
     # 3. Lock the source transaction FIRST (before accounts) to match the
@@ -3009,7 +3011,7 @@ async def convert_and_create_leg(
     dst_locked = first_acct if destination_account_id == first_id else second_acct
 
     # 6. Re-validate currency on the locked accounts.
-    if src_locked.currency != dst_locked.currency:
+    if normalise_currency(src_locked.currency) != normalise_currency(dst_locked.currency):
         raise ConflictError("Account currencies changed; refresh and retry")
 
     # Determine partner type by mirroring source.
