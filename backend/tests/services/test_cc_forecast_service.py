@@ -290,3 +290,26 @@ def test_synth_one_month_grace_real_payment_output_unchanged():
         (date(2026, 5, 1), Decimal("1000.00"), Decimal("300.00"), Decimal("700.00")),
         (date(2026, 6, 1), Decimal("400.00"), Decimal("0"), Decimal("400.00")),
     ]
+
+
+def test_synth_one_month_grace_payment_after_next_close_not_paid_twice():
+    """TBD-797 with relative_month=1: close the 5th, due the 28th of the next
+    month, so the windows overlap too (Apr-5 close -> due May 28, May-5 close ->
+    due Jun 28). A 300 Apr 1 charge, a 200 May 1 charge, and the Apr bill paid
+    for real on May 20, after the May close.
+
+    Apr cycle: owed 300, its own credit 300 -> outflow 0.
+    May cycle: owed 500 at close, less the 300 paid May 20 -> 200."""
+    acct = _FakeAccount(close_day=5, payment_day=28, payment_day_relative_month=1,
+                        payment_strategy="full_balance")
+    pay_in = (11, date(2026, 5, 20), Decimal("300.00"))
+    ledger = [(date(2026, 4, 1), Decimal("-300.00")), (date(2026, 5, 1), Decimal("-200.00")),
+              (pay_in[1], pay_in[2])]
+    bills = svc.synthesize_account_cc_cycles(
+        acct, p_start=date(2026, 5, 28), p_end=date(2026, 6, 30),
+        opening_balance=Decimal("0.00"), ledger=ledger, credits=[pay_in], per_cycle_amounts={},
+    )
+    assert [(b.payment_date, b.outflow) for b in bills] == [
+        (date(2026, 5, 28), Decimal("0.00")),
+        (date(2026, 6, 28), Decimal("200.00")),
+    ]
