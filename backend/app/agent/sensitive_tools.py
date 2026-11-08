@@ -30,6 +30,7 @@ from app.routers import transactions as transactions_router
 from app.schemas.transaction import TransferCreate
 from app.services import transaction_service
 from app.services.category_rules_service import normalize_description
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import ValidationError
 from app.services.reconciliation_service import PENDING_STATES
 from app.services.transaction_filters import contributes_to_cached_balance
@@ -402,7 +403,7 @@ async def _transfer_preview(ctx: ToolContext, args) -> Preview:
     if len(accounts) != 2:
         raise ValidationError("Invalid account")
     src, dst = accounts[body.from_account_id], accounts[body.to_account_id]
-    if src.currency != dst.currency:
+    if normalise_currency(src.currency) != normalise_currency(dst.currency):
         raise ValidationError("Transfer legs must have the same currency")
     description = body.description.strip() or f"Transfer from {src.name} to {dst.name}"
     if body.category_id is not None:

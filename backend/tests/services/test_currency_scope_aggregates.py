@@ -1645,3 +1645,113 @@ async def test_f14_a_lowercase_single_currency_org_excludes_nothing(
     assert scope["excluded_currencies"] == []
     # Normalised on the way out, so every consumer sees one spelling.
     assert scope["currency"] == "EUR"
+
+
+# ── TBD-798: legacy spellings stay inside the scoped figures ────────────────
+#
+# Case half: RED on SQLite (every CI shard but the migration checks), VACUOUS on
+# MySQL, whose case-insensitive collation already matches ``'eur'``. Padding
+# half: red on both engines while a padded row exists (the collation is NO PAD).
+# ⚠ On MySQL ``accounts.currency`` is VARCHAR(3), which trims excess trailing
+# spaces on insert, so this fixture cannot create ``'EUR '`` there; the padding
+# half's MySQL coverage is only for a row that already holds one.
+# Same posture as ``test_report_sources_currency_case.py`` (TBD-550).
+
+
+@pytest_asyncio.fixture
+async def mixed_spelling(db) -> dict:
+    """EUR org holding ``'EUR'``, ``'eur'``, ``'EUR '``, ``'USD'`` and ``'usd'``.
+
+    The USD accounts are what make ``org_currency_filter`` emit its subquery at
+    all (``excluded_account_count`` > 0); without them the filter
+    short-circuits and the fences below are vacuous.
+    """
+    bones = await _bones(db, primary_currency="EUR")
+    accts = {
+        code: await _account(db, bones, f"Acct {code!r}", code)
+        for code in ("EUR", "eur", "EUR ", "USD", "usd")
+    }
+    for code, acct in accts.items():
+        await _money(db, bones, acct, eur_leg=code.strip().upper() == "EUR")
+    await db.commit()
+    return {**bones, "accts": accts}
+
+
+async def test_tbd798_scoped_spending_keeps_lowercase_and_padded_accounts(
+    db, mixed_spelling
+):
+    """Kills the bare ``Account.currency ==`` in ``org_currency_filter``, and
+    the bare ``Account.currency`` GROUP BY in ``resolve_currency_scope``.
+
+    Driven through ``compute_spending_by_category`` (the dashboard donut). The
+    three EUR spellings are one currency, so all three accounts' expense is in
+    the scoped figure and neither USD account's is. Unfixed on SQLite the
+    figure is 100 (the ``'EUR'`` account only).
+
+    The case half is red on SQLite and vacuous on MySQL; the padding half is
+    red on both engines (see the block comment above for MySQL's VARCHAR(3)).
+    """
+    org_id = mixed_spelling["org"].id
+    out = await spending_service.compute_spending_by_category(
+        db, org_id, P_START, today=TODAY
+    )
+    assert Decimal(out["executed_expense"]) == 3 * EUR_EXECUTED, out
+
+    scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+    assert scope["excluded_currencies"] == ["USD"], scope
+    assert scope["excluded_account_count"] == 2, scope
+
+
+async def test_tbd798_transfer_candidates_and_pairing_fold_legacy_spellings(
+    db, mixed_spelling
+):
+    """Kills the bare ``Account.currency == currency`` in
+    ``transaction_service.find_match_candidates``, and the raw ``!=`` guard in
+    ``_link_pair`` that the widened candidate would otherwise hit.
+
+    An expense on the ``'EUR'`` account looks for its income partner. The
+    partners on the ``'eur'`` and ``'EUR '`` accounts are the same currency and
+    must be offered; the USD one must not. Callers pass the source account's
+    RAW currency, so a legacy ``'eur'`` source is asked too. Then the offered
+    ``'eur'`` partner must actually pair.
+
+    Candidate half: the case half is red on SQLite and vacuous on MySQL; the
+    padding half is red on both engines (see the block comment above). Pairing
+    half: an in-Python comparison, red on both engines.
+    """
+    from app.services import transaction_service
+
+    org_id = mixed_spelling["org"].id
+    accts = mixed_spelling["accts"]
+    day = datetime.date(2026, 6, 15)
+    amount = Decimal(50)
+    partners = {}
+    for code in ("eur", "EUR ", "USD"):
+        partners[code] = Transaction(
+            org_id=org_id, account_id=accts[code].id,
+            category_id=mixed_spelling["pay"].id, description="Transfer in",
+            amount=amount, type=TransactionType.INCOME,
+            status=TransactionStatus.SETTLED, date=day, settled_date=day,
+        )
+    source = Transaction(
+        org_id=org_id, account_id=accts["EUR"].id,
+        category_id=mixed_spelling["food"].id, description="Transfer out",
+        amount=amount, type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=day, settled_date=day,
+    )
+    db.add_all([*partners.values(), source])
+    await db.commit()
+
+    for raw in ("EUR", "eur"):
+        found = await transaction_service.find_match_candidates(
+            db, org_id, source_type=TransactionType.EXPENSE, amount=amount,
+            account_id_excluded=accts["EUR"].id, date=day, currency=raw,
+        )
+        assert {t.id for t in found} == {
+            partners["eur"].id, partners["EUR "].id
+        }, raw
+
+    expense, income = await transaction_service.pair_existing_transactions(
+        db, org_id, source.id, partners["eur"].id
+    )
+    assert expense.linked_transaction_id == income.id

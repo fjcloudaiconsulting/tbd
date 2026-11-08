@@ -409,6 +409,10 @@ def account_currency_key():
     and the predicate cannot drift apart. The filter's other side is already
     canonical: ``schemas/reports_query._coerce_filter_scalar`` strips,
     uppercases and length-checks every currency filter value on construction.
+
+    TBD-798: ``org_currency_filter``, ``resolve_currency_scope``'s GROUP BY and
+    the transfer/duplicate detectors in ``transaction_service`` use it too; a
+    caller comparing against a raw value runs it through ``normalise_currency``.
     """
     return func.upper(func.trim(Account.currency))
 
@@ -466,6 +470,8 @@ def org_currency_filter(
     return account_id_col.in_(
         select(Account.id).where(
             Account.org_id == org_id,
-            Account.currency == currency_scope["currency"],
+            # TBD-798: canonical key; the scope's currency is already
+            # normalised by ``resolve_currency_scope``, its only producer.
+            account_currency_key() == currency_scope["currency"],
         )
     )

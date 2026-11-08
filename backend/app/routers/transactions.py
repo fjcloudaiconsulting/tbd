@@ -51,6 +51,7 @@ from app.services import (
     transaction_service as svc,
     transaction_suggestions_service as suggestions_svc,
 )
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import NotFoundError, ValidationError
 from app import logs
 
@@ -328,7 +329,7 @@ async def transfer_candidates(
     )
     if dst_acct is None:
         raise NotFoundError("Account")
-    if source.account.currency != dst_acct.currency:
+    if normalise_currency(source.account.currency) != normalise_currency(dst_acct.currency):
         raise ValidationError("Source and destination must have the same currency")
     candidates = await svc.find_match_candidates(
         db,

@@ -33,6 +33,7 @@ from app.schemas.transaction import (
     TransferCandidate,
 )
 from app.services import transaction_service
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import (
     ConflictError,
     MissingCategoryTypeError,
@@ -893,7 +894,7 @@ async def _apply_confirm_rows(
                         raise ConflictError(
                             "Partner row no longer settled; re-preview"
                         )
-                    if partner.account.currency != currency:
+                    if normalise_currency(partner.account.currency) != normalise_currency(currency):
                         raise ConflictError(
                             "Currency mismatch detected at confirm; re-preview"
                         )
@@ -964,7 +965,7 @@ async def _apply_confirm_rows(
                         raise ValidationError(
                             "Partner account must differ from import account"
                         )
-                    if partner_account.currency != currency:
+                    if normalise_currency(partner_account.currency) != normalise_currency(currency):
                         raise ValidationError(
                             "Partner account currency must match import "
                             "account currency"
