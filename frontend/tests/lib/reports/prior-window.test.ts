@@ -46,12 +46,10 @@ describe("resolvePriorWindow — bounded windows", () => {
     });
   });
 
-  it("keeps the prior window the SAME LENGTH, not the same calendar month", () => {
-    // March has 31 days; the prior 31 days end 2026-02-28 and therefore
-    // reach back into January. A month-arithmetic implementation would
-    // return 2026-02-01..2026-02-28 (28 days) and compare unlike windows.
+  it("maps a whole month to the whole previous month, whatever their lengths (TBD-488)", () => {
+    // March (31) -> February (28), not the 31 days ending 2026-02-28.
     expect(resolvePriorWindow(between("2026-03-01", "2026-03-31"), TODAY)).toEqual({
-      prior: ["2026-01-29", "2026-02-28"],
+      prior: ["2026-02-01", "2026-02-28"],
       refusal: null,
     });
   });
@@ -77,7 +75,7 @@ describe("resolvePriorWindow — bounded windows", () => {
       { field: "status", op: "eq", value: "settled" },
     ];
     expect(resolvePriorWindow(filters, TODAY)).toEqual({
-      prior: ["2026-05-02", "2026-05-31"],
+      prior: ["2026-05-01", "2026-05-31"],
       refusal: null,
     });
   });
@@ -165,17 +163,17 @@ describe("resolvePriorWindow — a window that has not finished yet is clamped t
   // still reads about -29% on day 2 at 10:00 and about -4% by day 15.
   // `min(end, today - 1)` would be exact, and is not used because it refuses
   // on the 1st, when no complete day exists yet.
-  it("compares September 1-2 against August 30-31, not against all of August", () => {
+  it("compares September 1-2 against August 1-2, not against all of August", () => {
     expect(
       resolvePriorWindow(between("2026-09-01", "2026-09-30"), "2026-09-02"),
-    ).toEqual({ prior: ["2026-08-30", "2026-08-31"], refusal: null });
+    ).toEqual({ prior: ["2026-08-01", "2026-08-02"], refusal: null });
   });
 
   it("on the FIRST of the month compares one day against one day", () => {
     // The worst case before the clamp: 1 day of data vs 30, i.e. ~-100%.
     expect(
       resolvePriorWindow(between("2026-09-01", "2026-09-30"), "2026-09-01"),
-    ).toEqual({ prior: ["2026-08-31", "2026-08-31"], refusal: null });
+    ).toEqual({ prior: ["2026-08-01", "2026-08-01"], refusal: null });
   });
 
   it("leaves a FULLY PAST window untouched (the clamp is not a rewrite)", () => {
@@ -208,43 +206,47 @@ describe("resolvePriorWindow — a window that has not finished yet is clamped t
   });
 });
 
-describe("resolvePriorWindow — the sliding window is deliberate, and CONTESTED", () => {
-  // B2. The prior window is same-LENGTH, not same-CALENDAR-MONTH. For a
-  // fully-past 28-day February the prior 28 days are 2026-01-04..01-31, so
-  // January 1-3 are not counted.
-  //
-  // ⚠⚠ THE ARGUMENT AGAINST THE CURRENT CHOICE IS STRONGER THAN THE ONE FOR
-  // IT, AND THE RULING IS WITH THE OPERATOR. Equal-length windows are right
-  // for day-of-WEEK periodic data (web traffic). Personal cashflow is
-  // day-of-MONTH periodic: rent, mortgage, salary and subscriptions land on
-  // fixed days, overwhelmingly the 1st. So on `last_month` = February the
-  // prior window 2026-01-04..01-31 DROPS JANUARY'S RENT — commonly 25-40% of
-  // a month's spend — and a user whose spending is identical month over month
-  // sees a large positive delta under a label asserting comparability. That is
-  // a concrete misleading number on a preset users actually pick.
-  //
-  // What is on the other side: a 28-day February set against a 31-day January
-  // is unfair in the opposite direction, and the delta's own label says "vs
-  // prior period", not "vs last month" — the chip names the CURRENT window,
-  // not the comparison. Month-aligned arithmetic is NOT hard for a
-  // calendar-month window (shift both ends back one calendar month, which
-  // handles Sep 1-2 -> Aug 1-2 uniformly and needs no clamp exception); it is
-  // only awkward for arbitrary custom ranges, which would still need the
-  // sliding rule. So the real cost is TWO rules, not an exception to one.
-  //
-  // Fenced here so the behaviour is RECORDED rather than latent. If the ruling
-  // goes the other way, this is the test that must change.
-  it("a fully-past calendar month maps to the preceding N days, not the preceding month", () => {
+describe("resolvePriorWindow — whole months compare against whole months (TBD-488)", () => {
+  // B2, ruled 2026-11-08. Personal cashflow repeats by day of MONTH (rent,
+  // salary, subscriptions on fixed days, mostly the 1st), so a window made of
+  // whole calendar months shifts back by that many calendar months, both ends.
+  // The old same-length rule mapped February to 2026-01-04..01-31 and dropped
+  // January's rent. Any other window keeps the same-length slide.
+  it("a fully-past February maps to all of January", () => {
     expect(
       resolvePriorWindow(between("2026-02-01", "2026-02-28"), "2026-09-02"),
-    ).toEqual({ prior: ["2026-01-04", "2026-01-31"], refusal: null });
+    ).toEqual({ prior: ["2026-01-01", "2026-01-31"], refusal: null });
   });
 
-  it("...and lands exactly on the previous month when the lengths happen to match", () => {
-    // August (31) → July (31). Equal-length and calendar-aligned agree here.
+  it("a fully-past March maps to a leap February", () => {
     expect(
-      resolvePriorWindow(between("2026-08-01", "2026-08-31"), "2026-09-02"),
-    ).toEqual({ prior: ["2026-07-01", "2026-07-31"], refusal: null });
+      resolvePriorWindow(between("2024-03-01", "2024-03-31"), "2024-09-02"),
+    ).toEqual({ prior: ["2024-02-01", "2024-02-29"], refusal: null });
+  });
+
+  it("this month on the 30th of March compares against February 1-28, not into March", () => {
+    expect(
+      resolvePriorWindow(between("2026-03-01", "2026-03-31"), "2026-03-30"),
+    ).toEqual({ prior: ["2026-02-01", "2026-02-28"], refusal: null });
+  });
+
+  it("a whole quarter maps to the previous quarter", () => {
+    expect(
+      resolvePriorWindow(between("2026-04-01", "2026-06-30"), TODAY),
+    ).toEqual({ prior: ["2026-01-01", "2026-03-31"], refusal: null });
+  });
+
+  it("a whole year in progress compares the same elapsed part of last year", () => {
+    expect(
+      resolvePriorWindow(between("2026-01-01", "2026-12-31"), "2026-11-08"),
+    ).toEqual({ prior: ["2025-01-01", "2025-11-08"], refusal: null });
+  });
+
+  it("a range that is not whole months keeps the same-length slide", () => {
+    // Starts on the 2nd: not a whole month, so 30 days back.
+    expect(
+      resolvePriorWindow(between("2026-03-02", "2026-03-31"), TODAY),
+    ).toEqual({ prior: ["2026-01-31", "2026-03-01"], refusal: null });
   });
 });
 

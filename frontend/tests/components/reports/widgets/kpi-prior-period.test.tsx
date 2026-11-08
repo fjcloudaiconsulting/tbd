@@ -76,7 +76,7 @@ vi.mock("@/components/reports/widgets/SankeyWidget", () => ({
 const JANUARY = { start: "2026-01-01", end: "2026-01-31" };
 /** December 2026-01-01..2026-01-31 shifted back one whole window. */
 const PRIOR_DECEMBER: [string, string] = ["2025-12-01", "2025-12-31"];
-/** 28 days; its prior 28 days are 2026-01-04..2026-01-31. */
+/** 28 days; its prior window is all of January (TBD-488). */
 const FEBRUARY = { start: "2026-02-01", end: "2026-02-28" };
 
 const NO_CANVAS: CanvasFilters = {};
@@ -145,8 +145,11 @@ function respondByWindowStart(values: Record<string, number>) {
   runQueryMock.mockImplementation(
     async (q: ReportsQuery): Promise<ReportsQueryResponse> => {
       const d = dateFilterOf(q);
-      const key = Array.isArray(d?.value) ? String(d.value[0]) : "__unbounded__";
-      const v = values[key];
+      // Keyed by "start..end" when both are given, else by start: two windows
+      // can share a start (September and its own first day).
+      const v = Array.isArray(d?.value)
+        ? (values[`${d.value[0]}..${d.value[1]}`] ?? values[String(d.value[0])])
+        : values.__unbounded__;
       if (v === undefined) {
         throw new Error(`unexpected query window: ${JSON.stringify(d?.value)}`);
       }
@@ -516,7 +519,7 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
   it("B1: the prior window is the 2 ELAPSED days, not the whole prior month", async () => {
     respondByWindowStart({
       "2026-09-01": 250, // September so far (2 days)
-      "2026-08-30": 500, // the matching 2 days, Aug 30-31
+      "2026-08-01": 500, // the matching 2 days, Aug 1-2
     });
     const w = makeKpi({ date_range: SEPTEMBER }, true);
 
@@ -524,14 +527,14 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
     const delta = await screen.findByTestId("kpi-widget-delta");
 
     // The exact window is the assertion. An unclamped implementation asks for
-    // 2026-08-02..08-31 and the responder throws on it, so this cannot pass by
+    // 2026-08-01..08-31 and the responder throws on it, so this cannot pass by
     // decaying into "no delta".
-    const prior = runQueryMock.mock.calls.map((c) => c[0]).filter(isPriorWindowFor("2026-08-30"));
+    const prior = runQueryMock.mock.calls.map((c) => c[0]).filter(isPriorWindowFor("2026-08-01"));
     expect(prior).toHaveLength(1);
     expect(dateFilterOf(prior[0])).toEqual({
       field: "date",
       op: "between",
-      value: ["2026-08-30", "2026-08-31"],
+      value: ["2026-08-01", "2026-08-02"],
     });
     expect(delta.textContent).toContain("-50.0%");
     await settle();
@@ -543,19 +546,19 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
   it("B1t: a `this_month` TOKEN resolves and clamps exactly like the frozen window", async () => {
     respondByWindowStart({
       "2026-09-01": 250,
-      "2026-08-30": 500,
+      "2026-08-01": 500,
     });
     const w = makeKpi({ date_range: { preset: "this_month" } }, true);
 
     renderWithSWR(<>{renderReportWidget(w, NO_CANVAS, false)}</>);
     const delta = await screen.findByTestId("kpi-widget-delta");
 
-    const prior = runQueryMock.mock.calls.map((c) => c[0]).filter(isPriorWindowFor("2026-08-30"));
+    const prior = runQueryMock.mock.calls.map((c) => c[0]).filter(isPriorWindowFor("2026-08-01"));
     expect(prior).toHaveLength(1);
     expect(dateFilterOf(prior[0])).toEqual({
       field: "date",
       op: "between",
-      value: ["2026-08-30", "2026-08-31"],
+      value: ["2026-08-01", "2026-08-02"],
     });
     expect(delta.textContent).toContain("-50.0%");
     await settle();
@@ -564,10 +567,10 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
   it("B1u: crossing into a new month re-resolves the token's value AND prior window together", async () => {
     vi.setSystemTime(new Date(2026, 8, 30, 23, 0, 0)); // Sep 30
     respondByWindowStart({
-      "2026-09-01": 300, // September (30 elapsed days)
-      "2026-08-02": 300, // Aug 2-31
+      "2026-09-01..2026-09-30": 300, // September (30 elapsed days)
+      "2026-08-01": 300, // Aug 1-30
       "2026-10-01": 100, // October, day one
-      "2026-09-30": 50, // the day before
+      "2026-09-01..2026-09-01": 50, // September's day one
     });
     const w = makeKpi({ date_range: { preset: "this_month" } }, true);
     const ui = () => <>{renderReportWidget(w, NO_CANVAS, false)}</>;
@@ -578,7 +581,7 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
     vi.setSystemTime(new Date(2026, 9, 1, 0, 5, 0)); // Oct 1, just after midnight
     rerender(ui());
 
-    // October's value (100) against Sep 30 (50). A main query still holding
+    // October's value (100) against Sep 1 (50). A main query still holding
     // September (300) would read +500% against the re-derived prior window.
     await waitFor(() =>
       expect(screen.getByTestId("kpi-widget-delta").textContent).toContain("100.0%"),
@@ -591,7 +594,7 @@ describe("TBD-383 B1 — the seeded `this_month` preset is clamped to the days i
     vi.setSystemTime(new Date(2026, 8, 1, 9, 0, 0));
     respondByWindowStart({
       "2026-09-01": 100, // day one
-      "2026-08-31": 100, // the day before
+      "2026-08-01": 100, // August's day one
     });
     const w = makeKpi({ date_range: SEPTEMBER }, true);
 
@@ -652,7 +655,6 @@ describe("TBD-383 Hole 1 — a window inherited from the CANVAS drives the compa
       "2026-01-01": 200,
       "2025-12-01": 100, // prior of January
       "2026-02-01": 300,
-      "2026-01-04": 250, // prior of February (28 elapsed days back)
     });
     const w = makeKpi(undefined, true, "w_canvas_follow");
 
@@ -668,7 +670,7 @@ describe("TBD-383 Hole 1 — a window inherited from the CANVAS drives the compa
     );
     await waitFor(() =>
       expect(screen.getByTestId("kpi-widget-delta").textContent).toContain(
-        "+20.0%",
+        "+50.0%",
       ),
     );
     await settle();
@@ -686,12 +688,12 @@ describe("TBD-383 Hole 4 — the comparison cache key includes the query", () =>
     // rendered with no sign that anything is stale.
     //
     // The three deltas are deliberately distinct: January +100.0%, correct
-    // February +20.0%, stale-prior February +200.0%.
+    // February +50.0% (against all of January, TBD-488), stale-prior
+    // February +200.0%.
     respondByWindowStart({
       "2026-01-01": 200,
       "2025-12-01": 100,
       "2026-02-01": 300,
-      "2026-01-04": 250,
     });
     const jan = makeKpi({ date_range: JANUARY }, true, "w_key_fence");
     const feb = makeKpi({ date_range: FEBRUARY }, true, "w_key_fence");
@@ -706,7 +708,7 @@ describe("TBD-383 Hole 4 — the comparison cache key includes the query", () =>
     rerender(<>{renderReportWidget(feb, NO_CANVAS, false)}</>);
     await waitFor(() =>
       expect(screen.getByTestId("kpi-widget-delta").textContent).toContain(
-        "+20.0%",
+        "+50.0%",
       ),
     );
     expect(screen.getByTestId("kpi-widget-delta").textContent).not.toContain(
