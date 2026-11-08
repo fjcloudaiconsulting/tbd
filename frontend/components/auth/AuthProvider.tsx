@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import {
@@ -186,6 +187,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     "expired" | "manual" | "account_changed" | null
   >(null);
   const clearAuthExitReason = useCallback(() => setAuthExitReason(null), []);
+  // TBD-625: the restore retry loop below. An explicit sign-in or sign-out
+  // ends it, so a pending pass can't sign a logged-out user back in with a
+  // refresh cookie the failed logout POST left alive.
+  const restoreStopped = useRef(false);
+  const restoreTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const stopRestore = () => {
+    restoreStopped.current = true;
+    clearTimeout(restoreTimer.current);
+    setLoading(false);
+  };
 
   const fetchMe = useCallback(async () => {
     // 2026-05-18 review fix: fetchMe is the shared current-user load
@@ -239,7 +250,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // straight to /login. Calls go through the shared withAuthRetry
     // helper hoisted to module scope so restore() and fetchMe() share
     // exactly one retry / classification contract.
+    //
+    // TBD-625: withAuthRetry's budget is under a second, a backend restart
+    // takes several. Once it ran out, restore stopped for good: the user sat
+    // on the spinner (or on the /login form, which never bounced back)
+    // until a manual reload. So a persistent transient schedules another
+    // full pass, backing off to every 10s, until the backend answers.
+    restoreStopped.current = false;
+    let round = 0;
     const restore = async () => {
+      if (restoreStopped.current) return;
       try {
         // Check if system needs initial setup. Also captures the
         // billing-UI kill switch so the trial banner, settings Billing
@@ -276,7 +296,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         );
         // TBD-623: a login() that armed another identity while this refresh
         // was in flight wins; drop the stale restore, no spinner forever.
-        if (setAccessToken(data.access_token) === false) {
+        // Same for a login() or logout() that ended the loop (TBD-625).
+        if (restoreStopped.current || setAccessToken(data.access_token) === false) {
           setLoading(false);
           return;
         }
@@ -289,6 +310,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const me = await withAuthRetry(() =>
           apiFetch<User>("/api/v1/auth/me"),
         );
+        if (restoreStopped.current) return;
         setUser(me);
 
         // Re-fetch /auth/status now that the access token is set so
@@ -303,8 +325,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Non-fatal: keep the global/env-level features already set.
         }
 
+        restoreStopped.current = true;
         setLoading(false);
       } catch (err) {
+        // A login() or logout() already decided the session state.
+        if (restoreStopped.current) return;
         if (isTerminalAuthError(err)) {
           // Real logout signal: clear in-memory state and let
           // AppShell's `!loading && !user` redirect to /login fire.
@@ -318,13 +343,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // on next interaction AND, more importantly, dropping
           // loading=false here would let AppShell redirect to /login
           // even though the session is healthy. Keep loading=true
-          // so the user sees the AppShell spinner and can reload to
-          // retry; the next mount runs restore() afresh against a
-          // (probably) recovered backend.
+          // so the user sees the AppShell spinner, and run restore()
+          // again once the backend has had time to come back.
+          if (!restoreStopped.current) {
+            restoreTimer.current = setTimeout(restore, Math.min(1000 * 2 ** round++, 10_000));
+          }
         }
       }
     };
     restore();
+    return () => {
+      restoreStopped.current = true;
+      clearTimeout(restoreTimer.current);
+    };
   }, []);
 
   // Listen for terminal 401s dispatched by apiFetch so we clear React state
@@ -367,6 +398,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const tokenData = data as TokenResponse;
     signInWithAccessToken(tokenData.access_token);
     await fetchMe();
+    stopRestore();
 
     // Re-fetch /auth/status with the new Bearer token so per-org
     // feature overrides are reflected immediately after login.
@@ -413,6 +445,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Voluntary sign-out: tag "manual" so /login shows the "signed out"
     // banner and AppShell drops returnTo (the user chose to leave).
     setAuthExitReason("manual");
+    stopRestore();
     setAccessToken(null);
     setUser(null);
     // Reset to the shipped defaults so a signed-out user doesn't retain a
