@@ -46,6 +46,7 @@ from app.services.billing_service import (
 )
 from app.services.exceptions import ValidationError
 from app.services.cc_statement_service import load_cc_ledgers
+from app.services.currency_service import normalise_currency
 from app.services.date_utils import occurrences_in_window
 from app.services.loan_service import compute_pmt
 from app.services.recurring_filters import active_series_filter, remaining_occurrences
@@ -350,7 +351,7 @@ async def baseline(
             if source_entry is None:
                 continue  # source inactive/not loaded -> no-op (do not resurrect)
             source, _ = source_entry
-            if source.currency != cc.currency:
+            if normalise_currency(source.currency) != normalise_currency(cc.currency):
                 continue  # no FX in V1 -> would desync per-currency totals
             transfer_in = transfer_in_by_account.get(cc.id, [])
             bills = cc_forecast_service.synthesize_account_cc_cycles(
@@ -425,7 +426,7 @@ async def baseline(
             if source_entry is None:
                 continue  # source inactive/not loaded -> no-op (do not resurrect)
             source, _ = source_entry
-            if source.currency != loan.currency:
+            if normalise_currency(source.currency) != normalise_currency(loan.currency):
                 continue  # no FX in V1 -> would desync per-currency totals
             pmt = compute_pmt(
                 Decimal(str(loan.principal_amount)),
@@ -559,8 +560,10 @@ async def baseline(
         ))
         # Every account walks the same dates, so a currency series is the
         # index-wise sum of ITS accounts' points and nothing else.
-        total = currencies.get(account.currency)
-        currencies[account.currency] = list(points) if total is None else [
+        # Keyed on the canonical code: a legacy 'eur' row is EUR (TBD-801).
+        currency = normalise_currency(account.currency)
+        total = currencies.get(currency)
+        currencies[currency] = list(points) if total is None else [
             (d, b + p) for (d, b), (_, p) in zip(total, points)
         ]
 

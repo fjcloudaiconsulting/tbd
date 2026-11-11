@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import projection_kernel
 from app.services.billing_service import resolve_period
+from app.services.currency_service import normalise_currency
 
 # ── Low-balance warning: the deny-list (TBD-198) ─────────────────────────────
 # Account types where a negative balance is NORMAL, not a warning. A deny-list,
@@ -174,6 +175,8 @@ async def compute_account_balance_forecast(
 
     for row in sorted_rows:
         account = row.account
+        # Canonical code: a legacy 'eur' row joins the EUR total (TBD-801).
+        currency = normalise_currency(account.currency)
         balance = row.balance
         delta = row.pending_delta
 
@@ -189,7 +192,7 @@ async def compute_account_balance_forecast(
             {
                 "account_id": account.id,
                 "account_name": account.name,
-                "currency": account.currency,
+                "currency": currency,
                 "is_default": account.is_default,
                 "account_type_slug": row.type_slug,
                 "balance": _q(balance),
@@ -213,7 +216,7 @@ async def compute_account_balance_forecast(
         )
 
         bucket = totals_by_currency.setdefault(
-            account.currency,
+            currency,
             {
                 "balance": Decimal("0"),
                 "pending_delta": Decimal("0"),
@@ -223,7 +226,7 @@ async def compute_account_balance_forecast(
         bucket["balance"] += balance
         bucket["pending_delta"] += delta
         # Σ(rows) by construction, so the hero number and the rows under it
-        # cannot drift. Same-currency only — ``account.currency`` keys the
+        # cannot drift. Same-currency only — the canonical ``currency`` keys the
         # bucket, so nothing here ever sums unlike currencies. (Before TBD-198
         # this was `balance + pending_delta`, which held only because CC/loan
         # synthesis CONSERVES within a currency; an income or expense

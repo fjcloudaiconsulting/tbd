@@ -1082,3 +1082,34 @@ async def test_a_leg_without_an_origin_still_counts_as_recurring(db_session):
     without_origin = await projection_kernel.baseline(db_session, seed["org_id"], **kw)
     assert len(_row(with_origin, seed["loan"]).loan_payments) == 1
     assert _points_by_account(without_origin) == _points_by_account(with_origin)
+
+
+async def test_legacy_currency_spellings_share_a_series_and_pay_their_card_and_loan(db_session):
+    """Fence (TBD-801). ``accounts.currency`` was free text before TBD-325, so a
+    legacy 'eur' card or 'EUR ' loan paid from an 'EUR' source is the same
+    currency: it still gets its projected payments, and every account lands
+    in ONE 'EUR' series. Kills a raw-string guard (no payments) and a raw key
+    (three series)."""
+    org, _, source = await _org_with_source(db_session)
+    cc = await _card(db_session, org, source, owed=Decimal("1000.00"), fixed=Decimal("200.00"))
+    loan = await _loan(db_session, org, source, owed=Decimal("5000.00"),
+                       principal=Decimal("12000.00"), apr=Decimal("6.00"), term=60,
+                       first_payment=datetime.date(2026, 5, 15))
+    cc.currency, loan.currency = "eur", "EUR "
+    cat = Category(org_id=org.id, name="Shop", slug="shop", type=CategoryType.EXPENSE)
+    db_session.add(cat)
+    await db_session.flush()
+    db_session.add(_tx(org.id, cc, cat, "1000.00", datetime.date(2026, 4, 10), settled=True))
+    await db_session.commit()
+
+    kb = await projection_kernel.baseline(
+        db_session, org.id, today=P_START, horizon_end=datetime.date(2026, 7, 31),
+    )
+    rows = {a.account.id: a for a in kb.accounts}
+    assert rows[cc.id].cc_payments[0] == (datetime.date(2026, 5, 1), Decimal("200.00"))
+    assert rows[loan.id].loan_payments[0][0] == datetime.date(2026, 5, 15)
+    assert set(kb.currencies) == {"EUR"}
+    assert kb.currencies["EUR"] == [
+        (d, a + b + c) for (d, a), (_, b), (_, c)
+        in zip(rows[source.id].points, rows[cc.id].points, rows[loan.id].points)
+    ]
