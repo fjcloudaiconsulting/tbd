@@ -19,6 +19,7 @@ import pytest_asyncio
 from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import settings as app_settings
 from app.models import Account, AccountType, Organization
 from app.models.billing import BillingPeriod
 from app.models.budget import Budget
@@ -77,6 +78,12 @@ async def eng():
 @pytest.fixture
 def factory(eng):
     return async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest.fixture(autouse=True)
+def _enable_plans(monkeypatch, plans_entitled):
+    """The rollover runs only for an org entitled to Plans (TBD-802)."""
+    monkeypatch.setattr(app_settings, "feature_plans", True)
 
 
 async def _seed(factory) -> dict:

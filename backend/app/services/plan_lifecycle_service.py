@@ -50,6 +50,7 @@ from collections import Counter
 from decimal import Decimal
 from typing import Any
 
+from dateutil.relativedelta import relativedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,10 +64,12 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, PlanGoalKind, Scenario, ScenarioStatus
 from app.models.tag import Tag
 from app.models.transaction import Transaction, TransactionStatus
+from app.models.user import Organization
 from app.schemas.plan_projection import PlanProjectionResponse
 from app.schemas.recurring import RECURRING_DESCRIPTION_MAX_LENGTH, RecurringCreate
 from app.services import (
     billing_service,
+    feature_gate,
     plan_draft_service,
     plan_projection_service,
     recurring_service,
@@ -192,6 +195,7 @@ async def start_goal(db: AsyncSession, *, plan: Scenario, goal: PlanGoal,
     await _check_topology(db, plan)
     await _master_category(db, plan)
     await _start_goal_steps(db, plan, goal, today or datetime.date.today())
+    await budget_changed(db, plan=plan)  # its spend now counts against the Budget
 
 
 async def _check_topology(db: AsyncSession, plan: Scenario) -> None:
@@ -373,47 +377,115 @@ async def _expected_balance(db: AsyncSession, account_id: int) -> Decimal:
 # ── Budgets and the rollover ─────────────────────────────────────────────
 
 
-async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datetime.date) -> int:
+def _payments(series: RecurringTransaction, start: datetime.date, end: datetime.date) -> int:
+    """How many of a monthly series' payments (a lump's single one included)
+    fall in ``[start, end]``: the last one made (``last_spent_date``) and the
+    ones still due, walked from the frontier as generation walks them and cut
+    at ``occurrence_count``. A window past the goal's last payment counts none. Of the payments already
+    made only the last is known, so a window holding two of them (materialised
+    ahead, or a catch-up) counts one: rare for a monthly series in a monthly
+    period, and the Budget errs low."""
+    paid = int(series.last_spent_date is not None and start <= series.last_spent_date <= end)
+    if end < series.next_due_date:
+        return paid
+    due = occurrences_in_window(series.next_due_date, Frequency.MONTHLY, series.next_due_date, end, budget=1201)
+    if series.occurrence_count is not None:
+        due = due[:max(series.occurrence_count - series.occurrences_elapsed, 0)]
+    return paid + sum(1 for d in due if d >= start)
+
+
+async def _spend_goals(db: AsyncSession, plan: Scenario) -> list[tuple[PlanGoal, RecurringTransaction]]:
+    """The plan's started spend goals with their series. Savings and
+    retirement goals are transfers, which no Budget counts."""
+    return list((await db.execute(select(PlanGoal, RecurringTransaction).join(
+        RecurringTransaction, RecurringTransaction.id == PlanGoal.funding_recurring_id).where(
+        PlanGoal.scenario_id == plan.id, PlanGoal.enabled.is_(True),
+        PlanGoal.kind.in_(_SPEND_KINDS)).order_by(PlanGoal.id))).all())
+
+
+def _window_end(periods: list[BillingPeriod], i: int, cycle_day: int) -> datetime.date:
+    """The last day ``periods[i]``'s Budget is for. Never unbounded
+    (``period_effective_end`` can be), or a lump months out lands in the last
+    period as well as its own; the roster tail ends the day before
+    ``billing_service.plan_future_periods`` would start the next period (its
+    formula, so an off-grid open period after a close is bounded right)."""
+    period = periods[i]
+    if period.end_date is not None:
+        return period.end_date
+    if i + 1 < len(periods):
+        return periods[i + 1].start_date - datetime.timedelta(days=1)
+    return billing_service._snap_to_cycle(
+        period.start_date + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
+
+
+def _has_budget(plan: Scenario, goals: list) -> bool:
+    """A plan has Budgets when it has a cap or a started spend goal (TBD-802).
+    ``_owed`` and ``_ensure_budgets`` must agree on this, or the rollover
+    takes the plan locks on every call."""
+    return plan.category_id is not None and (plan.monthly_budget is not None or bool(goals))
+
+
+def _amount(plan: Scenario, goals: list, start: datetime.date, end: datetime.date) -> Decimal:
+    """A period's Budget: the cap plus each spend goal's payments in the
+    window (a lump is a one-payment series), following the series if its date
+    is moved. The master's Budget counts its children
+    (``budget_service._compute_spent``), so a goal's spend lands against it.
+    A lump paid by card settles, and so counts, when the card says."""
+    total = plan.monthly_budget or Decimal(0)
+    for goal, series in goals:
+        each = goal.target_amount if goal.kind == PlanGoalKind.LUMP.value else goal.monthly_amount
+        total += each * _payments(series, start, end)
+    return total.quantize(_CENTS)
+
+
+async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datetime.date,
+                          *, recompute: bool = False) -> int:
     """The plan's Budget on its master category in the current period and
     every later one that exists (stubs), unless one is there already
-    (``uq_budget_org_cat_period``). Returns how many it added."""
-    if plan.monthly_budget is None or plan.category_id is None:
+    (``uq_budget_org_cat_period``); ``recompute`` also resets the amount of
+    the ones there. Returns how many it added."""
+    goals = await _spend_goals(db, plan)
+    if not _has_budget(plan, goals):
         return 0
     added = 0
     # A locking read: the rollover's snapshot predates its locks (its probe).
-    have = set((await db.scalars(select(Budget.period_start).where(
+    # Recompute writes the rows, so it locks them for writing up front.
+    have = {b.period_start: b for b in (await db.scalars(select(Budget).where(
         Budget.org_id == plan.org_id, Budget.category_id == plan.category_id,
-        Budget.period_start >= current_start).with_for_update(read=True))).all())
-    for period in (await db.scalars(select(BillingPeriod).where(
-            BillingPeriod.org_id == plan.org_id, BillingPeriod.start_date >= current_start))).all():
-        if period.start_date not in have:
+        Budget.period_start >= current_start).with_for_update(read=not recompute))).all()}
+    periods = (await db.scalars(select(BillingPeriod).where(
+        BillingPeriod.org_id == plan.org_id, BillingPeriod.start_date >= current_start)
+        .order_by(BillingPeriod.start_date))).all()
+    cycle_day = (await db.get(Organization, plan.org_id)).billing_cycle_day
+    for i, period in enumerate(periods):
+        amount = _amount(plan, goals, period.start_date, _window_end(periods, i, cycle_day))
+        if period.start_date in have:
+            if recompute:
+                have[period.start_date].amount = amount
+        else:
             # ``period_end`` is the raw row value, as ``budget_service.create_budget`` writes it.
-            db.add(Budget(org_id=plan.org_id, category_id=plan.category_id, amount=plan.monthly_budget,
+            db.add(Budget(org_id=plan.org_id, category_id=plan.category_id, amount=amount,
                           period_start=period.start_date, period_end=period.end_date))
             added += 1
     return added
 
 
 async def budget_changed(db: AsyncSession, *, plan: Scenario) -> None:
-    """Edit after start: a new ``monthly_budget`` reaches the current Budget
-    and the later ones the plan already has. Past Budgets are history."""
+    """Edit after start: a new ``monthly_budget`` or a goal started late
+    reaches the current Budget and the later ones, overwriting a hand edit or
+    a rebalance of those rows. Past Budgets are history."""
     period = await billing_service.find_open_period(db, plan.org_id)
-    if period is None or plan.category_id is None:
-        return
-    for budget in (await db.scalars(select(Budget).where(
-            Budget.org_id == plan.org_id, Budget.category_id == plan.category_id,
-            Budget.period_start >= period.start_date))).all():
-        budget.amount = plan.monthly_budget
-    await _ensure_budgets(db, plan, period.start_date)
+    if period is not None:
+        await _ensure_budgets(db, plan, period.start_date, recompute=True)
 
 
 async def _owed(db: AsyncSession, org_id: int, current_start: datetime.date) -> bool:
     """Whether an active plan lacks a Budget in a period from ``current_start``
     on. A plain read: it decides whether the rollover locks anything at all."""
     plans = [p for p in (await db.scalars(select(Scenario).where(
-        Scenario.org_id == org_id, Scenario.status == _ACTIVE,
-        Scenario.monthly_budget.is_not(None), Scenario.category_id.is_not(None)))).all()
-        if not await attention(db, p)]  # the rollover skips these anyway
+        Scenario.org_id == org_id, Scenario.status == _ACTIVE, Scenario.category_id.is_not(None)))).all()
+        if _has_budget(p, await _spend_goals(db, p))
+        and not await attention(db, p)]  # the rollover skips these anyway
     if not plans:
         return False
     starts = (await db.scalars(select(BillingPeriod.start_date).where(
@@ -445,6 +517,9 @@ async def rollover(db: AsyncSession, org_id: int) -> bool:
     try:
         period = await billing_service.find_open_period(db, org_id)
         if period is None or not await _owed(db, org_id, period.start_date):
+            return True
+        # An org that lost Plans cannot reach its plan to finish it (TBD-802).
+        if not await feature_gate.resolve_feature(feature_gate.Feature.PLANS, org_id, db):
             return True
         if not await lock_plans(db, org_id, skip_locked=True):
             await db.commit()  # release the ones it did lock
