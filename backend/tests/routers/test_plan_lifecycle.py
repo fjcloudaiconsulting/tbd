@@ -107,6 +107,17 @@ async def w(factory) -> dict:
 
 
 TARGET = TODAY + relativedelta(months=11)
+FLIGHTS_PERIOD = billing_service.current_cycle_window(1, TODAY + datetime.timedelta(days=90))[0]
+
+
+def _periods(n: int) -> list[datetime.date]:
+    return [PERIOD_START + relativedelta(months=i) for i in range(n)]
+
+
+async def _budget_amounts(factory, org_id: int) -> dict[datetime.date, Decimal]:
+    async with factory() as db:
+        return {b.period_start: b.amount for b in (await db.scalars(
+            select(Budget).where(Budget.org_id == org_id))).all()}
 
 
 def _goals(w: dict) -> list[dict]:
@@ -173,8 +184,9 @@ async def test_start_creates_one_set_of_rows_and_a_second_start_changes_nothing(
         tag = await db.get(Tag, row.tag_id)
         assert tag.name_normalized == "lisbon trip"
         budgets = (await db.scalars(select(Budget).where(Budget.org_id == w["org"]))).all()
+        # TBD-802: the cap plus this period's Food payment; Flights falls in a later period.
         assert [(b.category_id, b.period_start, b.amount) for b in budgets] == [
-            (master.id, PERIOD_START, Decimal("300.00"))]
+            (master.id, PERIOD_START, Decimal("400.00"))]
         goals = {g.name: g for g in (await db.scalars(select(PlanGoal).where(PlanGoal.scenario_id == pid))).all()}
         series = {}
         for name in ("Flights", "Food", "Fund"):
@@ -195,6 +207,13 @@ async def test_start_creates_one_set_of_rows_and_a_second_start_changes_nothing(
             "transfer", Decimal("50.00"), w["main"], w["savings"], 12)
         # Balance plus the pending delta.
         assert goals["Fund"].start_balance == Decimal("230.00")
+
+    # Each later period: the cap and Food; the lump only in its own period.
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, w["org"], count=4)
+    assert await _budget_amounts(factory, w["org"]) == {
+        d: Decimal("1000.00") if d == FLIGHTS_PERIOD else Decimal("400.00")
+        for d in _periods(5)}
 
 
 async def test_start_adopts_an_existing_tag_of_the_same_normalised_name(factory, w):
@@ -451,6 +470,52 @@ async def test_rollover_writes_no_budget_while_the_org_is_not_entitled_to_plans(
     assert await _budget_periods(factory, w["org"]) == [PERIOD_START, nxt, nxt + relativedelta(months=1)]
 
 
+async def test_a_plan_without_a_cap_gets_a_budget_for_its_spend_goals_only(factory, w, monkeypatch):
+    """TBD-802 (b), architects' ruling: no ``monthly_budget`` but a spend goal
+    is still a Budget, 0 in a period with nothing due (a skipped row would
+    leave the plan owed forever, so every Budgets visit would lock); no cap
+    and no spend goal is none."""
+    with _client(factory, "alice") as alice:
+        lump = _draft(alice, w, monthly_budget=None, goals=[_goals(w)[0]])
+        bare = _draft(alice, w, name="Bare", monthly_budget=None, goals=[])
+        assert alice.post(f"/api/v1/scenarios/{lump}/start").status_code == 200
+        assert alice.post(f"/api/v1/scenarios/{bare}/start").status_code == 200
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, w["org"], count=4)
+        master = (await db.get(Scenario, lump)).category_id
+        assert {b.category_id for b in (await db.scalars(select(Budget))).all()} == {master}
+    assert await _budget_amounts(factory, w["org"]) == {
+        d: Decimal("600.00") if d == FLIGHTS_PERIOD else Decimal("0.00") for d in _periods(5)}
+    calls = []
+    real = plan_lifecycle_service.lock_plans
+
+    async def spy(db, org_id, **k):
+        calls.append(org_id)
+        return await real(db, org_id, **k)
+
+    monkeypatch.setattr(plan_lifecycle_service, "lock_plans", spy)
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, w["org"], count=4)
+    assert calls == []
+
+
+def test_a_monthly_goal_counts_the_payments_its_series_makes_in_the_window():
+    """TBD-802 (b), both architects: count the series' payments, not "target
+    on or after the period start". Started Jan 20 with a Mar 10 target: Jan 20
+    paid, Feb 20 due, then nothing; March has no payment."""
+    from types import SimpleNamespace
+
+    d = datetime.date
+    series = SimpleNamespace(next_due_date=d(2027, 2, 20), occurrence_count=2, occurrences_elapsed=1,
+                             last_spent_date=d(2027, 1, 20))
+    payments = plan_lifecycle_service._payments
+    assert [payments(series, d(2027, m, 1), d(2027, m + 1, 1) - datetime.timedelta(days=1))
+            for m in (1, 2, 3)] == [1, 1, 0]
+    open_ended = SimpleNamespace(next_due_date=d(2027, 2, 20), occurrence_count=None,
+                                 occurrences_elapsed=1, last_spent_date=d(2027, 1, 20))
+    assert payments(open_ended, d(2027, 5, 1), d(2027, 5, 31)) == 1
+
+
 async def test_a_broken_link_needs_attention_and_rollover_skips_the_plan(factory, w):
     pid = await _start(factory, w)
     food = await _goal(factory, pid, "Food")
@@ -505,7 +570,8 @@ async def test_edit_after_start_needs_confirmation_and_runs_starts_steps(factory
                            json={"enabled": True}).status_code == 200
         assert alice.delete(f"/api/v1/scenarios/{pid}/goals/{later.id}").status_code == 409
     async with factory() as db:
-        assert [b.amount for b in (await db.scalars(select(Budget))).all()] == [Decimal("400.00")]
+        # TBD-802: the new cap, Food, and the two goals started here (Hotel 70, Later 10).
+        assert [b.amount for b in (await db.scalars(select(Budget))).all()] == [Decimal("580.00")]
     after = await _rows(factory, w["org"])
     # Only the two goals' rows are new: a child category and a series each.
     assert len(after["categories"]) == len(before["categories"]) + 2
