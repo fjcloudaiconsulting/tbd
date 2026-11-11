@@ -423,6 +423,34 @@ async def test_rollover_covers_scheduler_close_manual_close_and_ensure_future_pe
         PERIOD_START, nxt, third, third + relativedelta(months=1), third + relativedelta(months=2)]
 
 
+async def test_rollover_writes_no_budget_while_the_org_is_not_entitled_to_plans(factory, w, monkeypatch):
+    """TBD-802 (a): a downgraded org cannot reach its plan (every route is
+    gated), so the rollover must not keep writing its Budgets. The next
+    ``ensure_future_periods`` after the entitlement returns fills them in."""
+    import dataclasses
+
+    from app.services import feature_service
+
+    await _start(factory, w)
+    entitled = feature_service.get_entitlements
+
+    async def downgraded(db, org_id, **kwargs):
+        ent = await entitled(db, org_id, **kwargs)
+        return dataclasses.replace(ent, features={**ent.features, "plans": False})
+
+    monkeypatch.setattr(feature_service, "get_entitlements", downgraded)
+    nxt = PERIOD_START + relativedelta(months=1)
+    async with factory() as db:
+        await billing_service.close_period(db, w["org"], nxt - datetime.timedelta(days=1), today=nxt)
+        await billing_service.ensure_future_periods(db, w["org"], count=1)
+    assert await _budget_periods(factory, w["org"]) == [PERIOD_START]
+
+    monkeypatch.setattr(feature_service, "get_entitlements", entitled)
+    async with factory() as db:
+        await billing_service.ensure_future_periods(db, w["org"], count=1)
+    assert await _budget_periods(factory, w["org"]) == [PERIOD_START, nxt, nxt + relativedelta(months=1)]
+
+
 async def test_a_broken_link_needs_attention_and_rollover_skips_the_plan(factory, w):
     pid = await _start(factory, w)
     food = await _goal(factory, pid, "Food")

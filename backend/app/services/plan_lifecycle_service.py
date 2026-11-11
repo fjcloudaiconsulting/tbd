@@ -446,6 +446,11 @@ async def rollover(db: AsyncSession, org_id: int) -> bool:
         period = await billing_service.find_open_period(db, org_id)
         if period is None or not await _owed(db, org_id, period.start_date):
             return True
+        from app.services import feature_gate  # import cycle at module level
+
+        # An org that lost Plans cannot reach its plan to finish it (TBD-802).
+        if not await feature_gate.resolve_feature(feature_gate.Feature.PLANS, org_id, db):
+            return True
         if not await lock_plans(db, org_id, skip_locked=True):
             await db.commit()  # release the ones it did lock
             logger.info("plans.rollover.skipped_busy", extra={"org_id": org_id})
