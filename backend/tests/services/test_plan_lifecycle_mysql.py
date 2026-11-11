@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import os
 import uuid
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
+from dateutil.relativedelta import relativedelta
 from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -30,6 +32,7 @@ from app.models.tag import Tag
 from app.models.user import Role, User
 from app.services import (
     billing_service,
+    feature_gate,
     plan_lifecycle_service,
     plan_projection_service,
 )
@@ -283,3 +286,149 @@ async def test_a_start_that_waited_sees_what_the_lock_holder_committed(factory):
         assert goals["Fund"].funding_recurring_id is not None
         assert await db.scalar(select(func.count()).select_from(RecurringTransaction).where(
             RecurringTransaction.org_id == s["org"])) == 1
+
+
+# ── TBD-803 item 2: the rollover's one fresh SKIP LOCKED read ──
+
+
+async def _owed_world(factory, *, second: bool, first_budgeted: bool = False) -> dict:
+    """Plan 1 active (and plan 2 when asked), a stub period after the open one
+    that every plan without a Budget in it is owed."""
+    s = await _seed(factory)
+    await _start(factory, s["plan"])
+    if second:
+        async with factory() as db:
+            a = await db.get(Scenario, s["plan"])
+            b = Scenario(org_id=a.org_id, user_id=a.user_id, name=f"Two {uuid.uuid4().hex[:6]}",
+                         scenario_type=ScenarioType.CUSTOM, params_json=a.params_json, currency="EUR",
+                         monthly_budget=Decimal("200.00"), funding_account_id=a.funding_account_id)
+            db.add(b)
+            await db.commit()
+            s["plan2"] = b.id
+        await _start(factory, s["plan2"])
+    new_start = billing_service.current_cycle_window(1, datetime.date.today())[0] + relativedelta(months=1)
+    async with factory() as db:
+        db.add(BillingPeriod(org_id=s["org"], start_date=new_start))
+        a = await db.get(Scenario, s["plan"])
+        s["master1"] = a.category_id
+        if first_budgeted:
+            db.add(Budget(org_id=s["org"], category_id=a.category_id, amount=Decimal("1.00"), period_start=new_start))
+        if second:
+            s["master2"] = (await db.get(Scenario, s["plan2"])).category_id
+        await db.commit()
+    s["new_start"] = new_start
+    return s
+
+
+async def _budgets_in(factory, category_id: int, start) -> int:
+    async with factory() as db:
+        return await db.scalar(select(func.count()).select_from(Budget).where(
+            Budget.category_id == category_id, Budget.period_start == start))
+
+
+def _in_the_window(monkeypatch, hook) -> None:
+    """Run ``hook`` between the rollover's probe and its locks."""
+    real = feature_gate.resolve_feature
+
+    async def resolve(*a, **k):
+        await hook()
+        return await real(*a, **k)
+
+    monkeypatch.setattr(feature_gate, "resolve_feature", resolve)
+
+
+async def _commit_draft(factory, s) -> None:
+    async with factory() as db:
+        a = await db.get(Scenario, s["plan"])
+        db.add(Scenario(org_id=a.org_id, user_id=a.user_id, name=f"Draft {uuid.uuid4().hex[:6]}",
+                        scenario_type=ScenarioType.CUSTOM, params_json=a.params_json, currency="EUR"))
+        await db.commit()
+
+
+async def test_a_plan_committed_in_the_probe_window_does_not_skip_the_rollover(factory, monkeypatch):
+    """F2a. Wrong implementation: comparing the locked rows to a COUNT read
+    from the probe's snapshot, which misses the new plan: the org looks busy."""
+    s = await _owed_world(factory, second=False)
+
+    async def hook():
+        await _commit_draft(factory, s)
+
+    _in_the_window(monkeypatch, hook)
+    async with factory() as db:
+        assert await asyncio.wait_for(plan_lifecycle_service.rollover(db, s["org"]), timeout=8)
+    assert await _budgets_in(factory, s["master1"], s["new_start"]) == 1
+
+
+async def _hold_plan_1_and_commit_a_draft(factory, s, holders: list) -> None:
+    holder = factory()
+    holders.append(holder)
+    await holder.execute(select(Scenario).where(Scenario.id == s["plan"]).with_for_update())
+    await _commit_draft(factory, s)
+
+
+async def _release(holders: list) -> None:
+    for h in holders:
+        await h.rollback()
+        await h.close()
+
+
+async def test_a_busy_owed_plan_skips_the_whole_rollover(factory, monkeypatch, caplog):
+    """F2b(i). Plans 1 and 2 owed, plan 1 held by another transaction: no
+    wait, no failure, no partial work. Wrong implementation: a count match
+    (the new draft hides the missing plan) or writing plan 2's Budget alone."""
+    s = await _owed_world(factory, second=True)
+    holders: list = []
+
+    async def hook():
+        await _hold_plan_1_and_commit_a_draft(factory, s, holders)
+
+    _in_the_window(monkeypatch, hook)
+    caplog.set_level(logging.INFO)
+    try:
+        async with factory() as db:
+            assert await asyncio.wait_for(plan_lifecycle_service.rollover(db, s["org"]), timeout=6)
+    finally:
+        await _release(holders)
+    msgs = [r.getMessage() for r in caplog.records]
+    assert "plans.rollover.failed" not in msgs and "plans.rollover.skipped_busy" in msgs
+    assert [await _budgets_in(factory, s[k], s["new_start"]) for k in ("master1", "master2")] == [0, 0]
+
+
+async def test_a_busy_plan_that_is_not_owed_does_not_stop_the_rollover(factory, monkeypatch, caplog):
+    """F2b(ii). Plan 1 held but already budgeted, plan 2 owed: plan 2's Budget
+    is written without waiting. Wrong implementation: a plain FOR UPDATE
+    re-read (waits on plan 1), or a skip on any locked row."""
+    s = await _owed_world(factory, second=True, first_budgeted=True)
+    holders: list = []
+
+    async def hook():
+        await _hold_plan_1_and_commit_a_draft(factory, s, holders)
+
+    _in_the_window(monkeypatch, hook)
+    caplog.set_level(logging.INFO)
+    try:
+        async with factory() as db:
+            assert await asyncio.wait_for(plan_lifecycle_service.rollover(db, s["org"]), timeout=6)
+    finally:
+        await _release(holders)
+    assert "plans.rollover.failed" not in [r.getMessage() for r in caplog.records]
+    assert await _budgets_in(factory, s["master2"], s["new_start"]) == 1
+
+
+async def test_a_budget_committed_in_the_probe_window_is_not_written_twice(factory, monkeypatch, caplog):
+    """F2c. Wrong implementation: a plain Budget read in _ensure_budgets (the
+    probe's snapshot predates the commit, so it inserts a duplicate)."""
+    s = await _owed_world(factory, second=False)
+
+    async def hook():
+        async with factory() as db:
+            db.add(Budget(org_id=s["org"], category_id=s["master1"], amount=Decimal("5.00"),
+                          period_start=s["new_start"]))
+            await db.commit()
+
+    _in_the_window(monkeypatch, hook)
+    caplog.set_level(logging.INFO)
+    async with factory() as db:
+        assert await asyncio.wait_for(plan_lifecycle_service.rollover(db, s["org"]), timeout=8)
+    assert "plans.rollover.failed" not in [r.getMessage() for r in caplog.records]
+    assert await _budgets_in(factory, s["master1"], s["new_start"]) == 1
