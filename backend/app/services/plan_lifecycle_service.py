@@ -121,9 +121,13 @@ def _flushed(session, _ctx) -> None:
 
 
 @event.listens_for(Session, "do_orm_execute")
-def _executed(state) -> None:
-    if state.is_insert or state.is_update or state.is_delete:
-        state.session.info[_WROTE_IN] = state.session.get_transaction()
+def _executed(state):
+    if not (state.is_insert or state.is_update or state.is_delete):
+        return None
+    # Run it first: as a transaction's first statement it fires before autobegin.
+    result = state.invoke_statement()
+    state.session.info[_WROTE_IN] = state.session.get_transaction()
+    return result
 
 
 async def reload(db: AsyncSession) -> None:

@@ -960,6 +960,18 @@ async def test_lock_refuses_an_orm_update_statement(factory):
             await plan_lifecycle_service.lock(db, plan)
 
 
+async def test_lock_refuses_an_orm_update_that_opened_the_transaction(factory):
+    """F1b'. Wrong implementation: tagging before the statement runs (it
+    fires before autobegin, so the tag is None and misses the transaction)."""
+    pid = await _a_plan(factory)
+    async with factory() as db:
+        plan = await db.get(Scenario, pid)
+        await db.commit()
+        await db.execute(update(Scenario).where(Scenario.id == pid).values(name="changed"))
+        with pytest.raises(RuntimeError):
+            await plan_lifecycle_service.lock(db, plan)
+
+
 async def test_lock_is_fine_after_the_write_committed(factory):
     """F1c. Wrong implementation: an unkeyed or sticky flag."""
     pid = await _a_plan(factory)
