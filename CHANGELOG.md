@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.309.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.309.0...v0.309.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **forecast:** key and guard forecast currencies on the canonical code (TBD-801) ([#1135](https://github.com/fjcloudaiconsulting/tbd/issues/1135)) ([81953ef](https://github.com/fjcloudaiconsulting/tbd/commit/81953ef0b4e62778b916237928f1adaa1fd3dcb6))
+* **plans:** harden the lifecycle lock and the Budget rollover, word the past-date refusal for the plan (TBD-803) ([#1136](https://github.com/fjcloudaiconsulting/tbd/issues/1136)) ([6cb5c4e](https://github.com/fjcloudaiconsulting/tbd/commit/6cb5c4e56818f59b5ba146789421c9461684f563))
+* **plans:** size plan Budgets to their spend goals and stop the rollover without Plans (TBD-802) ([#1133](https://github.com/fjcloudaiconsulting/tbd/issues/1133)) ([f5b527d](https://github.com/fjcloudaiconsulting/tbd/commit/f5b527d66a0e7a0d2326656730a85223e97d9585))
+
 ## [0.309.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.308.0...v0.309.0) (2026-11-08)
 
 
