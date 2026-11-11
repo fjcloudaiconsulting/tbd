@@ -499,6 +499,22 @@ async def test_a_plan_without_a_cap_gets_a_budget_for_its_spend_goals_only(facto
     assert calls == []
 
 
+async def test_a_lump_budgets_where_its_series_pays_after_the_date_moves(factory, w):
+    """TBD-802 review: the Recurring page can move a lump's payment; the
+    Budget follows the series, not the goal's ``target_date``."""
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, monthly_budget=None, goals=[_goals(w)[0]])
+        assert alice.post(f"/api/v1/scenarios/{pid}/start").status_code == 200
+    flights = await _goal(factory, pid, "Flights")
+    moved = FLIGHTS_PERIOD + relativedelta(months=1)
+    async with factory() as db:
+        (await db.get(RecurringTransaction, flights.funding_recurring_id)).next_due_date = moved
+        await db.commit()
+        await billing_service.ensure_future_periods(db, w["org"], count=5)
+    amounts = await _budget_amounts(factory, w["org"])
+    assert {d for d, a in amounts.items() if a} == {moved} and amounts[moved] == Decimal("600.00")
+
+
 def test_a_monthly_goal_counts_the_payments_its_series_makes_in_the_window():
     """TBD-802 (b), both architects: count the series' payments, not "target
     on or after the period start". Started Jan 20 with a Mar 10 target: Jan 20
