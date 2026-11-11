@@ -63,6 +63,7 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, PlanGoalKind, Scenario, ScenarioStatus
 from app.models.tag import Tag
 from app.models.transaction import Transaction, TransactionStatus
+from app.models.user import Organization
 from app.schemas.plan_projection import PlanProjectionResponse
 from app.schemas.recurring import RECURRING_DESCRIPTION_MAX_LENGTH, RecurringCreate
 from app.services import (
@@ -73,7 +74,7 @@ from app.services import (
     tag_service,
 )
 from app.services.account_balance_forecast_service import LIABILITY_SLUGS
-from app.services.date_utils import advance_date, occurrences_in_window
+from app.services.date_utils import occurrences_in_window
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.transaction_filters import (
     non_reverted_transaction_filter,
@@ -378,7 +379,10 @@ def _payments(series: RecurringTransaction, start: datetime.date, end: datetime.
     """How many of a monthly series' payments fall in ``[start, end]``: the
     last one made (``last_spent_date``) and the ones still due, walked from the
     frontier as generation walks them and cut at ``occurrence_count``. A
-    window past the goal's last payment counts none."""
+    window past the goal's last payment counts none. Of the payments already
+    made only the last is known, so a window holding two of them (materialised
+    ahead, or a catch-up) counts one: rare for a monthly series in a monthly
+    period, and the Budget errs low."""
     paid = int(series.last_spent_date is not None and start <= series.last_spent_date <= end)
     if end < series.next_due_date:
         return paid
@@ -395,6 +399,19 @@ async def _spend_goals(db: AsyncSession, plan: Scenario) -> list[tuple[PlanGoal,
         RecurringTransaction, RecurringTransaction.id == PlanGoal.funding_recurring_id).where(
         PlanGoal.scenario_id == plan.id, PlanGoal.enabled.is_(True),
         PlanGoal.kind.in_(_SPEND_KINDS)).order_by(PlanGoal.id))).all())
+
+
+def _window_end(periods: list[BillingPeriod], i: int, cycle_day: int) -> datetime.date:
+    """The last day ``periods[i]``'s Budget is for. Never unbounded
+    (``period_effective_end`` can be), or a lump months out lands in the last
+    period as well as its own; the roster tail ends where its billing cycle
+    does, as ``billing_service.plan_future_periods`` will start the next."""
+    period = periods[i]
+    if period.end_date is not None:
+        return period.end_date
+    if i + 1 < len(periods):
+        return periods[i + 1].start_date - datetime.timedelta(days=1)
+    return billing_service.current_cycle_window(cycle_day, period.start_date)[1]
 
 
 def _has_budget(plan: Scenario, goals: list) -> bool:
@@ -430,19 +447,16 @@ async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datet
         return 0
     added = 0
     # A locking read: the rollover's snapshot predates its locks (its probe).
+    # Recompute writes the rows, so it locks them for writing up front.
     have = {b.period_start: b for b in (await db.scalars(select(Budget).where(
         Budget.org_id == plan.org_id, Budget.category_id == plan.category_id,
-        Budget.period_start >= current_start).with_for_update(read=True))).all()}
+        Budget.period_start >= current_start).with_for_update(read=not recompute))).all()}
     periods = (await db.scalars(select(BillingPeriod).where(
         BillingPeriod.org_id == plan.org_id, BillingPeriod.start_date >= current_start)
         .order_by(BillingPeriod.start_date))).all()
+    cycle_day = (await db.get(Organization, plan.org_id)).billing_cycle_day
     for i, period in enumerate(periods):
-        # The window the amount is for: never unbounded (``period_effective_end``
-        # can be), or a lump months out lands in the last period as well as its own.
-        end = period.end_date or (periods[i + 1].start_date if i + 1 < len(periods)
-                                  else advance_date(period.start_date, Frequency.MONTHLY)
-                                  ) - datetime.timedelta(days=1)
-        amount = _amount(plan, goals, period.start_date, end)
+        amount = _amount(plan, goals, period.start_date, _window_end(periods, i, cycle_day))
         if period.start_date in have:
             if recompute:
                 have[period.start_date].amount = amount

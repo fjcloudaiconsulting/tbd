@@ -516,6 +516,21 @@ def test_a_monthly_goal_counts_the_payments_its_series_makes_in_the_window():
     assert payments(open_ended, d(2027, 5, 1), d(2027, 5, 31)) == 1
 
 
+def test_the_roster_tail_budget_ends_where_its_billing_cycle_does():
+    """TBD-802 review: an open period with nothing after it is bounded by its
+    cycle, not by a month from its start (cycle day 31 from Feb 28 runs to Mar
+    30, so a payment on Mar 28 or 29 still counts), and never unbounded."""
+    from types import SimpleNamespace
+
+    d = datetime.date
+    tail = [SimpleNamespace(start_date=d(2027, 2, 28), end_date=None)]
+    assert plan_lifecycle_service._window_end(tail, 0, 31) == d(2027, 3, 30)
+    roster = [SimpleNamespace(start_date=d(2027, 2, 28), end_date=None),
+              SimpleNamespace(start_date=d(2027, 3, 31), end_date=d(2027, 4, 29))]
+    assert [plan_lifecycle_service._window_end(roster, i, 31) for i in (0, 1)] == [
+        d(2027, 3, 30), d(2027, 4, 29)]
+
+
 async def test_a_broken_link_needs_attention_and_rollover_skips_the_plan(factory, w):
     pid = await _start(factory, w)
     food = await _goal(factory, pid, "Food")
@@ -547,6 +562,12 @@ async def test_a_deleted_tag_or_account_needs_attention(factory, w):
 
 async def test_edit_after_start_needs_confirmation_and_runs_starts_steps(factory, w):
     pid = await _start(factory, w)
+    past = PERIOD_START - relativedelta(months=1)
+    async with factory() as db:  # a later stub with its Budget, and a past Budget (history)
+        await billing_service.ensure_future_periods(db, w["org"], count=1)
+        db.add(Budget(org_id=w["org"], category_id=(await db.get(Scenario, pid)).category_id,
+                      amount=Decimal("1.00"), period_start=past, period_end=PERIOD_START - datetime.timedelta(days=1)))
+        await db.commit()
     with _client(factory, "alice") as alice:
         res = alice.patch(f"/api/v1/scenarios/{pid}", json={"monthly_budget": "400.00"})
         assert res.status_code == 409 and "confirm" in res.json()["detail"]
@@ -569,9 +590,10 @@ async def test_edit_after_start_needs_confirmation_and_runs_starts_steps(factory
         assert alice.patch(f"/api/v1/scenarios/{pid}/goals/{later.id}?confirm=true",
                            json={"enabled": True}).status_code == 200
         assert alice.delete(f"/api/v1/scenarios/{pid}/goals/{later.id}").status_code == 409
-    async with factory() as db:
-        # TBD-802: the new cap, Food, and the two goals started here (Hotel 70, Later 10).
-        assert [b.amount for b in (await db.scalars(select(Budget))).all()] == [Decimal("580.00")]
+    # TBD-802: the new cap, Food, and the two goals started here (Hotel 70, Later 10),
+    # in the open period and the stub after it; the past Budget is history.
+    assert await _budget_amounts(factory, w["org"]) == {
+        past: Decimal("1.00"), PERIOD_START: Decimal("580.00"), _periods(2)[1]: Decimal("580.00")}
     after = await _rows(factory, w["org"])
     # Only the two goals' rows are new: a child category and a series each.
     assert len(after["categories"]) == len(before["categories"]) + 2
