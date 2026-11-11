@@ -53,7 +53,9 @@ from typing import Any
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app._time import utcnow_naive
 from app.models.account import Account, AccountType
@@ -108,6 +110,21 @@ async def lock_plans(db: AsyncSession, org_id: int, *, skip_locked: bool = False
 
 
 _LOCKED_IN = "plan_lifecycle.locked_in"
+_WROTE_IN = "plan_lifecycle.wrote_in"
+
+
+# A write already sent (flushed, or ORM DML, which never flushes) is not in
+# db.new/dirty/deleted, and lock()'s rollback would silently drop it.
+# shortcut: raw db.connection()/text() writes are not seen; route them through the ORM or tag them if one ever precedes lock().
+@event.listens_for(Session, "after_flush")
+def _flushed(session, _ctx) -> None:
+    session.info[_WROTE_IN] = session.get_transaction()
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _executed(state) -> None:
+    if state.is_insert or state.is_update or state.is_delete:
+        state.session.info[_WROTE_IN] = state.session.get_transaction()
 
 
 async def reload(db: AsyncSession) -> None:
@@ -132,7 +149,7 @@ async def lock(db: AsyncSession, plan: Scenario) -> Scenario:
     org_id, plan_id = plan.org_id, plan.id
     held_in = db.sync_session.get_transaction()
     if held_in is None or db.info.get(_LOCKED_IN) is not held_in:
-        if db.new or db.dirty or db.deleted:
+        if db.new or db.dirty or db.deleted or (held_in is not None and db.info.get(_WROTE_IN) is held_in):
             raise RuntimeError("plan_lifecycle_service.lock would roll back a pending write")
         await db.rollback()
         await lock_plans(db, org_id)
@@ -348,6 +365,12 @@ async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, to
     spec = _series_spec(plan, goal, today)
     if spec is None:
         return
+    if goal.kind == PlanGoalKind.LUMP.value:
+        earliest = await recurring_service.frontier_lower_bound(db, plan.org_id, today=today)
+        if goal.target_date < earliest:
+            raise ValidationError(
+                f'The goal "{goal.name}" is due on {goal.target_date}, before the current billing cycle '
+                f"started on {earliest}. Move its target date to {earliest} or later, or disable the goal.")
     if spec.get("to_account_id", 0) is None:
         raise ValidationError(f"goal {goal.id} saves monthly, so it needs an account to save into")
     if spec["account_id"] is None:
