@@ -17,13 +17,14 @@ The concurrent-Start fence needs InnoDB row locks: ``test_plan_lifecycle_mysql.p
 from __future__ import annotations
 
 import datetime
+from types import SimpleNamespace
 from collections.abc import AsyncIterator
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -916,3 +917,141 @@ async def test_delete_of_a_finished_plan_leaves_what_the_user_did_after_finish(f
     async with factory() as db:
         assert (await db.get(RecurringTransaction, food.funding_recurring_id)).is_active
     assert later in await _budget_periods(factory, w["org"])
+
+
+# ── TBD-803 item 1: lock() refuses a write already sent in this transaction ──
+
+
+async def _a_plan(factory) -> int:
+    async with factory() as db:
+        org = Organization(name="locks", billing_cycle_day=1, primary_currency="EUR")
+        db.add(org)
+        await db.flush()
+        user = User(org_id=org.id, username="lk", email="lk@x.test", password_hash="x",
+                    role=Role.MEMBER, is_active=True, email_verified=True)
+        db.add(user)
+        await db.flush()
+        plan = Scenario(org_id=org.id, user_id=user.id, name="P", scenario_type="custom",
+                        params_json={"scenario_type": "custom", "label": "x", "events": []}, currency="EUR")
+        db.add(plan)
+        await db.commit()
+        return plan.id
+
+
+async def test_lock_refuses_a_flushed_orm_write(factory):
+    """F1a. Wrong implementation: a guard on new/dirty/deleted only (a flush empties them)."""
+    pid = await _a_plan(factory)
+    async with factory() as db:
+        plan = await db.get(Scenario, pid)
+        plan.name = "changed"
+        await db.flush()
+        with pytest.raises(RuntimeError):
+            await plan_lifecycle_service.lock(db, plan)
+        assert (await db.get(Scenario, pid)).name == "changed"  # still in the transaction
+
+
+async def test_lock_refuses_an_orm_update_statement(factory):
+    """F1b. Wrong implementation: only an after_flush listener (Core-style ORM DML never flushes)."""
+    pid = await _a_plan(factory)
+    async with factory() as db:
+        plan = await db.get(Scenario, pid)
+        await db.execute(update(Scenario).where(Scenario.id == pid).values(name="changed"))
+        with pytest.raises(RuntimeError):
+            await plan_lifecycle_service.lock(db, plan)
+
+
+async def test_lock_refuses_an_orm_update_that_opened_the_transaction(factory):
+    """F1b'. Wrong implementation: tagging before the statement runs (it
+    fires before autobegin, so the tag is None and misses the transaction)."""
+    pid = await _a_plan(factory)
+    async with factory() as db:
+        plan = await db.get(Scenario, pid)
+        await db.commit()
+        await db.execute(update(Scenario).where(Scenario.id == pid).values(name="changed"))
+        with pytest.raises(RuntimeError):
+            await plan_lifecycle_service.lock(db, plan)
+
+
+async def test_lock_is_fine_after_the_write_committed(factory):
+    """F1c. Wrong implementation: an unkeyed or sticky flag."""
+    pid = await _a_plan(factory)
+    async with factory() as db:
+        plan = await db.get(Scenario, pid)
+        plan.name = "changed"
+        await db.flush()
+        await db.commit()
+        await plan_lifecycle_service.lock(db, plan)  # no read after the commit
+    async with factory() as db:
+        plan = await db.get(Scenario, pid)
+        plan.name = "again"
+        await db.flush()
+        await db.commit()
+        await db.scalar(select(Scenario.id))  # a new transaction, read only
+        await plan_lifecycle_service.lock(db, plan)
+
+
+async def test_a_second_lock_keeps_its_locks_over_a_write_after_the_first(factory):
+    """F1d. Wrong implementation: the check outside lock()'s first-call branch."""
+    pid = await _a_plan(factory)
+    async with factory() as db:
+        plan = await plan_lifecycle_service.lock(db, await db.get(Scenario, pid))
+        plan.name = "changed"
+        await db.flush()
+        await plan_lifecycle_service.lock(db, plan)
+
+
+async def test_lock_on_a_fresh_session_is_fine(factory):
+    """F1e. Wrong implementation: a guard without ``held_in is not None`` (None is None)."""
+    pid = await _a_plan(factory)
+    async with factory() as other:
+        org_id = await other.scalar(select(Scenario.org_id).where(Scenario.id == pid))
+    async with factory() as db:  # no transaction begun yet
+        await plan_lifecycle_service.lock(db, SimpleNamespace(org_id=org_id, id=pid))
+
+
+# ── TBD-803 item 4: a past-dated lump is refused in plan words ──
+
+PAST = PERIOD_START - datetime.timedelta(days=1)
+
+
+def _lump(target: datetime.date, **extra) -> dict:
+    return {"name": "Flights", "tier": "essential", "kind": "lump", "target_amount": "600.00",
+            "target_date": target.isoformat(), **extra}
+
+
+async def _counts(factory, org_id: int) -> list[int]:
+    async with factory() as db:
+        return [await db.scalar(select(func.count()).select_from(m).where(m.org_id == org_id))
+                for m in (Category, RecurringTransaction, Budget)]
+
+
+async def test_start_refuses_a_lump_dated_before_the_cycle_started(factory, w):
+    """F4a."""
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, goals=[_lump(PAST)])
+        before = await _counts(factory, w["org"])
+        res = alice.post(f"/api/v1/scenarios/{pid}/start")
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert "Flights" in detail and PERIOD_START.isoformat() in detail and "next_due_date" not in detail
+    async with factory() as db:
+        assert (await db.get(Scenario, pid)).status == ScenarioStatus.DRAFT
+    assert await _counts(factory, w["org"]) == before
+
+
+async def test_start_accepts_a_lump_dated_on_the_cycle_start(factory, w):
+    """F4b. Wrong implementation: ``<=``, or a check against today."""
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, goals=[_lump(PERIOD_START)])
+        assert alice.post(f"/api/v1/scenarios/{pid}/start").status_code == 200
+
+
+async def test_enabling_a_past_dated_lump_on_an_active_plan_is_refused(factory, w):
+    """F4c. Wrong implementation: the check in start() only."""
+    with _client(factory, "alice") as alice:
+        pid = _draft(alice, w, goals=[_lump(PAST, enabled=False)])
+        assert alice.post(f"/api/v1/scenarios/{pid}/start").status_code == 200
+        gid = (await _goal(factory, pid, "Flights")).id
+        res = alice.patch(f"/api/v1/scenarios/{pid}/goals/{gid}?confirm=true", json={"enabled": True})
+    assert res.status_code == 422, res.text
+    assert "Flights" in res.json()["detail"] and "next_due_date" not in res.json()["detail"]

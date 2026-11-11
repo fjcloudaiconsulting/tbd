@@ -51,9 +51,10 @@ from decimal import Decimal
 from typing import Any
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, event, func, select
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app._time import utcnow_naive
 from app.models.account import Account, AccountType
@@ -97,17 +98,36 @@ ACCOUNT_TAKEN, TAG_TAKEN, CATEGORY_TAKEN = "plan_account_taken", "plan_tag_taken
 SERIES_LINKED = "plan_series_linked"
 
 
-async def lock_plans(db: AsyncSession, org_id: int, *, skip_locked: bool = False) -> bool:
+async def lock_plans(db: AsyncSession, org_id: int, *, skip_locked: bool = False) -> list[Scenario]:
     """Every plan row of the org ``FOR UPDATE``, in id order: the first lock
-    of every plan write (module docstring). With ``skip_locked``, it never
-    waits, and is False when another transaction holds any of them."""
-    locked = (await db.scalars(select(Scenario.id).where(Scenario.org_id == org_id)
-                               .order_by(Scenario.id).with_for_update(skip_locked=skip_locked))).all()
-    return not skip_locked or len(locked) == await db.scalar(
-        select(func.count()).select_from(Scenario).where(Scenario.org_id == org_id))
+    of every plan write (module docstring). Returns the rows it locked. With
+    ``skip_locked``, it never waits: a plan another transaction holds is
+    missing from the result."""
+    return list((await db.scalars(
+        select(Scenario).where(Scenario.org_id == org_id).order_by(Scenario.id)
+        .with_for_update(skip_locked=skip_locked).execution_options(populate_existing=True))).all())
 
 
 _LOCKED_IN = "plan_lifecycle.locked_in"
+_WROTE_IN = "plan_lifecycle.wrote_in"
+
+
+# A write already sent (flushed, or ORM DML, which never flushes) is not in
+# db.new/dirty/deleted, and lock()'s rollback would silently drop it.
+# shortcut: raw db.connection()/text() writes are not seen; route them through the ORM or tag them if one ever precedes lock().
+@event.listens_for(Session, "after_flush")
+def _flushed(session, _ctx) -> None:
+    session.info[_WROTE_IN] = session.get_transaction()
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _executed(state):
+    if not (state.is_insert or state.is_update or state.is_delete):
+        return None
+    # Run it first: as a transaction's first statement it fires before autobegin.
+    result = state.invoke_statement()
+    state.session.info[_WROTE_IN] = state.session.get_transaction()
+    return result
 
 
 async def reload(db: AsyncSession) -> None:
@@ -132,7 +152,7 @@ async def lock(db: AsyncSession, plan: Scenario) -> Scenario:
     org_id, plan_id = plan.org_id, plan.id
     held_in = db.sync_session.get_transaction()
     if held_in is None or db.info.get(_LOCKED_IN) is not held_in:
-        if db.new or db.dirty or db.deleted:
+        if db.new or db.dirty or db.deleted or (held_in is not None and db.info.get(_WROTE_IN) is held_in):
             raise RuntimeError("plan_lifecycle_service.lock would roll back a pending write")
         await db.rollback()
         await lock_plans(db, org_id)
@@ -348,6 +368,12 @@ async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, to
     spec = _series_spec(plan, goal, today)
     if spec is None:
         return
+    if goal.kind == PlanGoalKind.LUMP.value:
+        earliest = await recurring_service.frontier_lower_bound(db, plan.org_id, today=today)
+        if goal.target_date < earliest:
+            raise ValidationError(
+                f'The goal "{goal.name}" is due on {goal.target_date}, before the current billing cycle '
+                f"started on {earliest}. Move its target date to {earliest} or later, or disable the goal.")
     if spec.get("to_account_id", 0) is None:
         raise ValidationError(f"goal {goal.id} saves monthly, so it needs an account to save into")
     if spec["account_id"] is None:
@@ -479,21 +505,23 @@ async def budget_changed(db: AsyncSession, *, plan: Scenario) -> None:
         await _ensure_budgets(db, plan, period.start_date, recompute=True)
 
 
-async def _owed(db: AsyncSession, org_id: int, current_start: datetime.date) -> bool:
-    """Whether an active plan lacks a Budget in a period from ``current_start``
-    on. A plain read: it decides whether the rollover locks anything at all."""
+async def _owed(db: AsyncSession, org_id: int, current_start: datetime.date) -> list[int]:
+    """The ids (id order) of the active plans that lack a Budget in a period
+    from ``current_start`` on; empty = nothing to do. A plain read: it decides
+    whether the rollover locks anything at all."""
     plans = [p for p in (await db.scalars(select(Scenario).where(
-        Scenario.org_id == org_id, Scenario.status == _ACTIVE, Scenario.category_id.is_not(None)))).all()
+        Scenario.org_id == org_id, Scenario.status == _ACTIVE, Scenario.category_id.is_not(None))
+        .order_by(Scenario.id))).all()
         if _has_budget(p, await _spend_goals(db, p))
         and not await attention(db, p)]  # the rollover skips these anyway
     if not plans:
-        return False
+        return []
     starts = (await db.scalars(select(BillingPeriod.start_date).where(
         BillingPeriod.org_id == org_id, BillingPeriod.start_date >= current_start))).all()
     have = set((await db.execute(select(Budget.category_id, Budget.period_start).where(
         Budget.org_id == org_id, Budget.category_id.in_([p.category_id for p in plans]),
         Budget.period_start >= current_start))).all())
-    return any((p.category_id, d) not in have for p in plans for d in starts)
+    return [p.id for p in plans if any((p.category_id, d) not in have for d in starts)]
 
 
 async def rollover(db: AsyncSession, org_id: int) -> bool:
@@ -516,21 +544,21 @@ async def rollover(db: AsyncSession, org_id: int) -> bool:
     ``ensure_future_periods`` (every Budgets page visit)."""
     try:
         period = await billing_service.find_open_period(db, org_id)
-        if period is None or not await _owed(db, org_id, period.start_date):
+        owed = await _owed(db, org_id, period.start_date) if period is not None else []
+        if not owed:
             return True
         # An org that lost Plans cannot reach its plan to finish it (TBD-802).
         if not await feature_gate.resolve_feature(feature_gate.Feature.PLANS, org_id, db):
             return True
-        if not await lock_plans(db, org_id, skip_locked=True):
+        # One fresh read: a plan committed since the probe is locked, one a
+        # Finish holds is missing, and no second locking read can wait on it.
+        locked = await lock_plans(db, org_id, skip_locked=True)
+        if busy := sorted(set(owed) - {p.id for p in locked}):
             await db.commit()  # release the ones it did lock
-            logger.info("plans.rollover.skipped_busy", extra={"org_id": org_id})
+            logger.info("plans.rollover.skipped_busy", extra={"org_id": org_id, "plan_ids": busy})
             return True
-        # Re-read under the locks: a Finish that landed first is seen.
-        plans = (await db.scalars(select(Scenario).where(
-            Scenario.org_id == org_id, Scenario.status == _ACTIVE).order_by(Scenario.id)
-            .execution_options(populate_existing=True).with_for_update())).all()
-        for plan in plans:
-            if not await attention(db, plan):
+        for plan in locked:
+            if plan.status == _ACTIVE and not await attention(db, plan):
                 await _ensure_budgets(db, plan, period.start_date)
         await db.commit()
         return True
