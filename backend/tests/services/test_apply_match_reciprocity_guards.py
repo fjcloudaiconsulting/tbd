@@ -382,6 +382,12 @@ async def test_rematching_after_a_reopen_still_works(db_session):
                        account_id=seed["acct_a_id"], amount="8.00", in_batch=True)
     b = await _add_row(db_session, seed, tx_id=8032,
                        account_id=seed["acct_b_id"], amount="16.00", in_batch=False)
+    # An IMPORTED settled target (from an earlier import). Since TBD-755,
+    # re-pointing a bank row away from a settled row the user ENTERED is
+    # refused (``match_source_bound``), so the stale link this fence needs
+    # must point at a row of another shape.
+    b.is_imported = True
+    await db_session.commit()
     d = await _add_row(db_session, seed, tx_id=8033,
                        account_id=seed["acct_b_id"], amount="32.00", in_batch=False)
 

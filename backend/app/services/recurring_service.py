@@ -935,11 +935,12 @@ async def _remove_pending_transactions(
     same, and ``transactions.linked_transaction_id`` is ``ON DELETE SET NULL``
     for these rows exactly as it is for the other two paths.
 
-    ``reconciliation_service._apply_match`` validates its target on org,
-    existence and not-self and NOTHING else -- no status filter, no
-    ``recurring_id`` filter -- so a settled bank row matched against the
-    PENDING recurring row it settles is a legal, and in fact the most natural,
-    reconcile action. Stopping that template used to delete the target, the FK
+    Before TBD-755, ``reconciliation_service._apply_match`` validated its
+    target on org, existence and not-self and NOTHING else -- no status filter,
+    no ``recurring_id`` filter -- so a settled bank row matched against the
+    PENDING recurring row it settles only linked and reverted the bank row, and
+    production still holds rows in that legacy state. (Since TBD-755 that match
+    settles the occurrence instead.) Stopping that template used to delete the target, the FK
     nulled the link, and the matched duplicate re-entered
     ``balance_contribution_filter`` and ``reportable_transaction_filter``
     carrying an amount ``accounts.balance`` does not contain.

@@ -25,6 +25,7 @@ from app.models.recurring import RecurringTransaction
 from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.import_reconciliation import (
     ReconcileBatchRequest,
+    ReconciliationEdits,
     ReconciliationState,
     ReconciliationTransition,
 )
@@ -513,13 +514,41 @@ async def test_account_or_type_mismatch_is_refused(db_session, cell):
     assert await _snapshot(db_session, seed) == before
 
 
-@pytest.mark.parametrize("cell", ["a_bound", "b_legacy_pending", "c_legacy_auto_settled",
-                                  "d_transfer_leg"])
+REFUSED = {
+    "a_bound", "c_legacy_auto_settled_now_refused", "e_bound_then_stopped",
+    "f_bound_then_deleted", "g_bound_then_edited_amount", "h_bound_then_edited_date",
+    "i_bound_then_o1_amount_put", "j_dedupe_onto_hand_entered_now_refused",
+}
+
+
+async def _edit_bank(db, seed, bank_id: int, **edits):
+    """Reopen, EDIT the bank row, accept, reopen again: back in pending_review."""
+    await _reopen(db, seed, bank_id)
+    await _reconcile(db, seed, ReconcileBatchRequest(transitions=[ReconciliationTransition(
+        transaction_id=bank_id, to_state=ReconciliationState.EDITED,
+        edits=ReconciliationEdits(**edits),
+    )]))
+    await _reopen(db, seed, bank_id)
+
+
+@pytest.mark.parametrize("cell", [
+    "a_bound", "b_legacy_pending", "c_legacy_auto_settled_now_refused", "d_transfer_leg",
+    "e_bound_then_stopped", "f_bound_then_deleted", "g_bound_then_edited_amount",
+    "h_bound_then_edited_date", "i_bound_then_o1_amount_put",
+    "j_dedupe_onto_hand_entered_now_refused",
+])
 async def test_rematch_away_from_a_matched_row(db_session, cell):
-    """#12. Kills: (a) Insertion A absent (Z-730); (b) Insertion A without the
-    status term; (c) Insertion A without the amount + settled_date tell (a false
-    409 on every pre-PR1 production match); (d) Insertion A keyed on
-    ``_is_recurring_occurrence``."""
+    """#12, Insertion A (Option N). Re-pointing a bank row away from a SETTLED
+    row the user entered is refused on the row's SHAPE alone, so the refusal
+    survives what a value tell does not: stop / delete NULL ``recurring_id``
+    (e, f), and an EDITED bank row or a PUT on the occurrence changes the
+    amount or date (g, h, i). A PENDING row (b) and a transfer leg (d) keep
+    today's re-target.
+
+    Pinned costs: (c) a pre-TBD-755 match onto an auto-settled occurrence and
+    (j) a dedupe onto a hand-entered settled row can no longer be re-targeted.
+    Every refused cell then SKIPs the bank row: 200, balance unchanged.
+    """
     seed = await _seed(db_session)
     org, a = seed["org_id"], seed["acct_a_id"]
 
@@ -532,60 +561,90 @@ async def test_rematch_away_from_a_matched_row(db_session, cell):
         o2 = await _series_row(db_session, r.id, JUN_1)
         bank = await _bank(db_session, seed, amount="500.00", paid=JUN_1)
         await _match(db_session, seed, bank.id, o1.id)  # today's dedupe
-        o1 = await _reload(db_session, o1.id)
-        # L carries the tell by construction: only the bindable term lets this through.
-        assert (o1.amount, o1.settled_date) == (Decimal("500.00"), JUN_1)
-    else:
-        r = await _template(db_session, seed, auto_settle=(cell == "c_legacy_auto_settled"))
+        await _reopen(db_session, seed, bank.id)
+    elif cell in ("a_bound", "b_legacy_pending", "c_legacy_auto_settled_now_refused"):
+        r = await _template(db_session, seed,
+                            auto_settle=(cell == "c_legacy_auto_settled_now_refused"))
         o1 = await _occurrence(db_session, seed, r)
         o2 = await recurring_service.materialise_next(
             db_session, org, r.id, occurrence_date=JUL_1, skipped=False, today=JUN_1,
         )
         assert o2.status == TransactionStatus.PENDING
         bank = await _bank(db_session, seed, paid=JUN_2)
-        if cell == "b_legacy_pending":
-            # A PENDING O1 that nonetheless carries the tell (an edited amount and
-            # an expected settlement date), so ONLY the status term lets it through.
-            o1.amount, o1.settled_date = Decimal(B), JUN_2
-            await db_session.commit()
         if cell == "a_bound":
             await _match(db_session, seed, bank.id, o1.id)
             o1 = await _reload(db_session, o1.id)
-            assert (o1.status, o1.amount, o1.settled_date) == (
-                TransactionStatus.SETTLED, Decimal(B), JUN_2)
+            assert (o1.status, o1.amount) == (TransactionStatus.SETTLED, Decimal(B))
         else:
             with _legacy_pre_tbd755_match():
                 await _match(db_session, seed, bank.id, o1.id)
-    await _reopen(db_session, seed, bank.id)
-    o1_before = (await _snapshot(db_session, seed))["rows"][o1.id]
+        await _reopen(db_session, seed, bank.id)
+    elif cell == "j_dedupe_onto_hand_entered_now_refused":
+        x = await _create(db_session, seed, account_id=a, amount=B, label="hand-entered",
+                          tx_date=JUN_2)
+        r = await _template(db_session, seed)
+        o2 = await _occurrence(db_session, seed, r)
+        bank = await _bank(db_session, seed, paid=JUN_2)
+        await _match(db_session, seed, bank.id, x.id)  # today's dedupe
+        o1 = x
+        await _reopen(db_session, seed, bank.id)
+    else:  # e-i: bind O1 (Energy), then the event that breaks a value tell
+        r = await _template(db_session, seed)
+        w = await _template(db_session, seed, amount="50.00", description="Water")
+        o1 = await _occurrence(db_session, seed, r)
+        o2 = await _series_row(db_session, w.id, JUN_1)
+        bank = await _bank(db_session, seed, paid=JUN_2)
+        await _match(db_session, seed, bank.id, o1.id)
+        if cell in ("e_bound_then_stopped", "f_bound_then_deleted"):
+            stop = (recurring_service.stop_recurring if cell == "e_bound_then_stopped"
+                    else recurring_service.delete_recurring)
+            await stop(db_session, org, r.id)
+            o1 = await _reload(db_session, o1.id)
+            assert o1 is not None and o1.recurring_id is None
+            await _reopen(db_session, seed, bank.id)
+        elif cell == "g_bound_then_edited_amount":
+            await _edit_bank(db_session, seed, bank.id, amount=Decimal("370.00"))
+        elif cell == "h_bound_then_edited_date":
+            await _edit_bank(db_session, seed, bank.id, date=JUN_1)
+            assert (await _reload(db_session, bank.id)).settled_date == JUN_1
+        else:
+            await transaction_service.update_transaction(
+                db_session, org, o1.id, TransactionUpdate(amount=Decimal("400.00")),
+            )
+            await _reopen(db_session, seed, bank.id)
+    await assert_invariant(db_session, seed)
+    o1_id, o2_id, bank_id = o1.id, o2.id, bank.id
+    before = await _snapshot(db_session, seed)
+    assert before["rows"][bank_id][4] == o1_id
+    assert before["rows"][bank_id][5] == "pending_review"
 
-    if cell == "a_bound":
-        before = await _snapshot(db_session, seed)
+    if cell in REFUSED:
+        assert before["rows"][o1_id][3] == TransactionStatus.SETTLED
         with pytest.raises(ConflictError) as exc:
-            await _match(db_session, seed, bank.id, o2.id)
+            await _match(db_session, seed, bank_id, o2_id)
         assert exc.value.code == "match_source_bound"
         assert await _snapshot(db_session, seed) == before
-        assert before["rows"][o2.id][3] == TransactionStatus.PENDING
-        assert before["accounts"][a] == OPENING_A - Decimal(B)
+        # The way out the message names: skip the bank row. Nothing moves.
+        await _reconcile(db_session, seed, _transition(bank_id, ReconciliationState.SKIPPED))
+        after = await _snapshot(db_session, seed)
+        assert after["accounts"] == before["accounts"]
+        assert after["rows"][bank_id][5] == "skipped"
+        await assert_invariant(db_session, seed)
         return
 
-    await _match(db_session, seed, bank.id, o2.id)
+    await _match(db_session, seed, bank_id, o2_id)
 
     after = await _snapshot(db_session, seed)
-    assert after["rows"][o1.id] == o1_before
-    o2 = await _reload(db_session, o2.id)
+    assert after["rows"][o1_id] == before["rows"][o1_id]
+    o2 = await _reload(db_session, o2_id)
     assert o2.status == TransactionStatus.SETTLED
     if cell == "d_transfer_leg":
         assert o2.amount == Decimal("500.00")
         assert after["accounts"][a] == OPENING_A - Decimal("1000.00")
     else:
+        assert before["rows"][o1_id][3] == TransactionStatus.PENDING
         assert o2.amount == Decimal(B)
-        held = Decimal(T) if cell == "c_legacy_auto_settled" else Decimal(0)
-        assert after["accounts"][a] == OPENING_A - held - Decimal(B)
-        if cell == "b_legacy_pending":
-            assert o1_before[3] == TransactionStatus.PENDING
-        else:
-            assert o1_before[0] == Decimal(T)
+        assert after["accounts"][a] == OPENING_A - Decimal(B)
     await assert_invariant(db_session, seed)
 
 

@@ -754,7 +754,8 @@ async def _settle_occurrence_from_bank(
     inserts before it gap-locks. Two concurrent MULTI-transition reconcile
     requests can still cycle (the second transition's link insert can wait on
     the other request's probe gap), and the reconcile vs generation-sweep edges
-    are unchanged. The loser gets InnoDB 1213, which surfaces as a 500; the
+    are unchanged. Because the index has no ``org_id`` column, all of this also
+    applies ACROSS orgs: two different orgs' binds share the same gap. The loser gets InnoDB 1213, which surfaces as a 500; the
     whole request rolls back and a retry succeeds. SQLite cannot prove any of
     this, and no test claims to.
     """
@@ -907,7 +908,7 @@ async def _apply_match(
     occurrence (400 ``match_target_pending``, rulings §5: the bank row would be
     reverted while the target adds nothing), a PENDING bank row onto a PENDING
     occurrence (400 ``match_source_not_settled``), re-pointing a bank row away
-    from an occurrence it settled (409 ``match_source_bound``), plus the
+    from a settled entered row (409 ``match_source_bound``), plus the
     helper's own account / type / frontier / already-bound refusals. The link
     is written BEFORE the helper runs (link-first, the gap-lock fix; see the
     helper). No template lock is taken: an existing occurrence's frontier is
@@ -997,23 +998,28 @@ async def _apply_match(
                 f"Transaction {tx.id} is a transfer leg; unlink the transfer "
                 "before matching it to another transaction."
             )
-        # TBD-755 Insertion A: an occurrence this bank row settled holds the
-        # bank amount, so re-pointing the bank row would let a second row
-        # count it too. Keyed on the bind's tell (only
-        # ``_settle_occurrence_from_bank`` writes both the amount and the
-        # settled_date from the bank row), so a legacy link, a settled transfer
-        # leg and a pre-TBD-755 match keep today's re-target.
+        # TBD-755 Insertion A: a SETTLED row the user entered (not imported,
+        # not a transfer leg) may be carrying this bank row's money, so
+        # re-pointing the bank row would count the payment twice. Keyed on the
+        # row's SHAPE alone, never on values: ``stop_recurring`` and
+        # ``delete_recurring`` NULL ``recurring_id`` (so no recurring term
+        # survives them), and an EDITED transition or a transactions-page PUT
+        # changes the amount or date (so no amount/date tell survives either).
+        # A PENDING row carries nothing and a transfer leg's amount is its
+        # own, so both keep the re-target. Cost: a dedupe onto a hand-entered
+        # settled row can no longer be re-targeted; skip it instead.
         if (
             current is not None
             and current.id != target.id
-            and _is_bindable_occurrence(current)
             and current.status == TransactionStatus.SETTLED
-            and current.amount == tx.amount
-            and current.settled_date == tx.settled_date
+            and not current.is_imported
+            and current.import_batch_id is None
+            and current.linked_transaction_id is None
+            and current.recurring_origin_id is None
         ):
             raise ConflictError(
-                "This bank transaction is already matched to a settled recurring "
-                "occurrence. Edit or delete that occurrence instead.",
+                "This bank row is matched to a transaction you entered. Skip it, "
+                "or unmatch it once unmatching is available.",
                 code="match_source_bound",
             )
 

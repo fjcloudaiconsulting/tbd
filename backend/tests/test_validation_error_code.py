@@ -31,12 +31,15 @@ async def _plain():
     raise ValidationError("x")
 
 
+PATHS = ("/__t755/coded", "/__t755/plain")
+
+
 @pytest.fixture
 def probe():
-    app.add_api_route("/__t755/coded", _coded)
-    app.add_api_route("/__t755/plain", _plain)
+    app.add_api_route(PATHS[0], _coded)
+    app.add_api_route(PATHS[1], _plain)
     yield
-    del app.router.routes[-2:]
+    app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", None) not in PATHS]
 
 
 async def test_validation_error_code_is_surfaced(probe):
