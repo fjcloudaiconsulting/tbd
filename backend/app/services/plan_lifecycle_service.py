@@ -68,6 +68,7 @@ from app.schemas.plan_projection import PlanProjectionResponse
 from app.schemas.recurring import RECURRING_DESCRIPTION_MAX_LENGTH, RecurringCreate
 from app.services import (
     billing_service,
+    feature_gate,
     plan_draft_service,
     plan_projection_service,
     recurring_service,
@@ -376,7 +377,8 @@ async def _expected_balance(db: AsyncSession, account_id: int) -> Decimal:
 
 
 def _payments(series: RecurringTransaction, start: datetime.date, end: datetime.date) -> int:
-    """How many of a monthly series' payments fall in ``[start, end]``: the
+    """How many of a monthly series' payments (a lump's single one included)
+    fall in ``[start, end]``: the
     last one made (``last_spent_date``) and the ones still due, walked from the
     frontier as generation walks them and cut at ``occurrence_count``. A
     window past the goal's last payment counts none. Of the payments already
@@ -422,17 +424,15 @@ def _has_budget(plan: Scenario, goals: list) -> bool:
 
 
 def _amount(plan: Scenario, goals: list, start: datetime.date, end: datetime.date) -> Decimal:
-    """A period's Budget: the cap, each monthly spend goal's payments in the
-    window, and each lump dated in it. The master's Budget counts its children
+    """A period's Budget: the cap plus each spend goal's payments in the
+    window (a lump is a one-payment series), following the series if its date
+    is moved. The master's Budget counts its children
     (``budget_service._compute_spent``), so a goal's spend lands against it.
     A lump paid by card settles, and so counts, when the card says."""
     total = plan.monthly_budget or Decimal(0)
     for goal, series in goals:
-        if goal.kind == PlanGoalKind.LUMP.value:
-            if goal.target_date is not None and start <= goal.target_date <= end:
-                total += goal.target_amount
-        else:
-            total += goal.monthly_amount * _payments(series, start, end)
+        each = goal.target_amount if goal.kind == PlanGoalKind.LUMP.value else goal.monthly_amount
+        total += each * _payments(series, start, end)
     return total.quantize(_CENTS)
 
 
@@ -470,7 +470,8 @@ async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datet
 
 async def budget_changed(db: AsyncSession, *, plan: Scenario) -> None:
     """Edit after start: a new ``monthly_budget`` or a goal started late
-    reaches the current Budget and the later ones. Past Budgets are history."""
+    reaches the current Budget and the later ones, overwriting a hand edit or
+    a rebalance of those rows. Past Budgets are history."""
     period = await billing_service.find_open_period(db, plan.org_id)
     if period is not None:
         await _ensure_budgets(db, plan, period.start_date, recompute=True)
@@ -515,8 +516,6 @@ async def rollover(db: AsyncSession, org_id: int) -> bool:
         period = await billing_service.find_open_period(db, org_id)
         if period is None or not await _owed(db, org_id, period.start_date):
             return True
-        from app.services import feature_gate  # import cycle at module level
-
         # An org that lost Plans cannot reach its plan to finish it (TBD-802).
         if not await feature_gate.resolve_feature(feature_gate.Feature.PLANS, org_id, db):
             return True

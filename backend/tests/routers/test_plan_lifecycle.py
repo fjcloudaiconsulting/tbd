@@ -514,6 +514,14 @@ def test_a_monthly_goal_counts_the_payments_its_series_makes_in_the_window():
     open_ended = SimpleNamespace(next_due_date=d(2027, 2, 20), occurrence_count=None,
                                  occurrences_elapsed=1, last_spent_date=d(2027, 1, 20))
     assert payments(open_ended, d(2027, 5, 1), d(2027, 5, 31)) == 1
+    # A lump is a one-payment series: counted where its series pays, before and after.
+    lump = SimpleNamespace(next_due_date=d(2027, 3, 12), occurrence_count=1, occurrences_elapsed=0,
+                           last_spent_date=None)
+    paid = SimpleNamespace(next_due_date=d(2027, 4, 12), occurrence_count=1, occurrences_elapsed=1,
+                           last_spent_date=d(2027, 3, 12))
+    for s in (lump, paid):
+        assert [payments(s, d(2027, m, 1), d(2027, m + 1, 1) - datetime.timedelta(days=1))
+                for m in (2, 3, 4)] == [0, 1, 0]
 
 
 def test_the_roster_tail_budget_ends_where_its_billing_cycle_does():
