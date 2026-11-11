@@ -537,6 +537,10 @@ def test_the_roster_tail_budget_ends_where_its_billing_cycle_does():
               SimpleNamespace(start_date=d(2027, 3, 31), end_date=d(2027, 4, 29))]
     assert [plan_lifecycle_service._window_end(roster, i, 31) for i in (0, 1)] == [
         d(2027, 3, 30), d(2027, 4, 29)]
+    # Off the grid (a close on Jan 9 with cycle day 15 opens Jan 10): the next
+    # stub starts Feb 15, so this window runs to Feb 14, not Jan 14.
+    off = [SimpleNamespace(start_date=d(2027, 1, 10), end_date=None)]
+    assert plan_lifecycle_service._window_end(off, 0, 15) == d(2027, 2, 14)
 
 
 async def test_a_broken_link_needs_attention_and_rollover_skips_the_plan(factory, w):
@@ -571,8 +575,9 @@ async def test_a_deleted_tag_or_account_needs_attention(factory, w):
 async def test_edit_after_start_needs_confirmation_and_runs_starts_steps(factory, w):
     pid = await _start(factory, w)
     past = PERIOD_START - relativedelta(months=1)
-    async with factory() as db:  # a later stub with its Budget, and a past Budget (history)
+    async with factory() as db:  # a later stub with its Budget, and a past period's Budget (history)
         await billing_service.ensure_future_periods(db, w["org"], count=1)
+        db.add(BillingPeriod(org_id=w["org"], start_date=past, end_date=PERIOD_START - datetime.timedelta(days=1)))
         db.add(Budget(org_id=w["org"], category_id=(await db.get(Scenario, pid)).category_id,
                       amount=Decimal("1.00"), period_start=past, period_end=PERIOD_START - datetime.timedelta(days=1)))
         await db.commit()

@@ -50,6 +50,7 @@ from collections import Counter
 from decimal import Decimal
 from typing import Any
 
+from dateutil.relativedelta import relativedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -406,14 +407,16 @@ async def _spend_goals(db: AsyncSession, plan: Scenario) -> list[tuple[PlanGoal,
 def _window_end(periods: list[BillingPeriod], i: int, cycle_day: int) -> datetime.date:
     """The last day ``periods[i]``'s Budget is for. Never unbounded
     (``period_effective_end`` can be), or a lump months out lands in the last
-    period as well as its own; the roster tail ends where its billing cycle
-    does, as ``billing_service.plan_future_periods`` will start the next."""
+    period as well as its own; the roster tail ends the day before
+    ``billing_service.plan_future_periods`` would start the next period (its
+    formula, so an off-grid open period after a close is bounded right)."""
     period = periods[i]
     if period.end_date is not None:
         return period.end_date
     if i + 1 < len(periods):
         return periods[i + 1].start_date - datetime.timedelta(days=1)
-    return billing_service.current_cycle_window(cycle_day, period.start_date)[1]
+    return billing_service._snap_to_cycle(
+        period.start_date + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
 
 
 def _has_budget(plan: Scenario, goals: list) -> bool:
