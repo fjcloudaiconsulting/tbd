@@ -429,8 +429,11 @@ async def not_found_handler(request, exc: NotFoundError):
 
 @app.exception_handler(ValidationError)
 async def validation_handler(request, exc: ValidationError):
-    _log_client_error(request, 400, exc.detail)
-    return JSONResponse(status_code=400, content={"detail": exc.detail})
+    content = {"detail": exc.detail}
+    if getattr(exc, "code", None):
+        content["code"] = exc.code
+    _log_client_error(request, 400, {"code": exc.code} if getattr(exc, "code", None) else exc.detail)
+    return JSONResponse(status_code=400, content=content)
 
 
 @app.exception_handler(PlanLimitReached)

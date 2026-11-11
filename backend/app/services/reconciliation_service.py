@@ -39,7 +39,8 @@ from app.models.import_batch import (
     ImportBatchStatus,
     ImportSourceFormat,
 )
-from app.models.transaction import Transaction
+from app.models.recurring import RecurringTransaction
+from app.models.transaction import Transaction, TransactionStatus
 from app.schemas.import_reconciliation import (
     ImportBatchDetail,
     ImportBatchHeader,
@@ -699,6 +700,159 @@ async def _apply_edits(
             )
 
 
+def _is_recurring_occurrence(tx: Transaction) -> bool:
+    """A row a series wrote (generation, materialise_next, or a non-imported promoted row).
+    recurring_id alone is not enough: promote_to_recurring stamps it on imported rows too."""
+    return tx.recurring_id is not None and not tx.is_imported and tx.import_batch_id is None
+
+
+def _is_bindable_occurrence(tx: Transaction) -> bool:
+    """An occurrence a bank row may settle. A transfer leg (paired, or unpaired but still
+    carrying recurring_origin_id) is not: re-pricing one leg breaks the pair. A SETTLED leg
+    keeps today's dedupe match (Guard 1, find_duplicate_of_linked_leg)."""
+    return (
+        _is_recurring_occurrence(tx)
+        and tx.linked_transaction_id is None
+        and tx.recurring_origin_id is None
+    )
+
+
+async def _settle_occurrence_from_bank(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    occurrence: Transaction,
+    bank_tx: Transaction,
+) -> None:
+    """Settle a recurring occurrence at the bank row's amount and payment date (TBD-755).
+
+    The shared helper behind a reconcile MATCH onto a bindable occurrence, and
+    the contract PR2's ``bind_occurrence`` reuses.
+
+    The caller guarantees: ``occurrence`` is locked FOR UPDATE with
+    ``populate_existing``, ``_is_bindable_occurrence(occurrence)`` holds and it
+    is not reverted, ``bank_tx`` is SETTLED, and ``bank_tx.linked_transaction_id
+    == occurrence.id`` is ALREADY assigned (autoflush writes it at this
+    function's first query; do not wrap the call in ``no_autoflush``).
+
+    It never writes the link, never touches the bank row's balance (the
+    caller's membership diff reverts it), never locks or writes the template or
+    a frontier field, and never commits. An existing occurrence's frontier was
+    spent when the row was written, so there is nothing to advance; and taking
+    the template lock here would invert generation's occurrence -> account ->
+    template order (TBD-512).
+
+    The result: ``amount = bank amount``, ``date = min(due, paid)``,
+    ``settled_date = paid``, SETTLED. The bank amount ends in
+    ``accounts.balance`` exactly once, carried by the occurrence.
+
+    ⚠ Residual deadlock, honestly stated. The link is written BEFORE the
+    referrer probe on purpose: ``ix_transactions_linked`` is single-column, so
+    the empty-result gap of the probe is shared across orgs, and probe-then-write
+    deadlocks two concurrent binds (each gap-locks, then needs an
+    insert-intention lock into the same gap). Link-first means each transaction
+    inserts before it gap-locks. Two concurrent MULTI-transition reconcile
+    requests can still cycle (the second transition's link insert can wait on
+    the other request's probe gap), and the reconcile vs generation-sweep edges
+    are unchanged. The loser gets InnoDB 1213, which surfaces as a 500; the
+    whole request rolls back and a retry succeeds. SQLite cannot prove any of
+    this, and no test claims to.
+    """
+    # Deferred, as in ``_apply_balance_for_transition``: module-load order.
+    from app.services.transaction_service import (
+        apply_balance,
+        get_account_for_update,
+        revert_balance,
+    )
+
+    # Currency lives only on the account, so this also keeps money from
+    # crossing currencies.
+    if occurrence.account_id != bank_tx.account_id:
+        raise ValidationError(
+            "That recurring occurrence is on a different account.",
+            code="occurrence_account_mismatch",
+        )
+    if occurrence.type != bank_tx.type:
+        raise ValidationError(
+            "That recurring occurrence is not the same type (income or expense).",
+            code="occurrence_type_mismatch",
+        )
+
+    paid = bank_tx.settled_date
+    new_date = min(occurrence.date, paid)
+    if new_date != occurrence.date:
+        # C1: a promoted source row can BE the frontier occurrence
+        # (``next_due_date <= tx.date`` seeds ``occurrences_elapsed=0``), and
+        # generation's ``exists`` probe counts it at its date. Moving it earlier
+        # would make generation write the occurrence a second time. A PLAIN
+        # read, no lock: the frontier only moves forward past an existing row,
+        # so a stale value is earlier than the committed one and can only
+        # over-refuse; a retry succeeds.
+        r = await db.scalar(
+            select(RecurringTransaction).where(
+                RecurringTransaction.id == occurrence.recurring_id,
+                RecurringTransaction.org_id == org_id,
+            )
+        )
+        if r is None or occurrence.date >= r.next_due_date:
+            raise ConflictError(
+                "That transaction is still the series' next occurrence, so it "
+                "cannot move to an earlier date. Move the series' next due date "
+                "past it first.",
+                code="occurrence_on_frontier",
+            )
+
+    # A LOCKING read: two binds onto one occurrence serialize on its row lock,
+    # but under MySQL REPEATABLE READ a plain SELECT would read the snapshot
+    # from before that wait and miss the winner's committed link. A locking
+    # read is a current read. ``id != bank_tx.id`` lets a re-match of the same
+    # pair repair a legacy link; the state filter keeps a SKIPPED, stale-linked
+    # earlier bank row from blocking.
+    other = await db.scalar(
+        select(Transaction.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.linked_transaction_id == occurrence.id,
+            Transaction.id != bank_tx.id,
+            Transaction.reconciliation_state.not_in(REVERTED_RECONCILIATION_STATES),
+        )
+        .limit(1)
+        .with_for_update()
+    )
+    if other is not None:
+        raise ConflictError(
+            "Another bank transaction is already matched to that recurring occurrence.",
+            code="occurrence_already_bound",
+        )
+
+    old_amount, old_date = occurrence.amount, occurrence.date
+    was_settled = occurrence.status == TransactionStatus.SETTLED
+    occurrence.amount = bank_tx.amount
+    occurrence.date = new_date
+    occurrence.settled_date = paid
+    occurrence.status = TransactionStatus.SETTLED
+    # Autoflush emits the occurrence UPDATE before the account lock is taken.
+    acct = await get_account_for_update(db, occurrence.account_id, org_id)
+    if was_settled:
+        revert_balance(acct, old_amount, occurrence.type)
+    apply_balance(acct, occurrence.amount, occurrence.type)
+
+    # The only record of the pre-bind values. Ids, amounts and dates only.
+    logger.info(
+        "reconcile.match_settled_occurrence",
+        extra={
+            "org_id": org_id,
+            "transaction_id": bank_tx.id,
+            "occurrence_id": occurrence.id,
+            "was_settled": was_settled,
+            "old_amount": str(old_amount),
+            "new_amount": str(occurrence.amount),
+            "old_date": old_date.isoformat(),
+            "new_date": new_date.isoformat(),
+        },
+    )
+
+
 async def _apply_match(
     db: AsyncSession,
     *,
@@ -742,6 +896,24 @@ async def _apply_match(
     of two reconcile matches, and every downstream predicate then reads
     the pair as a real transfer -- balance reconstruction included. Both
     guards are deliberately NARROW; see the comments at each.
+
+    TBD-755: a match onto a BINDABLE recurring occurrence
+    (``_is_bindable_occurrence``) by a SETTLED bank row also settles that
+    occurrence at the bank amount and payment date, through
+    ``_settle_occurrence_from_bank``. Every other SETTLED target (a non-recurring
+    row, a transfer leg, an imported row carrying a ``recurring_id``) and every
+    PENDING bank row onto a SETTLED occurrence takes the pre-TBD-755 path
+    unchanged. Four refusals are new: a PENDING target that is not a bindable
+    occurrence (400 ``match_target_pending``, rulings §5: the bank row would be
+    reverted while the target adds nothing), a PENDING bank row onto a PENDING
+    occurrence (400 ``match_source_not_settled``), re-pointing a bank row away
+    from an occurrence it settled (409 ``match_source_bound``), plus the
+    helper's own account / type / frontier / already-bound refusals. The link
+    is written BEFORE the helper runs (link-first, the gap-lock fix; see the
+    helper). No template lock is taken: an existing occurrence's frontier is
+    already spent, and the template-first order is the TBD-512 inversion
+    against generation. A refusal after the link write rolls back with
+    ``reconcile_request``'s savepoint.
     """
     match_id = transition.match_with_transaction_id
     if match_id is None:
@@ -825,8 +997,42 @@ async def _apply_match(
                 f"Transaction {tx.id} is a transfer leg; unlink the transfer "
                 "before matching it to another transaction."
             )
+        # TBD-755 Insertion A: an occurrence this bank row settled holds the
+        # bank amount, so re-pointing the bank row would let a second row
+        # count it too. Keyed on the bind's tell (only
+        # ``_settle_occurrence_from_bank`` writes both the amount and the
+        # settled_date from the bank row), so a legacy link, a settled transfer
+        # leg and a pre-TBD-755 match keep today's re-target.
+        if (
+            current is not None
+            and current.id != target.id
+            and _is_bindable_occurrence(current)
+            and current.status == TransactionStatus.SETTLED
+            and current.amount == tx.amount
+            and current.settled_date == tx.settled_date
+        ):
+            raise ConflictError(
+                "This bank transaction is already matched to a settled recurring "
+                "occurrence. Edit or delete that occurrence instead.",
+                code="match_source_bound",
+            )
 
+    bindable = _is_bindable_occurrence(target)
+    source_settled = tx.status == TransactionStatus.SETTLED
+    if target.status == TransactionStatus.PENDING and not (bindable and source_settled):
+        if bindable:
+            raise ValidationError(
+                "Only a settled bank transaction can settle a pending recurring occurrence.",
+                code="match_source_not_settled",
+            )
+        raise ValidationError(
+            "That transaction is still pending. Settle it first, or match a "
+            "settled transaction.",
+            code="match_target_pending",
+        )
     tx.linked_transaction_id = match_id
+    if bindable and source_settled:
+        await _settle_occurrence_from_bank(db, org_id=org_id, occurrence=target, bank_tx=tx)
     return target
 
 

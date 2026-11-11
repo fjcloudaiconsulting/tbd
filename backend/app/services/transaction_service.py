@@ -3688,8 +3688,9 @@ def _transfer_collapse_clause(filtered_ids_subq):
     this rank is ever nullable, branch 4 fails CLOSED -- do not cite the old
     sentence.
 
-    ``linked_transaction_id`` is NOT a transfer marker: it has two writers
+    ``linked_transaction_id`` is NOT a transfer marker: it has three writers
     with different semantics. ``_link_pair`` sets it BIDIRECTIONALLY;
+    ``unpair_transactions`` clears both sides; and
     ``reconciliation_service._apply_match`` sets it ONE-WAY, and that
     direction is a load-bearing discriminator (see the
     ``Transaction.linked_transaction_id`` model docstring). Branch 3 is what
