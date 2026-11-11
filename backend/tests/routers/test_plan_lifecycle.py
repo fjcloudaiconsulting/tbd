@@ -974,7 +974,7 @@ async def test_lock_is_fine_after_the_write_committed(factory):
         plan.name = "again"
         await db.flush()
         await db.commit()
-        await db.get(Scenario, pid)  # a new transaction, read only
+        await db.scalar(select(Scenario.id))  # a new transaction, read only
         await plan_lifecycle_service.lock(db, plan)
 
 
@@ -991,9 +991,10 @@ async def test_a_second_lock_keeps_its_locks_over_a_write_after_the_first(factor
 async def test_lock_on_a_fresh_session_is_fine(factory):
     """F1e. Wrong implementation: a guard without ``held_in is not None`` (None is None)."""
     pid = await _a_plan(factory)
-    async with factory() as db:
-        await plan_lifecycle_service.lock(db, SimpleNamespace(org_id=await db.scalar(
-            select(Scenario.org_id).where(Scenario.id == pid)), id=pid))
+    async with factory() as other:
+        org_id = await other.scalar(select(Scenario.org_id).where(Scenario.id == pid))
+    async with factory() as db:  # no transaction begun yet
+        await plan_lifecycle_service.lock(db, SimpleNamespace(org_id=org_id, id=pid))
 
 
 # ── TBD-803 item 4: a past-dated lump is refused in plan words ──
