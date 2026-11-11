@@ -549,9 +549,9 @@ async def rollover(db: AsyncSession, org_id: int) -> bool:
         # One fresh read: a plan committed since the probe is locked, one a
         # Finish holds is missing, and no second locking read can wait on it.
         locked = await lock_plans(db, org_id, skip_locked=True)
-        if set(owed) - {p.id for p in locked}:
+        if busy := sorted(set(owed) - {p.id for p in locked}):
             await db.commit()  # release the ones it did lock
-            logger.info("plans.rollover.skipped_busy", extra={"org_id": org_id, "plan_ids": owed})
+            logger.info("plans.rollover.skipped_busy", extra={"org_id": org_id, "plan_ids": busy})
             return True
         for plan in locked:
             if plan.status == _ACTIVE and not await attention(db, plan):
