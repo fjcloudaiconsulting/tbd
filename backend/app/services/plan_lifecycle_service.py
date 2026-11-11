@@ -379,10 +379,9 @@ async def _expected_balance(db: AsyncSession, account_id: int) -> Decimal:
 
 def _payments(series: RecurringTransaction, start: datetime.date, end: datetime.date) -> int:
     """How many of a monthly series' payments (a lump's single one included)
-    fall in ``[start, end]``: the
-    last one made (``last_spent_date``) and the ones still due, walked from the
-    frontier as generation walks them and cut at ``occurrence_count``. A
-    window past the goal's last payment counts none. Of the payments already
+    fall in ``[start, end]``: the last one made (``last_spent_date``) and the
+    ones still due, walked from the frontier as generation walks them and cut
+    at ``occurrence_count``. A window past the goal's last payment counts none. Of the payments already
     made only the last is known, so a window holding two of them (materialised
     ahead, or a catch-up) counts one: rare for a monthly series in a monthly
     period, and the Budget errs low."""
