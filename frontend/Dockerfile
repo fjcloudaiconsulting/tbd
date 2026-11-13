@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM mirror.gcr.io/library/node:24-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c AS builder
+FROM mirror.gcr.io/library/node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS builder
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
 # --- Runtime stage ---
-FROM mirror.gcr.io/library/node:24-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c AS runner
+FROM mirror.gcr.io/library/node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS runner
 
 WORKDIR /app
 
