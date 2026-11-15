@@ -221,3 +221,17 @@ async def test_a_database_error_is_not_a_row_error(db_session):
     with patch.object(reconciliation_service, "bind_bank_row", AsyncMock(side_effect=boom)):
         with pytest.raises(OperationalError):
             await _confirm(db_session, seed, out.rows[0])
+
+
+async def test_an_unexpected_bind_error_still_imports_the_row(db_session):
+    """Review finding 3. Kills: the fallback only on domain errors."""
+    seed = await _seed(db_session)
+    r = await _template(db_session, seed)
+    await _occurrence(db_session, seed, r)
+    out = await _preview(db_session, seed, [_parsed()])
+    with patch.object(reconciliation_service, "bind_bank_row",
+                      AsyncMock(side_effect=RuntimeError("boom"))):
+        res = await _confirm(db_session, seed, out.rows[0])
+    assert (res.bound_count, res.imported_count, len(res.bind_fallbacks)) == (0, 1, 1)
+    assert (await _account(db_session, seed["acct_a_id"])).balance == OPENING_A - Decimal(B)
+    await assert_invariant(db_session, seed)

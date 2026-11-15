@@ -7,6 +7,7 @@ its money edited, so the payment can never be counted or projected twice.
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -245,3 +246,42 @@ async def test_inbox_row_shows_the_bound_occurrence(db_session):
     )
     row = next(r for r in detail.rows if r.transaction_id == bank.id)
     assert row.bound_occurrence.can_unbind is False
+
+
+async def test_a_stopped_bound_occurrence_cannot_seed_a_new_series(db_session):
+    """Review finding 1. Kills: promote without the bind guard, which let unbind
+    write the old series' snapshot onto the new series' row."""
+    from app.schemas.transaction import PromoteToRecurringRequest
+
+    seed, o, bank = await _bound(db_session)
+    await recurring_service.stop_recurring(db_session, seed["org_id"], o.recurring_id)
+    with pytest.raises(ConflictError) as exc:
+        await transaction_service.promote_to_recurring(
+            db_session, seed["org_id"], o.id,
+            # Far future: promote checks the frontier against the real today first.
+            PromoteToRecurringRequest(frequency="monthly", next_due_date=date(2099, 1, 1)),
+        )
+    assert exc.value.code == "transaction_bound"
+
+
+async def test_unbind_of_a_reopened_row_keeps_its_state_and_counters(db_session):
+    """Review finding 2. Kills: moving a PENDING_REVIEW row to ACCEPTED (or
+    bumping accepted_count) on a decision taken from an unlocked read."""
+    from tests.services.test_reconcile_match_recurring_occurrence import _reopen
+
+    seed, o, bank = await _bound(db_session)
+    await _reopen(db_session, seed, bank.id)
+    batch = await db_session.get(ImportBatch, bank.import_batch_id)
+    await db_session.refresh(batch)
+    counts = (batch.accepted_count, batch.pending_count)
+
+    await reconciliation_service.unbind_occurrence(
+        db_session, org_id=seed["org_id"], bank_tx_id=bank.id,
+    )
+
+    bank = await _reload(db_session, bank.id)
+    assert bank.reconciliation_state == "pending_review"
+    await db_session.refresh(batch)
+    assert (batch.accepted_count, batch.pending_count) == counts
+    assert (await _account(db_session, seed["acct_a_id"])).balance == OPENING_A - Decimal(B)
+    await assert_invariant(db_session, seed)

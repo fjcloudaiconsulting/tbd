@@ -1452,6 +1452,15 @@ async def promote_to_recurring(
             raise ValidationError(
                 "Transaction is already linked to a recurring template"
             )
+        # TBD-755: a bound occurrence whose series was stopped keeps its
+        # back-pointer; seeding a new series from it would let unbind write the
+        # old series' snapshot onto the new series' row.
+        if tx.bound_bank_tx_id is not None or tx.bind_prev_status is not None:
+            raise ConflictError(
+                "This transaction is bound to a bank row as a recurring payment. "
+                "Unbind it first.",
+                code="transaction_bound",
+            )
 
         template = RecurringTransaction(
             org_id=org_id,

@@ -1193,8 +1193,8 @@ async def unbind_occurrence(
     """Undo a bind: the occurrence gets its pre-bind state back and the bank row
     counts on its own again (TBD-755 PR2). Returns ``(bank_tx, occurrence)``.
 
-    Locks the batch first when the bank row is MATCHED (``reconcile_request``'s
-    order), then both rows by ascending id, then the account. Refuses a bank row
+    Locks the bank row's batch first (``reconcile_request``'s order), then both
+    rows by ascending id, then the account. Refuses a bank row
     without the marker (a pre-PR2 bind has no snapshot to restore), a stopped or
     deleted series, a reverted occurrence, and a restore date another row of the
     series already holds. An occurrence the bind created is restored to PENDING
@@ -1218,8 +1218,10 @@ async def unbind_occurrence(
             "This transaction does not settle a recurring occurrence it can be unbound from.",
             code="not_bound",
         )
+    # Batch first whenever the row has one (``reconcile_request``'s order); the
+    # MATCHED decision below reads the LOCKED state, never this preview.
     batch = None
-    if preview.import_batch_id is not None and preview.reconciliation_state == "matched":
+    if preview.import_batch_id is not None:
         batch = await get_batch_for_update(db, org_id=org_id, batch_id=preview.import_batch_id)
     locked = await db.execute(
         select(Transaction)
@@ -1277,7 +1279,7 @@ async def unbind_occurrence(
     bank.linked_transaction_id = None
     bank.bind_prev_amount = bank.bind_prev_date = bank.bind_prev_settled_date = None
     bank.bind_prev_status = None
-    if batch is not None:
+    if source_state == "matched" and batch is not None and batch.id == bank.import_batch_id:
         # A MATCHED row with no link would read as matched to nothing.
         bank.reconciliation_state = "accepted"
         batch.accepted_count += 1

@@ -1172,19 +1172,28 @@ async def _apply_confirm_rows(
             # on and commit progress over rows that were already lost.
             raise
         except Exception as exc:
-            # Unexpected failures: surface as row-level error, batch continues.
-            errors.append(
-                ImportRowError(row_number=row.row_number, error=str(exc))
-            )
-            logger.warning(
-                "import_row_failed",
-                extra={
-                    "row_number": row.row_number,
-                    "error": tracing.error_summary(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            continue
+            # A bind row is never lost, whatever refused it.
+            if row.action == "bind_occurrence" and (
+                new_tx := await _fallback_create(db, org_id, body, row, category_id)
+            ) is not None:
+                result.bind_fallbacks.append(
+                    ImportRowError(row_number=row.row_number, error=str(exc))
+                )
+                action_taken = "create"
+            else:
+                # Unexpected failures: surface as row-level error, batch continues.
+                errors.append(
+                    ImportRowError(row_number=row.row_number, error=str(exc))
+                )
+                logger.warning(
+                    "import_row_failed",
+                    extra={
+                        "row_number": row.row_number,
+                        "error": tracing.error_summary(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                continue
 
         # L3.2 Wave 2B: collect the imported leg's ID. ``new_tx`` is the
         # row that came from the bank file -- the plain create row, the
