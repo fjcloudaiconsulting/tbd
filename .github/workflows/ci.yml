@@ -830,6 +830,22 @@ jobs:
             exit 1
           fi
 
+      # TBD-755. Binding a bank row to a recurring occurrence rests on InnoDB
+      # row locks, the UNIQUE bound_bank_tx_id and the template lock against
+      # generation, so the fences run here. A skip is red, as above.
+      - name: Run the occurrence bind fences against MySQL
+        working-directory: backend
+        env:
+          OCCURRENCE_BIND_MYSQL_URL: ${{ env.DATABASE_URL }}
+          OCCURRENCE_BIND_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/services/test_occurrence_bind_mysql.py -q -rs -p no:cacheprovider -p no:xdist 2>&1 | tee /tmp/occurrence-bind.log
+          if grep -q '^SKIPPED' /tmp/occurrence-bind.log; then
+            echo "an occurrence bind fence did not run"
+            exit 1
+          fi
+
       # TBD-784. Simultaneous batch creates with one Idempotency-Key must write
       # the rows once; that rests on the InnoDB unique-key wait on
       # transaction_batch_keys, so the fences run here. A skip is red, as above.
