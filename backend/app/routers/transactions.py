@@ -45,6 +45,7 @@ from app.schemas.transaction_suggestions import (
 )
 from app.services import (
     audit_service,
+    reconciliation_service,
     recurring_service,
     spending_service,
     transaction_batch_service,
@@ -308,6 +309,25 @@ async def unpair_transaction(
     )
     pair = sorted([svc.to_response(e), svc.to_response(i)], key=lambda r: r.id)
     return pair
+
+
+@router.post(
+    "/{transaction_id}/unbind",
+    response_model=list[TransactionResponse],
+    status_code=200,
+)
+async def unbind_transaction(
+    transaction_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo a bank row's bind to the recurring occurrence it settles (TBD-755).
+    Returns the bank row and the restored occurrence, sorted by id."""
+    bank, occ = await reconciliation_service.unbind_occurrence(
+        db, org_id=current_user.org_id, bank_tx_id=transaction_id,
+    )
+    rows = [await svc.get_transaction(db, current_user.org_id, t.id) for t in (bank, occ)]
+    return sorted((svc.to_response(r) for r in rows), key=lambda r: r.id)
 
 
 @router.get(

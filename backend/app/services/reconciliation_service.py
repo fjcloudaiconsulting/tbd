@@ -1073,6 +1073,113 @@ async def _apply_match(
     return target
 
 
+async def unbind_occurrence(
+    db: AsyncSession, *, org_id: int, bank_tx_id: int
+) -> tuple[Transaction, Transaction]:
+    """Undo a bind: the occurrence gets its pre-bind state back and the bank row
+    counts on its own again (TBD-755 PR2). Returns ``(bank_tx, occurrence)``.
+
+    Locks the batch first when the bank row is MATCHED (``reconcile_request``'s
+    order), then both rows by ascending id, then the account. Refuses a bank row
+    without the marker (a pre-PR2 bind has no snapshot to restore), a stopped or
+    deleted series, a reverted occurrence, and a restore date another row of the
+    series already holds. An occurrence the bind created is restored to PENDING
+    at its due date, never deleted: the frontier has already moved past it.
+    Commits.
+    """
+    from app.services.transaction_filters import contributes_to_cached_balance
+    from app.services.transaction_service import (
+        apply_balance,
+        get_account_for_update,
+        revert_balance,
+    )
+
+    preview = await db.scalar(
+        select(Transaction).where(Transaction.id == bank_tx_id, Transaction.org_id == org_id)
+    )
+    if preview is None:
+        raise NotFoundError("Transaction")
+    if preview.bind_prev_status is None or preview.linked_transaction_id is None:
+        raise ValidationError(
+            "This transaction does not settle a recurring occurrence it can be unbound from.",
+            code="not_bound",
+        )
+    batch = None
+    if preview.import_batch_id is not None and preview.reconciliation_state == "matched":
+        batch = await get_batch_for_update(db, org_id=org_id, batch_id=preview.import_batch_id)
+    locked = await db.execute(
+        select(Transaction)
+        .where(
+            Transaction.id.in_(sorted({preview.id, preview.linked_transaction_id})),
+            Transaction.org_id == org_id,
+        )
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    rows = {r.id: r for r in locked.scalars().all()}
+    bank = rows.get(bank_tx_id)
+    if bank is None:
+        raise NotFoundError("Transaction")
+    occ = rows.get(bank.linked_transaction_id) if bank.linked_transaction_id else None
+    if bank.bind_prev_status is None or occ is None or occ.bound_bank_tx_id != bank.id:
+        raise ConflictError("The bind changed; refresh and retry.", code="bind_changed")
+    if occ.recurring_id is None:
+        raise ConflictError(
+            "The series was stopped or deleted, so this payment can no longer be unbound.",
+            code="series_stopped",
+        )
+    if occ.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+        raise ConflictError(
+            f"The recurring occurrence is {occ.reconciliation_state}.", code="occurrence_reverted",
+        )
+    prev_date = bank.bind_prev_date
+    if prev_date != occ.date and await db.scalar(
+        select(Transaction.id).where(
+            Transaction.org_id == org_id,
+            Transaction.recurring_id == occ.recurring_id,
+            Transaction.date == prev_date,
+            Transaction.id != occ.id,
+        ).limit(1)
+    ):
+        raise ConflictError(
+            "Another transaction of this series already sits on the date the "
+            "occurrence would return to.",
+            code="occurrence_date_taken",
+        )
+
+    source_state = bank.reconciliation_state
+    bank_was_in = contributes_to_cached_balance(bank, occ)
+    acct = await get_account_for_update(db, occ.account_id, org_id)
+    revert_balance(acct, occ.amount, occ.type)  # the bound occurrence is SETTLED
+    occ.amount = bank.bind_prev_amount
+    occ.date = prev_date
+    occ.settled_date = bank.bind_prev_settled_date
+    occ.status = bank.bind_prev_status
+    occ.bound_bank_tx_id = None
+    if occ.status == TransactionStatus.SETTLED:
+        apply_balance(acct, occ.amount, occ.type)
+
+    bank.linked_transaction_id = None
+    bank.bind_prev_amount = bank.bind_prev_date = bank.bind_prev_settled_date = None
+    bank.bind_prev_status = None
+    if batch is not None:
+        # A MATCHED row with no link would read as matched to nothing.
+        bank.reconciliation_state = "accepted"
+        batch.accepted_count += 1
+    await _apply_balance_for_transition(
+        db, org_id=org_id, tx=bank, source_state=source_state,
+        target_state=bank.reconciliation_state, source_in_cached_balance=bank_was_in,
+        target_partner=None,
+    )
+    logger.info(
+        "reconcile.occurrence_unbound",
+        extra={"org_id": org_id, "transaction_id": bank.id, "occurrence_id": occ.id},
+    )
+    await db.commit()
+    return bank, occ
+
+
 # ── Balance bookkeeping (PR #247 round 3 P1) ────────────────────────────────
 
 

@@ -12,10 +12,11 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.models import ImportBatch
 from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.transaction import TransactionUpdate
-from app.services import transaction_service
-from app.services.exceptions import ConflictError
+from app.services import reconciliation_service, recurring_service, transaction_service
+from app.services.exceptions import ConflictError, ValidationError
 from tests.services.test_reconcile_match_recurring_occurrence import (
     B,
     JUN_1,
@@ -139,3 +140,89 @@ async def test_unique_back_pointer(db_session):
     other.bound_bank_tx_id = bank.id
     with pytest.raises(IntegrityError):
         await db_session.flush()
+
+
+# ── unbind ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("auto_settle", [False, True], ids=["pending", "auto_settled"])
+async def test_unbind_restores_both_rows(db_session, auto_settle):
+    """Kills: restoring from the bank values instead of the snapshot; skipping
+    the occurrence's re-apply when it was auto-settled (balance off by T);
+    leaving the bank row out of the balance; leaving it MATCHED with no link."""
+    paid = JUN_2 if auto_settle else MAY_29
+    seed, o, bank = await _bound(db_session, auto_settle=auto_settle, paid=paid)
+    batch = await db_session.get(ImportBatch, bank.import_batch_id)
+    accepted_before = batch.accepted_count
+
+    await reconciliation_service.unbind_occurrence(
+        db_session, org_id=seed["org_id"], bank_tx_id=bank.id,
+    )
+
+    o, bank = await _reload(db_session, o.id), await _reload(db_session, bank.id)
+    assert (o.amount, o.date, o.bound_bank_tx_id) == (Decimal(T), JUN_1, None)
+    if auto_settle:
+        assert (o.status, o.settled_date) == (TransactionStatus.SETTLED, JUN_1)
+        expected = OPENING_A - Decimal(T) - Decimal(B)
+    else:
+        assert (o.status, o.settled_date) == (TransactionStatus.PENDING, None)
+        expected = OPENING_A - Decimal(B)
+    assert bank.linked_transaction_id is None and bank.bind_prev_status is None
+    assert bank.bind_prev_amount is None and bank.bind_prev_date is None
+    assert bank.reconciliation_state == "accepted"
+    await db_session.refresh(batch)
+    assert batch.accepted_count == accepted_before + 1
+    assert (await _account(db_session, seed["acct_a_id"])).balance == expected
+    await assert_invariant(db_session, seed)
+
+
+async def test_an_unbound_occurrence_can_be_bound_again(db_session):
+    """The way out of a wrong bind: unbind, then match the right bank row."""
+    seed, o, bank = await _bound(db_session)
+    await reconciliation_service.unbind_occurrence(
+        db_session, org_id=seed["org_id"], bank_tx_id=bank.id,
+    )
+    b2 = await _bank(db_session, seed, amount="370.00", paid=JUN_2)
+    await _match(db_session, seed, b2.id, o.id)
+    o = await _reload(db_session, o.id)
+    assert (o.amount, o.bound_bank_tx_id) == (Decimal("370.00"), b2.id)
+    assert (await _account(db_session, seed["acct_a_id"])).balance == (
+        OPENING_A - Decimal(B) - Decimal("370.00")
+    )
+    await assert_invariant(db_session, seed)
+
+
+async def test_unbind_refusals(db_session):
+    """Kills: unbinding a row with no snapshot, or after the series stopped."""
+    seed, o, bank = await _bound(db_session)
+    plain = await _create(db_session, seed, account_id=seed["acct_a_id"], amount=T, label="p",
+                          tx_date=JUN_1)
+    with pytest.raises(ValidationError) as exc:
+        await reconciliation_service.unbind_occurrence(
+            db_session, org_id=seed["org_id"], bank_tx_id=plain.id,
+        )
+    assert exc.value.code == "not_bound"
+
+    await recurring_service.stop_recurring(db_session, seed["org_id"], o.recurring_id)
+    before = await _snapshot(db_session, seed)
+    with pytest.raises(ConflictError) as exc:
+        await reconciliation_service.unbind_occurrence(
+            db_session, org_id=seed["org_id"], bank_tx_id=bank.id,
+        )
+    assert exc.value.code == "series_stopped"
+    await db_session.rollback()
+    db_session.expunge_all()
+    assert await _snapshot(db_session, seed) == before
+
+
+async def test_unbind_route_returns_both_rows(db_session):
+    from types import SimpleNamespace
+
+    from app.routers.transactions import unbind_transaction
+
+    seed, o, bank = await _bound(db_session)
+    out = await unbind_transaction(
+        bank.id, current_user=SimpleNamespace(org_id=seed["org_id"]), db=db_session,
+    )
+    assert [r.id for r in out] == sorted([o.id, bank.id])
+    assert {r.id: r.status for r in out}[o.id] == "pending"
