@@ -222,7 +222,9 @@ async def test_pushed_back_bind_keeps_the_due_date(db_session):
 
 async def test_later_edit_of_a_bound_occurrence_succeeds(db_session):
     """#3. Kills: ``date = due`` with ``settled_date = paid`` (every later PUT
-    400s on ``settled_date must be on or after date``)."""
+    400s on ``settled_date must be on or after date``). PR2: the bound pair's
+    money is the bank's, so an amount edit is refused (TBD-807b) while a
+    description edit still lands."""
     seed = await _seed(db_session)
     r = await _template(db_session, seed)
     o = await _occurrence(db_session, seed, r)
@@ -234,11 +236,13 @@ async def test_later_edit_of_a_bound_occurrence_succeeds(db_session):
     )
     assert out.description == "Energy (May)"
     before = (await _account(db_session, seed["acct_a_id"])).balance
-    await transaction_service.update_transaction(
-        db_session, seed["org_id"], o.id, TransactionUpdate(amount=Decimal("400.00")),
-    )
-    after = (await _account(db_session, seed["acct_a_id"])).balance
-    assert before - after == Decimal("35.00")
+    with pytest.raises(ConflictError) as exc:
+        await transaction_service.update_transaction(
+            db_session, seed["org_id"], o.id, TransactionUpdate(amount=Decimal("400.00")),
+        )
+    assert exc.value.code == "transaction_bound"
+    await db_session.rollback()
+    assert (await _account(db_session, seed["acct_a_id"])).balance == before
     await assert_invariant(db_session, seed)
 
 
@@ -408,7 +412,10 @@ async def test_skipped_earlier_bank_row_does_not_block_a_rebind(db_session):
     r = await _template(db_session, seed)
     o = await _occurrence(db_session, seed, r)
     b1 = await _bank(db_session, seed, paid=MAY_29)
-    await _match(db_session, seed, b1.id, o.id)
+    # A legacy pre-TBD-755 match (still in production): link, no settle, no
+    # marker, so it can be skipped. A marker-bound row cannot (PR2).
+    with _legacy_pre_tbd755_match():
+        await _match(db_session, seed, b1.id, o.id)
     await _reopen(db_session, seed, b1.id)
     await _reconcile(db_session, seed, _transition(b1.id, ReconciliationState.SKIPPED))
     b1 = await _reload(db_session, b1.id)
@@ -533,6 +540,8 @@ async def _edit_bank(db, seed, bank_id: int, **edits):
 
 # Each keeps the re-target; k and l each carry only ONE of the two leg markers,
 # so dropping either guard term goes red (d carries both).
+# Bound through PR1's match, so PR2's marker is on the bank row.
+MARKER_BOUND = {"a_bound", "e_bound_then_stopped", "f_bound_then_deleted"}
 TRANSFER_LEG_CELLS = {"d_transfer_leg", "k_hand_paired_leg", "l_unpaired_recurring_leg"}
 
 
@@ -640,16 +649,26 @@ async def test_rematch_away_from_a_matched_row(db_session, cell):
             o1 = await _reload(db_session, o1.id)
             assert o1 is not None and o1.recurring_id is None
             await _reopen(db_session, seed, bank.id)
-        elif cell == "g_bound_then_edited_amount":
-            await _edit_bank(db_session, seed, bank.id, amount=Decimal("370.00"))
-        elif cell == "h_bound_then_edited_date":
-            await _edit_bank(db_session, seed, bank.id, date=JUN_1)
-            assert (await _reload(db_session, bank.id)).settled_date == JUN_1
         else:
-            await transaction_service.update_transaction(
-                db_session, org, o1.id, TransactionUpdate(amount=Decimal("400.00")),
+            # PR2: the edit that broke a value tell is itself refused now.
+            before = await _snapshot(db_session, seed)
+            with pytest.raises(ConflictError) as exc:
+                if cell == "g_bound_then_edited_amount":
+                    await _edit_bank(db_session, seed, bank.id, amount=Decimal("370.00"))
+                elif cell == "h_bound_then_edited_date":
+                    await _edit_bank(db_session, seed, bank.id, date=JUN_1)
+                else:
+                    await transaction_service.update_transaction(
+                        db_session, org, o1.id, TransactionUpdate(amount=Decimal("400.00")),
+                    )
+            assert exc.value.code == (
+                "transaction_bound" if cell == "i_bound_then_o1_amount_put" else "bank_row_bound"
             )
-            await _reopen(db_session, seed, bank.id)
+            db_session.expunge_all()
+            after = await _snapshot(db_session, seed)
+            assert after["accounts"] == before["accounts"]
+            await assert_invariant(db_session, seed)
+            return
     await assert_invariant(db_session, seed)
     o1_id, o2_id, bank_id = o1.id, o2.id, bank.id
     before = await _snapshot(db_session, seed)
@@ -662,6 +681,14 @@ async def test_rematch_away_from_a_matched_row(db_session, cell):
             await _match(db_session, seed, bank_id, o2_id)
         assert exc.value.code == "match_source_bound"
         assert await _snapshot(db_session, seed) == before
+        if cell in MARKER_BOUND:
+            # PR2: a marker-bound bank row cannot be skipped; the way out is unbind.
+            with pytest.raises(ConflictError) as exc:
+                await _reconcile(db_session, seed, _transition(bank_id, ReconciliationState.SKIPPED))
+            assert exc.value.code == "bank_row_bound"
+            db_session.expunge_all()
+            assert await _snapshot(db_session, seed) == before
+            return
         # The way out the message names: skip the bank row. Nothing moves.
         await _reconcile(db_session, seed, _transition(bank_id, ReconciliationState.SKIPPED))
         after = await _snapshot(db_session, seed)

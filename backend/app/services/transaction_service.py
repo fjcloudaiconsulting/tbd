@@ -11,6 +11,7 @@ instead of HTTPException — callers map these to the appropriate response.
 """
 
 import datetime
+import enum
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -846,6 +847,12 @@ async def refuse_row_date_at_frontier(
         )
 
 
+def _field_value(tx: Transaction, name: str):
+    """``tx``'s value for a ``TransactionUpdate`` field, in the body's form."""
+    v = getattr(tx, name)
+    return v.value if isinstance(v, enum.Enum) else v
+
+
 async def update_transaction(
     db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate,
     *, learn: bool = True,
@@ -891,6 +898,21 @@ async def update_transaction(
     # and we'd rather force the user to issue a fresh adjustment.
     if tx.is_manual_adjustment:
         raise ValidationError("Manual balance adjustments cannot be edited")
+
+    # TBD-807: a bound pair's money (amount, dates, status, account, type) is
+    # the bank's; changing it on either row, or flipping the occurrence back
+    # to pending, would count or project the payment twice. Unbind first.
+    if tx.bound_bank_tx_id is not None or tx.bind_prev_status is not None:
+        _money_fields = ("amount", "date", "settled_date", "status", "account_id", "type")
+        if any(
+            getattr(body, f) is not None and getattr(body, f) != _field_value(tx, f)
+            for f in _money_fields
+        ):
+            raise ConflictError(
+                "This transaction is bound to a bank row as a recurring payment. "
+                "Unbind it first to change its amount, dates, status, account or type.",
+                code="transaction_bound",
+            )
 
     # TBD-272: moving a skipped RECURRING row onto another date would make that
     # date's real occurrence look materialised (the (recurring_id, date) probe
@@ -1950,6 +1972,14 @@ async def plan_transaction_delete(
     # rather than aborting the whole batch.
     if tx.is_manual_adjustment:
         raise ValidationError("Manual balance adjustments cannot be deleted")
+    # TBD-755: deleting either half of a bind would drop the payment from the
+    # books (TBD-294 rejects the referrer) or orphan the marker.
+    if tx.bound_bank_tx_id is not None or tx.bind_prev_status is not None:
+        raise ConflictError(
+            "This transaction is bound to a bank row as a recurring payment. "
+            "Unbind it first.",
+            code="transaction_bound",
+        )
 
     # TWO SEPARATE NAMES, on purpose (TBD-280). ``raw_partner`` is whatever
     # the link points at -- possibly an unrelated canonical row that
@@ -2120,6 +2150,18 @@ async def bulk_delete_transactions(
     )
     locked_rows = {tx.id: tx for tx in result.scalars().all()}
     skipped_ids = [i for i in requested if i not in locked_rows]
+    # TBD-755: refused whole, as ``delete_transaction`` refuses; a skip would
+    # read as "already gone" on the transactions page.
+    if any(
+        r.bound_bank_tx_id is not None or r.bind_prev_status is not None
+        for rid in requested
+        if (r := locked_rows.get(rid)) is not None
+    ):
+        raise ConflictError(
+            "Some selected transactions are bound to a bank row as a recurring "
+            "payment. Unbind them first, or leave them out of the selection.",
+            code="transaction_bound",
+        )
 
     # THE LOCK SET IS NOT THE DELETE SET (TBD-280). ``locked_rows`` above is
     # deliberately a superset: it pulls every non-null link so reciprocity can
@@ -2529,6 +2571,18 @@ async def _link_pair(
     if expense_tx.is_manual_adjustment or income_tx.is_manual_adjustment:
         raise ValidationError(
             "Manual balance adjustments cannot be paired as transfer legs"
+        )
+    # TBD-807: a bound occurrence is settled by its bank row (and a bound bank
+    # row carries that settlement); pairing either would let the bank row be
+    # matched again and count the payment twice. Unbind first.
+    if any(
+        leg.bound_bank_tx_id is not None or leg.bind_prev_status is not None
+        for leg in (expense_tx, income_tx)
+    ):
+        raise ConflictError(
+            "This transaction is bound to a bank row as a recurring payment. "
+            "Unbind it first.",
+            code="transaction_bound",
         )
     if expense_tx.org_id != income_tx.org_id:
         raise ValidationError("Transfer legs must belong to the same org")

@@ -714,6 +714,7 @@ def _is_bindable_occurrence(tx: Transaction) -> bool:
         _is_recurring_occurrence(tx)
         and tx.linked_transaction_id is None
         and tx.recurring_origin_id is None
+        and tx.bound_bank_tx_id is None
     )
 
 
@@ -826,8 +827,22 @@ async def _settle_occurrence_from_bank(
             code="occurrence_already_bound",
         )
 
+    if bank_tx.bind_prev_status is not None:
+        raise ConflictError(
+            "This bank transaction already settles another recurring occurrence.",
+            code="bank_row_already_bound",
+        )
+
     old_amount, old_date = occurrence.amount, occurrence.date
     was_settled = occurrence.status == TransactionStatus.SETTLED
+    # The durable bind marker (PR2): the occurrence's pre-bind state on the
+    # bank row, so an unbind restores it exactly, and the back-pointer on the
+    # occurrence, which every occurrence-side guard reads off its locked row.
+    bank_tx.bind_prev_amount = old_amount
+    bank_tx.bind_prev_date = old_date
+    bank_tx.bind_prev_settled_date = occurrence.settled_date
+    bank_tx.bind_prev_status = occurrence.status
+    occurrence.bound_bank_tx_id = bank_tx.id
     occurrence.amount = bank_tx.amount
     occurrence.date = new_date
     occurrence.settled_date = paid
@@ -998,6 +1013,14 @@ async def _apply_match(
                 f"Transaction {tx.id} is a transfer leg; unlink the transfer "
                 "before matching it to another transaction."
             )
+        # TBD-755 PR2: a bank row carrying the bind marker settles its
+        # occurrence; re-pointing it would leave that occurrence settled by
+        # nothing. Keyed on the marker, so it survives pairing and stop.
+        if tx.bind_prev_status is not None and tx.linked_transaction_id != target.id:
+            raise ConflictError(
+                "This bank row settles a recurring occurrence. Unbind it first.",
+                code="match_source_bound",
+            )
         # TBD-755 Insertion A: a SETTLED row the user entered (not imported,
         # not a transfer leg) may be carrying this bank row's money, so
         # re-pointing the bank row would count the payment twice. Keyed on the
@@ -1023,6 +1046,14 @@ async def _apply_match(
                 code="match_source_bound",
             )
 
+    # TBD-755 PR2: a bound occurrence is no longer bindable, so without this a
+    # second bank row would take the plain dedupe path and drop out of the
+    # balance while the occurrence carries the first one's money.
+    if target.bound_bank_tx_id is not None and target.bound_bank_tx_id != tx.id:
+        raise ConflictError(
+            "Another bank transaction is already matched to that recurring occurrence.",
+            code="occurrence_already_bound",
+        )
     bindable = _is_bindable_occurrence(target)
     source_settled = tx.status == TransactionStatus.SETTLED
     if target.status == TransactionStatus.PENDING and not (bindable and source_settled):
@@ -1231,6 +1262,16 @@ async def _reconcile_one(
     _validate_transition(
         source_state=source_state, target_state=target_state
     )
+    # TBD-755 PR2: a bound bank row carries its occurrence's settlement. SKIP,
+    # REJECT or EDIT would drop or change that money behind the occurrence's
+    # back; a MATCHED onto another row is refused by ``_apply_match``.
+    if tx.bind_prev_status is not None and target_state not in (
+        "accepted", "pending_review", "matched",
+    ):
+        raise ConflictError(
+            "This bank row settles a recurring occurrence. Unbind it first.",
+            code="bank_row_bound",
+        )
 
     # Capture the source cached-balance-membership snapshot BEFORE any
     # mutation. ``contributes_to_cached_balance`` reads live attributes off the
