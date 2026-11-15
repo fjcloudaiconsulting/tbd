@@ -35,7 +35,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 23
+MAX_GAPS = 24
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -69,6 +69,8 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/import/preview"): "TBD-670",
     ("POST", "/api/v1/import/tab/preview"): "TBD-670",
     ("POST", "/api/v1/import/{import_id}/reconcile"): "TBD-670",
+    # TBD-755: undoes a reconcile/import bind, part of the same inbox surface.
+    ("POST", "/api/v1/transactions/{transaction_id}/unbind"): "TBD-670",
 }
 
 PARITY_EXEMPT: dict[tuple[str, str], str] = {

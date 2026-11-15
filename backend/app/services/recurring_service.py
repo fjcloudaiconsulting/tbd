@@ -1159,6 +1159,24 @@ async def materialise_next(
     it (this call then acts on the new frontier). sqlite cannot prove this; no
     test claims to.
     """
+    tx = await materialise_next_no_commit(
+        db, org_id, recurring_id, occurrence_date=occurrence_date, skipped=skipped, today=today,
+    )
+    await db.commit()
+    return await _load_transaction(db, tx.id)
+
+
+async def materialise_next_no_commit(
+    db: AsyncSession, org_id: int, recurring_id: int, *,
+    occurrence_date: datetime.date, skipped: bool,
+    today: datetime.date | None = None,
+) -> Transaction:
+    """``materialise_next`` without the commit and reload, every guard kept.
+
+    For a caller inside a larger unit of work: an import confirm's bind
+    (TBD-755) creates the frontier occurrence in the same chunk transaction as
+    the bank row, so both land, or neither does.
+    """
     if today is None:
         today = datetime.date.today()
     r = (await db.execute(
@@ -1202,8 +1220,7 @@ async def materialise_next(
 
     tx = await _create_occurrence(db, org_id, r, due, today, settle=False, skipped=skipped)
     _advance_frontier(r, due)
-    await db.commit()
-    return await _load_transaction(db, tx.id)
+    return tx
 
 
 async def skip_occurrence(db: AsyncSession, org_id: int, transaction_id: int) -> Transaction:

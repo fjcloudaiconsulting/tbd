@@ -4,6 +4,7 @@ Parsing/validation is separate from persistence so a background worker
 can replace the synchronous confirm path later without a rewrite.
 """
 
+import datetime
 import hashlib
 import uuid
 from collections import Counter
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 
 import logging
 from sqlalchemy import and_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
@@ -24,6 +25,7 @@ from app.schemas.import_schemas import (
     ImportConfirmResponse,
     ImportConfirmRow,
     ImportPreviewRow,
+    OccurrenceCandidate,
     ImportPreviewResponse,
     ImportRowError,
 )
@@ -32,7 +34,7 @@ from app.schemas.transaction import (
     TransactionCreate,
     TransferCandidate,
 )
-from app.services import transaction_service
+from app.services import reconciliation_service, transaction_service
 from app.services.currency_service import normalise_currency
 from app.services.exceptions import (
     ConflictError,
@@ -60,6 +62,7 @@ from app.services.category_rules_service import (
     should_skip_learning,
 )
 from app.services.import_parser import ParsedRow
+from app.services.occurrence_match_service import RowInput, classify, find_candidates
 from app import tracing
 
 logger = logging.getLogger(__name__)
@@ -143,8 +146,10 @@ async def build_preview(
     parsed_rows: list[ParsedRow],
     *,
     source_format: str = "csv",
+    today: datetime.date | None = None,
 ) -> ImportPreviewResponse:
-    """Build a preview response: flag duplicates and potential transfers."""
+    """Build a preview response: flag duplicates, potential transfers, and the
+    recurring occurrences rows settle."""
 
     # Validate account belongs to this org and load it for currency.
     # Detectors filter cross-account candidates by Account.currency; we need
@@ -354,6 +359,37 @@ async def build_preview(
             )
         )
 
+    # ── Detector 3 (TBD-755): the recurring occurrence a row settles ──
+    # Only for rows no earlier detector answered: a duplicate or a transfer
+    # already has its action, and recurring transfers are out of v1.
+    from app.services.recurring_service import frontier_lower_bound
+
+    occ_candidates = await find_candidates(
+        db, org_id, account_id=account_id, start=min_date, end=max_date,
+        not_before=await frontier_lower_bound(db, org_id, today=today),
+    )
+    if occ_candidates:
+        inputs = [
+            None
+            if r.is_duplicate or r.is_duplicate_of_linked_leg or r.transfer_match_action != "none"
+            else RowInput(
+                r.date, r.amount, _tx_type(r), r.description, r.suggested_category_id
+            )
+            for r in preview_rows
+        ]
+        for r, m in zip(preview_rows, classify(inputs, occ_candidates)):
+            r.occurrence_match_action = m.action
+            r.occurrence_candidates = [
+                OccurrenceCandidate(
+                    recurring_id=c.recurring_id, occurrence_id=c.occurrence_id,
+                    due_date=c.due_date, expected_amount=c.expected_amount,
+                    description=c.description,
+                    date_diff_days=abs((c.due_date - r.date).days), signal=sig,
+                )
+                for c, sig in m.candidates
+            ]
+    bind_count = sum(1 for r in preview_rows if r.occurrence_match_action == "bind")
+
     # ── Aggregate smart-rules metric (architect-mandated; one event per preview) ──
     source_split = Counter((r.suggestion_source or "skipped") for r in preview_rows)
     suggested_count = sum(
@@ -391,6 +427,7 @@ async def build_preview(
             "suggested": suggested_pair_count,
             "multi_candidate": multi_candidate_count,
             "duplicate_of_linked": duplicate_of_linked_count,
+            "bind": bind_count,
         },
     )
 
@@ -404,6 +441,7 @@ async def build_preview(
         suggested_pair_count=suggested_pair_count,
         multi_candidate_count=multi_candidate_count,
         duplicate_of_linked_count=duplicate_of_linked_count,
+        bind_count=bind_count,
         source_format=source_format,
     )
 
@@ -448,6 +486,7 @@ class _ConfirmContext:
     source_split: Counter = field(default_factory=Counter)
     miss_tokens: set[str] = field(default_factory=set)
     rows_processed: int = 0
+    today: datetime.date | None = None
 
 
 @dataclass
@@ -456,7 +495,9 @@ class _ChunkResult:
     paired_count: int = 0
     dropped_duplicate_count: int = 0
     skipped_count: int = 0
+    bound_count: int = 0
     errors: list[ImportRowError] = field(default_factory=list)
+    bind_fallbacks: list[ImportRowError] = field(default_factory=list)
     imported_transaction_ids: list[int] = field(default_factory=list)
 
 
@@ -481,6 +522,8 @@ def _add_chunk(acc: ImportConfirmResponse, chunk: _ChunkResult) -> ImportConfirm
             acc.dropped_duplicate_count + chunk.dropped_duplicate_count
         ),
         "skipped_count": acc.skipped_count + chunk.skipped_count,
+        "bound_count": acc.bound_count + chunk.bound_count,
+        "bind_fallbacks": [*acc.bind_fallbacks, *chunk.bind_fallbacks],
         "errors": errors,
         "error_count": len(errors),
     })
@@ -561,6 +604,7 @@ async def execute_import(
     body: ImportConfirmRequest,
     *,
     user_id: int | None = None,
+    today: datetime.date | None = None,
 ) -> ImportConfirmResponse:
     """Create / pair / drop transactions for all confirmed (non-skipped) rows.
 
@@ -596,6 +640,7 @@ async def execute_import(
         body=body,
         currency=destination_account.currency,
         share_merchant_data=share_merchant_data_value_enabled(share_flag),
+        today=today,
     )
 
     if user_id is None:
@@ -760,6 +805,28 @@ def _log_confirm_telemetry(
     )
 
 
+def _row_body(body: ImportConfirmRequest, row: ImportConfirmRow, category_id: int) -> TransactionCreate:
+    return TransactionCreate(
+        account_id=body.account_id, category_id=category_id, description=row.description,
+        amount=row.amount, type=row.type, date=row.date,
+    )
+
+
+async def _fallback_create(
+    db: AsyncSession, org_id: int, body: ImportConfirmRequest, row: ImportConfirmRow,
+    category_id: int,
+) -> Transaction | None:
+    """A refused bind's row as a plain create, in its own savepoint; None if
+    that fails too (the row is then a row error)."""
+    try:
+        async with db.begin_nested():
+            return await _create_transaction_no_commit(
+                db, org_id, _row_body(body, row, category_id), is_imported=True, fitid=row.fitid,
+            )
+    except (ConflictError, ValidationError, NotFoundError):
+        return None
+
+
 async def _apply_confirm_rows(
     db: AsyncSession,
     ctx: _ConfirmContext,
@@ -775,6 +842,11 @@ async def _apply_confirm_rows(
                                     rollback on any failure inside the pair.
       action="drop_as_duplicate"  → server-side revalidate the duplicate-of-
                                     linked-leg candidate, then skip insert.
+      action="bind_occurrence"    → insert the bank row, then settle the
+                                    recurring occurrence it pays through
+                                    ``reconciliation_service.bind_bank_row``
+                                    (TBD-755). A refused bind imports the row
+                                    plain in a fresh savepoint (``bind_fallbacks``).
 
     Each row runs inside its own ``db.begin_nested()`` savepoint so failures
     in the pair branch (e.g. _link_pair raises after the new leg flushed)
@@ -815,6 +887,22 @@ async def _apply_confirm_rows(
     source_split = ctx.source_split
     miss_tokens = ctx.miss_tokens
     paired_pair_ids: list[tuple[int, int]] = []
+    bound_count = 0
+
+    # TBD-755: lock every existing bind target before the first row takes its
+    # account lock, so a bind locks occurrence -> account, the order reconcile
+    # and generation use (the other order deadlocks against them).
+    bind_ids = sorted({
+        r.bind_occurrence_id for r in rows
+        if not r.skip and r.action == "bind_occurrence" and r.bind_occurrence_id is not None
+    })
+    if bind_ids:
+        await db.execute(
+            select(Transaction.id)
+            .where(Transaction.id.in_(bind_ids), Transaction.org_id == org_id)
+            .order_by(Transaction.id)
+            .with_for_update()
+        )
 
     for row in rows:
         if row.skip:
@@ -1037,34 +1125,75 @@ async def _apply_confirm_rows(
                     new_tx = csv_leg
                     action_taken = "create_transfer_pair"
 
+                elif row.action == "bind_occurrence":
+                    if row.bind_recurring_id is None or row.bind_due_date is None:
+                        raise ValidationError(
+                            "bind_recurring_id and bind_due_date required when "
+                            "action='bind_occurrence'"
+                        )
+                    new_tx = await _create_transaction_no_commit(
+                        db, org_id, _row_body(body, row, category_id),
+                        is_imported=True, fitid=row.fitid,
+                    )
+                    await reconciliation_service.bind_bank_row(
+                        db, org_id=org_id, bank_tx=new_tx,
+                        recurring_id=row.bind_recurring_id, due_date=row.bind_due_date,
+                        occurrence_id=row.bind_occurrence_id, today=ctx.today,
+                    )
+                    action_taken = "bind_occurrence"
+
         except (ConflictError, ValidationError, NotFoundError) as exc:
-            # Domain failures: row-level error, batch continues.
-            errors.append(
-                ImportRowError(row_number=row.row_number, error=str(exc))
-            )
-            logger.warning(
-                "import_row_failed",
-                extra={
-                    "row_number": row.row_number,
-                    "error": tracing.error_summary(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            continue
+            # A refused bind never loses the bank row: its savepoint rolled
+            # back, so import it as a plain row in a fresh one and say why.
+            if row.action == "bind_occurrence" and (
+                new_tx := await _fallback_create(db, org_id, body, row, category_id)
+            ) is not None:
+                result.bind_fallbacks.append(
+                    ImportRowError(row_number=row.row_number, error=str(exc))
+                )
+                action_taken = "create"
+            else:
+                # Domain failures: row-level error, batch continues.
+                errors.append(
+                    ImportRowError(row_number=row.row_number, error=str(exc))
+                )
+                logger.warning(
+                    "import_row_failed",
+                    extra={
+                        "row_number": row.row_number,
+                        "error": tracing.error_summary(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                continue
+        except OperationalError:
+            # A deadlock or lock-wait timeout rolls back the WHOLE transaction
+            # on MySQL, savepoints included. As a row error the loop would go
+            # on and commit progress over rows that were already lost.
+            raise
         except Exception as exc:
-            # Unexpected failures: surface as row-level error, batch continues.
-            errors.append(
-                ImportRowError(row_number=row.row_number, error=str(exc))
-            )
-            logger.warning(
-                "import_row_failed",
-                extra={
-                    "row_number": row.row_number,
-                    "error": tracing.error_summary(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            continue
+            # A bind row is never lost, whatever refused it.
+            if row.action == "bind_occurrence" and (
+                new_tx := await _fallback_create(db, org_id, body, row, category_id)
+            ) is not None:
+                result.bind_fallbacks.append(
+                    ImportRowError(row_number=row.row_number, error=str(exc))
+                )
+                action_taken = "create"
+            else:
+                # Unexpected failures: surface as row-level error, batch continues.
+                errors.append(
+                    ImportRowError(row_number=row.row_number, error=str(exc))
+                )
+                logger.warning(
+                    "import_row_failed",
+                    extra={
+                        "row_number": row.row_number,
+                        "error": tracing.error_summary(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                continue
 
         # L3.2 Wave 2B: collect the imported leg's ID. ``new_tx`` is the
         # row that came from the bank file -- the plain create row, the
@@ -1073,7 +1202,9 @@ async def _apply_confirm_rows(
         # create_transfer_pair is intentionally NOT linked. The
         # drop_as_duplicate branch never creates a row, so we skip.
         if (
-            action_taken in ("create", "pair_with_existing", "create_transfer_pair")
+            action_taken in (
+                "create", "pair_with_existing", "create_transfer_pair", "bind_occurrence",
+            )
             and new_tx is not None
         ):
             imported_transaction_ids.append(new_tx.id)
@@ -1081,6 +1212,8 @@ async def _apply_confirm_rows(
         # Per-action counter increments + telemetry (post-savepoint commit).
         if action_taken == "create":
             imported_count += 1
+        elif action_taken == "bind_occurrence":
+            bound_count += 1
         elif action_taken == "pair_with_existing":
             paired_count += 1
             logger.info(
@@ -1199,6 +1332,7 @@ async def _apply_confirm_rows(
     result.paired_count = paired_count
     result.dropped_duplicate_count = dropped_duplicate_count
     result.skipped_count = skipped_count
+    result.bound_count = bound_count
     ctx.learned_count += learned_count
     ctx.accepted_count += accepted_count
     ctx.overridden_count += overridden_count

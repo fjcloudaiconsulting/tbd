@@ -247,12 +247,15 @@ register(route_tool(
 #
 # ``plan_transaction_delete`` (TBD-664 A2) is the decision ``delete_transaction``
 # applies, so this disclosure is the delete itself, not a second copy of its
-# rules. The two foreign keys onto ``transactions``:
+# rules. The foreign keys onto ``transactions``:
 #
 # * ``transactions.linked_transaction_id`` (SET NULL): every surviving row that
 #   pointed at a deleted one loses its link, and a matched import row whose
 #   amount is outside the balance is also demoted to REJECTED (TBD-294);
-# * ``transaction_tags.transaction_id`` (CASCADE): the deleted rows' tags.
+# * ``transaction_tags.transaction_id`` (CASCADE): the deleted rows' tags;
+# * ``transactions.bound_bank_tx_id`` (SET NULL): never fires here, because
+#   ``plan_transaction_delete`` refuses either half of a bind (TBD-755), so
+#   there is nothing to disclose.
 
 DESCRIBE = ("description", "amount", "type", "status", "date", "account_id")
 
@@ -375,7 +378,10 @@ register(route_tool(
     ),
     entity=Transaction, describe=DESCRIBE, present=_delete_present,
     cascade=CascadeDisclosure(
-        covers=frozenset({"transactions.linked_transaction_id", "transaction_tags.transaction_id"}),
+        covers=frozenset({
+            "transactions.linked_transaction_id", "transaction_tags.transaction_id",
+            "transactions.bound_bank_tx_id",
+        }),
         disclose=_delete_cascade, locks=True,
     ),
 ))
