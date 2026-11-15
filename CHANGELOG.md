@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.310.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.309.1...v0.310.0) (2026-11-15)
+
+
+### Features
+
+* **import:** bind an imported bank row to the recurring occurrence it settles (TBD-755) ([#1139](https://github.com/fjcloudaiconsulting/tbd/issues/1139)) ([55be357](https://github.com/fjcloudaiconsulting/tbd/commit/55be357f12f25398235fbbd0c738012b72058c48))
+
+
+### Bug Fixes
+
+* **reconcile:** settle a recurring occurrence when a bank row is matched to it (TBD-755) ([#1137](https://github.com/fjcloudaiconsulting/tbd/issues/1137)) ([a80b57d](https://github.com/fjcloudaiconsulting/tbd/commit/a80b57de1c9e732ed1361cf1d1fd11c73f8612ca))
+
 ## [0.309.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.309.0...v0.309.1) (2026-11-11)
 
 
