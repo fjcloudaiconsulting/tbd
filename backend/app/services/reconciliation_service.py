@@ -42,6 +42,7 @@ from app.models.import_batch import (
 from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus
 from app.schemas.import_reconciliation import (
+    BoundOccurrence,
     ImportBatchDetail,
     ImportBatchHeader,
     ReconcileBatchRequest,
@@ -428,6 +429,9 @@ async def get_batch_detail(
                 is_reciprocal_transfer_leg=is_reciprocal_pair(
                     tx, partner_map.get(tx.linked_transaction_id)
                 ),
+                bound_occurrence=_bound_occurrence(
+                    tx, partner_map.get(tx.linked_transaction_id)
+                ),
             )
         )
 
@@ -444,6 +448,18 @@ async def get_batch_detail(
     )
 
     return ImportBatchDetail(batch=header, rows=rows)
+
+
+def _bound_occurrence(tx: Transaction, occ: Transaction | None) -> BoundOccurrence | None:
+    if tx.bind_prev_status is None or occ is None or occ.bound_bank_tx_id != tx.id:
+        return None
+    return BoundOccurrence(
+        occurrence_id=occ.id, description=occ.description, date=occ.date, amount=occ.amount,
+        can_unbind=(
+            occ.recurring_id is not None
+            and occ.reconciliation_state not in REVERTED_RECONCILIATION_STATES
+        ),
+    )
 
 
 # ── Transition validation ───────────────────────────────────────────────────
@@ -736,7 +752,9 @@ async def _settle_occurrence_from_bank(
     == occurrence.id`` is ALREADY assigned (autoflush writes it at this
     function's first query; do not wrap the call in ``no_autoflush``).
 
-    It never writes the link, never touches the bank row's balance (the
+    It writes the durable bind marker (PR2): the occurrence's pre-bind state on
+    ``bank_tx.bind_prev_*`` and ``occurrence.bound_bank_tx_id``, refusing a bank
+    row that already carries one. It never writes the link, never touches the bank row's balance (the
     caller's membership diff reverts it), never locks or writes the template or
     a frontier field, and never commits. An existing occurrence's frontier was
     spent when the row was written, so there is nothing to advance; and taking
@@ -1071,6 +1089,102 @@ async def _apply_match(
     if bindable and source_settled:
         await _settle_occurrence_from_bank(db, org_id=org_id, occurrence=target, bank_tx=tx)
     return target
+
+
+async def bind_bank_row(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    bank_tx: Transaction,
+    recurring_id: int,
+    due_date,
+    occurrence_id: int | None,
+    today=None,
+) -> Transaction:
+    """Settle the occurrence ``(recurring_id, due_date)`` from an already-written
+    SETTLED bank row, creating the occurrence when ``occurrence_id`` is None
+    (TBD-755 PR2). Returns the occurrence. Never commits.
+
+    The core of the import confirm's ``bind_occurrence`` and of sync's
+    auto-bind. The caller holds the occurrence's row lock taken BEFORE any
+    account lock (the confirm pre-locks every bind target at chunk start), so
+    the order is occurrence -> account -> template, as in ``_apply_match`` and
+    generation. The create path locks the template after the bank row's
+    account lock instead (``materialise_next_no_commit``); its residual edge
+    against generation's backfill is accepted (1213, the chunk resumes).
+
+    Revalidates what the preview offered: within the window, still qualifying
+    (amount or merchant), the occurrence still bindable, the series still an
+    active non-transfer one. Then, as PR1's match does: link first,
+    ``_settle_occurrence_from_bank`` (which writes the bind marker), and the
+    membership diff that takes the bank row's own amount back out, so exactly
+    one bank amount stays in ``accounts.balance``. Any refusal raises; the
+    caller rolls back its savepoint.
+    """
+    from app.services.occurrence_match_service import WINDOW_DAYS, merchant_key
+    from app.services.recurring_service import materialise_next_no_commit
+
+    if bank_tx.status != TransactionStatus.SETTLED:
+        raise ValidationError(
+            "Only a settled bank transaction can settle a recurring occurrence.",
+            code="match_source_not_settled",
+        )
+    if abs((due_date - bank_tx.date).days) > WINDOW_DAYS:
+        raise ValidationError(
+            f"That occurrence is more than {WINDOW_DAYS} days from the payment.",
+            code="bind_out_of_window",
+        )
+    template = await db.scalar(
+        select(RecurringTransaction).where(
+            RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id,
+        )
+    )
+    if template is None:
+        raise NotFoundError("Recurring transaction")
+    if template.type == "transfer":
+        raise ValidationError(
+            "A recurring transfer cannot be settled from a bank row.", code="bind_transfer_series",
+        )
+
+    if occurrence_id is None:
+        expected = template.amount
+    else:
+        occ = await db.scalar(
+            select(Transaction)
+            .where(Transaction.id == occurrence_id, Transaction.org_id == org_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            occ is None
+            or occ.recurring_id != recurring_id
+            or occ.date != due_date
+            or not _is_bindable_occurrence(occ)
+            or occ.reconciliation_state in REVERTED_RECONCILIATION_STATES
+        ):
+            raise ConflictError(
+                "That recurring occurrence changed since the preview; preview again.",
+                code="occurrence_changed",
+            )
+        expected = occ.amount
+    if bank_tx.amount != expected and merchant_key(bank_tx.description) != merchant_key(template.description):
+        raise ConflictError(
+            "The bank row no longer matches that recurring occurrence; preview again.",
+            code="bind_no_longer_matches",
+        )
+    if occurrence_id is None:
+        occ = await materialise_next_no_commit(
+            db, org_id, recurring_id, occurrence_date=due_date, skipped=False, today=today,
+        )
+
+    bank_tx.linked_transaction_id = occ.id  # link first (see the helper)
+    await _settle_occurrence_from_bank(db, org_id=org_id, occurrence=occ, bank_tx=bank_tx)
+    await _apply_balance_for_transition(
+        db, org_id=org_id, tx=bank_tx,
+        source_state=bank_tx.reconciliation_state, target_state=bank_tx.reconciliation_state,
+        source_in_cached_balance=True, target_partner=occ,
+    )
+    return occ
 
 
 async def unbind_occurrence(

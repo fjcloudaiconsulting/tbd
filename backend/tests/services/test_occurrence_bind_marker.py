@@ -226,3 +226,22 @@ async def test_unbind_route_returns_both_rows(db_session):
     )
     assert [r.id for r in out] == sorted([o.id, bank.id])
     assert {r.id: r.status for r in out}[o.id] == "pending"
+
+
+async def test_inbox_row_shows_the_bound_occurrence(db_session):
+    """Kills: no ``bound_occurrence`` on the row (nothing to unbind from in the
+    UI), and ``can_unbind`` ignoring a stopped series."""
+    seed, o, bank = await _bound(db_session)
+    detail = await reconciliation_service.get_batch_detail(
+        db_session, org_id=seed["org_id"], batch_id=bank.import_batch_id,
+    )
+    row = next(r for r in detail.rows if r.transaction_id == bank.id)
+    assert row.bound_occurrence.occurrence_id == o.id
+    assert row.bound_occurrence.can_unbind is True
+
+    await recurring_service.stop_recurring(db_session, seed["org_id"], o.recurring_id)
+    detail = await reconciliation_service.get_batch_detail(
+        db_session, org_id=seed["org_id"], batch_id=bank.import_batch_id,
+    )
+    row = next(r for r in detail.rows if r.transaction_id == bank.id)
+    assert row.bound_occurrence.can_unbind is False

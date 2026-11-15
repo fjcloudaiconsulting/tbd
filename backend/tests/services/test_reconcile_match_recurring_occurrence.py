@@ -561,6 +561,10 @@ async def test_rematch_away_from_a_matched_row(db_session, cell):
     today's re-target: a recurring transfer leg (d), a hand-paired leg with
     no ``recurring_origin_id`` (k), an unpaired leg that keeps it (l).
 
+    PR2: a bind now writes a marker, so (a, e, f) are refused on the marker and
+    cannot be skipped (unbind is the way out), and the edits in (g, h, i) are
+    themselves refused before any re-target.
+
     Pinned costs: (c) a pre-TBD-755 match onto an auto-settled occurrence and
     (j) a dedupe onto a hand-entered settled row can no longer be re-targeted.
     Every refused cell then SKIPs the bank row: 200, balance unchanged.

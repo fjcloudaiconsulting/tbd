@@ -20,6 +20,18 @@ MAX_CONFIRM_ROWS = 10_000
 # ── Preview Response ─────────────────────────────────────────────────────────
 
 
+class OccurrenceCandidate(BaseModel):
+    """A recurring occurrence an imported row may settle (TBD-755, detector 3)."""
+
+    recurring_id: int
+    occurrence_id: int | None = None  # None: not written yet; a bind creates it
+    due_date: datetime.date
+    expected_amount: Decimal
+    description: str
+    date_diff_days: int
+    signal: Literal["merchant", "category", "amount"]
+
+
 class ImportPreviewRow(BaseModel):
     """A single parsed row returned by the preview endpoint."""
 
@@ -50,6 +62,12 @@ class ImportPreviewRow(BaseModel):
     pair_with_transaction_id: int | None = None
     transfer_candidates: list[TransferCandidate] = []
 
+    # Detector 3 (TBD-755): the recurring occurrence this bank row settles.
+    # ``bind`` is the only verdict applied without a human (preselected here,
+    # auto-bound by sync); ``suggest_bind`` is an amount-only match.
+    occurrence_match_action: Literal["none", "bind", "suggest_bind", "choose_occurrence"] = "none"
+    occurrence_candidates: list[OccurrenceCandidate] = []
+
     # L3.2 Wave 1 contract: OFX-specific extras (populated only by the OFX
     # preview path; NULL on the CSV path). Declared here so OpenAPI exposes
     # the wire shape Wave 2 teams build against. See spec
@@ -77,6 +95,7 @@ class ImportPreviewResponse(BaseModel):
     suggested_pair_count: int = 0
     multi_candidate_count: int = 0
     duplicate_of_linked_count: int = 0
+    bind_count: int = 0  # rows whose occurrence_match_action is "bind"
 
     # L3.2 Wave 2B: source format of the parsed file ('csv' or 'ofx').
     # The frontend echoes this back at confirm so the service can stamp
@@ -101,13 +120,20 @@ class ImportConfirmRow(BaseModel):
 
     # Spec §3.2 confirm-row action mapping
     action: Literal[
-        "create", "pair_with_existing", "drop_as_duplicate", "create_transfer_pair"
+        "create", "pair_with_existing", "drop_as_duplicate", "create_transfer_pair",
+        "bind_occurrence",
     ] = "create"
     pair_with_transaction_id: int | None = None      # required iff action == "pair_with_existing"
     duplicate_of_transaction_id: int | None = None   # required iff action == "drop_as_duplicate"
     partner_account_id: int | None = None            # required iff action == "create_transfer_pair"
     transfer_category_id: int | None = None
     recategorize: bool = True
+    # Required iff action == "bind_occurrence" (TBD-755): the occurrence the
+    # row settles, by series and due date; ``bind_occurrence_id`` is None when
+    # the preview offered an occurrence not written yet.
+    bind_recurring_id: int | None = None
+    bind_due_date: datetime.date | None = None
+    bind_occurrence_id: int | None = None
 
     # Echoed back from preview for accept-vs-override detection
     suggested_category_id: int | None = None
@@ -167,13 +193,17 @@ class ImportConfirmResponse(BaseModel):
     """Result of the import execution.
 
     Counters sum to the total submitted rows:
-      imported_count + paired_count + dropped_duplicate_count
+      imported_count + paired_count + dropped_duplicate_count + bound_count
         + skipped_count + error_count == total_rows.
     """
 
     imported_count: int          # plain rows created via action == "create"
     paired_count: int = 0        # rows confirmed action == "pair_with_existing"
     dropped_duplicate_count: int = 0   # rows confirmed action == "drop_as_duplicate"
+    bound_count: int = 0         # rows that settled a recurring occurrence (TBD-755)
+    # Rows sent as "bind_occurrence" whose bind was refused at confirm; each was
+    # imported as a plain row instead (counted in imported_count), never lost.
+    bind_fallbacks: list[ImportRowError] = []
     skipped_count: int           # rows with skip=True
     error_count: int
     errors: list[ImportRowError]

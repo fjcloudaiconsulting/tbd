@@ -218,6 +218,18 @@ class ReconciliationError(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BoundOccurrence(BaseModel):
+    """The recurring occurrence a bank row settles (TBD-755)."""
+
+    occurrence_id: int
+    description: str
+    date: datetime.date
+    amount: Decimal
+    can_unbind: bool  # False once the series is stopped or deleted
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ReconciliationRow(BaseModel):
     """Per-transaction snapshot for the reconciliation inbox UI.
 
@@ -266,6 +278,8 @@ class ReconciliationRow(BaseModel):
     ``test_skipped_transfer_leg_balance.py`` builds one). Either way the client
     must not try: reciprocity is a server fact.
     """
+    bound_occurrence: BoundOccurrence | None = None
+    """Set iff this bank row carries the bind marker (TBD-755)."""
 
     model_config = ConfigDict(extra="forbid")
 
