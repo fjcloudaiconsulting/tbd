@@ -531,19 +531,26 @@ async def _edit_bank(db, seed, bank_id: int, **edits):
     await _reopen(db, seed, bank_id)
 
 
+# Each keeps the re-target; k and l each carry only ONE of the two leg markers,
+# so dropping either guard term goes red (d carries both).
+TRANSFER_LEG_CELLS = {"d_transfer_leg", "k_hand_paired_leg", "l_unpaired_recurring_leg"}
+
+
 @pytest.mark.parametrize("cell", [
     "a_bound", "b_legacy_pending", "c_legacy_auto_settled_now_refused", "d_transfer_leg",
     "e_bound_then_stopped", "f_bound_then_deleted", "g_bound_then_edited_amount",
     "h_bound_then_edited_date", "i_bound_then_o1_amount_put",
-    "j_dedupe_onto_hand_entered_now_refused",
+    "j_dedupe_onto_hand_entered_now_refused", "k_hand_paired_leg",
+    "l_unpaired_recurring_leg",
 ])
 async def test_rematch_away_from_a_matched_row(db_session, cell):
     """#12, Insertion A (Option N). Re-pointing a bank row away from a SETTLED
     row the user entered is refused on the row's SHAPE alone, so the refusal
     survives what a value tell does not: stop / delete NULL ``recurring_id``
     (e, f), and an EDITED bank row or a PUT on the occurrence changes the
-    amount or date (g, h, i). A PENDING row (b) and a transfer leg (d) keep
-    today's re-target.
+    amount or date (g, h, i). A PENDING row (b) and a transfer leg keep
+    today's re-target: a recurring transfer leg (d), a hand-paired leg with
+    no ``recurring_origin_id`` (k), an unpaired leg that keeps it (l).
 
     Pinned costs: (c) a pre-TBD-755 match onto an auto-settled occurrence and
     (j) a dedupe onto a hand-entered settled row can no longer be re-targeted.
@@ -561,6 +568,37 @@ async def test_rematch_away_from_a_matched_row(db_session, cell):
         o2 = await _series_row(db_session, r.id, JUN_1)
         bank = await _bank(db_session, seed, amount="500.00", paid=JUN_1)
         await _match(db_session, seed, bank.id, o1.id)  # today's dedupe
+        await _reopen(db_session, seed, bank.id)
+    elif cell in ("k_hand_paired_leg", "l_unpaired_recurring_leg"):
+        if cell == "k_hand_paired_leg":
+            card = await _template(db_session, seed, amount="500.00", auto_settle=True,
+                                   description="Card")
+        else:
+            card = await _template(db_session, seed, amount="500.00", type="transfer",
+                                   to_account="acct_b_id", auto_settle=True, description="Card")
+        r = await _template(db_session, seed)
+        await recurring_service.generate_due_transactions(db_session, org, today=JUN_1)
+        o1 = await _series_row(db_session, card.id, JUN_1)
+        o2 = await _series_row(db_session, r.id, JUN_1)
+        if cell == "k_hand_paired_leg":
+            income = await _create(
+                db_session, seed, account_id=seed["acct_b_id"], amount="500.00",
+                label="income", tx_type=TransactionType.INCOME, tx_date=JUN_1,
+            )
+            await transaction_service.pair_existing_transactions(
+                db_session, org, o1.id, income.id, recategorize=False,
+            )
+        else:
+            await transaction_service.unpair_transactions(
+                db_session, org, o1.id,
+                expense_fallback_category_id=seed["cat_id"],
+                income_fallback_category_id=seed["cat_id"],
+            )
+        o1 = await _reload(db_session, o1.id)
+        assert (o1.linked_transaction_id is None) == (cell == "l_unpaired_recurring_leg")
+        assert (o1.recurring_origin_id is None) == (cell == "k_hand_paired_leg")
+        bank = await _bank(db_session, seed, amount="500.00", paid=JUN_1)
+        await _match(db_session, seed, bank.id, o1.id)  # today's dedupe, no bind
         await _reopen(db_session, seed, bank.id)
     elif cell in ("a_bound", "b_legacy_pending", "c_legacy_auto_settled_now_refused"):
         r = await _template(db_session, seed,
@@ -638,13 +676,35 @@ async def test_rematch_away_from_a_matched_row(db_session, cell):
     assert after["rows"][o1_id] == before["rows"][o1_id]
     o2 = await _reload(db_session, o2_id)
     assert o2.status == TransactionStatus.SETTLED
-    if cell == "d_transfer_leg":
+    if cell in TRANSFER_LEG_CELLS:
         assert o2.amount == Decimal("500.00")
         assert after["accounts"][a] == OPENING_A - Decimal("1000.00")
     else:
         assert before["rows"][o1_id][3] == TransactionStatus.PENDING
         assert o2.amount == Decimal(B)
         assert after["accounts"][a] == OPENING_A - Decimal(B)
+    await assert_invariant(db_session, seed)
+
+
+async def test_rematch_onto_the_same_bound_occurrence_is_idempotent(db_session):
+    """Reopening a bound bank row and matching it to the SAME occurrence is not
+    a re-target: no 409, and nothing moves. Kills dropping ``current.id != target.id``."""
+    seed = await _seed(db_session)
+    r = await _template(db_session, seed)
+    o1 = await _occurrence(db_session, seed, r)
+    bank = await _bank(db_session, seed, paid=JUN_2)
+    await _match(db_session, seed, bank.id, o1.id)
+    await _reopen(db_session, seed, bank.id)
+    o1_id, bank_id = o1.id, bank.id
+    before = await _snapshot(db_session, seed)
+    assert before["rows"][o1_id][3] == TransactionStatus.SETTLED
+
+    await _match(db_session, seed, bank_id, o1_id)
+
+    after = await _snapshot(db_session, seed)
+    assert after["accounts"] == before["accounts"]
+    assert after["rows"][o1_id] == before["rows"][o1_id]
+    assert after["rows"][bank_id][4] == o1_id
     await assert_invariant(db_session, seed)
 
 

@@ -430,9 +430,9 @@ async def not_found_handler(request, exc: NotFoundError):
 @app.exception_handler(ValidationError)
 async def validation_handler(request, exc: ValidationError):
     content = {"detail": exc.detail}
-    if getattr(exc, "code", None):
+    if exc.code:
         content["code"] = exc.code
-    _log_client_error(request, 400, {"code": exc.code} if getattr(exc, "code", None) else exc.detail)
+    _log_client_error(request, 400, {"code": exc.code} if exc.code else exc.detail)
     return JSONResponse(status_code=400, content=content)
 
 
