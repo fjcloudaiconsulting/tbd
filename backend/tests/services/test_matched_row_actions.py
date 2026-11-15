@@ -47,6 +47,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -352,6 +353,18 @@ async def _make_recurring_pending(
     row.recurring_id = rec.id
     await db.commit()
     return rec, await _reload(db, row.id)
+
+
+def _legacy_pre_tbd755_match():
+    """The legacy pre-TBD-755 state that production rows still hold.
+
+    Before TBD-755 a match onto a PENDING recurring row only linked the bank
+    row and reverted it; nothing settled the occurrence. Inside this context
+    manager ``_settle_occurrence_from_bank`` is a no-op, so a match onto a
+    bindable occurrence runs exactly that pre-PR1 code: link plus diff revert.
+    The routing still passes because the bank row is SETTLED.
+    """
+    return patch.object(reconciliation_service, "_settle_occurrence_from_bank", AsyncMock())
 
 
 async def _reload(db: AsyncSession, tx_id: int) -> Transaction | None:
@@ -986,15 +999,18 @@ async def test_stop_recurring_demotes_the_match_orphan(db_session):
 
     ``recurring_service._remove_pending_transactions`` is a raw bulk
     ``DELETE`` reached from BOTH ``stop_recurring`` and ``delete_recurring``.
-    It never touched ``_settle_batch_counters_and_demote_orphans``, and it is reachable:
-    ``_apply_match`` validates its target on org, existence and not-self and
-    NOTHING else, so matching an imported bank row against the PENDING
-    recurring row it settles is legal -- and it is the single most natural
-    reconcile action in the product.
+    It never touched ``_settle_batch_counters_and_demote_orphans``.
+
+    The premise is the LEGACY pre-TBD-755 state that production rows still
+    hold: before TBD-755 matching an imported bank row against the PENDING
+    recurring row it settles only linked and reverted the bank row, leaving
+    the occurrence PENDING. Since TBD-755 that match settles the occurrence
+    (and refuses a cross-account one), so the state is built under
+    ``_legacy_pre_tbd755_match``.
 
     The failure this kills: rent template generates pending ``T``; bank
-    import brings settled ``M``; user matches ``M -> T`` and ``M``'s amount
-    is reverted out of ``accounts.balance``; user later stops the template;
+    import brings settled ``M``; a pre-TBD-755 match ``M -> T`` reverted
+    ``M``'s amount out of ``accounts.balance``; user later stops the template;
     ``T`` is deleted, the FK nulls ``M.linked_transaction_id``, and ``M``
     re-enters BOTH filters carrying an amount the cached balance does not
     contain.
@@ -1004,9 +1020,10 @@ async def test_stop_recurring_demotes_the_match_orphan(db_session):
     """
     seed = await _seed(db_session)
     rec, pending = await _make_recurring_pending(db_session, seed, amount="1024.00")
-    dup, canonical = await _make_matched_pair(
-        db_session, seed, amount="1024.00", canonical=pending,
-    )
+    with _legacy_pre_tbd755_match():
+        dup, canonical = await _make_matched_pair(
+            db_session, seed, amount="1024.00", canonical=pending,
+        )
     assert canonical.id == pending.id
     assert canonical.status == TransactionStatus.PENDING
 
@@ -1039,9 +1056,10 @@ async def test_delete_recurring_demotes_the_match_orphan(db_session):
     """
     seed = await _seed(db_session)
     rec, pending = await _make_recurring_pending(db_session, seed, amount="2048.00")
-    dup, _ = await _make_matched_pair(
-        db_session, seed, amount="2048.00", canonical=pending,
-    )
+    with _legacy_pre_tbd755_match():  # the legacy state; see F15b
+        dup, _ = await _make_matched_pair(
+            db_session, seed, amount="2048.00", canonical=pending,
+        )
 
     outcome = await recurring_service.delete_recurring(
         db_session, seed["org_id"], rec.id,
@@ -1081,8 +1099,11 @@ async def test_stop_recurring_leaves_a_settled_row_and_its_referrer_alone(db_ses
     )
     settled.recurring_id = rec.id
     await db_session.commit()
+    # Same account as ``settled``: since TBD-755 a match onto a recurring
+    # occurrence settles it (here re-pricing 256 -> 256), and a cross-account
+    # one is refused.
     settled_dup, _ = await _make_matched_pair(
-        db_session, seed, amount="256.00", canonical=settled,
+        db_session, seed, amount="256.00", canonical=settled, dup_account="acct_b_id",
     )
 
     outcome = await recurring_service.stop_recurring(

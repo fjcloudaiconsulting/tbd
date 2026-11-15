@@ -33,6 +33,7 @@ from app.services import recurring_service, transaction_service
 from tests.services.test_matched_row_actions import (  # noqa: F401  (db_session fixture)
     _batch_of_three,
     _create,
+    _legacy_pre_tbd755_match,
     _make_matched_pair,
     _make_recurring_pending,
     _reconcile,
@@ -303,7 +304,8 @@ async def test_char_bulk_delete_demotes_and_settles(db_session, log_lines):
 async def test_char_stop_recurring_demotes_the_match_orphan(db_session, log_lines):
     seed = await _seed(db_session)
     rec, pending = await _make_recurring_pending(db_session, seed, amount="1024.00")
-    dup, _ = await _make_matched_pair(db_session, seed, amount="1024.00", canonical=pending)
+    with _legacy_pre_tbd755_match():  # the legacy pre-TBD-755 state (F15b)
+        dup, _ = await _make_matched_pair(db_session, seed, amount="1024.00", canonical=pending)
     names = Names(seed, pending=pending.id, dup=dup.id)
     rec_id = rec.id
 

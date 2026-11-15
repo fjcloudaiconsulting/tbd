@@ -56,7 +56,10 @@ class Transaction(Base):
     sets it **bidirectionally** for transfer pairs and import pairing;
     ``transaction_service.unpair_transactions`` clears both sides; and
     ``reconciliation_service._apply_match`` writes it **one-way** to point an
-    imported row at its reconcile match.
+    imported row at its reconcile match. A match onto a bindable recurring occurrence
+    (TBD-755) also settles that occurrence at the bank row's amount and payment date
+    through ``reconciliation_service._settle_occurrence_from_bank``. The link is the
+    same one-way link, so the writer set is unchanged.
     Because a reconcile match reuses this column, forecast/balance queries must
     gate CC payment-in legs with ``balance_contribution_filter`` (transaction_filters.py)
     rather than assume every ``linked_transaction_id`` is a transfer leg (the Slice-3 gotcha).
