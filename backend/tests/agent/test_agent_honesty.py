@@ -53,7 +53,7 @@ from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem, ItemSource, PlanStatus
 from app.models.recurring import Frequency, RecurringTransaction
-from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
+from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioStatus, ScenarioType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.tag import Tag, TransactionTag
@@ -81,6 +81,8 @@ BOOKKEEPING = {
     ("category_rules", "source"),
     # The clock stamp of an auto-close; the close itself is named as ``status``.
     ("import_batches", "closed_at"),
+    # The clock stamp of a plan's Finish (TBD-604); the transition is named as ``status``.
+    ("scenarios", "finished_at"),
 }
 BOOKKEEPING_TABLES = {"audit_events"}
 # Insert identity beyond the PK and org_id: columns a natural-key group id names.
@@ -1291,6 +1293,20 @@ async def _fplan_active(f, a):
     await _fplan(f, a, PlanStatus.ACTIVE)
 
 
+async def _active_plan(f, a):
+    """A started plan on ``c1`` whose goal is funded by ``rec`` (``_series_matched``),
+    with the world's Budget in the open period (kept) and one in the next (deleted)."""
+    await _series_matched(f, a)
+    [a["scn"]] = await _ids(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP, params_json={},
+        horizon_months=24, status=ScenarioStatus.ACTIVE, currency="EUR", category_id=a["c1"]))
+    await _add(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], name="Fund", tier=PlanGoalTier.WANT,
+                           kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=Decimal("10.00"),
+                           funding_recurring_id=a["rec"]),
+               Budget(org_id=a["org"], category_id=a["c1"], amount=Decimal("10.00"),
+                      period_start=P_START + relativedelta(months=1)))
+
+
 async def _own_plan(f, a):
     [a["scn"]] = await _ids(f, Scenario(
         org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
@@ -1346,6 +1362,11 @@ FORECAST_PLAN_SCENARIOS = [
     ("plan-goal-update", _tool("plan_goal_update", scenario_id="@scn", goal_id="@goal", target_amount="250.00",
                                enabled=False), _own_plan, False),
     ("plan-goal-delete", _tool("plan_goal_delete", scenario_id="@scn", goal_id="@goal"), _own_plan, False),
+    # TBD-604: Finish, and Delete of a started plan, wind it down.
+    ("plan-finish-stops-its-series-and-drops-later-budgets", _tool("plans_finish", scenario_id="@scn"),
+     _active_plan, False),
+    ("scenario-delete-winds-a-started-plan-down", _tool("scenarios_delete", scenario_id="@scn"),
+     _active_plan, False),
 ]
 
 

@@ -111,6 +111,7 @@ const TOOL_LABELS: Record<string, string> = {
   plan_goal_create: "Add a plan goal",
   plan_goal_update: "Edit a plan goal",
   plan_goal_delete: "Delete a plan goal",
+  plans_finish: "Finish a plan",
 };
 
 export function toolLabel(name: string): string {
@@ -147,6 +148,7 @@ const FIELD_LABELS: Record<string, string> = {
   "scenarios.params_json": "Plan details",
   "scenarios.horizon_months": "Horizon (months)",
   "scenarios.is_active": "Active",
+  "scenarios.status": "Plan status",
   "scenarios.user_id": "Owner",
   "plan_goals.name": "Goal",
   "scenarios.currency": "Plan currency",
