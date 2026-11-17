@@ -13,6 +13,9 @@ runs the REST handler (it writes nothing). The simulate route caches the
 projection on the row; the tool runs the same analytic engine and returns the
 projection without writing it. ``ai_enhanced`` is not offered: it calls an AI
 provider, which no agent tool reaches.
+
+Finish (``plans_finish``, TBD-604) is a hand-written tool over the route's
+handler: the route takes a raw ``Request`` for its rate limit.
 """
 from __future__ import annotations
 
@@ -20,19 +23,24 @@ import json
 from typing import Any, Literal
 
 from fastapi.encoders import jsonable_encoder
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
+from app.agent.recurring_tools import TEMPLATE, _removal
 from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register, untrusted_leaves
 from app.agent.route_tool import CascadeDisclosure, _disclose, refusals, route_tool
 from app.agent.sensitive_tools import CONFIRM
-from app.models.scenario import PlanGoal, Scenario, ScenarioType
+from app.models.budget import Budget
+from app.models.recurring import RecurringTransaction
+from app.models.scenario import PlanGoal, Scenario, ScenarioStatus, ScenarioType
 from app.models.user import Role
 from app.routers import plan_goals as plan_goals_router
 from app.routers import scenarios as scenarios_router
 from app.schemas.plan_goal import PlanGoalCreate, PlanGoalUpdate
-from app.schemas.scenario import PLAN_FIELDS, CompareRequest, ScenarioCreate, ScenarioUpdate, SimulateRequest
-from app.services import plan_draft_service, plan_lifecycle_service
+from app.schemas.scenario import (
+    PLAN_FIELDS, CompareRequest, ScenarioCreate, ScenarioResponse, ScenarioUpdate, SimulateRequest,
+)
+from app.services import billing_service, plan_draft_service, plan_lifecycle_service
 from app.services.exceptions import ValidationError
 from app.services.feature_gate import Feature
 from app.services.scenario_engine import SimulationRequest, build_world_state, get_engine, simulate_off_loop
@@ -253,31 +261,126 @@ async def _owner_check(ctx: ToolContext, row: Scenario, args) -> None:
 async def _goals(ctx: ToolContext, row: Scenario, args) -> list[Change]:
     # Takes the locks (``locks=True``): the org's plans first, as every plan write does.
     row = await plan_lifecycle_service.lock(ctx.db, row)
-    # Deleting a started plan also stops its series and drops its later
-    # Budgets (TBD-602), which this preview does not disclose: TBD-604's.
-    with refusals():
-        plan_draft_service.assert_draft(row)
+    # ``delete_plan``: an active plan is wound down first; a finished one was at Finish.
+    out = await _wind_down(ctx, row) if row.status == ScenarioStatus.ACTIVE else []
     goals = (await ctx.db.scalars(
         select(PlanGoal).where(PlanGoal.scenario_id == row.id).order_by(PlanGoal.id)
     )).all()
-    return [Change("plan_goals", g.id, "name", {"untrusted": g.name}, None) for g in goals]
+    return out + [Change("plan_goals", g.id, "name", {"untrusted": g.name}, None) for g in goals]
 
 
 async def _delete_present(ctx: ToolContext, row: Scenario, args, changes: list[Change]) -> Preview:
     return Preview(
         summary=f"Delete plan {row.id} and its goals", changes=changes,
-        warnings=["A delete cannot be undone."],
-        context={"deleted": [{"entity": c.entity, "id": c.id} for c in changes if c.entity == "plan_goals"]},
+        warnings=["A delete cannot be undone.", *_wind_down_warnings(changes)],
+        context={"deleted": _gone(changes, "plan_goals")},
     )
 
 
 register(route_tool(
     name="scenarios_delete", risk="sensitive", router=ROUTER, method="DELETE",
     path="/api/v1/scenarios/{scenario_id}", fields=(), product_area=PLANS, min_role=Role.MEMBER,
-    description=(f"Delete a draft plan and its goals (to archive instead, scenarios_update "
-                 f"is_active=false). {CONFIRM}"),
+    description=(f"Delete a plan and its goals (to archive instead, scenarios_update is_active=false). "
+                 f"A started plan is wound down first, as plans_finish does; what Start created "
+                 f"(category, tag, past Budgets, transactions) stays. {CONFIRM}"),
     entity=Scenario, describe=("name", "scenario_type"), check=_owner_check, present=_delete_present,
     cascade=CascadeDisclosure(covers=frozenset({"plan_goals.scenario_id"}), disclose=_goals, locks=True),
+))
+
+
+# ── the lifecycle (TBD-602 routes, TBD-604) ───────────────────────────────
+#
+# Finish and an active plan's Delete wind the plan down
+# (``plan_lifecycle_service._wind_down``): each live funding series stopped
+# as ``recurring_stop`` stops one (its pending occurrences from today on
+# deleted, the rest leaving the series), and the plan's Budgets after the
+# open period deleted. Start is not offered yet: its preview would have to
+# name every row its steps create (TBD-604).
+
+
+async def _wind_down(ctx: ToolContext, plan: Scenario) -> list[Change]:
+    out: list[Change] = []
+    seen: set[int] = set()
+    for goal in await plan_draft_service.list_goals(ctx.db, plan=plan):
+        series = goal.funding_recurring_id and await ctx.db.get(RecurringTransaction, goal.funding_recurring_id)
+        if series and series.org_id == plan.org_id and series.is_active and series.id not in seen:
+            seen.add(series.id)
+            out.append(Change(TEMPLATE, series.id, "is_active", True, False))
+            out += await _removal(ctx, series)
+    period = await billing_service.find_open_period(ctx.db, plan.org_id)
+    if period is not None and plan.category_id is not None:
+        budgets = (await ctx.db.scalars(select(Budget).where(
+            Budget.org_id == plan.org_id, Budget.category_id == plan.category_id,
+            Budget.period_start > period.start_date).order_by(Budget.id))).all()
+        for b in budgets:
+            out += [Change("budgets", b.id, "category_id", b.category_id, None),
+                    Change("budgets", b.id, "amount", f"{b.amount:.2f}", None, plan.currency),
+                    Change("budgets", b.id, "period_start", b.period_start.isoformat(), None)]
+    return out
+
+
+def _gone(changes: list[Change], *entities: str) -> list[dict]:
+    """The rows that cease to exist: a deleted transaction is named by its
+    ``type``, a budget by its ``period_start``, a tag link by its ``tag_id``."""
+    keys = {("transactions", "type"), ("budgets", "period_start"), ("transaction_tags", "tag_id"),
+            *((e, "name") for e in entities)}
+    return [{"entity": c.entity, "id": c.id} for c in changes
+            if (c.entity, c.field) in keys and c.after is None]
+
+
+def _wind_down_warnings(changes: list[Change]) -> list[str]:
+    series = sum(1 for c in changes if c.entity == TEMPLATE)
+    pending = sum(1 for c in changes if (c.entity, c.field) == ("transactions", "type"))
+    demoted = sum(1 for c in changes if c.field == "reconciliation_state")
+    budgets = sum(1 for c in changes if (c.entity, c.field) == ("budgets", "period_start"))
+    out = [f"{series} funding series stop; their other transactions leave the series."] if series else []
+    if pending:
+        out.append(f"{pending} pending transaction(s) from today on are deleted.")
+    if demoted:
+        out.append(f"{demoted} matched import row(s) pointing at them will be marked rejected, "
+                   "which cannot be undone.")
+    if budgets:
+        out.append(f"{budgets} Budget(s) after the current period are deleted; the current one stays.")
+    return out
+
+
+class FinishArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenario_id: int
+
+
+async def _finish_preview(ctx: ToolContext, args: FinishArgs) -> Preview:
+    row = await _owned(ctx, args.scenario_id)
+    if row.status == ScenarioStatus.FINISHED:
+        raise ToolError("no_change", "the plan is already finished")
+    if row.status != ScenarioStatus.ACTIVE:
+        raise ToolError("conflict", "only an active plan can be finished")
+    # ``finished_at`` is the clock stamp of the transition named here as ``status``.
+    changes = [Change("scenarios", row.id, "status", ScenarioStatus.ACTIVE.value, ScenarioStatus.FINISHED.value)]
+    changes += await _wind_down(ctx, row)
+    return Preview(
+        summary=f"Finish plan {row.id}", changes=changes,
+        warnings=_wind_down_warnings(changes) + ["A finished plan cannot be started again."],
+        context={"name": {"untrusted": row.name}, "deleted": _gone(changes)},
+    )
+
+
+async def _finish_execute(ctx: ToolContext, args: FinishArgs) -> dict:
+    with refusals():  # the handler past its rate-limit decorator (``route_limit`` applies it)
+        row = await R.finish_plan.__wrapped__(
+            scenario_id=args.scenario_id, request=None, current_user=ctx.user, db=ctx.db)
+    return _ai_untrusted(ScenarioResponse.model_validate(row).model_dump(mode="json"))
+
+
+register(ToolSpec(
+    name="plans_finish", risk="sensitive", args=FinishArgs, product_area=PLANS, min_role=Role.MEMBER,
+    mirrors_route=("POST", "/api/v1/scenarios/{scenario_id}/finish"),
+    description=(
+        "Finish an active plan: its funding series stop (their pending transactions from today on "
+        "are deleted) and its Budgets after the current period are deleted; the current Budget, the "
+        f"category, the tag and all history stay. A finished plan cannot be started again. {CONFIRM}"
+    ),
+    preview=_finish_preview, execute=_finish_execute, route_limit=R.finish_plan,
 ))
 
 

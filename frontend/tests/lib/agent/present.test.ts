@@ -131,6 +131,8 @@ describe("present (TBD-664)", () => {
   it("TBD-668: forecast plan and Plans rows read by their kind, a new plan by name", () => {
     expect(actionHeadline("forecast_plan_populate", "s", [])).toBe("Fill the forecast plan from your history");
     expect(actionHeadline("scenarios_delete", "s", [])).toBe("Delete a plan");
+    expect(actionHeadline("plans_finish", "s", [])).toBe("Finish a plan");
+    expect(changeLabel(c({ entity: "scenarios", field: "status" }))).toBe("Plan status");
     expect(toolLabel("scenarios_simulate")).toBe("Projected a plan");
     const item = c({ entity: "forecast_plan_items", id: "new:2", field: "plan_id", after: "new:1" });
     expect(rowLabel(item)).toBe("New forecast item 2");

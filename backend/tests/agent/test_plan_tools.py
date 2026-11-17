@@ -262,10 +262,10 @@ async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory
         await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
         await db.execute(update(Organization).where(Organization.id == a["org"]).values(primary_currency=None))
         await db.commit()
-    # A started plan is changed or deleted in the app only (its lifecycle tools are TBD-604).
+    # A started plan is changed in the app only (edit after start is TBD-604's);
+    # its Delete stages, winding it down (honesty fence).
     for tool, args in (("scenarios_update", {"scenario_id": a["scn"], "return_pct": "3.00"}),
-                       ("plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]}),
-                       ("scenarios_delete", {"scenario_id": a["scn"]})):
+                       ("plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]})):
         assert (await _refused(_invoke(factory, a["member"], tool, args))).code == "conflict", tool
     err = await _refused(_invoke(factory, a["member"], "scenarios_create", {**create, "monthly_budget": "10.00"}))
     assert err.detail == plan_draft_service.NO_CURRENCY_SCOPE
@@ -287,3 +287,20 @@ async def test_a_goal_delete_checks_only_the_draft_as_the_route_does(factory, w)
     err = await _refused(_invoke(factory, a["member"], "plan_goal_create",
                                  {"scenario_id": a["scn"], "name": "G", "tier": "want", "kind": "lump"}))
     assert err.detail == plan_draft_service.NO_CURRENCY_SCOPE
+
+
+async def test_plans_finish_refuses_a_draft_and_is_a_no_change_on_a_finished_plan(factory, w):
+    """GUARD (TBD-604), as ``plan_lifecycle_service.finish``: only an active
+    plan finishes; a finished one is ``no_change``, not a second wind-down.
+    Wrong implementation: a preview staging a Finish the service refuses."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    args = {"scenario_id": a["scn"]}
+    assert (await _refused(_invoke(factory, a["member"], "plans_finish", args))).code == "conflict"
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.FINISHED))
+        await db.commit()
+    assert (await _refused(_invoke(factory, a["member"], "plans_finish", args))).code == "no_change"
+    # Another org's plan is not found, whatever its state.
+    err = await _refused(_invoke(factory, w["B"]["member"], "plans_finish", args))
+    assert err.code == "not_found"
