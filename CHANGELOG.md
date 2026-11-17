@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.311.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.310.0...v0.311.0) (2026-11-17)
+
+
+### Features
+
+* **agent:** plans_finish tool, and scenarios_delete winds down a started plan (TBD-604) ([#1146](https://github.com/fjcloudaiconsulting/tbd/issues/1146)) ([fb52aed](https://github.com/fjcloudaiconsulting/tbd/commit/fb52aedbb61898467a5801bf5d6db966550fb593))
+
 ## [0.310.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.309.1...v0.310.0) (2026-11-15)
 
 
