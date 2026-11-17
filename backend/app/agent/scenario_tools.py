@@ -20,6 +20,7 @@ handler: the route takes a raw ``Request`` for its rate limit.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from fastapi.encoders import jsonable_encoder
@@ -202,9 +203,11 @@ async def _create_preview(ctx: ToolContext, args) -> Preview:
 
 async def _update_preview(ctx: ToolContext, args) -> Preview:
     row = await _owned(ctx, args.scenario_id)
-    with refusals(), plan_goals_router.http_errors():  # editing a started plan is the lifecycle ticket's
-        plan_draft_service.assert_draft(row)
-    sent = args.model_fields_set
+    sent = args.model_fields_set - {"confirm"}
+    with refusals(), plan_goals_router.http_errors():
+        plan_draft_service.assert_editable(
+            row, confirm=args.confirm, changes={k: getattr(args, k) for k in sent - {"scenario_id"}},
+            allowed=plan_draft_service.STARTED_PLAN_FIELDS)
     horizon = row.horizon_months
     changes = []
     if "horizon_months" in sent:
@@ -226,10 +229,44 @@ async def _update_preview(ctx: ToolContext, args) -> Preview:
         after = await _plan_fields(ctx, row, body.plan_changes())
         changes += [Change("scenarios", row.id, f, _disclose(_COLUMNS[f], getattr(row, f)), v)
                     for f, v in after.items()]
+    if row.status == ScenarioStatus.ACTIVE and "monthly_budget" in sent:
+        changes += await _rebudget(ctx, row, body.monthly_budget)
     changes = [c for c in changes if c.before != c.after]
     if not changes:
         raise ToolError("no_change", "the plan already has these values")
-    return Preview(summary=f"Change {', '.join(c.field for c in changes)} of plan {row.id}", changes=changes)
+    budgets = {c.id for c in changes if c.entity == "budgets"}
+    return Preview(
+        summary=f"Change {', '.join(dict.fromkeys(c.field if c.entity == 'scenarios' else 'Budgets' for c in changes))} "
+                f"of plan {row.id}",
+        changes=changes,
+        warnings=[f"{len(budgets)} Budget(s) from the current period on are set to the new amount, "
+                  "replacing any hand edit or rebalance of them."] if budgets else [],
+    )
+
+
+async def _rebudget(ctx: ToolContext, row: Scenario, monthly_budget) -> list[Change]:
+    """A started plan's new ``monthly_budget`` reaches its Budget in the open
+    period and every later one, made where missing
+    (``plan_lifecycle_service.budget_changed``)."""
+    period = await billing_service.find_open_period(ctx.db, row.org_id)
+    if period is None:
+        return []
+    # The plan as it will be: only the cap changes (a started plan keeps its category).
+    probe = SimpleNamespace(id=row.id, org_id=row.org_id, category_id=row.category_id,
+                            monthly_budget=monthly_budget)
+    out: list[Change] = []
+    for k, (p, budget, amount) in enumerate(await plan_lifecycle_service.budget_plan(
+            ctx.db, probe, period.start_date, recompute=True), 1):
+        if budget is not None:
+            out.append(Change("budgets", budget.id, "amount", f"{budget.amount:.2f}", f"{amount:.2f}", row.currency))
+            continue
+        gid = f"new:budget:{k}"
+        out += [Change("budgets", gid, "category_id", None, row.category_id),
+                Change("budgets", gid, "amount", None, f"{amount:.2f}", row.currency),
+                Change("budgets", gid, "period_start", None, p.start_date.isoformat())]
+        if p.end_date is not None:
+            out.append(Change("budgets", gid, "period_end", None, p.end_date.isoformat()))
+    return out
 
 
 register(route_tool(
@@ -243,12 +280,15 @@ register(route_tool(
 register(route_tool(
     name="scenarios_update", risk="sensitive", result=_ai_untrusted, router=ROUTER, method="PATCH",
     path="/api/v1/scenarios/{scenario_id}",
-    fields=("name", "params", "horizon_months", "is_active", *PLAN_FIELDS), lean=("params",),
+    fields=("name", "params", "horizon_months", "is_active", *PLAN_FIELDS, "confirm"), lean=("params",),
     nullable=("currency", "monthly_budget", "birth_year", "funding_account_id", "category_id", "tag_id"),
     product_area=PLANS, min_role=Role.MEMBER,
     description=(f"Change a plan's name, params (whole object, as for scenarios_create, same "
-                 f"scenario_type), horizon, archive flag (is_active) or plan fields (a draft only; "
-                 f"null clears one). {PLAN} {CONFIRM}"),
+                 f"scenario_type), horizon, archive flag (is_active) or plan fields (null clears one). "
+                 f"A started plan takes only name, params, horizon_months, monthly_budget (not null; "
+                 f"its Budgets from the current period on follow), birth_year, return_pct and "
+                 f"inflation_pct, and only with confirm=true; a finished plan takes nothing. "
+                 f"{PLAN} {CONFIRM}"),
     preview=_update_preview,
 ))
 

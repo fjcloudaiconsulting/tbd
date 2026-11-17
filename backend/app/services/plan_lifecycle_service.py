@@ -464,16 +464,15 @@ def _amount(plan: Scenario, goals: list, start: datetime.date, end: datetime.dat
     return total.quantize(_CENTS)
 
 
-async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datetime.date,
-                          *, recompute: bool = False) -> int:
-    """The plan's Budget on its master category in the current period and
-    every later one that exists (stubs), unless one is there already
-    (``uq_budget_org_cat_period``); ``recompute`` also resets the amount of
-    the ones there. Returns how many it added."""
+async def budget_plan(db: AsyncSession, plan: Scenario, current_start: datetime.date, *,
+                      recompute: bool = False) -> list[tuple[BillingPeriod, Budget | None, Decimal]]:
+    """What ``_ensure_budgets`` writes, without writing: each period from
+    ``current_start`` on with the plan's Budget there (None: none yet) and
+    the amount it gets. Empty when the plan has no Budgets. The agent's
+    preview of an edit after start reads it too (TBD-604)."""
     goals = await _spend_goals(db, plan)
     if not _has_budget(plan, goals):
-        return 0
-    added = 0
+        return []
     # A locking read: the rollover's snapshot predates its locks (its probe).
     # Recompute writes the rows, so it locks them for writing up front.
     have = {b.period_start: b for b in (await db.scalars(select(Budget).where(
@@ -483,11 +482,22 @@ async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datet
         BillingPeriod.org_id == plan.org_id, BillingPeriod.start_date >= current_start)
         .order_by(BillingPeriod.start_date))).all()
     cycle_day = (await db.get(Organization, plan.org_id)).billing_cycle_day
-    for i, period in enumerate(periods):
-        amount = _amount(plan, goals, period.start_date, _window_end(periods, i, cycle_day))
-        if period.start_date in have:
+    return [(period, have.get(period.start_date),
+             _amount(plan, goals, period.start_date, _window_end(periods, i, cycle_day)))
+            for i, period in enumerate(periods)]
+
+
+async def _ensure_budgets(db: AsyncSession, plan: Scenario, current_start: datetime.date,
+                          *, recompute: bool = False) -> int:
+    """The plan's Budget on its master category in the current period and
+    every later one that exists (stubs), unless one is there already
+    (``uq_budget_org_cat_period``); ``recompute`` also resets the amount of
+    the ones there. Returns how many it added."""
+    added = 0
+    for period, budget, amount in await budget_plan(db, plan, current_start, recompute=recompute):
+        if budget is not None:
             if recompute:
-                have[period.start_date].amount = amount
+                budget.amount = amount
         else:
             # ``period_end`` is the raw row value, as ``budget_service.create_budget`` writes it.
             db.add(Budget(org_id=plan.org_id, category_id=plan.category_id, amount=amount,

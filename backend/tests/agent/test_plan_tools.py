@@ -262,8 +262,8 @@ async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory
         await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
         await db.execute(update(Organization).where(Organization.id == a["org"]).values(primary_currency=None))
         await db.commit()
-    # A started plan is changed in the app only (edit after start is TBD-604's);
-    # its Delete stages, winding it down (honesty fence).
+    # A started plan's edit needs confirm=true (the next test); a goal delete is
+    # refused; its Delete stages, winding it down (honesty fence).
     for tool, args in (("scenarios_update", {"scenario_id": a["scn"], "return_pct": "3.00"}),
                        ("plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]})):
         assert (await _refused(_invoke(factory, a["member"], tool, args))).code == "conflict", tool
@@ -272,6 +272,33 @@ async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory
     # no plan fields: a legacy scenario, no currency resolved (as the route)
     out = await _invoke(factory, a["member"], "scenarios_create", create)
     assert "currency" not in {c["field"] for c in out["changes"]} and "currency" not in out["context"]
+
+
+async def test_scenarios_update_on_a_started_plan_follows_assert_editable(factory, w):
+    """GUARD (TBD-604), as the PATCH route: a started plan takes the
+    ``STARTED_PLAN_FIELDS`` with ``confirm=true`` only, never a cleared cap; a
+    finished plan takes nothing. Wrong implementation: a preview staging an
+    edit the route refuses, or refusing one it takes."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
+        await db.commit()
+    scn = {"scenario_id": a["scn"]}
+    for args, detail in (
+        ({"name": "Porto"}, plan_draft_service.CONFIRM_TO_EDIT),
+        ({"is_active": False, "confirm": True}, "cannot change is_active"),
+        ({"monthly_budget": None, "confirm": True}, "cannot change monthly_budget"),
+    ):
+        err = await _refused(_invoke(factory, a["member"], "scenarios_update", {**scn, **args}))
+        assert (err.code, detail in err.detail) == ("conflict", True), (args, err.detail)
+    out = await _invoke(factory, a["member"], "scenarios_update", {**scn, "name": "Porto", "confirm": True})
+    assert [c["field"] for c in out["changes"]] == ["name"]
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.FINISHED))
+        await db.commit()
+    err = await _refused(_invoke(factory, a["member"], "scenarios_update", {**scn, "name": "X", "confirm": True}))
+    assert (err.code, "read-only" in err.detail) == ("conflict", True)
 
 
 async def test_a_goal_delete_checks_only_the_draft_as_the_route_does(factory, w):

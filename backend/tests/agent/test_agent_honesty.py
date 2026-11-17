@@ -1367,6 +1367,11 @@ FORECAST_PLAN_SCENARIOS = [
      _active_plan, False),
     ("scenario-delete-winds-a-started-plan-down", _tool("scenarios_delete", scenario_id="@scn"),
      _active_plan, False),
+    # A started plan's new cap rewrites its Budgets from the open period on and
+    # makes the missing ones (two of the three later periods have none).
+    ("scenario-update-started-plan-budget-reaches-its-budgets", _tool(
+        "scenarios_update", scenario_id="@scn", monthly_budget="300.00", name="Porto", confirm=True),
+     _seq(_active_plan, _next_period), False),
 ]
 
 
