@@ -92,3 +92,6 @@ graphify-out/*
 
 # CodeGraph 
 .codegraph/
+
+# Local scratch space for agent temp files
+.scratch/
