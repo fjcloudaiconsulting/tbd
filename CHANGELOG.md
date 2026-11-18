@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.312.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.311.0...v0.312.0) (2026-11-17)
+
+
+### Features
+
+* **agent:** scenarios_update edits a started plan with confirm=true (TBD-604) ([#1148](https://github.com/fjcloudaiconsulting/tbd/issues/1148)) ([3738f60](https://github.com/fjcloudaiconsulting/tbd/commit/3738f6030126bae6a2ea16d6cba29edcc8b81b3a))
+
 ## [0.311.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.310.0...v0.311.0) (2026-11-17)
 
 
