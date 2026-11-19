@@ -274,12 +274,12 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
 
   it("F8 fence + positive control: isAnimationActive={true} transitions under reduce", () => {
     mockMatchMedia(true);
-    expect(renderTooltip(true).style.transition).toBe("transform 400ms ease");
+    expect(renderTooltip(true).style.transition).toBe("transform 400ms");
   });
 
   it("F9 guard: tooltip still transitions for users who did not opt out", () => {
     mockMatchMedia(false);
-    expect(renderTooltip().style.transition).toBe("transform 400ms ease");
+    expect(renderTooltip().style.transition).toBe("transform 400ms");
   });
 
   // ---- Area and Line (TBD-437). TBD-437 re-enabled animation on the report
