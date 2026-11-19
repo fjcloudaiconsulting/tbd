@@ -4,7 +4,8 @@ FROM mirror.gcr.io/library/node:26-slim@sha256:e6bedef217677b276c591795e169840ed
 WORKDIR /app
 
 # pnpm version comes from packageManager in package.json.
-RUN corepack enable
+# Node 25+ no longer bundles corepack.
+RUN npm install -g corepack@0.36.0 && corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
