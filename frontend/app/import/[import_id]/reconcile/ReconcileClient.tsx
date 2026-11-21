@@ -102,7 +102,9 @@ const ALLOWED_NEXT: Record<ReconciliationState, ReconciliationState[]> = {
  */
 function allowedNext(row: ReconciliationRow): ReconciliationState[] {
   const base = ALLOWED_NEXT[row.reconciliation_state] ?? [];
-  if (!row.is_reciprocal_transfer_leg) return base;
+  // A bank row bound to a recurring occurrence (TBD-755) is refused the same
+  // four targets (`bank_row_bound` / `match_source_bound`); Unbind is its exit.
+  if (!row.is_reciprocal_transfer_leg && !row.bound_occurrence) return base;
   return base.filter((t) => !TRANSFER_LOCKED_TARGETS.includes(t));
 }
 
@@ -183,33 +185,15 @@ export default function ReconcileClient({
   const [matchModalRow, setMatchModalRow] =
     useState<ReconciliationRow | null>(null);
 
-  const applyTransition = useCallback(
-    async (
-      transactionId: number,
-      to: ReconciliationState,
-      extras: Partial<Omit<ReconciliationTransition, "transaction_id" | "to_state">> = {},
-    ) => {
+  const runRowAction = useCallback(
+    async (transactionId: number, request: () => Promise<unknown>) => {
       setGlobalError(null);
       setRowState((prev) => ({
         ...prev,
         [transactionId]: { busy: true, error: null },
       }));
       try {
-        await apiFetch(
-          `/api/v1/import/${batchId}/reconcile`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              transitions: [
-                {
-                  transaction_id: transactionId,
-                  to_state: to,
-                  ...extras,
-                },
-              ],
-            }),
-          },
-        );
+        await request();
         await mutate();
         setRowState((prev) => ({
           ...prev,
@@ -224,7 +208,33 @@ export default function ReconcileClient({
         setGlobalError(msg);
       }
     },
-    [batchId, mutate],
+    [mutate],
+  );
+
+  const applyTransition = useCallback(
+    (
+      transactionId: number,
+      to: ReconciliationState,
+      extras: Partial<Omit<ReconciliationTransition, "transaction_id" | "to_state">> = {},
+    ) =>
+      runRowAction(transactionId, () =>
+        apiFetch(`/api/v1/import/${batchId}/reconcile`, {
+          method: "POST",
+          body: JSON.stringify({
+            transitions: [{ transaction_id: transactionId, to_state: to, ...extras }],
+          }),
+        }),
+      ),
+    [batchId, runRowAction],
+  );
+
+  // TBD-755: restore the recurring occurrence a bank row settles.
+  const unbind = useCallback(
+    (transactionId: number) =>
+      runRowAction(transactionId, () =>
+        apiFetch(`/api/v1/transactions/${transactionId}/unbind`, { method: "POST" }),
+      ),
+    [runRowAction],
   );
 
   const batch = data?.batch ?? null;
@@ -364,6 +374,7 @@ export default function ReconcileClient({
                     key={row.transaction_id}
                     row={row}
                     busy={rowState[row.transaction_id]?.busy ?? false}
+                    onUnbind={() => unbind(row.transaction_id)}
                     onAction={(target) => {
                       // PR #247 P1: Edit and Match need extra payload
                       // (the modal collects it). The other targets
@@ -651,13 +662,16 @@ function ReconcileRow({
   row,
   busy,
   onAction,
+  onUnbind,
 }: {
   row: ReconciliationRow;
   busy: boolean;
   onAction: (target: ReconciliationState) => void;
+  onUnbind: () => void;
 }) {
   const money = useMoney();
   const nextStates = allowedNext(row);
+  const bound = row.bound_occurrence;
 
   return (
     <li
@@ -733,10 +747,35 @@ function ReconcileRow({
               or reject it, so both legs stay in sync.
             </div>
           ) : null}
+
+          {bound ? (
+            <div
+              className="mt-2 text-xs text-text-secondary"
+              data-testid="bound-occurrence"
+              role="status"
+            >
+              Settles the recurring payment {maskMoneyText(bound.description)} due{" "}
+              {formatDate(bound.date)} ({money(bound.amount)}).{" "}
+              {bound.can_unbind
+                ? "Unbind it to skip, reject or edit this row."
+                : "The series was stopped or deleted, so it can no longer be unbound."}
+            </div>
+          ) : null}
         </div>
 
         {/* Action cluster */}
         <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2">
+          {!busy && bound?.can_unbind ? (
+            <button
+              type="button"
+              className={`${btnSecondary} min-h-[44px] text-xs sm:text-sm`}
+              onClick={onUnbind}
+              data-testid="action-unbind"
+              aria-label={`Unbind row ${row.transaction_id}`}
+            >
+              Unbind
+            </button>
+          ) : null}
           {busy ? (
             <Spinner />
           ) : nextStates.length === 0 ? (
