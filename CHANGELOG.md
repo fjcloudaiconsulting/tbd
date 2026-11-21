@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.312.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.312.0...v0.312.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** land the open Renovate updates (TBD-812) ([#1152](https://github.com/fjcloudaiconsulting/tbd/issues/1152)) ([2d77831](https://github.com/fjcloudaiconsulting/tbd/commit/2d778319995dfd539375f994763b7898b2248ffb))
+
 ## [0.312.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.311.0...v0.312.0) (2026-11-17)
 
 
