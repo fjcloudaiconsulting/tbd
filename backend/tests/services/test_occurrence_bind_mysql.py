@@ -248,11 +248,18 @@ async def test_create_path_bind_races_generation(factory, monkeypatch, first):
 
     sides = {"bind": bind, "generate": generate}
     second = "generate" if first == "bind" else "bind"
-    async with asyncio.timeout(30):
-        a = asyncio.create_task(sides[first](), name=first)
-        await held.wait()
-        b = asyncio.create_task(sides[second](), name=second)
-        done = dict(zip((first, second), await asyncio.gather(a, b)))
+    tasks: list[asyncio.Task] = []
+    try:
+        async with asyncio.timeout(30):
+            tasks.append(asyncio.create_task(sides[first](), name=first))
+            await held.wait()
+            tasks.append(asyncio.create_task(sides[second](), name=second))
+            done = dict(zip((first, second), await asyncio.gather(*tasks)))
+    finally:
+        # A stalled side would otherwise keep its locks and hang the fixture's cleanup.
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     assert go.is_set()
 
     balance, rows = await _state(factory, seed)
@@ -265,7 +272,9 @@ async def test_create_path_bind_races_generation(factory, monkeypatch, first):
         # Generation wrote 1 July; the bind sees the frontier moved and imports plain.
         assert done["bind"].bound_count == 0 and len(done["bind"].bind_fallbacks) == 1
         assert series[0].bound_bank_tx_id is None
-    assert balance == _counted(rows)
+    # One bank row either way, and only its 365.00 in the balance.
+    assert len([t for t in rows if t.recurring_id is None]) == 1
+    assert balance == _counted(rows) == Decimal("-365.00")
 
 
 async def test_bind_races_a_reconcile_match(factory):
