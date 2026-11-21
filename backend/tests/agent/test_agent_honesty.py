@@ -83,6 +83,10 @@ BOOKKEEPING = {
     ("import_batches", "closed_at"),
     # The clock stamp of a plan's Finish (TBD-604); the transition is named as ``status``.
     ("scenarios", "finished_at"),
+    # Start's clock stamp, and the projection it freezes: derived from what the
+    # preview names, and far past the preview cap (architects' ruling, TBD-604).
+    ("scenarios", "started_at"),
+    ("scenarios", "baseline_projection_json"),
 }
 BOOKKEEPING_TABLES = {"audit_events"}
 # Insert identity beyond the PK and org_id: columns a natural-key group id names.
@@ -1338,6 +1342,44 @@ async def _started_with_a_disabled_goal(f, a):
         target_date=datetime.date.today() + relativedelta(months=3), enabled=False))
 
 
+def _draft(a, name, **kw):
+    return Scenario(org_id=a["org"], user_id=a["member"], name=name, scenario_type=ScenarioType.TRIP,
+                    params_json={}, horizon_months=24, currency="EUR", **kw)
+
+
+async def _draft_to_start(f, a):
+    """A draft with a cap, funded from ``acct``, and no category or tag: a
+    dated monthly spend, a savings goal into ``savings``, a lump in a later
+    period and a disabled goal (no steps)."""
+    await _savings(f, a)
+    [a["scn"]] = await _ids(f, _draft(a, "Lisbon Trip", funding_account_id=a["acct"],
+                                      monthly_budget=Decimal("100.00")))
+    goal = dict(org_id=a["org"], scenario_id=a["scn"], tier=PlanGoalTier.WANT)
+    await _add(f, PlanGoal(**goal, name="Food", kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=Decimal("25.00"),
+                           target_date=datetime.date.today() + relativedelta(months=2)),
+               PlanGoal(**goal, name="Pot", kind=PlanGoalKind.SAVINGS_TARGET, monthly_amount=Decimal("20.00"),
+                        account_id=a["savings"]),
+               PlanGoal(**goal, name="Flights", kind=PlanGoalKind.LUMP, target_amount=Decimal("300.00"),
+                        target_date=P_START + relativedelta(months=2, days=3)),
+               PlanGoal(**goal, name="Spa", kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=Decimal("9.00"),
+                        enabled=False))
+
+
+async def _draft_linked(f, a):
+    """A draft linked to a fresh BOTH master with a goal on its subcategory,
+    and a tag already named after it (adopted)."""
+    [master] = await _ids(f, Category(org_id=a["org"], name="House", type=CategoryType.BOTH))
+    [car] = await _ids(f, Category(org_id=a["org"], name="Car", type=CategoryType.BOTH, parent_id=master))
+    await _add(f, Tag(org_id=a["org"], name="house", name_normalized="house"))
+    [a["scn"]] = await _ids(f, _draft(a, "House", funding_account_id=a["acct"], category_id=master))
+    await _add(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], tier=PlanGoalTier.WANT, name="Car", kind=PlanGoalKind.MONTHLY_SPEND,
+        monthly_amount=Decimal("15.00"), category_id=car))
+
+
+async def _bare_draft(f, a):
+    [a["scn"]] = await _ids(f, _draft(a, "Someday"))
+
+
 async def _own_plan(f, a):
     [a["scn"]] = await _ids(f, Scenario(
         org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
@@ -1413,6 +1455,13 @@ FORECAST_PLAN_SCENARIOS = [
     ("plan-goal-update-enables-a-goal-on-a-started-plan", _tool(
         "plan_goal_update", scenario_id="@scn", goal_id="@goal", enabled=True, name="Down payment",
         confirm=True), _seq(_started_with_a_disabled_goal, _next_period), False),
+    # Start (architects' ruling on TBD-604): a new master and tag, each enabled
+    # goal's subcategory and series, the Budgets over every period.
+    ("plan-start-creates-master-tag-series-and-budgets", _tool("plans_start", scenario_id="@scn"),
+     _seq(_draft_to_start, _next_period), False),
+    ("plan-start-adopts-linked-master-and-tag", _tool("plans_start", scenario_id="@scn"),
+     _seq(_draft_linked, _next_period), False),
+    ("plan-start-bare-draft", _tool("plans_start", scenario_id="@scn"), _bare_draft, False),
 ]
 
 
@@ -1491,9 +1540,21 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeyp
         assert named[("budgets", "amount")] == "875.50"  # Rent's own item plus its subcategory's
     if sid == "budget-draft-writes-nothing":
         assert changes == []
+    if sid.startswith("plan-start-"):  # Start's steps were disclosed (TBD-604)
+        groups = collections.Counter((c["entity"], c["id"]) for c in changes)
+        kinds = collections.Counter(e for e, i in groups if isinstance(i, str))
+        expect = {"plan-start-creates-master-tag-series-and-budgets": {
+                      "categories": 4, "tags": 1, "recurring_transactions": 3, "budgets": 4},
+                  "plan-start-adopts-linked-master-and-tag": {"recurring_transactions": 1, "budgets": 4},
+                  "plan-start-bare-draft": {"categories": 1, "tags": 1}}[sid]
+        assert dict(kinds) == expect, kinds
+        assert named[("scenarios", "status")] == "active"
+        if sid == "plan-start-creates-master-tag-series-and-budgets":
+            assert named[("scenarios", "category_id")] == named[("categories", "parent_id")] == "new:category:master"
+            assert named[("plan_goals", "start_balance")] == "50.00"
     if sid.startswith("plan-goal-") and "started-plan" in sid:  # Start's steps were disclosed (TBD-604)
         assert {"categories", "recurring_transactions", "budgets"} <= {c["entity"] for c in changes}
-        assert named[("plan_goals", "funding_recurring_id")] == "new:series"
+        assert named[("plan_goals", "funding_recurring_id")] == "new:series:1"
         if sid == "plan-goal-update-enables-a-goal-on-a-started-plan":
             assert named[("recurring_transactions", "type")] == "transfer"
             assert named[("plan_goals", "start_balance")] == "50.00"

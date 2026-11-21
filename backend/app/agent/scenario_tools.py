@@ -43,7 +43,7 @@ from app.schemas.plan_goal import PlanGoalCreate, PlanGoalUpdate
 from app.schemas.scenario import (
     PLAN_FIELDS, CompareRequest, ScenarioCreate, ScenarioResponse, ScenarioUpdate, SimulateRequest,
 )
-from app.services import billing_service, plan_draft_service, plan_lifecycle_service
+from app.services import billing_service, plan_draft_service, plan_lifecycle_service, tag_service
 from app.services.exceptions import ValidationError
 from app.services.feature_gate import Feature
 from app.services.scenario_engine import SimulationRequest, build_world_state, get_engine, simulate_off_loop
@@ -246,10 +246,13 @@ async def _update_preview(ctx: ToolContext, args) -> Preview:
     )
 
 
-async def _rebudget(ctx: ToolContext, row: Scenario, monthly_budget, extra: tuple = ()) -> list[Change]:
+async def _rebudget(ctx: ToolContext, row: Scenario, monthly_budget, extra: tuple = (),
+                    category_ref: Any = None) -> list[Change]:
     """A started plan's new ``monthly_budget``, or a goal started late
     (``extra``), reaches its Budget in the open period and every later one,
-    made where missing (``plan_lifecycle_service.budget_changed``)."""
+    made where missing (``plan_lifecycle_service.budget_changed``); at Start,
+    the Budgets ``_ensure_budgets`` makes, on ``category_ref`` (a master not
+    made yet)."""
     period = await billing_service.find_open_period(ctx.db, row.org_id)
     if period is None:
         return []
@@ -263,7 +266,7 @@ async def _rebudget(ctx: ToolContext, row: Scenario, monthly_budget, extra: tupl
             out.append(Change("budgets", budget.id, "amount", f"{budget.amount:.2f}", f"{amount:.2f}", row.currency))
             continue
         gid = f"new:budget:{k}"
-        out += [Change("budgets", gid, "category_id", None, row.category_id),
+        out += [Change("budgets", gid, "category_id", None, category_ref or row.category_id),
                 Change("budgets", gid, "amount", None, f"{amount:.2f}", row.currency),
                 Change("budgets", gid, "period_start", None, p.start_date.isoformat())]
         if p.end_date is not None:
@@ -336,8 +339,9 @@ register(route_tool(
 # (``plan_lifecycle_service._wind_down``): each live funding series stopped
 # as ``recurring_stop`` stops one (its pending occurrences from today on
 # deleted, the rest leaving the series), and the plan's Budgets after the
-# open period deleted. Start is not offered yet: its preview would have to
-# name every row its steps create (TBD-604).
+# open period deleted. Start's preview names every row its steps create,
+# from the service's read-only halves (``master_plan``, ``tag_plan``,
+# ``goal_steps``, ``budget_plan``; TBD-604).
 
 
 async def _wind_down(ctx: ToolContext, plan: Scenario) -> list[Change]:
@@ -426,6 +430,102 @@ register(ToolSpec(
 ))
 
 
+MASTER = "new:category:master"
+_SERIES_COLUMNS = RecurringTransaction.__table__.c
+NO_PERIOD = "the organization has no open billing period: open one first (billing_period_create)"
+
+
+class StartArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenario_id: int
+
+
+async def _start_preview(ctx: ToolContext, args: StartArgs) -> Preview:
+    """Start's steps as ``plan_lifecycle_service.start`` takes them, from its
+    read-only halves (architects' ruling on TBD-604). ``started_at`` and the
+    frozen ``baseline_projection_json`` are not named (fence bookkeeping)."""
+    row = await _owned(ctx, args.scenario_id)
+    if row.status == ScenarioStatus.ACTIVE:
+        raise ToolError("no_change", "the plan is already started")
+    if row.status != ScenarioStatus.DRAFT:
+        raise ToolError("conflict", "a finished plan cannot be started again")
+    if not plan_draft_service.is_plan(row):
+        raise ToolError("invalid_arguments", f"scenario {row.id} is not a plan: give it plan fields first")
+    # ``get_current_period`` would commit a new period outside the plan's locks.
+    if await billing_service.find_open_period(ctx.db, row.org_id) is None:
+        raise ToolError("no_open_period", NO_PERIOD)
+    today = datetime.date.today()
+    with refusals(), plan_goals_router.http_errors():
+        plan = await plan_lifecycle_service.lock(ctx.db, row)
+        _, goals = await plan_lifecycle_service.start_checks(ctx.db, plan)
+        master = await plan_lifecycle_service.master_plan(ctx.db, plan, linked_at_start=True)
+        tag_id, tag_name = await plan_lifecycle_service.tag_plan(ctx.db, plan)
+    changes = [Change("scenarios", plan.id, "status", ScenarioStatus.DRAFT.value, ScenarioStatus.ACTIVE.value)]
+    if master.id is None:
+        changes += [Change("categories", MASTER, "name", None, {"untrusted": master.name}),
+                    Change("categories", MASTER, "type", None, master.type.value),
+                    Change("scenarios", plan.id, "category_id", None, MASTER)]
+    if tag_name is not None:
+        normalized = tag_service.normalize_tag_name(tag_name)
+        if tag_service._is_dictionary_eligible(normalized) and await tag_service.is_share_tag_data_enabled(
+                ctx.db, plan.org_id):
+            # Its tag-dictionary write is cross-org: disclosing it would show other orgs' counts.
+            raise ToolError("conflict", f"Start would create the tag '{tag_name}' and share it with the tag "
+                            "dictionary: link a tag first (scenarios_update tag_id), or start the plan in the app")
+        changes += [Change("tags", "new:tag", "name", None, {"untrusted": tag_name}),
+                    Change("tags", "new:tag", "name_normalized", None, {"untrusted": normalized}),
+                    Change("tags", "new:tag", "created_by_user_id", None, plan.user_id),
+                    Change("scenarios", plan.id, "tag_id", None, "new:tag")]
+    elif plan.tag_id is None:
+        changes.append(Change("scenarios", plan.id, "tag_id", None, tag_id))
+    extra: tuple = ()
+    series = 0
+    for k, goal in enumerate(goals, 1):
+        fields, steps, pair = await _goal_start(ctx, plan, goal, k, today, master)
+        changes += [_goal_change(goal.id, f, getattr(goal, f), v) for f, v in fields.items()] + steps
+        extra, series = extra + pair, series + bool(pair)
+    # No row has id 0: a master not made yet has no Budgets.
+    probe = SimpleNamespace(id=plan.id, org_id=plan.org_id, category_id=plan.category_id or 0,
+                            currency=plan.currency)
+    budgets = await _rebudget(ctx, probe, plan.monthly_budget, extra, MASTER if master.id is None else None)
+    changes += budgets
+    warnings = ["A started plan cannot go back to draft: Finish stops its series and drops its later "
+                "Budgets, but its category, tag, past Budgets and transactions stay."]
+    if series:
+        warnings.append(f"{series} funding series start, posting pending transactions on their dates.")
+    if n := len({c.id for c in budgets}):
+        warnings.append(f"{n} Budget(s) are created on the plan's category from the current period on.")
+    if master.id is not None or tag_id is not None:
+        warnings.append("The plan takes over its linked category and the tag named after it.")
+    if any(c.field == "start_balance" for c in changes):
+        warnings.append("A goal's starting balance is its account's balance, pending transactions included.")
+    return Preview(summary=f"Start plan {plan.id}", changes=changes, warnings=warnings,
+                   context={"name": {"untrusted": plan.name},
+                            "baseline": "a projection of the plan as drafted is saved as its baseline"})
+
+
+async def _start_execute(ctx: ToolContext, args: StartArgs) -> dict:
+    # The period the preview found may have closed since: never let the route create one.
+    if await billing_service.find_open_period(ctx.db, ctx.org_id) is None:
+        raise ToolError("no_open_period", NO_PERIOD)
+    with refusals():  # the handler past its rate-limit decorator (``route_limit`` applies it)
+        row = await R.start_plan.__wrapped__(
+            scenario_id=args.scenario_id, request=None, current_user=ctx.user, db=ctx.db)
+    return _ai_untrusted(ScenarioResponse.model_validate(row).model_dump(mode="json"))
+
+
+register(ToolSpec(
+    name="plans_start", risk="sensitive", args=StartArgs, product_area=PLANS, min_role=Role.MEMBER,
+    mirrors_route=("POST", "/api/v1/scenarios/{scenario_id}/start"),
+    description=(
+        "Start a draft plan: it gets its master category (made unless linked), its tag, a subcategory "
+        "and funding series per enabled goal, its Budgets from the current period on, and a frozen "
+        "baseline. Needs an open billing period. A started plan cannot go back to draft. " + CONFIRM
+    ),
+    preview=_start_preview, execute=_start_execute, route_limit=R.start_plan,
+))
+
+
 # ── plan goals (TBD-601 routes) ───────────────────────────────────────────
 #
 # The route's own plan lookup and the service's checks, read-only: the plan
@@ -478,8 +578,34 @@ def _goal_change(gid, field: str, before: Any, after: Any) -> Change:
     return Change(GOALS, gid, field, _disclose(_GOAL_COLUMNS[field], before), _disclose(_GOAL_COLUMNS[field], after))
 
 
-_CATEGORY_COLUMNS = Category.__table__.c
 _SERIES_COLUMNS = RecurringTransaction.__table__.c
+
+
+async def _goal_start(ctx: ToolContext, plan: Scenario, goal: PlanGoal, k: int, today: datetime.date,
+                      master: Category | None = None) -> tuple[dict[str, Any], list[Change], tuple]:
+    """One goal's share of Start's steps (``plan_lifecycle_service.goal_steps``):
+    the goal fields they set, the subcategory and series they insert (group ids
+    ``new:category:<k>``, ``new:series:<k>``), and its (goal, series) pair for
+    ``budget_plan``. ``goal`` is the goal as it will be, never the locked row."""
+    with refusals(), plan_goals_router.http_errors():
+        child, balance, series = await plan_lifecycle_service.goal_steps(ctx.db, plan, goal, today, master=master)
+    fields: dict[str, Any] = {}
+    changes: list[Change] = []
+    if child is not None:
+        fields["category_id"] = gid = f"new:category:{k}"
+        changes += [Change("categories", gid, "name", None, {"untrusted": child.name}),
+                    Change("categories", gid, "parent_id", None, child.parent_id or MASTER),
+                    Change("categories", gid, "type", None, child.type.value)]
+    if balance is not None:
+        fields["start_balance"] = balance
+    if series is None:
+        return fields, changes, ()
+    fields["funding_recurring_id"] = sid = f"new:series:{k}"
+    body = {**series, "category_id": fields.get("category_id", goal.category_id)}
+    changes += [Change(TEMPLATE, sid, f, None, _disclose(_SERIES_COLUMNS[f], v)) for f, v in body.items() if v is not None]
+    return fields, changes, ((goal, SimpleNamespace(next_due_date=series["next_due_date"], last_spent_date=None,
+                                                    occurrence_count=series["occurrence_count"],
+                                                    occurrences_elapsed=0)),)
 
 
 async def _start_steps(ctx: ToolContext, plan: Scenario, goal: PlanGoal) -> tuple[dict[str, Any], list[Change]]:
@@ -493,24 +619,7 @@ async def _start_steps(ctx: ToolContext, plan: Scenario, goal: PlanGoal) -> tupl
     with refusals(), plan_goals_router.http_errors():
         await plan_lifecycle_service._check_topology(ctx.db, plan, goal.account_id)
         await plan_lifecycle_service._master_category(ctx.db, plan)  # reads only: the plan has one
-        child, balance, series = await plan_lifecycle_service.goal_steps(
-            ctx.db, plan, goal, datetime.date.today())
-    fields: dict[str, Any] = {}
-    changes: list[Change] = []
-    if child is not None:
-        fields["category_id"] = "new:category"
-        changes += [Change("categories", "new:category", f, None, _disclose(_CATEGORY_COLUMNS[f], getattr(child, f)))
-                    for f in ("name", "parent_id", "type")]
-    if balance is not None:
-        fields["start_balance"] = balance
-    extra = ()
-    if series is not None:
-        fields["funding_recurring_id"] = "new:series"
-        body = {**series, "category_id": fields.get("category_id", goal.category_id)}
-        changes += [Change(TEMPLATE, "new:series", f, None, _disclose(_SERIES_COLUMNS[f], v))
-                    for f, v in body.items() if v is not None]
-        extra = ((goal, SimpleNamespace(next_due_date=series["next_due_date"], last_spent_date=None,
-                                        occurrence_count=series["occurrence_count"], occurrences_elapsed=0)),)
+    fields, changes, extra = await _goal_start(ctx, plan, goal, 1, datetime.date.today())
     # ``budget_changed`` runs for every goal started late; a Budget it leaves as it is goes unnamed.
     changes += [c for c in await _rebudget(ctx, plan, plan.monthly_budget, extra) if c.before != c.after]
     return fields, changes
