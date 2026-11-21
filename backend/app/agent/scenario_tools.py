@@ -19,6 +19,7 @@ handler: the route takes a raw ``Request`` for its rate limit.
 """
 from __future__ import annotations
 
+import datetime
 import json
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -32,6 +33,7 @@ from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec
 from app.agent.route_tool import CascadeDisclosure, _disclose, refusals, route_tool
 from app.agent.sensitive_tools import CONFIRM
 from app.models.budget import Budget
+from app.models.category import Category
 from app.models.recurring import RecurringTransaction
 from app.models.scenario import PlanGoal, Scenario, ScenarioStatus, ScenarioType
 from app.models.user import Role
@@ -244,10 +246,10 @@ async def _update_preview(ctx: ToolContext, args) -> Preview:
     )
 
 
-async def _rebudget(ctx: ToolContext, row: Scenario, monthly_budget) -> list[Change]:
-    """A started plan's new ``monthly_budget`` reaches its Budget in the open
-    period and every later one, made where missing
-    (``plan_lifecycle_service.budget_changed``)."""
+async def _rebudget(ctx: ToolContext, row: Scenario, monthly_budget, extra: tuple = ()) -> list[Change]:
+    """A started plan's new ``monthly_budget``, or a goal started late
+    (``extra``), reaches its Budget in the open period and every later one,
+    made where missing (``plan_lifecycle_service.budget_changed``)."""
     period = await billing_service.find_open_period(ctx.db, row.org_id)
     if period is None:
         return []
@@ -256,7 +258,7 @@ async def _rebudget(ctx: ToolContext, row: Scenario, monthly_budget) -> list[Cha
                             monthly_budget=monthly_budget)
     out: list[Change] = []
     for k, (p, budget, amount) in enumerate(await plan_lifecycle_service.budget_plan(
-            ctx.db, probe, period.start_date, recompute=True), 1):
+            ctx.db, probe, period.start_date, recompute=True, extra=extra), 1):
         if budget is not None:
             out.append(Change("budgets", budget.id, "amount", f"{budget.amount:.2f}", f"{amount:.2f}", row.currency))
             continue
@@ -427,9 +429,11 @@ register(ToolSpec(
 # ── plan goals (TBD-601 routes) ───────────────────────────────────────────
 #
 # The route's own plan lookup and the service's checks, read-only: the plan
-# in the caller's org, a draft only, the currency scope and every link in the
-# org. ``create_goal`` / ``update_goal`` / ``delete_goal`` write; the previews
-# run their guards and name the row instead.
+# in the caller's org, a draft (or, with confirm, a started plan: TBD-604),
+# the currency scope and every link in the org. ``create_goal`` /
+# ``update_goal`` / ``delete_goal`` write; the previews run their guards and
+# name the row instead, plus what Start's steps write for a goal added or
+# enabled on a started plan (``plan_lifecycle_service.goal_steps``).
 
 GOALS = "plan_goals"
 _GOAL_COLUMNS = PlanGoal.__table__.c
@@ -444,15 +448,20 @@ GOAL_TEXT = (
 )
 
 
-async def _goal_plan(ctx: ToolContext, scenario_id: int, links: dict[str, Any] | None) -> Scenario:
+async def _goal_plan(ctx: ToolContext, scenario_id: int, links: dict[str, Any] | None, *,
+                     confirm: bool = False, allowed: frozenset[str] | None = None) -> Scenario:
     """As the goal routes: the plan seen (``not_found``) and changeable
-    (``forbidden``), a draft, and (a create or update; ``links`` not None)
-    its currency scope and every link in the org."""
+    (``forbidden``), locked (the org's plans before the goal: the order every
+    plan write takes), and a draft, or (a create or update; ``links`` not
+    None) editable after start (``assert_editable``), its currency scope and
+    every link in the org."""
     with refusals(), plan_goals_router.http_errors():
         plan = await plan_draft_service.get_plan(ctx.db, user=ctx.user, plan_id=scenario_id, write=True)
-        plan_draft_service.assert_draft(plan)
-    if links is None:  # ``delete_goal`` checks the draft only
-        return plan
+        plan = await plan_lifecycle_service.lock(ctx.db, plan)
+        if links is None:  # ``delete_goal`` checks the draft only
+            plan_draft_service.assert_draft(plan)
+            return plan
+        plan_draft_service.assert_editable(plan, confirm=confirm, changes=links, allowed=allowed)
     currency = await plan_draft_service.plan_currency(ctx.db, org_id=plan.org_id, requested=plan.currency)
     await plan_draft_service._check_links(ctx.db, org_id=plan.org_id, currency=currency, changes=links)
     return plan
@@ -460,8 +469,6 @@ async def _goal_plan(ctx: ToolContext, scenario_id: int, links: dict[str, Any] |
 
 async def _goal(ctx: ToolContext, plan: Scenario, goal_id: int) -> PlanGoal:
     goal = await plan_draft_service.get_goal(ctx.db, plan=plan, goal_id=goal_id)
-    # The org's plans before the goal: the order every plan write takes.
-    await plan_lifecycle_service.lock(ctx.db, plan)
     return await ctx.db.scalar(
         select(PlanGoal).where(PlanGoal.id == goal.id).with_for_update().execution_options(populate_existing=True)
     )
@@ -471,27 +478,87 @@ def _goal_change(gid, field: str, before: Any, after: Any) -> Change:
     return Change(GOALS, gid, field, _disclose(_GOAL_COLUMNS[field], before), _disclose(_GOAL_COLUMNS[field], after))
 
 
+_CATEGORY_COLUMNS = Category.__table__.c
+_SERIES_COLUMNS = RecurringTransaction.__table__.c
+
+
+async def _start_steps(ctx: ToolContext, plan: Scenario, goal: PlanGoal) -> tuple[dict[str, Any], list[Change]]:
+    """Start's steps for ``goal`` (transient: the goal as it will be), added or
+    enabled on a started plan (``plan_lifecycle_service.start_goal``): the goal
+    fields they set, and the subcategory, series and Budgets they write."""
+    if plan.category_id is None:
+        # shortcut: Start always links a category; a started plan that lost it is
+        # given a new master by start_goal, which this preview does not disclose.
+        raise ToolError("conflict", "this started plan has no category: add the goal in the app")
+    with refusals(), plan_goals_router.http_errors():
+        await plan_lifecycle_service._check_topology(ctx.db, plan, goal.account_id)
+        await plan_lifecycle_service._master_category(ctx.db, plan)  # reads only: the plan has one
+        child, balance, series = await plan_lifecycle_service.goal_steps(
+            ctx.db, plan, goal, datetime.date.today())
+    fields: dict[str, Any] = {}
+    changes: list[Change] = []
+    if child is not None:
+        fields["category_id"] = "new:category"
+        changes += [Change("categories", "new:category", f, None, _disclose(_CATEGORY_COLUMNS[f], getattr(child, f)))
+                    for f in ("name", "parent_id", "type")]
+    if balance is not None:
+        fields["start_balance"] = balance
+    extra = ()
+    if series is not None:
+        fields["funding_recurring_id"] = "new:series"
+        body = {**series, "category_id": fields.get("category_id", goal.category_id)}
+        changes += [Change(TEMPLATE, "new:series", f, None, _disclose(_SERIES_COLUMNS[f], v))
+                    for f, v in body.items() if v is not None]
+        extra = ((goal, SimpleNamespace(next_due_date=series["next_due_date"], last_spent_date=None,
+                                        occurrence_count=series["occurrence_count"], occurrences_elapsed=0)),)
+    # ``budget_changed`` runs for every goal started late; a Budget it leaves as it is goes unnamed.
+    changes += [c for c in await _rebudget(ctx, plan, plan.monthly_budget, extra) if c.before != c.after]
+    return fields, changes
+
+
+def _budget_warning(changes: list[Change]) -> list[str]:
+    budgets = {c.id for c in changes if c.entity == "budgets"}
+    return [f"{len(budgets)} Budget(s) from the current period on are set to the new amount, "
+            "replacing any hand edit or rebalance of them."] if budgets else []
+
+
 async def _goal_create_preview(ctx: ToolContext, args) -> Preview:
-    fields = PlanGoalCreate.model_validate(args.model_dump(exclude={"scenario_id"}, exclude_unset=True)).model_dump()
-    plan = await _goal_plan(ctx, args.scenario_id, fields)
+    fields = PlanGoalCreate.model_validate(
+        args.model_dump(exclude={"scenario_id", "confirm"}, exclude_unset=True)).model_dump()
+    plan = await _goal_plan(ctx, args.scenario_id, fields, confirm=args.confirm)
+    steps: list[Change] = []
+    if plan.status == ScenarioStatus.ACTIVE and fields["enabled"]:
+        set_by_start, steps = await _start_steps(
+            ctx, plan, PlanGoal(**fields, org_id=plan.org_id, scenario_id=plan.id))
+        fields = {**fields, **set_by_start}
     changes = [Change(GOALS, "new:1", "scenario_id", None, plan.id)]
     changes += [_goal_change("new:1", f, None, v) for f, v in fields.items() if v is not None]
     if plan.currency is None:  # a legacy row given a goal becomes a plan in the org's currency
         currency = await plan_draft_service.plan_currency(ctx.db, org_id=plan.org_id, requested=None)
         changes.append(Change("scenarios", plan.id, "currency", None, currency))
-    return Preview(summary=f"Add a goal to plan {plan.id}", changes=changes)
+    changes += steps
+    return Preview(summary=f"Add a goal to plan {plan.id}", changes=changes, warnings=_budget_warning(steps))
 
 
 async def _goal_update_preview(ctx: ToolContext, args) -> Preview:
     sent = PlanGoalUpdate.model_validate(
-        args.model_dump(include=args.model_fields_set - {"scenario_id", "goal_id"})).changes()
-    plan = await _goal_plan(ctx, args.scenario_id, sent)
+        args.model_dump(include=args.model_fields_set - {"scenario_id", "goal_id", "confirm"})).changes()
+    plan = await _goal_plan(ctx, args.scenario_id, sent, confirm=args.confirm,
+                            allowed=plan_draft_service.STARTED_GOAL_FIELDS)
     goal = await _goal(ctx, plan, args.goal_id)
-    changes = [_goal_change(goal.id, f, getattr(goal, f), v) for f, v in sent.items()]
+    after = dict(sent)
+    steps: list[Change] = []
+    if plan.status == ScenarioStatus.ACTIVE and sent.get("enabled") and not goal.enabled:
+        # A transient copy: setting the locked row would autoflush the preview into the database.
+        copy = PlanGoal(**{c.key: getattr(goal, c.key) for c in _GOAL_COLUMNS} | sent)
+        set_by_start, steps = await _start_steps(ctx, plan, copy)
+        after |= set_by_start
+    changes = [_goal_change(goal.id, f, getattr(goal, f), v) for f, v in after.items()]
     changes = [c for c in changes if c.before != c.after]
     if not changes:
         raise ToolError("no_change", "the goal already has these values")
-    return Preview(summary=f"Change {', '.join(c.field for c in changes)} of goal {goal.id}", changes=changes)
+    return Preview(summary=f"Change {', '.join(c.field for c in changes)} of goal {goal.id}",
+                   changes=changes + steps, warnings=_budget_warning(steps))
 
 
 async def _goal_delete_preview(ctx: ToolContext, args) -> Preview:
@@ -507,13 +574,19 @@ async def _goal_delete_preview(ctx: ToolContext, args) -> Preview:
 GOAL_PATH = "/api/v1/scenarios/{scenario_id}/goals"
 register(route_tool(
     name="plan_goal_create", risk="sensitive", router=plan_goals_router.router, method="POST", path=GOAL_PATH,
-    fields=GOAL_FIELDS, required=("name", "tier", "kind"), product_area=PLANS, min_role=Role.MEMBER,
-    description=f"Add a goal to a draft plan. {GOAL_TEXT} {CONFIRM}", preview=_goal_create_preview,
+    fields=(*GOAL_FIELDS, "confirm"), required=("name", "tier", "kind"), product_area=PLANS, min_role=Role.MEMBER,
+    description=(f"Add a goal to a plan. {GOAL_TEXT} On a started plan, only with confirm=true: an "
+                 f"enabled goal then gets Start's steps (its subcategory, funding series and Budgets). "
+                 f"{CONFIRM}"),
+    preview=_goal_create_preview,
 ))
 register(route_tool(
     name="plan_goal_update", risk="sensitive", router=plan_goals_router.router, method="PATCH",
-    path=GOAL_PATH + "/{goal_id}", fields=GOAL_FIELDS, nullable=GOAL_NULLABLE, product_area=PLANS,
-    min_role=Role.MEMBER, description=f"Change a goal of a draft plan (null clears an optional field). {CONFIRM}",
+    path=GOAL_PATH + "/{goal_id}", fields=(*GOAL_FIELDS, "confirm"), nullable=GOAL_NULLABLE, product_area=PLANS,
+    min_role=Role.MEMBER,
+    description=(f"Change a goal of a plan (null clears an optional field). A started plan's goal takes only "
+                 f"name, tier, sort_order and enabled=true, with confirm=true; enabling it runs Start's steps "
+                 f"for it. A finished plan takes nothing. {CONFIRM}"),
     preview=_goal_update_preview,
 ))
 register(route_tool(
