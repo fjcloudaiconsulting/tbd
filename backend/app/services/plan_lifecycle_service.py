@@ -64,7 +64,7 @@ from app.models.category import Category, CategoryType
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, PlanGoalKind, Scenario, ScenarioStatus
 from app.models.tag import Tag
-from app.models.transaction import Transaction, TransactionStatus
+from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
 from app.schemas.plan_projection import PlanProjectionResponse
 from app.schemas.recurring import RECURRING_DESCRIPTION_MAX_LENGTH, RecurringCreate
@@ -75,6 +75,7 @@ from app.services import (
     plan_projection_service,
     recurring_service,
     tag_service,
+    transaction_service,
 )
 from app.services.account_balance_forecast_service import LIABILITY_SLUGS
 from app.services.date_utils import occurrences_in_window
@@ -181,17 +182,8 @@ async def start(db: AsyncSession, *, plan: Scenario, today: datetime.date | None
         return plan
     if plan.status != ScenarioStatus.DRAFT:
         raise ConflictError("a finished plan cannot be started again")
+    all_goals, goals = await start_checks(db, plan)
     plan.status, plan.started_at = _ACTIVE, utcnow_naive()
-
-    all_goals = await plan_draft_service.list_goals(db, plan=plan)
-    goals = [g for g in all_goals if g.enabled]
-    currency = await plan_draft_service.plan_currency(db, org_id=plan.org_id, requested=plan.currency)
-    # Links were checked when set; an account's currency or the org's scope may have moved since.
-    for row, columns in [(plan, ("funding_account_id", "category_id", "tag_id"))] + [
-            (g, ("account_id", "category_id", "funding_recurring_id")) for g in goals]:
-        await plan_draft_service._check_links(
-            db, org_id=plan.org_id, currency=currency, changes={c: getattr(row, c) for c in columns})
-    await _check_topology(db, plan)
     # The plan as drafted, before its own series join the books.
     plan.baseline_projection_json = PlanProjectionResponse.model_validate(
         await plan_projection_service.project(
@@ -205,6 +197,22 @@ async def start(db: AsyncSession, *, plan: Scenario, today: datetime.date | None
         await _start_goal_steps(db, plan, goal, today)
     await _ensure_budgets(db, plan, period_start)
     return plan
+
+
+async def start_checks(db: AsyncSession, plan: Scenario) -> tuple[list[PlanGoal], list[PlanGoal]]:
+    """Start's checks on a locked draft, read-only (the agent's preview runs
+    them too, TBD-604): every link still in the org and the plan's currency,
+    and the account topology. Returns the plan's goals and the enabled ones."""
+    all_goals = await plan_draft_service.list_goals(db, plan=plan)
+    goals = [g for g in all_goals if g.enabled]
+    currency = await plan_draft_service.plan_currency(db, org_id=plan.org_id, requested=plan.currency)
+    # Links were checked when set; an account's currency or the org's scope may have moved since.
+    for row, columns in [(plan, ("funding_account_id", "category_id", "tag_id"))] + [
+            (g, ("account_id", "category_id", "funding_recurring_id")) for g in goals]:
+        await plan_draft_service._check_links(
+            db, org_id=plan.org_id, currency=currency, changes={c: getattr(row, c) for c in columns})
+    await _check_topology(db, plan)
+    return all_goals, goals
 
 
 async def start_goal(db: AsyncSession, *, plan: Scenario, goal: PlanGoal,
@@ -222,11 +230,12 @@ async def _check_topology(db: AsyncSession, plan: Scenario, extra_account: int |
     """Money flows one way: from a funding account into goal accounts. So a
     funding account is no active plan's goal account (its own plan's
     included), a goal account is no active plan's funding account, neither is
-    a liability, and an account backs one enabled goal. ``plan`` is active
-    (flushed), so the queries below include it."""
+    a liability, and an account backs one enabled goal. ``plan`` counts as
+    active whatever its status, so a draft is checked as Start will leave it."""
     # Locking reads (module docstring): another plan's commit is seen, not a snapshot.
-    active = (await db.scalars(select(Scenario).where(
+    active = [p for p in (await db.scalars(select(Scenario).where(
         Scenario.org_id == plan.org_id, Scenario.status == _ACTIVE).with_for_update(read=True))).all()
+        if p.id != plan.id] + [plan]
     goals = (await db.scalars(select(PlanGoal).where(
         PlanGoal.scenario_id.in_([p.id for p in active]), PlanGoal.enabled.is_(True),
         PlanGoal.account_id.is_not(None)).with_for_update(read=True))).all()
@@ -256,7 +265,10 @@ async def _check_topology(db: AsyncSession, plan: Scenario, extra_account: int |
             raise ConflictError(f"account {account_id} already backs another enabled goal", code=ACCOUNT_TAKEN)
 
 
-async def _master_category(db: AsyncSession, plan: Scenario, *, linked_at_start: bool = False) -> Category:
+async def master_plan(db: AsyncSession, plan: Scenario, *, linked_at_start: bool = False) -> Category:
+    """The plan's master category, checked, or (none linked) the one
+    ``_master_category`` makes, transient (``id`` None). Writes nothing: the
+    agent's preview of Start reads it too (TBD-604)."""
     if plan.category_id is not None:
         cat = await db.get(Category, plan.category_id)
         if cat is None or cat.parent_id is not None:
@@ -265,10 +277,15 @@ async def _master_category(db: AsyncSession, plan: Scenario, *, linked_at_start:
         if linked_at_start:
             await _refuse_a_held_category(db, plan)
         return cat
-    cat = Category(org_id=plan.org_id, name=plan.name[:100], type=CategoryType.BOTH)
-    db.add(cat)
-    await db.flush()
-    plan.category_id = cat.id
+    return Category(org_id=plan.org_id, name=plan.name[:100], type=CategoryType.BOTH)
+
+
+async def _master_category(db: AsyncSession, plan: Scenario, *, linked_at_start: bool = False) -> Category:
+    cat = await master_plan(db, plan, linked_at_start=linked_at_start)
+    if cat.id is None:
+        db.add(cat)
+        await db.flush()
+        plan.category_id = cat.id
     return cat
 
 
@@ -301,24 +318,38 @@ async def _find_tag(db: AsyncSession, org_id: int, name: str) -> Tag | None:
         Tag.org_id == org_id, Tag.name_normalized == name).with_for_update(read=True))
 
 
-async def _tag(db: AsyncSession, plan: Scenario) -> None:
-    if plan.tag_id is None:
+async def tag_plan(db: AsyncSession, plan: Scenario) -> tuple[int | None, str | None]:
+    """The plan's tag at Start, without writing: ``(id, None)`` for one
+    linked or found by name (no other started plan's), or ``(None, name)``
+    for the one ``_tag`` creates. The agent's preview reads it too (TBD-604)."""
+    tag_id, name = plan.tag_id, None
+    if tag_id is None:
         name = _tag_name(plan)
+        found = await _find_tag(db, plan.org_id, name)
+        if found is None:
+            return None, name  # a new tag is no plan's
+        tag_id = found.id
+    held = await db.scalar(select(Scenario.id).where(
+        Scenario.org_id == plan.org_id, Scenario.tag_id == tag_id, Scenario.id != plan.id,
+        Scenario.status != ScenarioStatus.DRAFT).with_for_update(read=True))
+    if held is not None:
+        raise ConflictError(
+            f"the tag of plan {held} would be shared: rename this plan or link another tag", code=TAG_TAKEN)
+    return tag_id, None
+
+
+async def _tag(db: AsyncSession, plan: Scenario) -> None:
+    tag_id, name = await tag_plan(db, plan)
+    if name is not None:
         try:
-            tag = await _find_tag(db, plan.org_id, name) or await tag_service.create_tag(
-                db, org_id=plan.org_id, name=name, created_by_user_id=plan.user_id)
+            tag_id = (await tag_service.create_tag(
+                db, org_id=plan.org_id, name=name, created_by_user_id=plan.user_id)).id
         except IntegrityError:
             # The plan locks serialise Starts, so this is a guard: the unique
             # name lost to a tag committed in between, which is another plan's.
             raise ConflictError(f"the tag '{name}' is taken: rename this plan or link another tag",
                                 code=TAG_TAKEN) from None
-        plan.tag_id = tag.id
-    held = await db.scalar(select(Scenario.id).where(
-        Scenario.org_id == plan.org_id, Scenario.tag_id == plan.tag_id, Scenario.id != plan.id,
-        Scenario.status != ScenarioStatus.DRAFT).with_for_update(read=True))
-    if held is not None:
-        raise ConflictError(
-            f"the tag of plan {held} would be shared: rename this plan or link another tag", code=TAG_TAKEN)
+    plan.tag_id = tag_id
 
 
 def _series_spec(plan: Scenario, goal: PlanGoal, today: datetime.date) -> dict[str, Any] | None:
@@ -350,22 +381,25 @@ def _series_spec(plan: Scenario, goal: PlanGoal, today: datetime.date) -> dict[s
     return spec
 
 
-async def goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, today: datetime.date
+async def goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, today: datetime.date, *,
+                     master: Category | None = None,
                      ) -> tuple[Category | None, Decimal | None, dict[str, Any] | None]:
     """What ``_start_goal_steps`` writes for ``goal``, without writing: the
     subcategory it makes (transient; None: the goal has one), the
     ``start_balance`` it sets (None: none) and the funding series'
     ``RecurringCreate`` fields bar ``category_id`` (None: no series). Raises
-    the refusals Start's steps raise. The agent's preview of a goal started
-    late reads it too (TBD-604)."""
-    child = balance = None
+    the refusals Start's steps raise, the series' own checks included. The
+    agent's previews read it too (TBD-604), passing ``master`` when Start
+    has yet to make it (``master_plan``)."""
+    master = master or await db.get(Category, plan.category_id)
+    balance = None
     if goal.category_id is not None:
-        cat = await db.get(Category, goal.category_id)
-        if cat is None or cat.parent_id != plan.category_id:
+        child, cat = None, await db.get(Category, goal.category_id)
+        # A master not made yet has no subcategories.
+        if cat is None or master.id is None or cat.parent_id != master.id:
             raise ValidationError(f"goal {goal.id}'s category must be a subcategory of the plan's category")
     else:
-        master = await db.get(Category, plan.category_id)
-        child = Category(org_id=plan.org_id, parent_id=master.id, name=goal.name[:100], type=master.type)
+        child = cat = Category(org_id=plan.org_id, parent_id=master.id, name=goal.name[:100], type=master.type)
     if goal.account_id is not None and goal.start_balance is None:
         balance = await _expected_balance(db, goal.account_id)
     if goal.funding_recurring_id is not None:
@@ -386,6 +420,15 @@ async def goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, today: da
         raise ValidationError(f"goal {goal.id} saves monthly, so it needs an account to save into")
     if spec["account_id"] is None:
         raise ValidationError("set the plan's funding account: its goals draw on it")
+    # ``create_recurring_no_commit``'s checks, read-only, so a preview refuses what the write would.
+    kind = TransactionType(spec["type"])
+    if not all(transaction_service._category_type_matches(t, kind) for t in (cat.type, master.type)):
+        raise ValidationError(f"the plan's category is {master.type.value}, so goal {goal.id}'s "
+                              f"{spec['type']} series cannot use it: a transfer needs a category of both types")
+    await transaction_service.validate_account(db, spec["account_id"], plan.org_id)
+    await recurring_service._validate_transfer_accounts(
+        db, plan.org_id, spec["type"], spec["account_id"], spec.get("to_account_id"))
+    await recurring_service.validate_frontier(db, plan.org_id, spec["next_due_date"], today=today)
     return child, balance, {**spec, "frequency": "monthly",
                             "description": f"{plan.name}: {goal.name}"[:RECURRING_DESCRIPTION_MAX_LENGTH]}
 

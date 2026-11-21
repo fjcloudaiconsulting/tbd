@@ -122,7 +122,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "forecast_plan_get", "scenarios_list", "scenarios_get", "scenarios_simulate", "scenarios_compare",
         *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
         "plan_goal_create", "plan_goal_update", "plan_goal_delete",
-        "plans_finish",  # TBD-604
+        "plans_finish", "plans_start",  # TBD-604
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
@@ -161,7 +161,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         # a plan's params carry amounts and funding accounts.
         *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
         "plan_goal_create", "plan_goal_update", "plan_goal_delete",
-        "plans_finish",  # TBD-604
+        "plans_finish", "plans_start",  # TBD-604
     }
 
 
@@ -385,6 +385,7 @@ def _valid_base(tool) -> dict:
         "plan_goal_delete": {"scenario_id": 1, "goal_id": 1},
         "scenarios_delete": {"scenario_id": 1},
         "plans_finish": {"scenario_id": 1},
+        "plans_start": {"scenario_id": 1},
     }.get(tool.name, {})
 
 

@@ -112,6 +112,7 @@ const TOOL_LABELS: Record<string, string> = {
   plan_goal_update: "Edit a plan goal",
   plan_goal_delete: "Delete a plan goal",
   plans_finish: "Finish a plan",
+  plans_start: "Start a plan",
 };
 
 export function toolLabel(name: string): string {
@@ -171,6 +172,9 @@ const FIELD_LABELS: Record<string, string> = {
   "plan_goals.account_id": "Account",
   "plan_goals.start_balance": "Starting balance",
   "plan_goals.funding_recurring_id": "Funding recurring item",
+  "tags.name": "Tag name",
+  "tags.name_normalized": "Tag (as matched)",
+  "tags.created_by_user_id": "Created by",
   "transactions.category_id": "Category",
   "transactions.description": "Description",
   "transactions.date": "Date",
