@@ -1,10 +1,10 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import ImportPage from "@/app/import/page";
 import { apiFetch } from "@/lib/api";
-import type { ImportPreviewResponse, ImportPreviewRow } from "@/lib/types";
+import type { ImportPreviewResponse, ImportPreviewRow, OccurrenceCandidate } from "@/lib/types";
 
 // Mock Next.js navigation hooks. The page uses both useRouter and
 // useSearchParams; the latter must implement .get().
@@ -1122,5 +1122,184 @@ describe("ImportPage transfer pill column", () => {
       expect.stringContaining("/api/v1/import/confirm"),
       expect.objectContaining({ timeoutMs: 15_000 }),
     );
+  });
+});
+
+describe("ImportPage recurring occurrence bind (TBD-755)", () => {
+  beforeEach(() => {
+    vi.mocked(apiFetch).mockReset();
+  });
+
+  const occ = (overrides: Partial<OccurrenceCandidate> = {}): OccurrenceCandidate => ({
+    recurring_id: 40,
+    occurrence_id: 400,
+    due_date: "2026-05-01",
+    expected_amount: "50.00",
+    description: "Netflix",
+    date_diff_days: 2,
+    signal: "merchant",
+    ...overrides,
+  });
+
+  function bindPreview(): ImportPreviewResponse {
+    return {
+      ...basePreview([
+        baseRow({
+          row_number: 1,
+          description: "NETFLIX",
+          occurrence_match_action: "bind",
+          occurrence_candidates: [occ()],
+        }),
+        baseRow({
+          row_number: 2,
+          description: "GYM",
+          occurrence_match_action: "bind",
+          occurrence_candidates: [occ({ recurring_id: 41, occurrence_id: 410, description: "Gym" })],
+        }),
+        baseRow({
+          row_number: 3,
+          description: "SOMETHING 50",
+          occurrence_match_action: "suggest_bind",
+          occurrence_candidates: [
+            occ({ recurring_id: 42, occurrence_id: 420, description: "Insurance", signal: "amount" }),
+          ],
+        }),
+        baseRow({
+          row_number: 4,
+          description: "ENERGY",
+          occurrence_match_action: "choose_occurrence",
+          occurrence_candidates: [
+            occ({ recurring_id: 43, occurrence_id: 430, description: "Energy A" }),
+            occ({ recurring_id: 44, occurrence_id: null, due_date: "2026-05-03", description: "Energy B" }),
+          ],
+        }),
+      ]),
+      bind_count: 2,
+    };
+  }
+
+  it("preselects bind, offers suggest_bind, requires a pick for choose_occurrence, and sends bind_occurrence", async () => {
+    await renderAndPreview(bindPreview());
+
+    expect(screen.getByText(/2 settle a recurring payment/i)).toBeInTheDocument();
+
+    // The occurrence is shown by series name, due date and amount.
+    const panel1 = screen.getByTestId("bind-panel-1");
+    expect(panel1).toHaveTextContent(/Netflix · due 2026-05-01/);
+    expect(within(panel1).getByRole("radio", { name: /Netflix/ })).toBeChecked();
+
+    // suggest_bind: offered, but the plain-row choice is selected.
+    const panel3 = screen.getByTestId("bind-panel-3");
+    expect(within(panel3).getByRole("radio", { name: /Insurance/ })).not.toBeChecked();
+    expect(within(panel3).getByRole("radio", { name: /plain row/i })).toBeChecked();
+
+    // choose_occurrence: nothing selected, the frontier is labelled, confirm blocked.
+    const panel4 = screen.getByTestId("bind-panel-4");
+    for (const r of within(panel4).getAllByRole("radio")) expect(r).not.toBeChecked();
+    expect(panel4).toHaveTextContent(/not generated yet/i);
+    expect(panel4).toHaveTextContent(/required/i);
+
+    const selects = document.querySelectorAll("select");
+    fireEvent.change(selects[selects.length - 1], { target: { value: "5" } });
+    const confirmBtn = screen.getByRole("button", { name: /import 4 transactions/i });
+    expect(confirmBtn).toBeDisabled();
+    expect(screen.getByText(/1 row needs a recurring payment pick/i)).toBeInTheDocument();
+
+    // Opt row 2 out of its preselected bind; pick the frontier for row 4.
+    fireEvent.click(
+      within(screen.getByTestId("bind-panel-2")).getByRole("radio", { name: /plain row/i }),
+    );
+    fireEvent.click(within(panel4).getByRole("radio", { name: /Energy B/ }));
+    expect(confirmBtn).toBeEnabled();
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockResolvedValueOnce({
+      imported_count: 2,
+      paired_count: 0,
+      dropped_duplicate_count: 0,
+      bound_count: 2,
+      bind_fallbacks: [],
+      skipped_count: 0,
+      error_count: 0,
+      errors: [],
+      import_id: 9,
+    } as never);
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(
+        apiFetchMock.mock.calls.find(([url]) => url === "/api/v1/import/confirm"),
+      ).toBeDefined();
+    });
+    const confirmCall = apiFetchMock.mock.calls.find(
+      ([url]) => url === "/api/v1/import/confirm",
+    )!;
+    const body = JSON.parse((confirmCall[1] as RequestInit).body as string);
+
+    expect(body.rows[0]).toMatchObject({
+      action: "bind_occurrence",
+      bind_recurring_id: 40,
+      bind_due_date: "2026-05-01",
+      bind_occurrence_id: 400,
+    });
+    expect(body.rows[1].action).toBe("create");
+    expect(body.rows[2].action).toBe("create");
+    expect(body.rows[3]).toMatchObject({
+      action: "bind_occurrence",
+      bind_recurring_id: 44,
+      bind_due_date: "2026-05-03",
+      bind_occurrence_id: null,
+    });
+  });
+
+  it("a skipped choose_occurrence row does not block confirm", async () => {
+    await renderAndPreview(
+      basePreview([
+        baseRow({
+          row_number: 1,
+          occurrence_match_action: "choose_occurrence",
+          occurrence_candidates: [occ(), occ({ recurring_id: 41 })],
+        }),
+        baseRow({ row_number: 2 }),
+      ]),
+    );
+    const selects = document.querySelectorAll("select");
+    fireEvent.change(selects[selects.length - 1], { target: { value: "5" } });
+    expect(screen.getByRole("button", { name: /import 2 transactions/i })).toBeDisabled();
+
+    // Row 1's Skip checkbox.
+    fireEvent.click(document.querySelector('tbody input[type="checkbox"]') as HTMLInputElement);
+    expect(screen.queryByTestId("bind-panel-1")).toBeNull();
+    expect(screen.getByRole("button", { name: /import 1 transaction/i })).toBeEnabled();
+  });
+
+  it("results surface bound_count and bind_fallbacks", async () => {
+    await renderAndPreview(basePreview([baseRow({ row_number: 1 })]));
+    const selects = document.querySelectorAll("select");
+    fireEvent.change(selects[selects.length - 1], { target: { value: "5" } });
+
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      imported_count: 1,
+      paired_count: 0,
+      dropped_duplicate_count: 0,
+      bound_count: 3,
+      bind_fallbacks: [
+        {
+          row_number: 7,
+          error: "That recurring occurrence changed since the preview; preview again.",
+        },
+      ],
+      skipped_count: 0,
+      error_count: 0,
+      errors: [],
+      import_id: 9,
+    } as never);
+    fireEvent.click(screen.getByRole("button", { name: /import 1 transaction/i }));
+
+    await screen.findByText(/import complete/i);
+    expect(screen.getByText(/3 settled a recurring payment/i)).toBeInTheDocument();
+    const fallbacks = screen.getByTestId("bind-fallbacks");
+    expect(fallbacks).toHaveTextContent(/1 imported as plain row because/i);
+    expect(fallbacks).toHaveTextContent(/Row 7: That recurring occurrence changed/);
   });
 });

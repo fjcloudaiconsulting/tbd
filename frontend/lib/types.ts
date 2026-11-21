@@ -376,6 +376,22 @@ export interface ImportPreviewRow {
   transfer_match_confidence?: "same_day" | "near_date" | "multi_candidate" | null;
   pair_with_transaction_id?: number | null;
   transfer_candidates: TransferCandidate[];
+
+  // Detector 3 (TBD-755): the recurring occurrence this bank row settles.
+  // ``bind`` is preselected, ``suggest_bind`` offered, ``choose_occurrence``
+  // needs a pick. Absent on previews from before the backend shipped it.
+  occurrence_match_action?: "none" | "bind" | "suggest_bind" | "choose_occurrence";
+  occurrence_candidates?: OccurrenceCandidate[];
+}
+
+export interface OccurrenceCandidate {
+  recurring_id: number;
+  occurrence_id: number | null; // null: not generated yet; the bind creates it
+  due_date: string;
+  expected_amount: string;
+  description: string;
+  date_diff_days: number;
+  signal: "merchant" | "category" | "amount";
 }
 
 export interface ImportPreviewResponse {
@@ -390,6 +406,7 @@ export interface ImportPreviewResponse {
   suggested_pair_count: number;
   multi_candidate_count: number;
   duplicate_of_linked_count: number;
+  bind_count?: number; // rows whose occurrence_match_action is "bind" (TBD-755)
 
   // L3.2 Wave 2B: ``'csv'``, ``'ofx'`` or ``'tab'`` (ABN AMRO). The
   // frontend echoes this in the confirm payload so the backend can stamp
@@ -406,12 +423,22 @@ export interface ImportConfirmRow {
   category_id: number | null;
   skip: boolean;
   // Spec §3.2 confirm-row action mapping
-  action?: "create" | "pair_with_existing" | "drop_as_duplicate" | "create_transfer_pair";
+  action?:
+    | "create"
+    | "pair_with_existing"
+    | "drop_as_duplicate"
+    | "create_transfer_pair"
+    | "bind_occurrence";
   pair_with_transaction_id?: number | null;
   duplicate_of_transaction_id?: number | null;
   partner_account_id?: number | null;
   transfer_category_id?: number | null;
   recategorize?: boolean;
+  // Required iff action === "bind_occurrence" (TBD-755); bind_occurrence_id is
+  // null for an occurrence not generated yet.
+  bind_recurring_id?: number | null;
+  bind_due_date?: string | null;
+  bind_occurrence_id?: number | null;
   // Echoed from preview for accept-vs-override smart-rules detection
   suggested_category_id?: number | null;
   suggestion_source?: SuggestionSource | null;
@@ -440,6 +467,10 @@ export interface ImportConfirmResponse {
   imported_count: number;
   paired_count: number;
   dropped_duplicate_count: number;
+  // TBD-755: rows that settled a recurring occurrence, and rows whose bind was
+  // refused and were imported plain instead (counted in imported_count).
+  bound_count?: number;
+  bind_fallbacks?: ImportRowError[];
   skipped_count: number;
   error_count: number;
   errors: ImportRowError[];
@@ -828,6 +859,16 @@ export interface ReconciliationRow {
    * is a server fact, not something to re-derive here.
    */
   is_reciprocal_transfer_leg: boolean;
+  /** Set iff this bank row settles a recurring occurrence (TBD-755). */
+  bound_occurrence?: BoundOccurrence | null;
+}
+
+export interface BoundOccurrence {
+  occurrence_id: number;
+  description: string;
+  date: string;
+  amount: string;
+  can_unbind: boolean; // false once the series is stopped or deleted
 }
 
 export interface ImportBatchDetail {
