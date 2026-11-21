@@ -704,13 +704,15 @@ async def test_f7_already_verified_reclick_without_password_is_200(session_facto
 async def test_f8_register_squat_then_victim_recovers_end_to_end(
     session_factory, monkeypatch
 ):
-    """F8. Real POST /register as the attacker with the victim's address and
-    P. The victim's click without a password changes nothing and P cannot log
+    """F8. Since TBD-654 a real POST /register can no longer squat (it answers
+    setup_complete), but legacy squats made before it still exist, so the row
+    is seeded as one: the victim's address and the attacker's P, unverified.
+    The victim's click without a password changes nothing and P cannot log
     in; after forgot/reset to Q the same link verifies with Q only. Kills:
     binding a password fingerprint into the token (victim's link dead)."""
     from app.models.subscription import Plan
     from app.routers import auth as auth_module
-    from app.security import create_password_reset_token
+    from app.security import create_email_verification_token, create_password_reset_token
 
     async with session_factory() as db:
         db.add(Plan(slug="free", name="Free", is_active=True, sort_order=0))
@@ -728,8 +730,20 @@ async def test_f8_register_squat_then_victim_recovers_end_to_end(
             "/api/v1/auth/register",
             json={"username": "alice", "email": victim, "password": "attacker-P-1"},
         )
-        assert reg.status_code in (200, 201), reg.text
-        token = sent[-1][1]
+        assert reg.status_code == 403 and _code(reg) == "setup_complete", reg.text
+        assert sent == []
+        async with session_factory() as db:
+            org = Organization(name="squat", billing_cycle_day=1)
+            db.add(org)
+            await db.flush()
+            squat = User(
+                org_id=org.id, username="alice", email=victim,
+                password_hash=hash_password("attacker-P-1"), role=Role.OWNER,
+                is_superadmin=False, is_active=True, email_verified=False,
+            )
+            db.add(squat)
+            await db.commit()
+        token = create_email_verification_token(squat.id, victim)
 
         click = client.post("/api/v1/auth/verify-email", json={"token": token})
         assert click.status_code == 400 and _code(click) == "password_required"
