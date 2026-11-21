@@ -405,6 +405,85 @@ describe("ReconcileClient", () => {
     ).toBeInTheDocument();
   });
 
+  describe("bound to a recurring occurrence (TBD-755)", () => {
+    function boundBatch(canUnbind = true) {
+      const batch = makeBatch();
+      batch.rows[0] = {
+        ...batch.rows[0],
+        linked_transaction_id: 700,
+        bound_occurrence: {
+          occurrence_id: 700,
+          description: "Netflix",
+          date: "2026-05-12",
+          amount: "12.50",
+          can_unbind: canUnbind,
+        },
+      };
+      return batch;
+    }
+
+    it("shows the occurrence it settles, hides refused actions, and Unbind posts then refreshes", async () => {
+      const batch = boundBatch();
+      const unbindMock = vi.fn().mockResolvedValue([]);
+      const getMock = vi.fn().mockResolvedValue(batch);
+      (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
+        async (path: string, options?: RequestInit) =>
+          options?.method === "POST" ? unbindMock(path, options) : getMock(path),
+      );
+      renderClient({ batchId: 7, initialBatch: batch });
+      const row = (await screen.findAllByTestId("reconcile-row"))[0];
+
+      expect(row.querySelector('[data-testid="bound-occurrence"]')?.textContent).toMatch(
+        /Settles the recurring payment Netflix/,
+      );
+      for (const target of ["edited", "matched", "skipped", "rejected"]) {
+        expect(row.querySelector(`[data-testid="action-${target}"]`)).toBeNull();
+      }
+      expect(row.querySelector('[data-testid="action-accepted"]')).toBeTruthy();
+
+      const callsBefore = getMock.mock.calls.length;
+      fireEvent.click(row.querySelector('[data-testid="action-unbind"]') as HTMLButtonElement);
+      await waitFor(() => {
+        expect(unbindMock).toHaveBeenCalledWith(
+          "/api/v1/transactions/100/unbind",
+          expect.objectContaining({ method: "POST" }),
+        );
+      });
+      await waitFor(() => expect(getMock.mock.calls.length).toBeGreaterThan(callsBefore));
+    });
+
+    it("shows an unbind refusal readably", async () => {
+      const batch = boundBatch();
+      (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_path: string, options?: RequestInit) => {
+          if (options?.method === "POST") {
+            throw new Error(
+              "Another transaction of this series already sits on the date the occurrence would return to.",
+            );
+          }
+          return batch;
+        },
+      );
+      renderClient({ batchId: 7, initialBatch: batch });
+      const row = (await screen.findAllByTestId("reconcile-row"))[0];
+      fireEvent.click(row.querySelector('[data-testid="action-unbind"]') as HTMLButtonElement);
+      expect(
+        await screen.findByText(/already sits on the date the occurrence would return to/),
+      ).toBeInTheDocument();
+    });
+
+    it("offers no Unbind once the series is stopped, and says why", async () => {
+      const batch = boundBatch(false);
+      (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(async () => batch);
+      renderClient({ batchId: 7, initialBatch: batch });
+      const row = (await screen.findAllByTestId("reconcile-row"))[0];
+      expect(row.querySelector('[data-testid="action-unbind"]')).toBeNull();
+      expect(row.querySelector('[data-testid="bound-occurrence"]')?.textContent).toMatch(
+        /can no longer be unbound/,
+      );
+    });
+  });
+
   it("renders the error state when the initial fetch returned null", async () => {
     (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
       async () => {

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import useSWR from "swr";
 import { apiFetch, ApiResponseError, extractErrorMessage } from "@/lib/api";
 import AppShell from "@/components/AppShell";
@@ -51,7 +51,9 @@ type TransferUiState = {
  * Action precedence (per spec §4.6):
  *   1. is_duplicate_of_linked_leg + dropAccepted → "drop_as_duplicate"
  *   2. transfer_match_action != "none" + user-confirmed pair → "pair_with_existing"
- *   3. otherwise → "create"
+ *   3. a picked recurring occurrence (TBD-755) → "bind_occurrence"
+ *   4. manual "Mark as transfer..." → "create_transfer_pair"
+ *   5. otherwise → "create"
  *
  * Notes:
  * - skip semantics (UI-only "don't import this row") is unchanged. drop_as_duplicate
@@ -65,6 +67,8 @@ function buildConfirmRow(
   rowState: ImportConfirmRow,
   preview: ImportPreviewRow,
   ui: TransferUiState,
+  // Index into preview.occurrence_candidates; null/undefined imports plain.
+  bindPick?: number | null,
 ): ImportConfirmRow {
   const isDup = preview.is_duplicate_of_linked_leg;
   const matchAction = preview.transfer_match_action;
@@ -99,6 +103,21 @@ function buildConfirmRow(
       duplicate_of_transaction_id: null,
       transfer_category_id: null,
       recategorize: true,
+    };
+  }
+
+  const occ = bindPick != null ? preview.occurrence_candidates?.[bindPick] : undefined;
+  if (occ) {
+    return {
+      ...rowState,
+      action: "bind_occurrence",
+      bind_recurring_id: occ.recurring_id,
+      bind_due_date: occ.due_date,
+      bind_occurrence_id: occ.occurrence_id,
+      pair_with_transaction_id: null,
+      duplicate_of_transaction_id: null,
+      transfer_category_id: null,
+      recategorize: undefined,
     };
   }
 
@@ -179,6 +198,11 @@ function ImportPageContent() {
   // Transfer-pill UI state (parallel map keyed by row_number — UI only).
   // Confirm-payload mapping happens via buildConfirmRow at submit time.
   const [transferUi, setTransferUi] = useState<Record<number, TransferUiState>>({});
+
+  // TBD-755: the recurring occurrence each row settles, keyed by row_number:
+  // an index into occurrence_candidates, null for "import as a plain row",
+  // absent while a choose_occurrence row still needs a pick.
+  const [bindPick, setBindPick] = useState<Record<number, number | null>>({});
 
   // Review pairings filter — when ON, table only renders rows with a
   // transfer detector match (Detector 1 or Detector 2).
@@ -272,7 +296,10 @@ function ImportPageContent() {
 
       // Initialize transfer-pill UI state per row from preview detectors.
       const ui: Record<number, TransferUiState> = {};
+      const picks: Record<number, number | null> = {};
       data.rows.forEach((r: ImportPreviewRow) => {
+        if (r.occurrence_match_action === "bind") picks[r.row_number] = 0;
+        else if (r.occurrence_match_action === "suggest_bind") picks[r.row_number] = null;
         ui[r.row_number] = {
           panelOpen: false,
           // pair_with (same_day) defaults checked. suggest_pair (near_date)
@@ -284,6 +311,7 @@ function ImportPageContent() {
         };
       });
       setTransferUi(ui);
+      setBindPick(picks);
 
       setStep("preview");
     } catch (err) {
@@ -330,7 +358,7 @@ function ImportPageContent() {
       const pv = previewByRow.get(rs.row_number);
       if (!pv) return rs;
       const ui = transferUi[rs.row_number] ?? defaultUi;
-      return buildConfirmRow(rs, pv, ui);
+      return buildConfirmRow(rs, pv, ui, bindPick[rs.row_number]);
     });
 
     try {
@@ -358,7 +386,7 @@ function ImportPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [preview, defaultCategoryId, rowStates, transferUi, confirmKey]);
+  }, [preview, defaultCategoryId, rowStates, transferUi, bindPick, confirmKey]);
 
   // ── Row update helpers ───────────────────────────────────────────────────
   const updateRow = useCallback((rowNum: number, patch: Partial<ImportConfirmRow>) => {
@@ -383,8 +411,22 @@ function ImportPageContent() {
   // Modal state — when set, opens ImportMarkAsTransferModal for that row.
   const [markTransferModalRow, setMarkTransferModalRow] = useState<ImportPreviewRow | null>(null);
 
+  const pickBind = useCallback((rowNum: number, idx: number | null) => {
+    setBindPick((prev) => ({ ...prev, [rowNum]: idx }));
+    // A bound row is not also a manual transfer.
+    if (idx !== null) updateTransferUi(rowNum, { markTransferDestAccountId: null });
+  }, [updateTransferUi]);
+
   const activeRows = rowStates.filter((r) => !r.skip);
   const skipCount = rowStates.filter((r) => r.skip).length;
+  // choose_occurrence rows block confirm until the user picks (or opts out).
+  const bindPicksNeeded =
+    preview?.rows.filter(
+      (r, idx) =>
+        r.occurrence_match_action === "choose_occurrence" &&
+        !rowStates[idx]?.skip &&
+        !(r.row_number in bindPick),
+    ).length ?? 0;
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -553,6 +595,11 @@ function ImportPageContent() {
                   {preview.duplicate_of_linked_count} dup of linked leg
                 </span>
               )}
+              {(preview.bind_count ?? 0) > 0 && (
+                <span className={badgeInfo}>
+                  {preview.bind_count} settle a recurring payment
+                </span>
+              )}
             </div>
           </div>
 
@@ -625,9 +672,12 @@ function ImportPageContent() {
                   // per-row UI state.
                   const manualMarkDestId =
                     transferUi[previewRow.row_number]?.markTransferDestAccountId ?? null;
+                  const occMatch = previewRow.occurrence_match_action ?? "none";
+                  const occCandidates = previewRow.occurrence_candidates ?? [];
                   if (
                     reviewPairingsOnly &&
                     previewRow.transfer_match_action === "none" &&
+                    occMatch === "none" &&
                     !previewRow.is_duplicate_of_linked_leg &&
                     manualMarkDestId === null
                   ) {
@@ -801,6 +851,65 @@ function ImportPageContent() {
                         )}
                       </tr>
 
+                      {occMatch !== "none" && occCandidates.length > 0 && !rowState.skip && (() => {
+                        const pick = bindPick[previewRow.row_number];
+                        const radio = (idx: number | null, text: ReactNode) => (
+                          <li key={idx ?? "plain"}>
+                            <label
+                              className={`flex cursor-pointer items-center gap-2 rounded border px-2 py-1.5 ${
+                                pick === idx ? "border-accent bg-accent/5" : "border-border"
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`occ-${previewRow.row_number}`}
+                                checked={pick === idx}
+                                onChange={() => pickBind(previewRow.row_number, idx)}
+                              />
+                              <span className="text-text-secondary">{text}</span>
+                            </label>
+                          </li>
+                        );
+                        return (
+                          <tr
+                            className="border-b border-border bg-surface-raised/50"
+                            data-testid={`bind-panel-${previewRow.row_number}`}
+                          >
+                            <td colSpan={COL_COUNT} className="px-6 py-3">
+                              <fieldset className="space-y-2 text-sm">
+                                <legend className="font-medium text-text-primary">
+                                  {occMatch === "bind"
+                                    ? "Settles a recurring payment"
+                                    : occMatch === "suggest_bind"
+                                    ? "May settle a recurring payment (same amount)"
+                                    : "Pick the recurring payment this settles"}
+                                  {pick === undefined && (
+                                    <span className="ml-2 text-xs text-warning">(required)</span>
+                                  )}
+                                </legend>
+                                <ul className="mt-2 space-y-1">
+                                  {occCandidates.map((c, idx) =>
+                                    radio(
+                                      idx,
+                                      <>
+                                        {maskMoneyText(c.description)} · due {c.due_date} ·{" "}
+                                        <span className="tabular-nums">{money(c.expected_amount)}</span>
+                                        {c.occurrence_id === null && (
+                                          <span className="ml-2 text-xs text-text-muted">
+                                            (not generated yet)
+                                          </span>
+                                        )}
+                                      </>,
+                                    ),
+                                  )}
+                                  {radio(null, "Import as a plain row")}
+                                </ul>
+                              </fieldset>
+                            </td>
+                          </tr>
+                        );
+                      })()}
+
                       {pill && ui.panelOpen && (
                         <tr
                           className="border-b border-border bg-surface-raised/50"
@@ -954,6 +1063,12 @@ function ImportPageContent() {
 
           {/* Actions */}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-4">
+            {bindPicksNeeded > 0 && (
+              <span className="text-sm text-warning sm:order-4" role="status">
+                {bindPicksNeeded} row{bindPicksNeeded === 1 ? " needs" : "s need"} a recurring
+                payment pick
+              </span>
+            )}
             {skipCount > 0 && (
               <span className="text-sm text-text-muted sm:order-3">{skipCount} skipped</span>
             )}
@@ -965,7 +1080,9 @@ function ImportPageContent() {
             </button>
             <button
               onClick={handleConfirm}
-              disabled={defaultCategoryId === "" || activeRows.length === 0 || loading}
+              disabled={
+                defaultCategoryId === "" || activeRows.length === 0 || bindPicksNeeded > 0 || loading
+              }
               className={btnPrimary + " w-full sm:order-1 sm:min-h-0 sm:w-auto"}
             >
               {loading
@@ -993,6 +1110,8 @@ function ImportPageContent() {
                 updateTransferUi(markTransferModalRow.row_number, {
                   markTransferDestAccountId: destAccountId,
                 });
+                // A manual transfer is not also bound to an occurrence.
+                pickBind(markTransferModalRow.row_number, null);
                 setMarkTransferModalRow(null);
               }}
               onCancel={() => setMarkTransferModalRow(null)}
@@ -1022,8 +1141,27 @@ function ImportPageContent() {
                 {results.dropped_duplicate_count} dropped as duplicate of existing transfer leg
               </p>
             )}
+            {(results.bound_count ?? 0) > 0 && (
+              <p className="text-text-muted">
+                {results.bound_count} settled a recurring payment
+              </p>
+            )}
             {results.skipped_count > 0 && (
               <p className="text-text-muted">{results.skipped_count} skipped</p>
+            )}
+            {results.bind_fallbacks && results.bind_fallbacks.length > 0 && (
+              <div data-testid="bind-fallbacks">
+                <p className="font-medium text-warning">
+                  {results.bind_fallbacks.length} imported as plain row
+                  {results.bind_fallbacks.length === 1 ? "" : "s"} because the recurring
+                  payment could not be settled:
+                </p>
+                <ul className="ml-4 mt-1 list-disc text-text-secondary">
+                  {results.bind_fallbacks.map((e) => (
+                    <li key={e.row_number}>Row {e.row_number}: {e.error}</li>
+                  ))}
+                </ul>
+              </div>
             )}
             {results.error_count > 0 && (
               <div>
