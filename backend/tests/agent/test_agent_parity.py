@@ -35,7 +35,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Ratchet: gaps may only go DOWN. Closing one (a tool now mirrors the route)
 # lowers this number in the same PR (equality, so a silent deletion fails);
 # raising it needs an architect ruling.
-MAX_GAPS = 20
+MAX_GAPS = 19
 
 AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     # TBD-664
@@ -55,9 +55,6 @@ AGENT_PARITY_GAPS: dict[tuple[str, str], str] = {
     ("PUT", "/api/v1/transactions/{transaction_id}"): "TBD-664",
     ("PUT", "/api/v1/transactions/{transaction_id}/tags"): "TBD-664",
     ("POST", "/api/v1/transactions/{transaction_id}/unpair"): "TBD-664",
-    # TBD-604 (the Plans lifecycle, TBD-602). Start stays off the agent until
-    # a preview discloses what it writes.
-    ("POST", "/api/v1/scenarios/{scenario_id}/start"): "TBD-604",
     # TBD-670
     ("POST", "/api/v1/import/confirm"): "TBD-670",
     ("POST", "/api/v1/import/ofx/preview"): "TBD-670",

@@ -25,7 +25,9 @@ from app.models.user import Role
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
     P_START, _confirm, _invoke, _refused, _rows, engine, factory, w,
 )
-from tests.agent.test_agent_honesty import _TRIP, _fplan, _ids, _own_plan, _resolve, _snap
+from tests.agent.test_agent_honesty import (
+    _TRIP, _bare_draft, _draft, _fplan, _ids, _own_plan, _resolve, _savings, _snap,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +274,63 @@ async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory
     # no plan fields: a legacy scenario, no currency resolved (as the route)
     out = await _invoke(factory, a["member"], "scenarios_create", create)
     assert "currency" not in {c["field"] for c in out["changes"]} and "currency" not in out["context"]
+
+
+async def test_plans_start_refuses_at_preview_what_start_would_not_take(factory, w):
+    """GUARD (architects' ruling on TBD-604). Wrong implementation: a Start
+    preview staging what ``start()`` refuses, or what it cannot disclose (a
+    period the route would commit, a tag-dictionary write), or a
+    ``plan_goal_*`` preview staging a series the write refuses."""
+    from app.models.billing import BillingPeriod
+    from app.models.category import Category, CategoryType
+    from app.models.settings import OrgSetting
+    from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier
+
+    a = w["A"]
+    start = {"scenario_id": None}
+
+    async def refused(code, words):
+        err = await _refused(_invoke(factory, a["member"], "plans_start", start))
+        assert (err.code, words in err.detail) == (code, True), err.detail
+
+    async def goal(**kw):
+        await _ids(factory, PlanGoal(org_id=a["org"], scenario_id=start["scenario_id"], name="G",
+                                     tier=PlanGoalTier.WANT, **kw))
+
+    await _own_plan(factory, a)  # no plan fields: not a plan
+    start["scenario_id"] = a["scn"]
+    await refused("invalid_arguments", "not a plan")
+    await _bare_draft(factory, a)
+    start["scenario_id"] = a["scn"]
+    async with factory() as db:  # sharing tag data: the new tag would reach the dictionary
+        db.add(OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
+        await db.commit()
+    await refused("conflict", "tag dictionary")
+    async with factory() as db:
+        await db.execute(OrgSetting.__table__.delete().where(OrgSetting.org_id == a["org"]))
+        await db.commit()
+    await goal(kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=5, category_id=a["c1"])
+    await refused("invalid_arguments", "subcategory")  # a master not made yet has none
+
+    # An EXPENSE master cannot carry a savings goal's transfer series.
+    await _savings(factory, a)
+    [cat] = await _ids(factory, Category(org_id=a["org"], name="Spend", type=CategoryType.EXPENSE))
+    [a["scn"]] = await _ids(factory, _draft(a, "Spend", category_id=cat, funding_account_id=a["acct"]))
+    start["scenario_id"] = a["scn"]
+    await goal(kind=PlanGoalKind.SAVINGS_TARGET, monthly_amount=5, account_id=a["savings"])
+    await refused("invalid_arguments", "both types")
+
+    [a["scn"]] = await _ids(factory, _draft(a, "Later"))
+    start["scenario_id"] = a["scn"]
+    async with factory() as db:
+        await db.execute(update(BillingPeriod).where(BillingPeriod.org_id == a["org"]).values(end_date=P_START))
+        await db.commit()
+    await refused("no_open_period", "open one first")
+    for status, code in ((ScenarioStatus.ACTIVE, "no_change"), (ScenarioStatus.FINISHED, "conflict")):
+        async with factory() as db:
+            await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=status))
+            await db.commit()
+        await refused(code, "started" if code == "no_change" else "cannot be started")
 
 
 async def test_scenarios_update_on_a_started_plan_follows_assert_editable(factory, w):
