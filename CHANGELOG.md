@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.314.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.313.0...v0.314.0) (2026-11-21)
+
+
+### Features
+
+* **import:** choose and undo the recurring occurrence a bank row settles (TBD-755) ([#1159](https://github.com/fjcloudaiconsulting/tbd/issues/1159)) ([566ace6](https://github.com/fjcloudaiconsulting/tbd/commit/566ace61ac347582fd7dd040036c44a2f5ad97cd))
+
+
+### Bug Fixes
+
+* **test:** force the bind-vs-generation interleaving in the MySQL fence (TBD-818) ([#1160](https://github.com/fjcloudaiconsulting/tbd/issues/1160)) ([f6902b3](https://github.com/fjcloudaiconsulting/tbd/commit/f6902b3239ee8e8d46f2c157e268dced3ccc29f3))
+
 ## [0.313.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.312.1...v0.313.0) (2026-11-21)
 
 
