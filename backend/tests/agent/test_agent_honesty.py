@@ -275,6 +275,7 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summar
     del_rows = {t: {pk for pk in pre[t] if pk not in post[t]} for t in TABLES if t not in BOOKKEEPING_TABLES}
     claimed_del: set[tuple] = set()
     insert_groups = []
+    refs: list[tuple] = []  # (table, pk, column, group id it names): checked once inserts match
 
     for (table, _), cs in groups.items():
         tobj = TABLES[table]
@@ -296,6 +297,14 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summar
                     claimed.add((table, pk, base))
                     continue
                 assert f in tobj.c, f"rule 3: {table} has no column {f!r}"
+                a = c["after"]
+                if isinstance(a, str) and a.startswith("new:") and tobj.c[f].foreign_keys:
+                    # A link to a row this call inserts (TBD-604): rule 4 resolves it.
+                    assert _norm(tobj.c[f], pre[table][pk][f]) == c["before"], (
+                        f"rule 3: {table}.{f} before {c['before']!r} is not the row's")
+                    refs.append((table, pk, f, a))
+                    claimed.add((table, pk, f))
+                    continue
                 p, q = _norm(tobj.c[f], pre[table][pk][f]), _norm(tobj.c[f], post[table][pk][f])
                 assert p == c["before"] and q == c["after"] and (p != q or c["before"] == c["after"]), (
                     f"rule 3: {table}.{f} names {c['before']!r} -> {c['after']!r}, row went {p!r} -> {q!r}"
@@ -315,7 +324,6 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summar
 
     # 4. inserts: one-to-one, named values equal the row, the rest default
     matched: dict[str, tuple] = {}  # insert group id -> (table, pk)
-    refs: list[tuple] = []  # (table, pk, column, group id it names)
     for table, id_, pk, cs in insert_groups:
         tobj = TABLES[table]
         natural = not (isinstance(id_, str) and id_.startswith("new:"))
@@ -1307,6 +1315,29 @@ async def _active_plan(f, a):
                       period_start=P_START + relativedelta(months=1)))
 
 
+async def _active_plan_funded(f, a):
+    """``_active_plan`` drawing on ``acct``: a goal started late gets a series."""
+    await _active_plan(f, a)
+    async with f() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(funding_account_id=a["acct"]))
+        await db.commit()
+
+
+async def _started_with_a_disabled_goal(f, a):
+    """A started plan on a BOTH master (a transfer's category), funded from
+    ``acct``, with a disabled savings goal into ``savings`` ending in 3 months."""
+    await _savings(f, a)
+    [goals] = await _ids(f, Category(org_id=a["org"], name="Goals", type=CategoryType.BOTH))
+    [a["scn"]] = await _ids(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="House", scenario_type=ScenarioType.TRIP, params_json={},
+        horizon_months=24, status=ScenarioStatus.ACTIVE, currency="EUR", category_id=goals,
+        funding_account_id=a["acct"], monthly_budget=Decimal("100.00")))
+    [a["goal"]] = await _ids(f, PlanGoal(
+        org_id=a["org"], scenario_id=a["scn"], name="Deposit", tier=PlanGoalTier.WANT,
+        kind=PlanGoalKind.SAVINGS_TARGET, monthly_amount=Decimal("20.00"), account_id=a["savings"],
+        target_date=datetime.date.today() + relativedelta(months=3), enabled=False))
+
+
 async def _own_plan(f, a):
     [a["scn"]] = await _ids(f, Scenario(
         org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
@@ -1372,6 +1403,16 @@ FORECAST_PLAN_SCENARIOS = [
     ("scenario-update-started-plan-budget-reaches-its-budgets", _tool(
         "scenarios_update", scenario_id="@scn", monthly_budget="300.00", name="Porto", confirm=True),
      _seq(_active_plan, _next_period), False),
+    # A goal added to a started plan gets Start's steps: its subcategory, its
+    # series, and the plan's Budgets recomputed with its spend.
+    ("plan-goal-create-on-a-started-plan-runs-starts-steps", _tool(
+        "plan_goal_create", scenario_id="@scn", name="Gym", tier="want", kind="monthly_spend",
+        monthly_amount="25.00", confirm=True), _seq(_active_plan_funded, _next_period), False),
+    # Enabling a savings goal there: its start balance, a transfer series that
+    # stops at the target date, and the cap's missing Budgets (no spend of its own).
+    ("plan-goal-update-enables-a-goal-on-a-started-plan", _tool(
+        "plan_goal_update", scenario_id="@scn", goal_id="@goal", enabled=True, name="Down payment",
+        confirm=True), _seq(_started_with_a_disabled_goal, _next_period), False),
 ]
 
 
@@ -1450,6 +1491,13 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeyp
         assert named[("budgets", "amount")] == "875.50"  # Rent's own item plus its subcategory's
     if sid == "budget-draft-writes-nothing":
         assert changes == []
+    if sid.startswith("plan-goal-") and "started-plan" in sid:  # Start's steps were disclosed (TBD-604)
+        assert {"categories", "recurring_transactions", "budgets"} <= {c["entity"] for c in changes}
+        assert named[("plan_goals", "funding_recurring_id")] == "new:series"
+        if sid == "plan-goal-update-enables-a-goal-on-a-started-plan":
+            assert named[("recurring_transactions", "type")] == "transfer"
+            assert named[("plan_goals", "start_balance")] == "50.00"
+            assert named[("recurring_transactions", "occurrence_count")] in (3, 4)
     if sid == "category-create-sub-takes-the-master-type":
         assert named[("categories", "type")] == "expense"
     if sid == "category-type-cascades-to-subs":
@@ -1765,6 +1813,39 @@ async def test_ta10_green_for_two_inserts_that_name_each_other(factory, w, windo
     a = w["A"]
     name = mutant("m_pair_ok", lambda args: _pair_changes(a), _pair_execute(a, self_linked=False),
                   risk="sensitive")
+    await _run(factory, windows, w, name)
+
+
+def _relink_changes(a):
+    """Two inserted categories, and ``b1`` updated to point at the second (the
+    shape of a goal started late, linked to the subcategory it gets, TBD-604)."""
+    out = []
+    for gid, name in (("new:1", "Pets"), ("new:2", "Toys")):
+        out += [Change("categories", gid, "name", None, {"untrusted": name}),
+                Change("categories", gid, "type", None, "expense")]
+    return out + [Change("budgets", a["b1"], "category_id", a["c1"], "new:2")]
+
+
+def _relink_execute(a, *, right: bool):
+    async def ex(ctx, args):
+        pets, toys = (Category(org_id=a["org"], name=n, type=CategoryType.EXPENSE) for n in ("Pets", "Toys"))
+        ctx.db.add_all([pets, toys])
+        await ctx.db.flush()
+        await _b(ctx, a["b1"], category_id=(toys if right else pets).id)
+    return ex
+
+
+@_mutant("rule 4: budgets.category_id names 'new:2' but links elsewhere")
+def updated_link_points_elsewhere(a):
+    """Wrong implementation: an update disclosed as linking to one new row,
+    written linking to the other."""
+    return _relink_changes(a), _relink_execute(a, right=False), {}
+
+
+async def test_ta10_green_for_an_update_that_names_a_new_row(factory, w, windows, mutant):
+    """GUARD for ``updated_link_points_elsewhere``: the right link is green."""
+    a = w["A"]
+    name = mutant("m_relink_ok", lambda args: _relink_changes(a), _relink_execute(a, right=True))
     await _run(factory, windows, w, name)
 
 

@@ -301,6 +301,35 @@ async def test_scenarios_update_on_a_started_plan_follows_assert_editable(factor
     assert (err.code, "read-only" in err.detail) == ("conflict", True)
 
 
+async def test_goal_tools_on_a_started_plan_follow_assert_editable(factory, w):
+    """GUARD (TBD-604), as the goal routes: on a started plan a create or an
+    update needs ``confirm=true``, an update takes the ``STARTED_GOAL_FIELDS``
+    only and never disables; a finished plan takes nothing. Wrong
+    implementation: a preview staging an edit the route refuses."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
+        await db.commit()
+    new = {"scenario_id": a["scn"], "name": "Car", "tier": "want", "kind": "savings_target"}
+    edit = {"scenario_id": a["scn"], "goal_id": a["goal"]}
+    for tool, args, detail in (
+        ("plan_goal_create", new, plan_draft_service.CONFIRM_TO_EDIT),
+        ("plan_goal_update", {**edit, "name": "Van"}, plan_draft_service.CONFIRM_TO_EDIT),
+        ("plan_goal_update", {**edit, "target_amount": "9.00", "confirm": True}, "cannot change target_amount"),
+        ("plan_goal_update", {**edit, "enabled": False, "confirm": True}, "cannot change enabled"),
+    ):
+        err = await _refused(_invoke(factory, a["member"], tool, args))
+        assert (err.code, detail in err.detail) == ("conflict", True), (args, err.detail)
+    out = await _invoke(factory, a["member"], "plan_goal_update", {**edit, "name": "Van", "confirm": True})
+    assert [c["field"] for c in out["changes"]] == ["name"]
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.FINISHED))
+        await db.commit()
+    err = await _refused(_invoke(factory, a["member"], "plan_goal_create", {**new, "confirm": True}))
+    assert (err.code, "read-only" in err.detail) == ("conflict", True)
+
+
 async def test_a_goal_delete_checks_only_the_draft_as_the_route_does(factory, w):
     """GUARD (review L3). ``delete_goal`` checks the draft only: with no
     currency scope a delete still stages, while a create is refused."""

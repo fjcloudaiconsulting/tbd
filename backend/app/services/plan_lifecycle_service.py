@@ -218,7 +218,7 @@ async def start_goal(db: AsyncSession, *, plan: Scenario, goal: PlanGoal,
     await budget_changed(db, plan=plan)  # its spend now counts against the Budget
 
 
-async def _check_topology(db: AsyncSession, plan: Scenario) -> None:
+async def _check_topology(db: AsyncSession, plan: Scenario, extra_account: int | None = None) -> None:
     """Money flows one way: from a funding account into goal accounts. So a
     funding account is no active plan's goal account (its own plan's
     included), a goal account is no active plan's funding account, neither is
@@ -233,6 +233,9 @@ async def _check_topology(db: AsyncSession, plan: Scenario) -> None:
     goal_accounts = Counter(g.account_id for g in goals)
     funding = {p.funding_account_id for p in active if p.funding_account_id is not None}
     mine = [g.account_id for g in goals if g.scenario_id == plan.id]
+    if extra_account is not None:  # the agent's preview: a goal not yet written (TBD-604)
+        goal_accounts[extra_account] += 1
+        mine.append(extra_account)
     slugs = dict((await db.execute(
         select(Account.id, AccountType.slug).join(AccountType, AccountType.id == Account.account_type_id)
         .where(Account.id.in_([*mine, plan.funding_account_id or 0])))).all())
@@ -347,19 +350,24 @@ def _series_spec(plan: Scenario, goal: PlanGoal, today: datetime.date) -> dict[s
     return spec
 
 
-async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, today: datetime.date) -> None:
+async def goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, today: datetime.date
+                     ) -> tuple[Category | None, Decimal | None, dict[str, Any] | None]:
+    """What ``_start_goal_steps`` writes for ``goal``, without writing: the
+    subcategory it makes (transient; None: the goal has one), the
+    ``start_balance`` it sets (None: none) and the funding series'
+    ``RecurringCreate`` fields bar ``category_id`` (None: no series). Raises
+    the refusals Start's steps raise. The agent's preview of a goal started
+    late reads it too (TBD-604)."""
+    child = balance = None
     if goal.category_id is not None:
-        child = await db.get(Category, goal.category_id)
-        if child is None or child.parent_id != plan.category_id:
+        cat = await db.get(Category, goal.category_id)
+        if cat is None or cat.parent_id != plan.category_id:
             raise ValidationError(f"goal {goal.id}'s category must be a subcategory of the plan's category")
     else:
         master = await db.get(Category, plan.category_id)
         child = Category(org_id=plan.org_id, parent_id=master.id, name=goal.name[:100], type=master.type)
-        db.add(child)
-        await db.flush()
-        goal.category_id = child.id
     if goal.account_id is not None and goal.start_balance is None:
-        goal.start_balance = await _expected_balance(db, goal.account_id)
+        balance = await _expected_balance(db, goal.account_id)
     if goal.funding_recurring_id is not None:
         # Only a draft link gets here: Start's own series come after the status flips.
         # Adopting it would flag the plan (its category is not the goal's) and Finish would stop it.
@@ -367,7 +375,7 @@ async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, to
                             "Start creates the goal's own series", code=SERIES_LINKED)
     spec = _series_spec(plan, goal, today)
     if spec is None:
-        return
+        return child, balance, None
     if goal.kind == PlanGoalKind.LUMP.value:
         earliest = await recurring_service.frontier_lower_bound(db, plan.org_id, today=today)
         if goal.target_date < earliest:
@@ -378,11 +386,22 @@ async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, to
         raise ValidationError(f"goal {goal.id} saves monthly, so it needs an account to save into")
     if spec["account_id"] is None:
         raise ValidationError("set the plan's funding account: its goals draw on it")
-    series = await recurring_service.create_recurring_no_commit(db, plan.org_id, RecurringCreate(
-        **spec, category_id=goal.category_id, frequency="monthly",
-        description=f"{plan.name}: {goal.name}"[:RECURRING_DESCRIPTION_MAX_LENGTH],
-    ), today=today)
-    goal.funding_recurring_id = series.id
+    return child, balance, {**spec, "frequency": "monthly",
+                            "description": f"{plan.name}: {goal.name}"[:RECURRING_DESCRIPTION_MAX_LENGTH]}
+
+
+async def _start_goal_steps(db: AsyncSession, plan: Scenario, goal: PlanGoal, today: datetime.date) -> None:
+    child, balance, series = await goal_steps(db, plan, goal, today)
+    if child is not None:
+        db.add(child)
+        await db.flush()
+        goal.category_id = child.id
+    if balance is not None:
+        goal.start_balance = balance
+    if series is not None:
+        row = await recurring_service.create_recurring_no_commit(
+            db, plan.org_id, RecurringCreate(**series, category_id=goal.category_id), today=today)
+        goal.funding_recurring_id = row.id
 
 
 async def _expected_balance(db: AsyncSession, account_id: int) -> Decimal:
@@ -465,12 +484,13 @@ def _amount(plan: Scenario, goals: list, start: datetime.date, end: datetime.dat
 
 
 async def budget_plan(db: AsyncSession, plan: Scenario, current_start: datetime.date, *,
-                      recompute: bool = False) -> list[tuple[BillingPeriod, Budget | None, Decimal]]:
+                      recompute: bool = False, extra: tuple = ()) -> list[tuple[BillingPeriod, Budget | None, Decimal]]:
     """What ``_ensure_budgets`` writes, without writing: each period from
     ``current_start`` on with the plan's Budget there (None: none yet) and
     the amount it gets. Empty when the plan has no Budgets. The agent's
-    preview of an edit after start reads it too (TBD-604)."""
-    goals = await _spend_goals(db, plan)
+    preview of an edit after start reads it too (TBD-604), ``extra`` naming
+    the (goal, series) pair a goal started late would add."""
+    goals = await _spend_goals(db, plan) + [(g, s) for g, s in extra if g.kind in _SPEND_KINDS]
     if not _has_budget(plan, goals):
         return []
     # A locking read: the rollover's snapshot predates its locks (its probe).
