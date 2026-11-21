@@ -34,7 +34,12 @@ from app.schemas.import_reconciliation import (
 )
 from app.schemas.import_schemas import ImportConfirmRequest, ImportConfirmRow
 from app.schemas.recurring import RecurringCreate
-from app.services import import_service, reconciliation_service, recurring_service
+from app.services import (
+    import_service,
+    reconciliation_service,
+    recurring_service,
+    transaction_service,
+)
 
 URL = os.environ.get("OCCURRENCE_BIND_MYSQL_URL")
 if not URL:
@@ -182,26 +187,94 @@ async def test_two_confirms_race_for_one_occurrence(factory):
     assert sum(1 for t in rows if t.bound_bank_tx_id is not None) == 1
 
 
-async def test_create_path_bind_races_generation(factory):
-    """Template lock: generation and the bind never both write 1 July."""
+def _seam(monkeypatch, module, name: str, task: str, event: asyncio.Event, *,
+          hold: asyncio.Event | None = None) -> None:
+    """Wrap ``module.name`` for the asyncio task named ``task`` only. Without
+    ``hold``, set ``event`` on entry: that side has reached this call. With
+    ``hold``, set ``event`` once the call returns, then wait for ``hold`` with
+    the transaction and its row locks still open."""
+    original = getattr(module, name)
+
+    async def seam(*args, **kwargs):
+        mine = asyncio.current_task().get_name() == task
+        if mine and hold is None:
+            event.set()
+        result = await original(*args, **kwargs)
+        if mine and hold is not None and not event.is_set():
+            event.set()
+            await hold.wait()
+        return result
+
+    monkeypatch.setattr(module, name, seam)
+
+
+@pytest.mark.parametrize("first", ["bind", "generate"])
+async def test_create_path_bind_races_generation(factory, monkeypatch, first):
+    """Template lock: generation and the bind never both write 1 July.
+
+    The interleaving is forced, not left to the scheduler (TBD-818). The first
+    side stops holding the template lock with its 1 July work uncommitted, and
+    is let go only once the second side's transaction is open (its snapshot
+    taken) and on its way to the template. Only the template ``FOR UPDATE``
+    then shows the second side the moved frontier; a plain read would write
+    1 July again. Left to ``gather``, the two could instead take the account
+    and the transactions gap in opposite orders: the accepted 1213 residual
+    (``bind_bank_row``), which surfaces through the savepoint as 1305 and says
+    nothing about the template lock.
+    """
     seed = await _seed(factory, next_due=JUL_1, generate_today=None)
+    held, go = asyncio.Event(), asyncio.Event()
+    if first == "bind":
+        # After the chunk's rows, savepoint released: the bind's writes to
+        # transactions are flushed, so the sweep queued behind them cannot
+        # meet a later index insert (another accepted 1213, generation's).
+        _seam(monkeypatch, import_service, "_apply_confirm_rows", "bind", held, hold=go)
+        _seam(monkeypatch, recurring_service, "_settle_due_auto", "generate", go)
+    else:
+        _seam(monkeypatch, recurring_service, "_create_occurrence", "generate", held, hold=go)
+        _seam(monkeypatch, transaction_service, "get_account_for_update", "bind", go)
+
+    async def bind():
+        async with factory() as db:
+            return await import_service.execute_import(
+                db, seed["org_id"],
+                _bind_body(seed, amount="365.00", on=JUN_29, due=JUL_1, occurrence_id=None),
+                user_id=seed["user_id"], today=JUN_29,
+            )
 
     async def generate():
-        async def go():
-            async with factory() as db:
-                await recurring_service.generate_due_transactions(db, seed["org_id"], today=JUL_1)
-        await _retry_once(go)
+        async with factory() as db:
+            await recurring_service.generate_due_transactions(db, seed["org_id"], today=JUL_1)
 
-    await asyncio.gather(
-        _confirm(factory, seed, _bind_body(seed, amount="365.00", on=JUN_29, due=JUL_1,
-                                           occurrence_id=None), JUN_29),
-        generate(),
-    )
+    sides = {"bind": bind, "generate": generate}
+    second = "generate" if first == "bind" else "bind"
+    tasks: list[asyncio.Task] = []
+    try:
+        async with asyncio.timeout(30):
+            tasks.append(asyncio.create_task(sides[first](), name=first))
+            await held.wait()
+            tasks.append(asyncio.create_task(sides[second](), name=second))
+            done = dict(zip((first, second), await asyncio.gather(*tasks)))
+    finally:
+        # A stalled side would otherwise keep its locks and hang the fixture's cleanup.
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    assert go.is_set()
 
     balance, rows = await _state(factory, seed)
     series = [t for t in rows if t.recurring_id == seed["recurring_id"]]
     assert len(series) == 1
-    assert balance == _counted(rows)
+    if first == "bind":
+        assert done["bind"].bound_count == 1 and done["bind"].bind_fallbacks == []
+        assert series[0].bound_bank_tx_id is not None
+    else:
+        # Generation wrote 1 July; the bind sees the frontier moved and imports plain.
+        assert done["bind"].bound_count == 0 and len(done["bind"].bind_fallbacks) == 1
+        assert series[0].bound_bank_tx_id is None
+    # One bank row either way, and only its 365.00 in the balance.
+    assert len([t for t in rows if t.recurring_id is None]) == 1
+    assert balance == _counted(rows) == Decimal("-365.00")
 
 
 async def test_bind_races_a_reconcile_match(factory):
