@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.313.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.312.1...v0.313.0) (2026-11-21)
+
+
+### Features
+
+* **agent:** plan goal create and edit on a started plan with confirm=true (TBD-604) ([#1154](https://github.com/fjcloudaiconsulting/tbd/issues/1154)) ([94d6778](https://github.com/fjcloudaiconsulting/tbd/commit/94d6778f889e8465087e3323274045df1dda4cf2))
+* **agent:** plans_start starts a draft plan, every step disclosed (TBD-604) ([#1155](https://github.com/fjcloudaiconsulting/tbd/issues/1155)) ([24a1112](https://github.com/fjcloudaiconsulting/tbd/commit/24a11129a5870f109211b854f02ebf02f71436ca))
+
 ## [0.312.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.312.0...v0.312.1) (2026-11-19)
 
 
