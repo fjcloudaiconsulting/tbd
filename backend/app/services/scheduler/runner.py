@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import datetime
-
 import logging
+
 from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 
 from app import tracing
-
 from app.database import async_session
 from app.models.user import Organization
 from app.services.scheduler import org_settings
@@ -70,7 +69,7 @@ async def run_all_due(
                     if result.outcome == OUTCOME_SUCCESS:
                         org_did_work = True
                     logger.info(
-                        "scheduler.job.%s" % result.outcome,
+                        f"scheduler.job.{result.outcome}",
                         extra={
                             "job": job.job_type,
                             "org_id": org.id,
@@ -79,14 +78,19 @@ async def run_all_due(
                     )
                 except Exception as exc:  # noqa: BLE001 — isolate per-job failures
                     await db.rollback()
-                    await record_run(job_type=job.job_type, outcome="failure", org=org,
-                                     detail={"error": str(exc)})
+                    summary = tracing.error_summary(exc)
+                    await record_run(
+                        job_type=job.job_type,
+                        outcome="failure",
+                        org=org,
+                        detail={"error": summary},
+                    )
                     logger.error(
                         "scheduler.job.failure",
                         extra={
                             "job": job.job_type,
                             "org_id": org.id,
-                            "error": type(exc).__name__,
+                            "error": summary,
                         },
                     )
         if org_did_work:
