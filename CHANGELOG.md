@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.315.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.314.0...v0.315.0) (2026-11-26)
+
+
+### Features
+
+* **agent:** pair and unpair transactions as agent tools (TBD-820) ([#1172](https://github.com/fjcloudaiconsulting/tbd/issues/1172)) ([345d72b](https://github.com/fjcloudaiconsulting/tbd/commit/345d72bb0e8d4595a1c37651286f6fd1641aad02))
+* **agent:** tag routes as agent tools (TBD-820) ([#1166](https://github.com/fjcloudaiconsulting/tbd/issues/1166)) ([9b826c4](https://github.com/fjcloudaiconsulting/tbd/commit/9b826c47b380eb5b1b3341dc2447577be1fb3238))
+
+
+### Bug Fixes
+
+* **audit:** store an error summary, not the exception message, when org delete or reset fails (TBD-823) ([#1168](https://github.com/fjcloudaiconsulting/tbd/issues/1168)) ([9ae0fec](https://github.com/fjcloudaiconsulting/tbd/commit/9ae0fec6ed75fd85eeeed15f4be7db6a3d081024))
+* **deps:** clear the open Dependabot alerts and enable Renovate security PRs (TBD-809) ([#1171](https://github.com/fjcloudaiconsulting/tbd/issues/1171)) ([3acdb00](https://github.com/fjcloudaiconsulting/tbd/commit/3acdb00751125f74426348c6c12779707507d7ab))
+* **scheduler:** store the failed job's exception class, not its message (TBD-815) ([#1165](https://github.com/fjcloudaiconsulting/tbd/issues/1165)) ([da96888](https://github.com/fjcloudaiconsulting/tbd/commit/da968882e6f87a99282013e5dc3dd093466c2e68))
+* **security:** fail-safe APP_ENV default, refuse dev DB password and test captcha in production (INF-04, INF-05) ([#1096](https://github.com/fjcloudaiconsulting/tbd/issues/1096)) ([a76290b](https://github.com/fjcloudaiconsulting/tbd/commit/a76290b1e68e0502c52c3870fb203f51a3e8c4ba))
+* **security:** harden production config, dev compose, org export and apex deploy ([#1007](https://github.com/fjcloudaiconsulting/tbd/issues/1007)) ([f54d37d](https://github.com/fjcloudaiconsulting/tbd/commit/f54d37dadc8c22d6650dd98cf454464121083821))
+* **security:** pin reusable workflows, split apex deploy, per-run smoke secrets (INF-06, INF-07) ([#1089](https://github.com/fjcloudaiconsulting/tbd/issues/1089)) ([2155bd5](https://github.com/fjcloudaiconsulting/tbd/commit/2155bd52c4a65e482a503746e61f8c38623d08e3))
+
 ## [0.314.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.313.0...v0.314.0) (2026-11-21)
 
 
