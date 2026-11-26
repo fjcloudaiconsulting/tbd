@@ -104,6 +104,14 @@ describe("present (TBD-664)", () => {
     expect(rowLabel(c({ entity: "billing_periods", id: "new:2", field: "start_date" }))).toBe("New billing period 2");
   });
 
+  it("the tag tools have headlines and name tag rows", () => {
+    expect(actionHeadline("tags_create", "s", [])).toBe("Create a tag");
+    expect(actionHeadline("tags_rename", "s", [])).toBe("Rename a tag");
+    expect(actionHeadline("tags_delete", "s", [])).toBe("Delete a tag");
+    expect(actionHeadline("transactions_replace_tags", "s", [])).toBe("Replace tags on a transaction");
+    expect(rowLabel(c({ entity: "tags", id: 4 }))).toBe("Tag #4");
+  });
+
   it("the account tools (TBD-665) have headlines and name their rows", () => {
     expect(actionHeadline("accounts_adjust_balance", "s", [])).toBe("Adjust an account's balance");
     expect(actionHeadline("cycle_payments_upsert", "s", [])).toBe("Set a card payment");

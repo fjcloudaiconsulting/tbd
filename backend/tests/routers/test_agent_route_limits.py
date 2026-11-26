@@ -209,3 +209,28 @@ async def test_an_override_tightens_the_plans_limits_and_rest_shares_the_bucket(
     assert await _agent(factory, a, tool, body, w["t1"]) == "not_found"
     assert _rest_admitted(TestClient(app), a, url, {} if tool == "scenarios_simulate" else body, cap=4) == LIMIT - 1
     assert await _agent(factory, a, tool, body, w["t2"]) == "route_rate_limited"
+
+
+@pytest.mark.parametrize("method,path,pattern,tool,args,agent_status,rest_status", [
+    ("POST", "/api/v1/tags", "tags.create", "tags_create", {"name": "Travel"}, "ok", 201),
+    ("PUT", "/api/v1/transactions/999/tags", "tags.set_transaction_tags", "transactions_replace_tags",
+     {"transaction_id": 998, "tag_names": []}, "not_found", 404),
+], ids=["create-tag", "replace-tags"])
+async def test_tags_share_the_rest_user_bucket_and_keep_the_ip_backstop(
+    factory, method, path, pattern, tool, args, agent_status, rest_status,
+):
+    w = await _world(factory, patterns=(pattern,))
+    alice, bob = w["alice"], w["bob"]
+    client = TestClient(app)
+    separate_ip = TestClient(app, client=("192.0.2.1", 50000))
+
+    def rest(c, user, name):
+        body = {"name": name} if method == "POST" else {"tag_names": []}
+        return c.request(method, path, headers=_jwt(user), json=body).status_code
+
+    assert await _agent(factory, alice, tool, args) == agent_status
+    assert rest(client, alice, "Bills") == rest_status
+    assert rest(separate_ip, alice, "Groceries") == 429
+    assert await _agent(factory, alice, tool, args) == "route_rate_limited"
+    assert rest(client, bob, "Books") == rest_status
+    assert rest(client, bob, "Rent") == 429
