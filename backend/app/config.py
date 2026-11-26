@@ -43,7 +43,8 @@ SECRET_FIELDS = (
 # .env.example, compose.smoke.yaml, the workflows and tests/conftest.py and fails on a literal
 # missing here. Never remove an entry when its source changes: git history keeps the value public.
 _PUBLIC_SECRET_VALUES = frozenset(
-    {
+    value.casefold()
+    for value in {
         "change-me-generate-a-real-secret",  # .env.example, the field default
         "dev-only-shared-api-token-hmac-key-not-for-prod",  # docker-compose.yml
         "dev-only-mcp-jwt-secret-never-the-backend-value",  # docker-compose.yml, mcp
@@ -642,7 +643,7 @@ class Settings(BaseSettings):
         if self.app_env != "production":
             return self
         for name in SECRET_FIELDS:
-            value = getattr(self, name) or ""
+            value = (getattr(self, name) or "").strip().casefold()
             if value in _PUBLIC_SECRET_VALUES or value.startswith("dev-only"):
                 raise ValueError(
                     f"{name.upper()} is a value committed to this public repository; "

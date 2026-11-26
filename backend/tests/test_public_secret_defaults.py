@@ -226,10 +226,20 @@ def test_dev_and_test_still_accept_them():
     assert not rejected, f"dev or test no longer boots with: {rejected}"
 
 
-def test_production_refuses_a_dev_only_value_in_any_secret_field():
+@pytest.mark.parametrize(
+    "value",
+    [
+        "dev-only-" + "x" * 40,
+        "ci-migration-smoke-jwt-key-not-a-real-secret ",
+        " dev-only-" + "x" * 40,
+        "DEV-ONLY-" + "X" * 40,
+    ],
+    ids=["dev-only", "trailing-space", "leading-space", "uppercase-prefix"],
+)
+def test_production_refuses_public_secret_variants_in_any_secret_field(value):
     for field in SECRET_FIELDS:
         with pytest.raises(ValidationError, match=field.upper()):
-            _production(**{field: "dev-only-" + "x" * 40})
+            _production(**{field: value})
 
 
 def test_the_release_smoke_commits_no_secret_and_makes_its_own_per_run():
