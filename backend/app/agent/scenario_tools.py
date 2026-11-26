@@ -44,7 +44,7 @@ from app.schemas.scenario import (
     PLAN_FIELDS, CompareRequest, ScenarioCreate, ScenarioResponse, ScenarioUpdate, SimulateRequest,
 )
 from app.services import billing_service, plan_draft_service, plan_lifecycle_service, tag_service
-from app.services.exceptions import ValidationError
+from app.services.exceptions import ConflictError, ValidationError
 from app.services.feature_gate import Feature
 from app.services.scenario_engine import SimulationRequest, build_world_state, get_engine, simulate_off_loop
 
@@ -467,11 +467,13 @@ async def _start_preview(ctx: ToolContext, args: StartArgs) -> Preview:
                     Change("scenarios", plan.id, "category_id", None, MASTER)]
     if tag_name is not None:
         normalized = tag_service.normalize_tag_name(tag_name)
-        if tag_service._is_dictionary_eligible(normalized) and await tag_service.is_share_tag_data_enabled(
-                ctx.db, plan.org_id):
-            # Its tag-dictionary write is cross-org: disclosing it would show other orgs' counts.
-            raise ToolError("conflict", f"Start would create the tag '{tag_name}' and share it with the tag "
-                            "dictionary: link a tag first (scenarios_update tag_id), or start the plan in the app")
+        try:
+            await tag_service.ensure_local_tag_changes(ctx.db, plan.org_id, adding=[normalized])
+        except ConflictError:
+            raise ToolError(
+                "conflict", "Starting would change the shared tag dictionary. Link a tag first "
+                "(scenarios_update tag_id), or start the plan in the app.",
+            ) from None
         changes += [Change("tags", "new:tag", "name", None, {"untrusted": tag_name}),
                     Change("tags", "new:tag", "name_normalized", None, {"untrusted": normalized}),
                     Change("tags", "new:tag", "created_by_user_id", None, plan.user_id),
