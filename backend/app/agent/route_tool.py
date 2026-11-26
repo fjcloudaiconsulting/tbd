@@ -9,7 +9,10 @@ the tool runs the code REST runs instead of a second adapter over a service.
   model, so its validators run (and normalise: the preview shows the stripped
   description the service stores). ``required`` makes a field mandatory; only
   a ``nullable`` field accepts null, because elsewhere the service reads null
-  as "leave alone" and a preview of the null would lie. An omitted query field
+  as "leave alone" and a preview of the null would lie. A ``lean`` field is a
+  plain JSON object in the schema (its full schema would not fit the chat's
+  turn budget; TBD-668), still validated by the route's model and stored in
+  its JSON form. An omitted query field
   is the route's default, so a query param with no plain default (required, or
   a ``default_factory``) must be in ``required``.
 * ``execute`` (``run`` for a read) calls ``route.endpoint`` in-process, so the
@@ -71,7 +74,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, model_validator
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import select
+from pydantic.fields import FieldInfo
+from sqlalchemy import JSON, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agent.registry import (
@@ -255,9 +259,12 @@ def _arg(info: Any, *, required: bool, nullable: bool) -> tuple[Any, Any]:
 
 
 def _disclose(column: Any, value: Any) -> Any:
-    """A column value as a preview states it (the honesty fence's normal form)."""
+    """A column value as a preview states it (the honesty fence's normal form).
+    A JSON document is user-shaped: its canonical text, wrapped (TBD-669)."""
     if value is None:
         return None
+    if isinstance(column.type, JSON):
+        return {"untrusted": json.dumps(value, sort_keys=True)}
     if isinstance(value, enum.Enum):
         value = value.value
     if isinstance(value, Decimal):
@@ -270,7 +277,7 @@ def _disclose(column: Any, value: Any) -> Any:
     return value
 
 
-def _validator(body_model: type[BaseModel], body_fields: Sequence[str]) -> Any:
+def _validator(body_model: type[BaseModel], body_fields: Sequence[str], lean: Sequence[str] = ()) -> Any:
     def _through_the_route(self: BaseModel) -> BaseModel:
         sent = {k: getattr(self, k) for k in body_fields if k in self.model_fields_set}
         try:
@@ -280,7 +287,8 @@ def _validator(body_model: type[BaseModel], body_fields: Sequence[str]) -> Any:
                 f"{'.'.join(map(str, e['loc'])) or 'body'}: {e['msg']}" for e in exc.errors()
             )) from None
         for k in sent:  # the route's normal form (a stripped description, say)
-            self.__dict__[k] = getattr(body, k)
+            v = getattr(body, k)
+            self.__dict__[k] = v.model_dump(mode="json") if k in lean and isinstance(v, BaseModel) else v
         return self
 
     return model_validator(mode="after")(_through_the_route)
@@ -309,12 +317,14 @@ def route_tool(
     cascade: CascadeDisclosure | None = None,
     extra_areas: Sequence[Feature] = (),
     inverse: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
+    lean: Sequence[str] = (),
+    result: Callable[[Any], Any] | None = None,
 ) -> ToolSpec:
     """A ``ToolSpec`` for ``method path`` on ``router`` (see the module doc)."""
     route = _find_route(router, method, path)
     dep = route.dependant
     fields = tuple(fields)
-    if not set(required) <= set(fields) or not set(nullable) <= set(fields):
+    if not {*required, *nullable, *lean} <= set(fields):
         raise ToolRegistrationError(f"{name}: required/nullable must name allowlisted fields")
     if len(dep.body_params) > 1:
         raise ToolRegistrationError(f"{name}: the route takes more than one body")
@@ -346,9 +356,11 @@ def route_tool(
     }
     for f in fields:
         info = body_infos[f] if f in body_infos else query[f].field_info
+        if f in lean:  # a plain object in the schema; the route's model still validates it
+            info = FieldInfo(annotation=dict[str, Any], description=info.description)
         defs[f] = _arg(info, required=f in required, nullable=f in nullable)
     body_fields = [f for f in fields if f in body_infos]
-    validators = {"_through_the_route": _validator(body_model, body_fields)} if body_fields else {}
+    validators = {"_through_the_route": _validator(body_model, body_fields, lean)} if body_fields else {}
     args = create_model(
         args_name or "".join(w.title() for w in name.split("_")) + "Args",
         __config__=ConfigDict(extra="forbid"), __validators__=validators, **defs,
@@ -376,10 +388,16 @@ def route_tool(
             return jsonable_encoder(out)
         return response.dump_python(response.validate_python(out, from_attributes=True), mode="json")
 
+    async def _run(ctx: ToolContext, a: Any) -> Any:
+        # ``result`` shapes what the model reads back: a read's answer, and a
+        # change's result (stored as ``result_json``, replayed over MCP).
+        out = await _call_handler(ctx, a)
+        return out if result is None or out is None else result(out)
+
     if risk == "read":
         return ToolSpec(
             name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
-            mirrors_route=(method, path), description=description, run=_call_handler,
+            mirrors_route=(method, path), description=description, run=_run,
             route=route, extra_areas=tuple(extra_areas),
         )
 
@@ -394,7 +412,7 @@ def route_tool(
     return ToolSpec(
         name=name, risk=risk, args=args, product_area=product_area, min_role=min_role,
         mirrors_route=(method, path), description=description, preview=preview,
-        execute=_call_handler, route=route, extra_areas=tuple(extra_areas), inverse=inverse,
+        execute=_run, route=route, extra_areas=tuple(extra_areas), inverse=inverse,
     )
 
 

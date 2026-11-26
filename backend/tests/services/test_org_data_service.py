@@ -43,6 +43,7 @@ from app.models.tag import (
     Tag, TagDictionary, TagDictionaryContributor, TransactionTag,
 )
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.models.transaction_batch_key import TransactionBatchKey
 from app.models.user import Organization, Role, User
 from app.security import hash_password
 from app.services import org_data_service
@@ -274,6 +275,10 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             args_sha256="0" * 64, fingerprint="0" * 64, preview_json={}, status="pending",
             created_at=now, expires_at=now + datetime.timedelta(minutes=10),
         ))
+        db.add(TransactionBatchKey(
+            org_id=org.id, user_id=owner.id, idempotency_key="k" * 16,
+            request_hash="0" * 64, response={}, created_at=now,
+        ))
         await db.commit()
 
         return {"org_id": org.id, "owner_id": owner.id}
@@ -303,7 +308,7 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
         "merchant_dictionary_votes",
-        "cc_cycle_payments", "agent_pending_actions", "usage_counters",
+        "cc_cycle_payments", "agent_pending_actions", "transaction_batch_keys", "usage_counters",
     }
     assert set(counts.keys()) == expected_keys
     for key, n in counts.items():
@@ -322,7 +327,8 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
     async with session_factory() as db:
         for model in (Transaction, ForecastPlanItem, Budget, RecurringTransaction,
                       ForecastPlan, BillingPeriod, ImportBatch, Account, AccountType,
-                      CategoryRule, Category, Tag, AgentPendingAction):
+                      CategoryRule, Category, Tag, AgentPendingAction,
+                      TransactionBatchKey):
             assert await _count(db, model, org_id=seeded["org_id"]) == 0, (
                 f"{model.__name__} not wiped"
             )
@@ -495,7 +501,7 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
         "merchant_dictionary_votes",
-        "cc_cycle_payments", "agent_pending_actions",
+        "cc_cycle_payments", "agent_pending_actions", "transaction_batch_keys",
         "seeded_account_types", "seeded_categories",
     }
     assert set(counts.keys()) == expected_keys

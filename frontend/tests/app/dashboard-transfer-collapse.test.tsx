@@ -11,7 +11,7 @@
  * strips, so text-based counting would over-match.
  */
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 // Recharts' ResponsiveContainer measures its parent, and jsdom reports 0x0 —
 // so every chart in the page renders NOTHING and no bar can be clicked. F8d
@@ -102,6 +102,33 @@ function collapsedPage() {
   return rows;
 }
 
+// TBD-339 fixture: Home is a master with 90.00 of DIRECT spend and Utilities
+// its subcategory with 160.00. Both halves are needed: without either, the
+// subtree and exact drilldowns return the same rows and nothing is pinned.
+const HOME_ID = 10;
+const HOME_ROLLUP = [
+  { category_id: HOME_ID, category_name: "Home", parent_id: null, parent_name: null, executed: "90.00" },
+  { category_id: 11, category_name: "Utilities", parent_id: HOME_ID, parent_name: "Home", executed: "160.00" },
+];
+const HOME_DIRECT_ROW = tx({ id: 201, amount: "90.00", category_id: HOME_ID, category_name: "Home", description: "Home direct" });
+const UTILITIES_ROW = tx({ id: 202, amount: "160.00", category_id: 11, category_name: "Utilities", description: "Utilities sub" });
+const HOME_BUDGET = {
+  id: 1, category_id: HOME_ID, category_name: "Home",
+  amount: "300.00", spent: "250.00", percent_used: 83,
+  period_start: "2026-05-01", period_end: null,
+};
+// Forecast items are per OWN category: the Home item is the 90.00 direct spend.
+const HOME_PLAN = {
+  id: 1, billing_period_id: 1, period_start: "2026-05-01", period_end: null,
+  status: "active", total_planned_income: "0", total_planned_expense: "100.00",
+  total_actual_income: "0", total_actual_expense: "90.00",
+  items: [{
+    id: 1, plan_id: 1, category_id: HOME_ID, category_name: "Home", parent_id: null,
+    type: "expense", planned_amount: "100.00", source: "manual",
+    actual_amount: "90.00", variance: "10.00",
+  }],
+};
+
 let listUrls: string[] = [];
 let projectionCategories: Record<string, unknown>[] = [];
 
@@ -109,6 +136,7 @@ function mockDashboard(
   rows: ReturnType<typeof tx>[],
   budgets: Record<string, unknown>[] = [],
   categories: Record<string, unknown>[] = [],
+  forecastPlan: Record<string, unknown> | null = null,
 ) {
   listUrls = [];
   projectionCategories = categories;
@@ -121,7 +149,7 @@ function mockDashboard(
       return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
     if (url === "/api/v1/settings/billing-periods")
       return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
-    if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
+    if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(forecastPlan);
     // TBD-221: the Spending donut and the chart-filter drilldown both read the
     // UNGATED spending-by-category rollup (and its window), so it can no
     // longer be null.
@@ -147,6 +175,13 @@ function mockDashboard(
       listUrls.push(url);
       if (url.startsWith("/api/v1/transactions?status=pending"))
         return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+      // TBD-339: Home's drilldown answers per mode, as the real endpoint does.
+      if (url.includes(`category_id=${HOME_ID}&`)) {
+        const items = url.includes("category_match=exact")
+          ? [HOME_DIRECT_ROW]
+          : [HOME_DIRECT_ROW, UTILITIES_ROW];
+        return Promise.resolve({ items, total: items.length, limit: 10, offset: 0 });
+      }
       // A drilldown into a category with no settled spend this period.
       if (url.includes("category_id="))
         return Promise.resolve({ items: [], total: 0, limit: 10, offset: 0 });
@@ -266,11 +301,12 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     await waitFor(() => {
       expect(screen.getByText(/Filtering: Rent/)).toBeInTheDocument();
     });
-    // The drilldown carries the rollup's grouping and the rollup's window.
+    // The drilldown carries the budget's grouping and the rollup's window.
+    // TBD-339: a budget rolls its master up with the subcategories -> subtree.
     await waitFor(() => {
       const drill = listUrls.find((u) => u.includes("category_id=9"));
       expect(drill).toBeTruthy();
-      expect(drill).toContain("category_match=exact");
+      expect(drill).toContain("category_match=subtree");
       expect(drill).toContain("reportable=true");
       expect(drill).not.toContain("collapse_transfers");
     });
@@ -279,6 +315,152 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
       expect(screen.queryAllByTestId(/^dash-settled-\d+$/)).toHaveLength(0),
     );
     expect(screen.getByText(EMPTY)).toBeInTheDocument();
+  });
+
+  it("TBD-339: the Home budget bar opens the 250.00 subtree it reports, not the 90.00 direct rows", async () => {
+    // The live bug: Budget Progress rolls Home up to 250.00 (90 direct + 160
+    // Utilities) while the drilldown always sent `exact`, opening 90.00.
+    mockDashboard([tx()], [HOME_BUDGET], HOME_ROLLUP);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    const bars = container.querySelectorAll(".recharts-bar-rectangle");
+    expect(bars.length).toBeGreaterThan(0);
+    fireEvent.click(bars[0]);
+
+    await waitFor(() => {
+      const drill = listUrls.find((u) => u.includes(`category_id=${HOME_ID}&`));
+      expect(drill).toBeTruthy();
+      expect(drill).toContain("category_match=subtree");
+    });
+    await screen.findByTestId("dash-settled-202");
+    expect(screen.getByTestId("dash-settled-201")).toBeInTheDocument();
+    expect(rowCount()).toBe(2);
+  });
+
+  it("TBD-339: a Forecast bar still drills down with category_match=exact", async () => {
+    // Forecast items are grouped by OWN category, so the Home item is the
+    // 90.00 of direct spend and its drilldown must not pull Utilities in.
+    mockDashboard([tx()], [], HOME_ROLLUP, HOME_PLAN);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    // No budgets, so the only bar chart is Forecast by Category; its first
+    // <Bar> is `planned`, the clickable one.
+    const planned = await waitFor(() => {
+      const rect = container.querySelector(".recharts-bar .recharts-bar-rectangle");
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(planned);
+
+    await waitFor(() => {
+      const drill = listUrls.find((u) => u.includes(`category_id=${HOME_ID}&`));
+      expect(drill).toBeTruthy();
+      expect(drill).toContain("category_match=exact");
+    });
+    await screen.findByTestId("dash-settled-201");
+    expect(screen.queryByTestId("dash-settled-202")).toBeNull();
+  });
+
+  // ── Selection is id AND mode (PR 1129 review) ─────────────────────────────
+  // The exact Home filter (forecast, 90.00) and the subtree Home filter
+  // (donut / budget, 250.00) share an id. A tile that compared only the id
+  // highlighted its 250.00 slice over a 90.00 list, and a click on it CLEARED
+  // the filter instead of switching to the subtree.
+
+  const homeDrills = () => listUrls.filter((u) => u.includes(`category_id=${HOME_ID}&`));
+  const homeLegendRow = () =>
+    within(screen.getByTestId("spending-donut")).getByText("Home").closest("button")!;
+  // Budget Progress renders before Forecast by Category; each chart's first
+  // <Bar> is the clickable one (spent / planned).
+  const barChart = (container: HTMLElement, i: number) =>
+    Array.from(container.querySelectorAll(".recharts-wrapper"))
+      .filter((w) => w.querySelector(".recharts-bar"))[i]
+      ?.querySelector(".recharts-bar-rectangle") ?? null;
+
+  it("TBD-339: forecast bar then donut slice switches exact -> subtree, highlighting only the subtree", async () => {
+    mockDashboard([tx()], [], HOME_ROLLUP, HOME_PLAN);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    const planned = await waitFor(() => {
+      const rect = barChart(container, 0);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(planned);
+    await waitFor(() => expect(homeDrills().at(-1)).toContain("category_match=exact"));
+    await screen.findByTestId("dash-settled-201");
+    // The donut's 250.00 Home slice is NOT the 90.00 selection.
+    expect(homeLegendRow().className).not.toContain("bg-surface-overlay");
+
+    const before = homeDrills().length;
+    fireEvent.click(homeLegendRow());
+    await waitFor(() => expect(homeDrills().length).toBeGreaterThan(before));
+    expect(homeDrills().at(-1)).toContain("category_match=subtree");
+    await screen.findByTestId("dash-settled-202");
+    expect(homeLegendRow().className).toContain("bg-surface-overlay");
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
+  });
+
+  it("TBD-339: budget bar then forecast bar switches subtree -> exact instead of clearing", async () => {
+    mockDashboard([tx()], [HOME_BUDGET], HOME_ROLLUP, HOME_PLAN);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    const spent = await waitFor(() => {
+      const rect = barChart(container, 0);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(spent);
+    await waitFor(() => expect(homeDrills().at(-1)).toContain("category_match=subtree"));
+    await screen.findByTestId("dash-settled-202");
+    expect(homeLegendRow().className).toContain("bg-surface-overlay");
+
+    const before = homeDrills().length;
+    const planned = await waitFor(() => {
+      const rect = barChart(container, 1);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(planned);
+    await waitFor(() => expect(homeDrills().length).toBeGreaterThan(before));
+    expect(homeDrills().at(-1)).toContain("category_match=exact");
+    await waitFor(() => expect(screen.queryByTestId("dash-settled-202")).toBeNull());
+    expect(screen.getByTestId("dash-settled-201")).toBeInTheDocument();
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
+    // The donut no longer claims the selection.
+    expect(homeLegendRow().className).not.toContain("bg-surface-overlay");
+  });
+
+  it("TBD-339: forecast bar then budget bar switches exact -> subtree instead of clearing", async () => {
+    mockDashboard([tx()], [HOME_BUDGET], HOME_ROLLUP, HOME_PLAN);
+    const { container } = render(<DashboardPage />);
+    await screen.findByTestId("dash-settled-1");
+
+    const planned = await waitFor(() => {
+      const rect = barChart(container, 1);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(planned);
+    await waitFor(() => expect(homeDrills().at(-1)).toContain("category_match=exact"));
+    await screen.findByTestId("dash-settled-201");
+    expect(screen.queryByTestId("dash-settled-202")).toBeNull();
+
+    const before = homeDrills().length;
+    const spent = await waitFor(() => {
+      const rect = barChart(container, 0);
+      expect(rect).toBeTruthy();
+      return rect!;
+    });
+    fireEvent.click(spent);
+    await waitFor(() => expect(homeDrills().length).toBeGreaterThan(before));
+    expect(homeDrills().at(-1)).toContain("category_match=subtree");
+    await screen.findByTestId("dash-settled-202");
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
   });
 
   it("TBD-505: the Budget Progress spent bars draw with real width", async () => {

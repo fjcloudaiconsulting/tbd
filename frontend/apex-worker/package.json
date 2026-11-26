@@ -5,6 +5,6 @@
     "dev": "cp _headers ../out-apex/_headers && wrangler dev"
   },
   "devDependencies": {
-    "wrangler": "4.156.1"
+    "wrangler": "4.168.0"
   }
 }

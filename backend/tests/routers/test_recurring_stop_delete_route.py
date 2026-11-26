@@ -140,11 +140,12 @@ async def _make_template_with_pending_and_match(factory, seed: dict) -> dict:
     """A recurring template with one FUTURE PENDING row, and a settled bank
     row matched against it one-way.
 
-    This is the natural shape, not an exotic one: matching an imported bank
-    charge against the pending recurring row it settles is one of the most
-    ordinary actions in the product, and ``_apply_match`` validates its target
-    on org, existence and not-self only -- no status filter, no
-    ``recurring_id`` filter.
+    This is the LEGACY pre-TBD-755 shape that production rows still hold:
+    before TBD-755, matching an imported bank charge against the pending
+    recurring row it settles only linked the bank row (``_apply_match``
+    validated its target on org, existence and not-self only). Since TBD-755
+    that match settles the occurrence; the link here is written directly, so
+    this fixture still builds the legacy state.
     """
     async with factory() as db:
         future = date.today() + timedelta(days=7)

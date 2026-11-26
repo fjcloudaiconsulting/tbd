@@ -390,6 +390,41 @@ def contributes_to_cached_balance(
     return partner.linked_transaction_id == tx.id
 
 
+def account_currency_key():
+    """The canonical currency expression: ``UPPER(TRIM(accounts.currency))``.
+
+    ⚠ NOT the bare column, and not only for tidiness. ``accounts.currency`` was
+    FREE TEXT before TBD-325 PR 1, and ``AccountUpdate`` carries no currency
+    field (``schemas/account.py``), so a legacy ``'eur'`` or ``'EUR '`` row is
+    unrepairable through the product. MySQL's case-insensitive collation folds
+    case inside GROUP BY and comparisons; SQLite does not -- and every CI shard
+    but the migration checks runs on aiosqlite. A bare column therefore splits
+    ``'eur'`` and ``'EUR'`` into two partitions, and drops the lowercase row
+    from a filter, ON CI ONLY. The padded row is a defect on BOTH engines (the
+    MySQL collation is NO PAD). Same normalise-BOTH-sides rule as
+    ``currency_service.resolve_currency_scope``.
+
+    Every report source uses this ONE expression for its currency dimension,
+    its GROUP BY and its currency filter (TBD-507, TBD-550), so the group key
+    and the predicate cannot drift apart. The filter's other side is already
+    canonical: ``schemas/reports_query._coerce_filter_scalar`` strips,
+    uppercases and length-checks every currency filter value on construction.
+
+    TBD-798: ``org_currency_filter``, ``resolve_currency_scope``'s GROUP BY and
+    the transfer/duplicate detectors in ``transaction_service`` use it too; a
+    caller comparing against a raw value uses ``account_currency_matches``.
+    """
+    return func.upper(func.trim(Account.currency))
+
+
+def account_currency_matches(currency: str):
+    """``account_currency_key() == currency``, with ``currency`` folded by the
+    SAME SQL ``UPPER(TRIM())`` rather than by ``normalise_currency``: Python's
+    ``strip()`` also drops tabs and newlines, SQL ``TRIM`` only spaces, so a
+    Python-folded value could miss its own account's key (TBD-798)."""
+    return account_currency_key() == func.upper(func.trim(currency))
+
+
 def org_currency_filter(
     org_id: int,
     currency_scope: dict | None,
@@ -443,6 +478,8 @@ def org_currency_filter(
     return account_id_col.in_(
         select(Account.id).where(
             Account.org_id == org_id,
-            Account.currency == currency_scope["currency"],
+            # TBD-798: canonical key; the scope's currency is already
+            # normalised by ``resolve_currency_scope``, its only producer.
+            account_currency_key() == currency_scope["currency"],
         )
     )

@@ -20,9 +20,15 @@ learn failure on row N never poisons rows N+1..M.
 """
 from __future__ import annotations
 
+import datetime
+import hashlib
 import logging
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app._time import utcnow_naive
+from app.models.transaction_batch_key import TransactionBatchKey
 from app.schemas.import_batch import (
     BatchRowError,
     BatchRowResult,
@@ -164,3 +170,92 @@ async def create_batch(
         results=results,
         errors=errors,
     )
+
+
+# ── TBD-784: Idempotency-Key ────────────────────────────────────────────────
+#
+# A keyed batch inserts its ``transaction_batch_keys`` row BEFORE the rows and
+# the router commits both together. A second request with the same key blocks
+# on the unique index until the first commits, then hits the duplicate, rolls
+# back (it has written nothing yet) and returns the stored response. If the
+# first request rolls back instead, the second one's insert goes through and
+# it writes the rows itself. So a committed key always carries its response.
+
+KEY_TTL_HOURS = 24
+
+
+def _request_hash(body: BatchTransactionsRequest) -> str:
+    return hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+
+
+async def _find_key(
+    db: AsyncSession, org_id: int, user_id: int, key: str
+) -> TransactionBatchKey | None:
+    return await db.scalar(
+        select(TransactionBatchKey)
+        .where(
+            TransactionBatchKey.idempotency_key == key,
+            TransactionBatchKey.org_id == org_id,
+            TransactionBatchKey.user_id == user_id,
+        )
+        .execution_options(populate_existing=True)
+    )
+
+
+def _replay(
+    row: TransactionBatchKey, request_hash: str
+) -> BatchTransactionsResponse:
+    if row.request_hash != request_hash:
+        raise ConflictError(
+            "This Idempotency-Key was already used for a different batch; "
+            "send a new key for new rows"
+        )
+    return BatchTransactionsResponse.model_validate(row.response).model_copy(
+        update={"replayed": True}
+    )
+
+
+async def create_batch_with_key(
+    db: AsyncSession,
+    org_id: int,
+    user_id: int,
+    body: BatchTransactionsRequest,
+    key: str,
+) -> BatchTransactionsResponse:
+    """``create_batch`` once per (org, user, key) within ``KEY_TTL_HOURS``.
+
+    A repeat with the same body returns the first response with
+    ``replayed=True`` and writes nothing; with another body it is a 409. The
+    caller commits, as for ``create_batch``.
+    """
+    request_hash = _request_hash(body)
+    now = utcnow_naive()
+    existing = await _find_key(db, org_id, user_id, key)
+    if existing is not None:
+        if existing.created_at > now - datetime.timedelta(hours=KEY_TTL_HOURS):
+            return _replay(existing, request_hash)
+        # Expired: the key is free again. A Core delete, because a concurrent
+        # request may already have removed it (0 rows is fine here).
+        await db.execute(
+            delete(TransactionBatchKey).where(TransactionBatchKey.id == existing.id)
+        )
+
+    claim = TransactionBatchKey(
+        org_id=org_id, user_id=user_id, idempotency_key=key,
+        request_hash=request_hash, created_at=now,
+    )
+    db.add(claim)
+    try:
+        await db.flush()
+    except IntegrityError:
+        # A concurrent request with this key committed first. A fresh
+        # transaction sees its row.
+        await db.rollback()
+        existing = await _find_key(db, org_id, user_id, key)
+        if existing is None:
+            raise
+        return _replay(existing, request_hash)
+
+    response = await create_batch(db, org_id, body)
+    claim.response = response.model_dump(mode="json")
+    return response

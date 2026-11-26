@@ -32,8 +32,8 @@ fenced on both axes, by name:
     why an ORDINAL key was rejected: ordinals shift under a resume.
 
 Each test is labelled ``fence`` (goes RED under a named wrong implementation,
-injected and confirmed) or ``guard``. ``X1`` is a strict xfail reproducing
-TBD-509 and turns into an XPASS failure the day that ticket lands.
+injected and confirmed) or ``guard``. ``X1``-``X7`` fence TBD-509: a rewind
+or a row date edit that would re-spend an instalment is refused at the write.
 
 Clocks are injected everywhere. Fixtures anchor to ``date.today() - n`` via
 ``_safe_month_anchor`` (``reference_wall_clock_date_bomb_tests``); F4 uses
@@ -68,6 +68,7 @@ from app.services.account_balance_forecast_service import (
 )
 from app.services.billing_service import current_cycle_window
 from app.services.date_utils import occurrences_in_window
+from app.services.exceptions import ConflictError
 
 DAY = datetime.timedelta(days=1)
 WEEK = datetime.timedelta(weeks=1)
@@ -168,8 +169,8 @@ async def _seed_on_grid(db: AsyncSession, today: datetime.date) -> dict:
     """
     p_start = _safe_month_anchor(today - datetime.timedelta(days=10))
     seed = await _seed(db, open_start=p_start)
-    # ``pytest.fail``, not ``assert``: X1 is ``xfail(raises=AssertionError)``,
-    # and a broken fixture must FAIL it, never satisfy it.
+    # ``pytest.fail``, not ``assert``: a broken fixture must read as a broken
+    # fixture, not as the assertion under test.
     if current_cycle_window(p_start.day, today) != seed["p1"]:
         pytest.fail(f"cycle window drifted from P1 {seed['p1']}")
     return seed
@@ -737,54 +738,245 @@ async def test_f5_linked_row_at_the_frontier_is_neither_duplicated_nor_projected
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# X1 — TBD-509, reproduced. Known exception #2 of the definition.
+# X1 — TBD-509. Known exception #2 of the definition, closed at the write.
 # ─────────────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    # Only the assertion may xfail. Without ``raises`` a fixture or setup
-    # error is swallowed as an "expected failure" too.
-    raises=AssertionError,
-    reason="TBD-509: rewinding the frontier onto an already-generated date "
-    "re-spends occurrences_elapsed through the exists branch",
-)
-async def test_x1_rewind_onto_generated_date_double_spends_elapsed(db_session):
-    """GUARD (strict xfail). One occurrence, one row, one instalment spent.
+@pytest.mark.parametrize("frequency", ["monthly", "weekly"])
+async def test_x1_rewind_onto_generated_date_is_refused_and_spends_nothing(
+    db_session, frequency,
+):
+    """GUARD. One occurrence, one row, one instalment spent (TBD-509).
 
-    Monthly, 12 instalments, frontier on ``p_start``. Generate (1 row, elapsed
-    1), rewind ``next_due_date`` back onto ``p_start``, generate again. The
-    rewind is written directly: since TBD-762 ``update_recurring`` refuses a
-    MOVED next due date that does not clear the series' rows (a locking read of
-    them). The shape stays reachable from frontiers stored before that guard and
-    from any writer that does not go through it, so the probe stays.
-    The ``exists`` branch finds the row and ``_advance_frontier`` spends a
-    second instalment for the same key. Flips to XPASS -> FAIL when TBD-509
-    lands, which is the prompt to delete this marker.
+    12 instalments, frontier on ``p_start``. Generate, then move
+    ``next_due_date`` back onto ``p_start``, already generated. Accepted, the
+    next run's ``exists`` branch would find the row and ``_advance_frontier``
+    would spend a second instalment for the same key: 11 payments for 12
+    (weekly: one per week moved back). ``update_recurring`` refuses it
+    (``_check_frontier_clears_series``) and writes nothing, so the next run
+    spends nothing either.
     """
     today = datetime.date.today()
     seed = await _seed_on_grid(db_session, today)
     p_start, _ = seed["p1"]
-    t = await _add(db_session, _template(
+    tid = (await _add(db_session, _template(
+        seed, frequency=frequency, next_due_date=p_start, occurrence_count=12,
+    ))).id
+    await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=today
+    )
+    after_first = await _reload(db_session, tid)
+    elapsed, frontier = after_first.occurrences_elapsed, after_first.next_due_date
+    rows = await _row_keys(db_session, seed["org_id"])
+    assert (tid, p_start) in rows
+    assert elapsed == len(rows)
+
+    with pytest.raises(ConflictError, match=p_start.isoformat()):
+        await recurring_service.update_recurring(
+            db_session, seed["org_id"], tid,
+            RecurringUpdate(next_due_date=p_start), today=today,
+        )
+    # The request's session is rolled back on the error, as the router's is.
+    await db_session.rollback()
+    assert (await _reload(db_session, tid)).next_due_date == frontier
+
+    await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=today
+    )
+    assert await _row_keys(db_session, seed["org_id"]) == rows
+    assert (await _reload(db_session, tid)).occurrences_elapsed == elapsed
+
+
+async def _rewind(db_session, seed, tid, new, today):
+    """PUT ``next_due_date`` through the service, rolled back on a refusal as
+    the router's session is."""
+    try:
+        return await recurring_service.update_recurring(
+            db_session, seed["org_id"], tid, RecurringUpdate(next_due_date=new), today=today,
+        )
+    except ConflictError:
+        await db_session.rollback()
+        raise
+
+
+async def test_x2_rewind_after_stop_and_resume_is_refused(db_session):
+    """GUARD. TBD-509 review, the reproduced sequence. Stop NULLs
+    ``recurring_id`` on the surviving SETTLED row, so neither the row guard nor
+    generation's ``exists`` probe can see it. Accepted, the rewind wrote a second
+    SETTLED row (moving the balance) and spent the instalment twice.
+    ``last_spent_date`` survives the stop and refuses it."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    tid = (await _add(db_session, _template(
         seed, frequency="monthly", next_due_date=p_start, occurrence_count=12,
-    ))
-
-    # Every precondition is ``pytest.fail``, never ``assert``: under
-    # ``raises=AssertionError`` a broken precondition would otherwise XFAIL
-    # for the wrong reason. The LAST line is the only ``assert`` in this test.
-    await recurring_service.generate_due_transactions(
-        db_session, seed["org_id"], today=today
+        auto_settle=True,
+    ))).id
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=today)
+    await recurring_service.stop_recurring(db_session, seed["org_id"], tid)
+    await recurring_service.update_recurring(
+        db_session, seed["org_id"], tid, RecurringUpdate(is_active=True), today=today,
     )
-    if (await _reload(db_session, t.id)).occurrences_elapsed != 1:
-        pytest.fail("precondition: first run must spend exactly one instalment")
+    rows = await _row_keys(db_session, seed["org_id"])
+    assert rows == {(None, p_start)}
 
-    rewound = await _reload(db_session, t.id)
-    rewound.next_due_date = p_start
+    with pytest.raises(ConflictError, match=f"through {p_start.isoformat()}"):
+        await _rewind(db_session, seed, tid, p_start, today)
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=today)
+
+    assert await _row_keys(db_session, seed["org_id"]) == rows
+    t = await _reload(db_session, tid)
+    assert (t.occurrences_elapsed, t.last_spent_date) == (1, p_start)
+
+
+async def test_x3_rewind_onto_a_deleted_occurrence_is_refused(db_session):
+    """GUARD. The row of a spent occurrence was deleted. Accepted, the rewind
+    re-created it and spent its instalment again: 12 instalments, 11 dates."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=p_start, occurrence_count=12,
+    ))).id
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=today)
+    row_id = await db_session.scalar(select(Transaction.id).where(Transaction.recurring_id == tid))
+    await transaction_service.delete_transaction(db_session, seed["org_id"], row_id)
+
+    with pytest.raises(ConflictError, match=f"through {p_start.isoformat()}"):
+        await _rewind(db_session, seed, tid, p_start, today)
+    assert (await _reload(db_session, tid)).occurrences_elapsed == 1
+
+
+async def test_x4_rewind_over_unspent_dates_stays_allowed(db_session):
+    """GUARD. Moved forward past dates nothing spent, the frontier may come
+    back onto them, down to the period after the last spent occurrence."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=p_start, occurrence_count=12,
+    ))).id
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=today)
+    nxt = p_start + relativedelta(months=1)
+    await _rewind(db_session, seed, tid, p_start + relativedelta(months=3), today)
+
+    assert (await _rewind(db_session, seed, tid, nxt, today)).next_due_date == nxt
+
+
+async def test_x5_a_template_spent_before_the_mark_existed_takes_no_earlier_frontier(db_session):
+    """GUARD. ``last_spent_date`` NULL with instalments spent (written before
+    TBD-509) and no rows left: the frontier it replaces is the only bound."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    frontier = p_start + relativedelta(months=1)
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=frontier, occurrences_elapsed=1,
+    ))).id
+
+    with pytest.raises(ConflictError, match=f"Choose {frontier.isoformat()} or later"):
+        await _rewind(db_session, seed, tid, p_start, today)
+    later = frontier + 3 * DAY
+    assert (await _rewind(db_session, seed, tid, later, today)).next_due_date == later
+
+
+async def test_x6_promote_marks_the_source_row_spent(db_session):
+    """GUARD. Promote with a next due date after the row counts the row as
+    instalment 1 without generation, so it marks it spent too."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    src = Transaction(
+        org_id=seed["org_id"], account_id=seed["account_a"], category_id=seed["cat_id"],
+        description="gym", amount=Decimal("10.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.PENDING, date=p_start,
+    )
+    db_session.add(src)
     await db_session.commit()
-    if (await _reload(db_session, t.id)).next_due_date != p_start:
-        pytest.fail("precondition: the rewind must land on p_start")
-    await recurring_service.generate_due_transactions(
-        db_session, seed["org_id"], today=today
+    promoted = await transaction_service.promote_to_recurring(
+        db_session, seed["org_id"], src.id,
+        PromoteToRecurringRequest(frequency="weekly", next_due_date=p_start + WEEK),
+        today=today,
     )
-    if await _row_keys(db_session, seed["org_id"]) != {(t.id, p_start)}:
-        pytest.fail("precondition: still exactly one row for the one key")
-    assert (await _reload(db_session, t.id)).occurrences_elapsed == 1
+    t = await _reload(db_session, promoted.recurring_id)
+    assert (t.occurrences_elapsed, t.last_spent_date) == (1, p_start)
+
+
+async def test_x7_a_single_row_date_edit_cannot_reach_the_frontier(db_session):
+    """GUARD. A series row moved onto its frontier is found by generation's
+    ``exists`` probe, which then spends that occurrence and writes no row."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=p_start, occurrence_count=12,
+    ))).id
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=today)
+    frontier = (await _reload(db_session, tid)).next_due_date
+    row_id = await db_session.scalar(select(Transaction.id).where(Transaction.recurring_id == tid))
+
+    for bad in (frontier, frontier + DAY):
+        with pytest.raises(ConflictError, match=f"due {frontier.isoformat()}"):
+            await transaction_service.update_transaction(
+                db_session, seed["org_id"], row_id, TransactionUpdate(date=bad),
+            )
+        await db_session.rollback()
+    ok = frontier - DAY
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], row_id, TransactionUpdate(date=ok),
+    )
+    assert await _row_keys(db_session, seed["org_id"]) == {(tid, ok)}
+
+
+async def _row_of(db_session, seed, tid, dt):
+    row = Transaction(
+        org_id=seed["org_id"], account_id=seed["account_a"], category_id=seed["cat_id"],
+        description="rent", amount=Decimal("10.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.PENDING, date=dt, recurring_id=tid,
+    )
+    db_session.add(row)
+    await db_session.commit()
+    return row.id
+
+
+async def test_x8_a_paused_template_bounds_row_dates_at_the_cycle_start(db_session):
+    """GUARD. Paused behind ``p_start``, the frontier is re-anchored onto the
+    cycle on resume, so a row may move up to, not onto, ``p_start``."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    frozen = p_start - relativedelta(months=2)
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=frozen, is_active=False,
+        occurrences_elapsed=1, last_spent_date=frozen - relativedelta(months=1),
+    ))).id
+    row_id = await _row_of(db_session, seed, tid, frozen - relativedelta(months=1))
+
+    with pytest.raises(ConflictError, match=f"due {p_start.isoformat()}"):
+        await transaction_service.update_transaction(
+            db_session, seed["org_id"], row_id, TransactionUpdate(date=p_start),
+        )
+    await db_session.rollback()
+    ok = p_start - DAY
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], row_id, TransactionUpdate(date=ok),
+    )
+    assert await _row_keys(db_session, seed["org_id"]) == {(tid, ok)}
+
+
+async def test_x9_an_exhausted_plan_does_not_bound_row_dates(db_session):
+    """GUARD. A finished plan generates nothing more, so no run can spend
+    an occurrence through a moved row."""
+    today = datetime.date.today()
+    seed = await _seed_on_grid(db_session, today)
+    p_start, _ = seed["p1"]
+    frontier = p_start + relativedelta(months=1)
+    tid = (await _add(db_session, _template(
+        seed, frequency="monthly", next_due_date=frontier, occurrence_count=1,
+        occurrences_elapsed=1, last_spent_date=p_start,
+    ))).id
+    row_id = await _row_of(db_session, seed, tid, p_start)
+
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], row_id, TransactionUpdate(date=frontier),
+    )
+    assert await _row_keys(db_session, seed["org_id"]) == {(tid, frontier)}

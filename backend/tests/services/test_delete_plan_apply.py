@@ -33,6 +33,7 @@ from app.services import recurring_service, transaction_service
 from tests.services.test_matched_row_actions import (  # noqa: F401  (db_session fixture)
     _batch_of_three,
     _create,
+    _legacy_pre_tbd755_match,
     _make_matched_pair,
     _make_recurring_pending,
     _reconcile,
@@ -272,7 +273,7 @@ async def test_char_bulk_delete_demotes_and_settles(db_session, log_lines):
     names = Names(seed, r0=rows[0].id, r1=rows[1].id, r2=rows[2].id, dup=dup.id, canonical=canonical.id)
 
     async def act():
-        n, skipped, demoted = await transaction_service.bulk_delete_transactions(
+        n, skipped, demoted, _adj = await transaction_service.bulk_delete_transactions(
             db_session, seed["org_id"], [canonical.id, rows[0].id, rows[2].id])
         return n, _ids(names, skipped), _ids(names, demoted)
 
@@ -303,7 +304,8 @@ async def test_char_bulk_delete_demotes_and_settles(db_session, log_lines):
 async def test_char_stop_recurring_demotes_the_match_orphan(db_session, log_lines):
     seed = await _seed(db_session)
     rec, pending = await _make_recurring_pending(db_session, seed, amount="1024.00")
-    dup, _ = await _make_matched_pair(db_session, seed, amount="1024.00", canonical=pending)
+    with _legacy_pre_tbd755_match():  # the legacy pre-TBD-755 state (F15b)
+        dup, _ = await _make_matched_pair(db_session, seed, amount="1024.00", canonical=pending)
     names = Names(seed, pending=pending.id, dup=dup.id)
     rec_id = rec.id
 

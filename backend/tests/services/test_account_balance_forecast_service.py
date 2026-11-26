@@ -2186,3 +2186,25 @@ async def test_f_wire_risk_day_key_is_from_after_response_model_round_trip(
     assert (
         row.daily_balances[-1].balance == row.expected_month_end_balance
     )
+
+
+async def test_legacy_currency_spellings_share_a_total_and_pay_the_card(db_session: AsyncSession):
+    """Fence (TBD-801). An org with 'EUR', 'eur' and 'EUR ' accounts (legacy
+    free-text spellings) has ONE 'EUR' total, the 'eur ' card paid from the
+    'EUR' source still gets its projected payment, and every row reports the
+    canonical code. Kills a raw-string bucket key (three totals) and a raw
+    guard (no payment)."""
+    seed = await _seed_cc(db_session, cc_currency="eur ")
+    cc = seed["cc"]
+    seed["accounts"]["secondary"].currency = "eur"
+    db_session.add(_charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-500.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    assert [t["currency"] for t in result["totals"]] == ["EUR"]
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "500.00", "date": "2026-05-01"}]
+    assert {a["currency"] for a in result["accounts"]} == {"EUR"}
+    eur = result["totals"][0]
+    assert eur["expected_month_end_balance"] == str(
+        sum(Decimal(a["expected_month_end_balance"]) for a in result["accounts"]).quantize(Decimal("0.01")))

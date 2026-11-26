@@ -124,18 +124,16 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
         "org_members.preview_invitation",
         "30/minute",
     ),
-    # TBD-738: the deprecated GET shape, one release only; shares the POST's
-    # bucket (``shared_limit`` on the same scope).
-    ("org_members", "preview_invitation_by_query"): (
-        "org_members.preview_invitation",
-        "30/minute",
-    ),
     ("org_members", "remove_member"): ("org_members.remove_member", "30/minute"),
     ("orgs", "rename_org_endpoint"): ("orgs.rename", "10/hour"),
     ("reports", "run_query"): ("reports.query", "60/minute"),
     ("reports", "run_sankey_query"): ("reports.sankey_query", "60/minute"),
     ("scenarios", "compare_scenarios"): ("scenarios.compare", "30/minute"),  # per user (TBD-726)
+    ("scenarios", "compare_plan_projections"): ("scenarios.projection_compare", "30/minute"),  # per user
+    ("scenarios", "project_plans"): ("scenarios.projection", "60/minute"),  # per user (TBD-601)
     ("scenarios", "simulate_scenario"): ("scenarios.simulate", "60/minute"),  # per user (TBD-726)
+    ("scenarios", "start_plan"): ("scenarios.start", "30/minute"),  # per user (TBD-602)
+    ("scenarios", "finish_plan"): ("scenarios.finish", "30/minute"),  # per user (TBD-602)
     ("security", "csp_report"): ("security.csp_report", "60/minute"),
     ("tags", "create_tag_endpoint"): ("tags.create", "30/minute"),
     ("tags", "replace_transaction_tags_endpoint"): (
@@ -150,7 +148,29 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
 
 
 def _find_decorated_routes() -> dict[tuple[str, str], tuple[str | None, str]]:
-    """Every ``(module_stem, function_name) -> (pattern, limit-string)`` under routers/.
+    """Every ``(module_stem, function_name) -> (pattern, limit-string)`` under
+    routers/: a route's first (outermost) limit decorator. A route stacking
+    more is pinned by ``test_stacked_limits_are_pinned``."""
+    return {site: entries[0] for site, entries in _all_decorated_routes().items()}
+
+
+# Limits stacked under a route's catalogued one: a static per-address backstop
+# beside a per-user limit (TBD-669: the agent draws the per-user bucket, which
+# has no address). Adding one is a reviewed change to this pin.
+STACKED_LIMITS: dict[tuple[str, str], list[tuple[str | None, str]]] = {
+    ("reports", "run_query"): [(None, "300/minute")],
+    ("reports", "run_sankey_query"): [(None, "300/minute")],
+}
+
+
+def test_stacked_limits_are_pinned():
+    stacked = {site: entries[1:] for site, entries in _all_decorated_routes().items() if len(entries) > 1}
+    assert stacked == STACKED_LIMITS
+
+
+def _all_decorated_routes() -> dict[tuple[str, str], list[tuple[str | None, str]]]:
+    """Every ``(module_stem, function_name) -> [(pattern, limit-string), ...]``
+    under routers/, in decorator order.
 
     Both ``limiter.limit(...)`` and ``limiter.shared_limit(..., scope=...)`` are
     collected. The first argument is either a literal (static limit, pattern
@@ -167,7 +187,7 @@ def _find_decorated_routes() -> dict[tuple[str, str], tuple[str | None, str]]:
     Any other non-literal argument is collected with its source unparsed, so it
     still shows up here rather than vanishing from the inventory.
     """
-    found: dict[tuple[str, str], tuple[str | None, str]] = {}
+    found: dict[tuple[str, str], list[tuple[str | None, str]]] = {}
     for path in sorted(ROUTERS_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -195,7 +215,7 @@ def _find_decorated_routes() -> dict[tuple[str, str], tuple[str | None, str]]:
                         entry = (arg.args[0].value, arg.args[1].value)
                     else:
                         entry = (None, ast.unparse(arg))
-                    found[(path.stem, node.name)] = entry
+                    found.setdefault((path.stem, node.name), []).append(entry)
     return found
 
 
@@ -375,6 +395,8 @@ _KNOWN_PATH_PARAM_LIMITED: frozenset = frozenset({
     "app.routers.org_members.remove_member",
     "app.routers.orgs.rename_org_endpoint",
     "app.routers.scenarios.simulate_scenario",
+    "app.routers.scenarios.start_plan",
+    "app.routers.scenarios.finish_plan",
 })
 
 

@@ -230,9 +230,9 @@ async def _preview(db: AsyncSession, token: str) -> dict:
 
 
 # TBD-738: the token travels in the POST body so it never sits in a URL (edge
-# access logs, browser history, Referer). Both shapes share ONE pre-auth
-# budget (``shared_limit`` on the same scope), so keeping the GET for a
-# release does not double it.
+# access logs, browser history, Referer). The query-string GET it replaced was
+# removed in TBD-751; the bucket keeps its ``shared_limit`` scope so existing
+# counters carry over.
 @router.post(
     "/invitations/preview",
     response_model=InvitationPreviewResponse,
@@ -244,25 +244,6 @@ async def preview_invitation(
     db: AsyncSession = Depends(get_db),
 ):
     return await _preview(db, payload.token)
-
-
-# DEPRECATED (TBD-738): the query-string shape, kept for one release only.
-# Backend and frontend images deploy separately, so a frontend still on the
-# GET must keep working until the frontend that posts is live. Delete this
-# route (and its PUBLIC_ROUTES and DECORATOR_PATTERNS entries) in the next
-# release.
-@router.get(
-    "/invitations/preview",
-    response_model=InvitationPreviewResponse,
-    deprecated=True,
-)
-@limiter.shared_limit("30/minute", scope="org_members.preview_invitation")
-async def preview_invitation_by_query(
-    request: Request,
-    token: str = Query(..., min_length=1),
-    db: AsyncSession = Depends(get_db),
-):
-    return await _preview(db, token)
 
 
 @router.post("/invitations/accept", response_model=TokenResponse)
@@ -377,8 +358,8 @@ async def list_members(
 # over N members N private budgets. The stated intent and the actual behaviour
 # disagreed; this makes the behaviour match the comment.
 #
-# NOTE the preview routes above carry no path parameter either; they use
-# `shared_limit` only so the deprecated GET and the POST share one budget.
+# NOTE the preview route above carries no path parameter either; it keeps
+# `shared_limit` from when a deprecated GET shared its budget (TBD-738, TBD-751).
 @limiter.shared_limit(dynamic_limit("org_members.remove_member", "30/minute"), scope="org_members.remove_member")
 async def remove_member(
     user_id: int,

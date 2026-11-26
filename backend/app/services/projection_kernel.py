@@ -24,7 +24,7 @@ currency's series.
 
 import datetime
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 
@@ -46,6 +46,7 @@ from app.services.billing_service import (
 )
 from app.services.exceptions import ValidationError
 from app.services.cc_statement_service import load_cc_ledgers
+from app.services.currency_service import normalise_currency
 from app.services.date_utils import occurrences_in_window
 from app.services.loan_service import compute_pmt
 from app.services.recurring_filters import active_series_filter, remaining_occurrences
@@ -69,6 +70,8 @@ class AccountBaseline:
     account: Account
     type_slug: str | None
     balance: Decimal
+    # Day 0's opening: ``balance`` less the future-dated settled rows laid back on their dates.
+    seed: Decimal
     pending_delta: Decimal
     # (date, amount) lines behind the projection; amounts are signed for
     # recurring, and positive outflows for the CC and loan payments.
@@ -78,6 +81,8 @@ class AccountBaseline:
     loan_interest: list[Point]
     recurring_lines: list[Point]
     points: list[Point]
+    # A card's due cycles as the payment synthesis billed them (TBD-793).
+    cc_cycles: list[cc_forecast_service.CycleBill] = field(default_factory=list)
 
     @property
     def end_balance(self) -> Decimal:
@@ -86,11 +91,17 @@ class AccountBaseline:
 
 @dataclass
 class Baseline:
+    # The first period as resolved: rows are read from ``window_start``, and
+    # future-dated settled rows are laid on their dates up to ``first_period_end``.
+    window_start: datetime.date
+    first_period_end: datetime.date
     walk_start: datetime.date
     horizon_end: datetime.date
     accounts: list[AccountBaseline]
     # currency -> points, summed over that currency's accounts only.
     currencies: dict[str, list[Point]]
+    # recurring id -> dates of its un-materialised occurrences the walk booked (TBD-562).
+    series_dates: dict[int, list[datetime.date]]
 
 
 async def baseline(
@@ -243,7 +254,16 @@ async def baseline(
     # When one leg's account is inactive or unknown, only the other leg
     # projects: per-account truth, as for a single-leg series on an inactive
     # account, which projects nothing.
+    #
+    # TBD-789: a transfer's destination leg is ALSO kept apart, keyed like a
+    # row id, so a card reads an un-generated leg exactly as it reads the
+    # generated one: a credit toward its payment, from the first period on.
     recurring_lines_by_account: dict[int, list[Point]] = {}
+    # The same lines split for the card synthesis: charges, and transfer-in
+    # legs as ``(key, date, amount)`` credits.
+    charges_by_account: dict[int, list[Point]] = {}
+    transfer_in_by_account: dict[int, list[tuple]] = {}
+    series_dates: dict[int, list[datetime.date]] = {}
     for r in recurring_items:
         legs = [(a, d) for a, d in _recurring_legs(r) if a in accounts_by_id]
         if not legs:
@@ -254,9 +274,15 @@ async def baseline(
         ):
             if (r.id, d) in materialised:
                 continue
+            series_dates.setdefault(r.id, []).append(d)
             for account_id, delta in legs:
                 _add_day_delta(day_deltas, account_id, d, delta, walk_start)
                 recurring_lines_by_account.setdefault(account_id, []).append((d, delta))
+                if r.type == "transfer" and account_id == r.to_account_id:
+                    transfer_in_by_account.setdefault(account_id, []).append(
+                        (("recurring", r.id, d), d, delta))
+                else:
+                    charges_by_account.setdefault(account_id, []).append((d, delta))
 
     # ── Credit-card projected-payment synthesis (Slice 3) ─────────────────────
     # Ephemeral in-memory deltas with provenance source="credit_card_payment":
@@ -269,6 +295,13 @@ async def baseline(
     # period also bills the card's projected (not yet generated) recurring
     # charges, so a card subscription is paid off every month instead of
     # drifting; first-period cycles bill only real rows, as the dashboard does.
+    #
+    # TBD-789: a recurring transfer INTO the card is a payment toward it, so
+    # the synthesized payment of its cycle is lowered by it (never below
+    # zero). A generated leg is a linked INCOME row, already in the ledger and
+    # in ``credits``; an un-generated leg joins both the same way, in every
+    # cycle, so the card is not paid twice before generation and the forecast
+    # does not move when generation runs.
     cc_accounts = [
         acct for acct, slug in rows
         if slug == "credit_card"
@@ -276,6 +309,7 @@ async def baseline(
         and acct.payment_source_account_id is not None
     ]
     cc_payments_by_account: dict[int, list[Point]] = {}
+    cc_cycles_by_account: dict[int, list[cc_forecast_service.CycleBill]] = {}
 
     if cc_accounts:
         cc_ids = [a.id for a in cc_accounts]
@@ -317,18 +351,20 @@ async def baseline(
             if source_entry is None:
                 continue  # source inactive/not loaded -> no-op (do not resurrect)
             source, _ = source_entry
-            if source.currency != cc.currency:
+            if normalise_currency(source.currency) != normalise_currency(cc.currency):
                 continue  # no FX in V1 -> would desync per-currency totals
-            payments = cc_forecast_service.synthesize_account_cc_payments(
+            transfer_in = transfer_in_by_account.get(cc.id, [])
+            bills = cc_forecast_service.synthesize_account_cc_cycles(
                 cc, p_start=window_start, p_end=horizon_end,
                 opening_balance=Decimal(str(cc.opening_balance)),
-                ledger=ledger_by_account.get(cc.id, []),
-                credits=credits_by_account.get(cc.id, []),
+                ledger=ledger_by_account.get(cc.id, []) + [(d, a) for _, d, a in transfer_in],
+                credits=credits_by_account.get(cc.id, []) + transfer_in,
                 per_cycle_amounts=per_cycle_amounts,
-                projected=recurring_lines_by_account.get(cc.id, []),
+                projected=charges_by_account.get(cc.id, []),
                 projected_after=first_period_end,
             )
-            for pay_date, outflow in payments:
+            cc_cycles_by_account[cc.id] = bills
+            for pay_date, outflow in ((b.payment_date, b.outflow) for b in bills if b.outflow > 0):
                 _add_day_delta(day_deltas, source.id, pay_date, -outflow, walk_start)
                 _add_day_delta(day_deltas, cc.id, pay_date, outflow, walk_start)
                 cc_payments_by_account.setdefault(cc.id, []).append((pay_date, outflow))
@@ -358,14 +394,22 @@ async def baseline(
         periods = _loan_periods(window_start, first_period_end, horizon_end)
 
         # Already-paid signal: any linked INCOME (payment-in) leg on the loan
-        # whose effective date falls in the period. balance_contribution_filter()
+        # whose effective date falls in the period. Recurring transfer legs
+        # (TBD-789: ``recurring_origin_id``, which survives a stop or delete,
+        # else ``recurring_id`` for legs written before it existed) count
+        # together: when the period's recurring legs, generated and projected,
+        # sum to at least the PMT they ARE the scheduled payment and the excess
+        # is extra principal; below it they are all extra principal on top of
+        # the scheduled payment. balance_contribution_filter()
         # carries NO status filter, so this catches BOTH settled legs (already
         # in loan.balance) and pending legs (already in pending_delta) -- DO NOT
         # add a status filter here or a pending loan payment double-counts
         # against pending_delta (regression-tested). Disbursement legs are an
         # EXPENSE on the loan and never match; manual adjustments are unlinked.
         loan_paid_rows = (await db.execute(
-            select(Transaction.account_id, eff_date.label("eff")).distinct()
+            select(Transaction.account_id, eff_date.label("eff"),
+                   func.coalesce(Transaction.recurring_origin_id, Transaction.recurring_id),
+                   Transaction.amount)
             .where(Transaction.org_id == org_id,
                    Transaction.account_id.in_(loan_ids),
                    Transaction.linked_transaction_id.is_not(None),
@@ -374,14 +418,15 @@ async def baseline(
                    and_(eff_date >= window_start, eff_date <= horizon_end),
                    *([not_pending_of_series_filter(excluded)] if excluded else []))
         )).all()
-        loan_paid = {(aid, _as_date(eff)) for aid, eff in loan_paid_rows}
+        loan_paid = [(aid, _as_date(eff), origin, Decimal(str(amt)))
+                     for aid, eff, origin, amt in loan_paid_rows]
 
         for loan in loan_accounts:
             source_entry = accounts_by_id.get(loan.payment_source_account_id)
             if source_entry is None:
                 continue  # source inactive/not loaded -> no-op (do not resurrect)
             source, _ = source_entry
-            if source.currency != loan.currency:
+            if normalise_currency(source.currency) != normalise_currency(loan.currency):
                 continue  # no FX in V1 -> would desync per-currency totals
             pmt = compute_pmt(
                 Decimal(str(loan.principal_amount)),
@@ -389,22 +434,34 @@ async def baseline(
                 int(loan.term_months),
             )
             rate = Decimal(str(loan.interest_rate_apr)) / Decimal("100") / Decimal("12")
+            # Manual payment-in legs, each one the payment; recurring legs,
+            # generated and projected, summed per period against the PMT.
+            manual_on = [d for aid, d, origin, _ in loan_paid if aid == loan.id and origin is None]
+            recurring_on = [(d, amt) for aid, d, origin, amt in loan_paid
+                            if aid == loan.id and origin is not None]
+            recurring_on += [(d, amt) for _, d, amt in transfer_in_by_account.get(loan.id, [])]
+
+            def paid_in(start, end):
+                return any(start <= d <= end for d in manual_on) or sum(
+                    (amt for d, amt in recurring_on if start <= d <= end), Decimal("0")) >= pmt
             # Running owed balance (stored NEGATIVE). Period 0 is the
             # dashboard's: the CURRENT balance, interest-blind. Each later
-            # period first takes in the pending loan legs dated in the period
-            # before it (so a booked payment is never paid twice) and then
-            # accrues a month of interest on what is owed, booked on the loan
-            # on its due date, so the payment amortises and the schedule runs
-            # to term instead of ending early.
+            # period first takes in the loan legs dated in the period before
+            # it, pending AND projected recurring ones (TBD-789: un-generated
+            # extra principal lowers the interest basis exactly as its
+            # generated leg does), so a booked payment is never paid twice,
+            # and then accrues a month of interest on what is owed, booked on
+            # the loan on its due date, so the payment amortises and the
+            # schedule runs to term instead of ending early.
+            legs_on = pending_on.get(loan.id, []) + recurring_lines_by_account.get(loan.id, [])
+
+            def legs_in(start, end):
+                return sum((d for eff, d in legs_on if start <= eff < end), Decimal("0"))
+
             balance = Decimal(str(loan.balance))
             for k, (seg_start, seg_end) in enumerate(periods):
                 if k:
-                    prev_start = periods[k - 1][0]
-                    balance += sum(
-                        (d for eff, d in pending_on.get(loan.id, [])
-                         if prev_start <= eff < seg_start),
-                        Decimal("0"),
-                    )
+                    balance += legs_in(periods[k - 1][0], seg_start)
                     due = loan_forecast_service.due_loan_payment_dates(
                         loan.first_payment_date, int(loan.term_months),
                         seg_start, seg_end,
@@ -421,14 +478,14 @@ async def baseline(
                 payments = loan_forecast_service.synthesize_account_loan_payment(
                     first_payment_date=loan.first_payment_date,
                     term_months=int(loan.term_months),
-                    balance=balance,
+                    # Capped at what is owed after this period's own legs, so the
+                    # scheduled payment never adds to an overpayment. The legs
+                    # themselves are the user's transfers and are not capped.
+                    balance=balance + legs_in(seg_start, seg_end + datetime.timedelta(days=1)),
                     pmt=pmt,
                     p_start=seg_start,
                     p_end=seg_end,
-                    already_paid=any(
-                        aid == loan.id and seg_start <= d <= seg_end
-                        for aid, d in loan_paid
-                    ),
+                    already_paid=paid_in(seg_start, seg_end),
                     account_id=loan.id,
                 )
                 for pay_date, applied in payments:
@@ -492,8 +549,10 @@ async def baseline(
             account=account,
             type_slug=type_slug,
             balance=balance,
+            seed=seed,
             pending_delta=pending_by_account.get(account.id, Decimal("0")),
             cc_payments=cc_payments_by_account.get(account.id, []),
+            cc_cycles=cc_cycles_by_account.get(account.id, []),
             loan_payments=loan_payments_by_account.get(account.id, []),
             loan_interest=loan_interest_by_account.get(account.id, []),
             recurring_lines=recurring_lines_by_account.get(account.id, []),
@@ -501,16 +560,21 @@ async def baseline(
         ))
         # Every account walks the same dates, so a currency series is the
         # index-wise sum of ITS accounts' points and nothing else.
-        total = currencies.get(account.currency)
-        currencies[account.currency] = list(points) if total is None else [
+        # Keyed on the canonical code: a legacy 'eur' row is EUR (TBD-801).
+        currency = normalise_currency(account.currency)
+        total = currencies.get(currency)
+        currencies[currency] = list(points) if total is None else [
             (d, b + p) for (d, b), (_, p) in zip(total, points)
         ]
 
     return Baseline(
+        window_start=window_start,
+        first_period_end=first_period_end,
         walk_start=walk_start,
         horizon_end=horizon_end,
         accounts=accounts,
         currencies=currencies,
+        series_dates=series_dates,
     )
 
 

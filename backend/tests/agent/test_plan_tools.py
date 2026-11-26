@@ -1,0 +1,421 @@
+"""TBD-668: the forecast plan and Plans (``scenarios``) tools.
+
+The honesty fence (``test_agent_honesty``, T-A9) checks every row each change
+tool writes against its preview. This file holds the reads, the refusals, the
+proof that the two ``READ_POSTS`` tools write nothing, and the ``lean`` args of
+the scenario create and update.
+"""
+from __future__ import annotations
+
+import pytest
+from sqlalchemy import func, select, update
+
+from app.agent import registry
+from app.agent.registry import ToolRegistrationError, ToolSpec
+from app.config import settings as app_settings
+from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus
+from app.models import Organization
+from app.models.scenario import Scenario, ScenarioStatus, ScenarioType
+from app.models.user import User
+from app.services import feature_service, plan_draft_service
+from app.services.feature_gate import Feature
+from app.services.feature_service import get_entitlements as real_get_entitlements
+from app.models.user import Role
+
+from tests.agent.test_actions import (  # noqa: F401  (fixtures)
+    P_START, _confirm, _invoke, _refused, _rows, engine, factory, w,
+)
+from tests.agent.test_agent_honesty import (
+    _TRIP, _bare_draft, _draft, _fplan, _ids, _own_plan, _resolve, _savings, _snap,
+)
+
+
+@pytest.fixture(autouse=True)
+def _plans_on(monkeypatch, plans_entitled):
+    monkeypatch.setattr(app_settings, "feature_plans", True)
+
+
+async def _count(f, model, *where) -> int:
+    async with f() as db:
+        return await db.scalar(select(func.count()).select_from(model).where(*where))
+
+
+async def test_the_plans_entitlement_gates_every_plans_tool(factory, w, monkeypatch):
+    """FENCE F-E5 (TBD-564), the agent path. The switch is on and ``ai.agent``
+    is granted, but the org isn't entitled to ``plans``: every Plans tool is
+    refused at the gate, before its handler runs."""
+    monkeypatch.setattr(feature_service, "get_entitlements", real_get_entitlements)
+    specs = [s for s in registry._TOOLS.values() if Feature.PLANS in (s.product_area, *s.extra_areas)]
+    assert specs
+    async with factory() as db:
+        user = await db.get(User, w["A"]["member"])
+        for spec in specs:
+            with pytest.raises(registry.ToolError) as err:
+                await registry.check_gates(db, user, spec, "in_app", None)
+            assert (err.value.code, err.value.detail) == ("feature_disabled", "plans"), spec.name
+
+
+# ── reads ─────────────────────────────────────────────────────────────────
+
+async def test_forecast_plan_get_reads_without_creating_a_plan(factory, w):
+    a = w["A"]
+    assert await _invoke(factory, a["member"], "forecast_plan_get", {}) is None
+    assert await _count(factory, ForecastPlan) == 0
+    await _fplan(factory, a)
+    out = await _invoke(factory, a["member"], "forecast_plan_get", {"period_start": P_START.isoformat()})
+    assert (out["id"], [i["id"] for i in out["items"]]) == (a["plan"], [a["item"]])
+
+
+SCENARIO_TOOLS = (
+    ("scenarios_get", {}), ("scenarios_simulate", {}), ("scenarios_update", {"name": "Mine"}),
+    ("scenarios_delete", {}), ("plan_goal_create", {"name": "G", "tier": "want", "kind": "lump"}),
+    ("plan_goal_update", {"goal_id": "@goal", "name": "G2"}), ("plan_goal_delete", {"goal_id": "@goal"}),
+)
+
+
+async def test_plans_follow_the_routes_scoping(factory, w):
+    """FENCE (TBD-601 scoping, as the routes). A plan is seen by its org and
+    changed by its creator or an org owner or admin; another member gets
+    ``forbidden``; a legacy scenario stays its creator's; another org gets
+    ``not_found``. Nothing about a plan the caller cannot see is disclosed."""
+    a, b = w["A"], w["B"]
+    await _own_plan(factory, a)  # the member's; made a plan below
+    [legacy] = await _ids(factory, Scenario(org_id=a["org"], user_id=a["member"], name="Old",
+                                            scenario_type=ScenarioType.TRIP, params_json={}, horizon_months=24))
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(currency="EUR"))
+        await db.commit()
+
+    def call(uid, tool, args, sid=None):
+        return _invoke(factory, uid, tool, {"scenario_id": sid or a["scn"], **_resolve(a, args)})
+
+    for tool, args in SCENARIO_TOOLS:  # another org
+        err = await _refused(call(b["member"], tool, args))
+        assert err.code == "not_found", tool
+        assert "Trip" not in str(err.data) and "Fund" not in str(err.data)
+    err = await _refused(_invoke(factory, b["member"], "scenarios_compare",
+                                 {"scenario_ids": [a["scn"]], "horizon_months": 12}))
+    assert err.code == "not_found"
+    assert await _invoke(factory, b["member"], "scenarios_list", {}) == []
+    # another member: sees the plan, not the legacy row; changes neither
+    assert [s["id"] for s in await _invoke(factory, a["other"], "scenarios_list", {})] == [a["scn"]]
+    assert (await call(a["other"], "scenarios_get", {}))["id"] == a["scn"]
+    for tool, args in SCENARIO_TOOLS[2:]:
+        assert (await _refused(call(a["other"], tool, args))).code == "forbidden", tool
+    for tool, args in SCENARIO_TOOLS[:4]:
+        assert (await _refused(call(a["other"], tool, args, legacy))).code == "not_found", tool
+    # an org admin and the creator change the plan
+    for uid in (a["admin"], a["member"]):
+        for tool, args in SCENARIO_TOOLS[2:]:
+            assert (await call(uid, tool, args))["requires_confirmation"] is True, (uid, tool)
+    assert await _rows(factory)  # staged, never executed
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("scenarios_simulate", {"horizon_months": 12, "smooth_with_regression": True}),
+    ("scenarios_compare", {"horizon_months": 12}),
+])
+async def test_read_posts_write_nothing(factory, w, tool, args):
+    """FENCE (READ_POSTS). Wrong implementation: the simulate tool caching
+    its projection on the row as the REST route does, or any write at all."""
+    a = w["A"]
+    [a["scn"]] = await _ids(factory, Scenario(
+        org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
+        params_json=_resolve(a, _TRIP), horizon_months=24))
+    args = {**args, **({"scenario_ids": [a["scn"]]} if tool == "scenarios_compare" else {"scenario_id": a["scn"]})}
+    async with factory() as db:
+        before = await _snap(await db.connection())
+    out = await _invoke(factory, a["member"], tool, args)
+    projection = out["projection"] if tool == "scenarios_simulate" else out["projections"][0]["projection"]
+    assert projection["horizon_months"] == 12
+    async with factory() as db:
+        assert await _snap(await db.connection()) == before
+
+
+async def test_simulate_offers_only_the_analytic_engine(factory, w):
+    """``ai_enhanced`` calls an AI provider, which no agent tool reaches."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    err = await _refused(_invoke(factory, a["member"], "scenarios_simulate",
+                                 {"scenario_id": a["scn"], "engine": "ai_enhanced"}))
+    assert err.code == "invalid_arguments"
+
+
+def test_read_posts_are_pinned_and_gate_registration():
+    assert registry.READ_POSTS == {
+        ("POST", "/api/v1/scenarios/compare"), ("POST", "/api/v1/scenarios/{scenario_id}/simulate"),
+        ("POST", "/api/v1/reports/query"), ("POST", "/api/v1/reports/query/sankey"),
+    }, "a new read POST needs proof it writes nothing (a test like test_read_posts_write_nothing)"
+    spec = registry.get_tool("scenarios_compare")
+    with pytest.raises(ToolRegistrationError, match="READ_POSTS"):
+        registry.register(ToolSpec(**{
+            **{f: getattr(spec, f) for f in ("risk", "args", "product_area", "min_role", "description", "run")},
+            "name": "fixture_read_post", "mirrors_route": ("POST", "/api/v1/scenarios"),
+        }))
+    assert registry.get_tool("fixture_read_post") is None
+
+
+# ── changes ───────────────────────────────────────────────────────────────
+
+async def test_every_change_is_browser_confirmed(factory, w):
+    a = w["A"]
+    await _fplan(factory, a)
+    out = await _invoke(factory, a["member"], "forecast_plan_item_update",
+                        {"plan_id": a["plan"], "item_id": a["item"], "planned_amount": "75.00"})
+    assert out["requires_browser_confirmation"] is True
+    done = await _confirm(factory, a["member"], out["action_id"])
+    assert [(i["planned_amount"], i["source"]) for i in done["result"]["items"]] == [("75.00", "manual")]
+
+
+@pytest.mark.parametrize("tool,args,code", [
+    ("forecast_plan_item_add", {"category_id": "@c1", "type": "expense", "planned_amount": "1.00"}, "invalid_arguments"),
+    ("forecast_plan_item_update", {"item_id": "@item", "planned_amount": "1.00"}, "invalid_arguments"),
+    ("forecast_plan_item_delete", {"item_id": "@item"}, "invalid_arguments"),
+    ("forecast_plan_activate", {}, "invalid_arguments"),
+    ("forecast_plan_discard", {}, "invalid_arguments"),
+])
+async def test_an_active_plan_refuses_changes_at_preview(factory, w, tool, args, code):
+    a = w["A"]
+    await _fplan(factory, a, PlanStatus.ACTIVE)
+    err = await _refused(_invoke(factory, a["member"], tool, {"plan_id": a["plan"], **_resolve(a, args)}))
+    assert (err.code, err.detail) == (code, "Cannot modify an active plan. Revert to draft first.")
+
+
+async def test_item_refusals(factory, w):
+    a = w["A"]
+    await _fplan(factory, a)
+    b = w["B"]
+    cases = [
+        ({"plan_id": a["plan"], "category_id": b["c1"], "type": "expense", "planned_amount": "1.00"}, "invalid_arguments"),
+        ({"plan_id": a["plan"], "category_id": a["c1"], "type": "income", "planned_amount": "1.00"}, "invalid_arguments"),
+        ({"plan_id": a["plan"], "category_id": a["c1"], "type": "expense", "planned_amount": "0"}, "invalid_arguments"),
+        ({"plan_id": a["plan"] + 99, "category_id": a["c1"], "type": "expense", "planned_amount": "1.00"}, "not_found"),
+    ]
+    for args, code in cases:
+        assert (await _refused(_invoke(factory, a["member"], "forecast_plan_item_add", args))).code == code, args
+    err = await _refused(_invoke(factory, b["member"], "forecast_plan_discard", {"plan_id": a["plan"]}))
+    assert err.code == "not_found"
+    # The same amount still pins a generated item as the user's (a refresh keeps it).
+    out = await _invoke(factory, a["member"], "forecast_plan_item_update",
+                        {"plan_id": a["plan"], "item_id": a["item"], "planned_amount": "50.00"})
+    assert [(c["field"], c["before"], c["after"]) for c in out["changes"]] == [("source", "history", "manual")]
+    assert await _count(factory, ForecastPlanItem) == 1
+
+
+async def test_revert_refuses_a_draft_and_copy_an_empty_source(factory, w):
+    a = w["A"]
+    await _fplan(factory, a)
+    err = await _refused(_invoke(factory, a["member"], "forecast_plan_revert", {"plan_id": a["plan"]}))
+    assert err.detail == "Plan is already a draft"
+    err = await _refused(_invoke(factory, a["member"], "forecast_plan_copy",
+                                 {"source_period_start": "2000-01-01"}))
+    assert err.detail == "Billing period not found"
+
+
+async def test_scenario_params_are_a_plain_object_validated_by_the_route(factory, w):
+    """``lean``: the schema is a plain object (the full union would not fit
+    the turn budget), and the route's model still refuses a bad one."""
+    spec = registry.get_tool("scenarios_create")
+    schema = spec.args.model_json_schema()["properties"]["params"]
+    assert schema["type"] == "object" and "$ref" not in str(schema)
+    a = w["A"]
+    bad = {**_resolve(a, _TRIP), "duration_days": 0}
+    err = await _refused(_invoke(factory, a["member"], "scenarios_create",
+                                 {"name": "x", "scenario_type": "trip", "params": bad}))
+    assert err.code == "invalid_arguments" and "duration_days" in err.detail
+    err = await _refused(_invoke(factory, a["member"], "scenarios_create",
+                                 {"name": "x", "scenario_type": "purchase", "params": _resolve(a, _TRIP)}))
+    assert err.code == "invalid_arguments"
+    await _own_plan(factory, a)
+    err = await _refused(_invoke(factory, a["member"], "scenarios_update", {
+        "scenario_id": a["scn"], "params": {"scenario_type": "custom", "label": "x"}}))
+    assert err.detail == "params scenario_type must match the existing scenario_type on the row"
+
+
+async def test_a_created_plan_belongs_to_the_caller(factory, w):
+    a = w["A"]
+    out = await _invoke(factory, a["member"], "scenarios_create",
+                        {"name": "Lisbon", "scenario_type": "trip", "params": _resolve(a, _TRIP)})
+    done = await _confirm(factory, a["member"], out["action_id"])
+    assert (done["result"]["user_id"], done["result"]["horizon_months"]) == (a["member"], 24)
+    assert registry.get_tool("scenarios_create").min_role == Role.MEMBER
+
+
+async def test_plan_fields_and_goals_refuse_at_preview_as_the_route_does(factory, w):
+    """FENCE (TBD-601 checks). Wrong implementation: a preview promising a
+    plan the route refuses: another currency, a link in another org, no
+    currency scope, or a change to a plan that is not a draft."""
+    a, b = w["A"], w["B"]
+    await _own_plan(factory, a)
+    create = {"name": "P", "scenario_type": "trip", "params": _resolve(a, _TRIP)}
+    cases = [
+        ("scenarios_create", {**create, "currency": "USD"}, "organization's currency"),
+        ("scenarios_create", {**create, "funding_account_id": b["acct"]}, "not found in this organization"),
+        ("scenarios_update", {"scenario_id": a["scn"], "category_id": b["c1"]}, "not found in this organization"),
+        ("plan_goal_create", {"scenario_id": a["scn"], "name": "G", "tier": "want", "kind": "lump",
+                              "account_id": b["acct"]}, "not found in this organization"),
+    ]
+    for tool, args, detail in cases:
+        err = await _refused(_invoke(factory, a["member"], tool, args))
+        assert (err.code, detail in err.detail) == ("invalid_arguments", True), (tool, err.detail)
+    out = await _invoke(factory, a["member"], "scenarios_create", {**create, "monthly_budget": "10.00"})
+    assert out["context"]["currency"] == "EUR"
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
+        await db.execute(update(Organization).where(Organization.id == a["org"]).values(primary_currency=None))
+        await db.commit()
+    # A started plan's edit needs confirm=true (the next test); a goal delete is
+    # refused; its Delete stages, winding it down (honesty fence).
+    for tool, args in (("scenarios_update", {"scenario_id": a["scn"], "return_pct": "3.00"}),
+                       ("plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]})):
+        assert (await _refused(_invoke(factory, a["member"], tool, args))).code == "conflict", tool
+    err = await _refused(_invoke(factory, a["member"], "scenarios_create", {**create, "monthly_budget": "10.00"}))
+    assert err.detail == plan_draft_service.NO_CURRENCY_SCOPE
+    # no plan fields: a legacy scenario, no currency resolved (as the route)
+    out = await _invoke(factory, a["member"], "scenarios_create", create)
+    assert "currency" not in {c["field"] for c in out["changes"]} and "currency" not in out["context"]
+
+
+async def test_plans_start_refuses_at_preview_what_start_would_not_take(factory, w):
+    """GUARD (architects' ruling on TBD-604). Wrong implementation: a Start
+    preview staging what ``start()`` refuses, or what it cannot disclose (a
+    period the route would commit, a tag-dictionary write), or a
+    ``plan_goal_*`` preview staging a series the write refuses."""
+    from app.models.billing import BillingPeriod
+    from app.models.category import Category, CategoryType
+    from app.models.settings import OrgSetting
+    from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier
+
+    a = w["A"]
+    start = {"scenario_id": None}
+
+    async def refused(code, words):
+        err = await _refused(_invoke(factory, a["member"], "plans_start", start))
+        assert (err.code, words in err.detail) == (code, True), err.detail
+
+    async def goal(**kw):
+        await _ids(factory, PlanGoal(org_id=a["org"], scenario_id=start["scenario_id"], name="G",
+                                     tier=PlanGoalTier.WANT, **kw))
+
+    await _own_plan(factory, a)  # no plan fields: not a plan
+    start["scenario_id"] = a["scn"]
+    await refused("invalid_arguments", "not a plan")
+    await _bare_draft(factory, a)
+    start["scenario_id"] = a["scn"]
+    async with factory() as db:  # sharing tag data: the new tag would reach the dictionary
+        db.add(OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
+        await db.commit()
+    await refused("conflict", "tag dictionary")
+    async with factory() as db:
+        await db.execute(OrgSetting.__table__.delete().where(OrgSetting.org_id == a["org"]))
+        await db.commit()
+    await goal(kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=5, category_id=a["c1"])
+    await refused("invalid_arguments", "subcategory")  # a master not made yet has none
+
+    # An EXPENSE master cannot carry a savings goal's transfer series.
+    await _savings(factory, a)
+    [cat] = await _ids(factory, Category(org_id=a["org"], name="Spend", type=CategoryType.EXPENSE))
+    [a["scn"]] = await _ids(factory, _draft(a, "Spend", category_id=cat, funding_account_id=a["acct"]))
+    start["scenario_id"] = a["scn"]
+    await goal(kind=PlanGoalKind.SAVINGS_TARGET, monthly_amount=5, account_id=a["savings"])
+    await refused("invalid_arguments", "both types")
+
+    [a["scn"]] = await _ids(factory, _draft(a, "Later"))
+    start["scenario_id"] = a["scn"]
+    async with factory() as db:
+        await db.execute(update(BillingPeriod).where(BillingPeriod.org_id == a["org"]).values(end_date=P_START))
+        await db.commit()
+    await refused("no_open_period", "open one first")
+    for status, code in ((ScenarioStatus.ACTIVE, "no_change"), (ScenarioStatus.FINISHED, "conflict")):
+        async with factory() as db:
+            await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=status))
+            await db.commit()
+        await refused(code, "started" if code == "no_change" else "cannot be started")
+
+
+async def test_scenarios_update_on_a_started_plan_follows_assert_editable(factory, w):
+    """GUARD (TBD-604), as the PATCH route: a started plan takes the
+    ``STARTED_PLAN_FIELDS`` with ``confirm=true`` only, never a cleared cap; a
+    finished plan takes nothing. Wrong implementation: a preview staging an
+    edit the route refuses, or refusing one it takes."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
+        await db.commit()
+    scn = {"scenario_id": a["scn"]}
+    for args, detail in (
+        ({"name": "Porto"}, plan_draft_service.CONFIRM_TO_EDIT),
+        ({"is_active": False, "confirm": True}, "cannot change is_active"),
+        ({"monthly_budget": None, "confirm": True}, "cannot change monthly_budget"),
+    ):
+        err = await _refused(_invoke(factory, a["member"], "scenarios_update", {**scn, **args}))
+        assert (err.code, detail in err.detail) == ("conflict", True), (args, err.detail)
+    out = await _invoke(factory, a["member"], "scenarios_update", {**scn, "name": "Porto", "confirm": True})
+    assert [c["field"] for c in out["changes"]] == ["name"]
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.FINISHED))
+        await db.commit()
+    err = await _refused(_invoke(factory, a["member"], "scenarios_update", {**scn, "name": "X", "confirm": True}))
+    assert (err.code, "read-only" in err.detail) == ("conflict", True)
+
+
+async def test_goal_tools_on_a_started_plan_follow_assert_editable(factory, w):
+    """GUARD (TBD-604), as the goal routes: on a started plan a create or an
+    update needs ``confirm=true``, an update takes the ``STARTED_GOAL_FIELDS``
+    only and never disables; a finished plan takes nothing. Wrong
+    implementation: a preview staging an edit the route refuses."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.ACTIVE))
+        await db.commit()
+    new = {"scenario_id": a["scn"], "name": "Car", "tier": "want", "kind": "savings_target"}
+    edit = {"scenario_id": a["scn"], "goal_id": a["goal"]}
+    for tool, args, detail in (
+        ("plan_goal_create", new, plan_draft_service.CONFIRM_TO_EDIT),
+        ("plan_goal_update", {**edit, "name": "Van"}, plan_draft_service.CONFIRM_TO_EDIT),
+        ("plan_goal_update", {**edit, "target_amount": "9.00", "confirm": True}, "cannot change target_amount"),
+        ("plan_goal_update", {**edit, "enabled": False, "confirm": True}, "cannot change enabled"),
+    ):
+        err = await _refused(_invoke(factory, a["member"], tool, args))
+        assert (err.code, detail in err.detail) == ("conflict", True), (args, err.detail)
+    out = await _invoke(factory, a["member"], "plan_goal_update", {**edit, "name": "Van", "confirm": True})
+    assert [c["field"] for c in out["changes"]] == ["name"]
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.FINISHED))
+        await db.commit()
+    err = await _refused(_invoke(factory, a["member"], "plan_goal_create", {**new, "confirm": True}))
+    assert (err.code, "read-only" in err.detail) == ("conflict", True)
+
+
+async def test_a_goal_delete_checks_only_the_draft_as_the_route_does(factory, w):
+    """GUARD (review L3). ``delete_goal`` checks the draft only: with no
+    currency scope a delete still stages, while a create is refused."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    async with factory() as db:
+        await db.execute(update(Organization).where(Organization.id == a["org"]).values(primary_currency=None))
+        await db.commit()
+    out = await _invoke(factory, a["member"], "plan_goal_delete", {"scenario_id": a["scn"], "goal_id": a["goal"]})
+    assert out["requires_confirmation"] is True
+    err = await _refused(_invoke(factory, a["member"], "plan_goal_create",
+                                 {"scenario_id": a["scn"], "name": "G", "tier": "want", "kind": "lump"}))
+    assert err.detail == plan_draft_service.NO_CURRENCY_SCOPE
+
+
+async def test_plans_finish_refuses_a_draft_and_is_a_no_change_on_a_finished_plan(factory, w):
+    """GUARD (TBD-604), as ``plan_lifecycle_service.finish``: only an active
+    plan finishes; a finished one is ``no_change``, not a second wind-down.
+    Wrong implementation: a preview staging a Finish the service refuses."""
+    a = w["A"]
+    await _own_plan(factory, a)
+    args = {"scenario_id": a["scn"]}
+    assert (await _refused(_invoke(factory, a["member"], "plans_finish", args))).code == "conflict"
+    async with factory() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(status=ScenarioStatus.FINISHED))
+        await db.commit()
+    assert (await _refused(_invoke(factory, a["member"], "plans_finish", args))).code == "no_change"
+    # Another org's plan is not found, whatever its state.
+    err = await _refused(_invoke(factory, w["B"]["member"], "plans_finish", args))
+    assert err.code == "not_found"

@@ -11,6 +11,7 @@ instead of HTTPException — callers map these to the appropriate response.
 """
 
 import datetime
+import enum
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -36,10 +37,13 @@ from app.schemas.transaction import (
 )
 from app.services.category_rules_service import learn_from_choice
 from app.services.date_utils import advance_date
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
+from app.services.recurring_filters import has_remaining_occurrences
 from app.services.transaction_filters import (
     REVERTED_RECONCILIATION_STATES,
+    account_currency_matches,
     balance_contribution_filter,
     contributes_to_cached_balance,
     effective_period_date_expr,
@@ -485,10 +489,11 @@ async def _series_sync_targets(
 class SeriesDateMove:
     """A validated "this and future" date move (TBD-756). ``moves`` maps a
     sibling id to its new (date, settled_date); ``next_due_date`` is the new
-    frontier."""
+    frontier and ``last_spent_date`` the grid date just before it (TBD-509)."""
 
     moves: dict[int, tuple[datetime.date, datetime.date | None]]
     next_due_date: datetime.date
+    last_spent_date: datetime.date
 
 
 async def _plan_series_date_move(
@@ -595,7 +600,7 @@ async def _plan_series_date_move(
             f"its next occurrence would move ({new_frontier.isoformat()}). Change only "
             f"this occurrence."
         )
-    return SeriesDateMove(moves=moves, next_due_date=new_frontier)
+    return SeriesDateMove(moves=moves, next_due_date=new_frontier, last_spent_date=d)
 
 
 async def _propagate_fields_to_series(
@@ -758,6 +763,7 @@ async def _propagate_fields_to_series(
             template_values["amount"] = amount
         if date_move is not None:
             template_values["next_due_date"] = date_move.next_due_date
+            template_values["last_spent_date"] = date_move.last_spent_date
         await db.execute(
             update(RecurringTransaction)
             .where(
@@ -810,6 +816,43 @@ async def _propagate_fields_to_series(
             )
 
 
+async def refuse_row_date_at_frontier(
+    db: AsyncSession, org_id: int, recurring_id: int, new_date: datetime.date,
+) -> None:
+    """Refuse moving one series row onto or past where generation will probe
+    next (TBD-509): its ``exists`` branch would find the row and spend that
+    occurrence without writing one. Shared by ``update_transaction`` and the
+    import inbox's edits (``reconciliation_service._apply_edits``).
+
+    A paused template resumes on a frontier re-anchored to at least ``p_start``,
+    so its bound is the later of the two. An exhausted plan generates nothing
+    more, so nothing is refused.
+    """
+    # Local import: recurring_service imports this module at load.
+    from app.services.recurring_service import frontier_lower_bound
+
+    r = await db.scalar(select(RecurringTransaction).where(
+        RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id,
+    ))
+    if r is None or not has_remaining_occurrences(r):
+        return
+    bound = r.next_due_date
+    if not r.is_active:
+        bound = max(bound, await frontier_lower_bound(db, org_id))
+    if new_date >= bound:
+        raise ConflictError(
+            f"The series' next occurrence is due {bound.isoformat()}, so this "
+            f"transaction's date must be before it. Choose an earlier date, or "
+            f"change the series' next due date first."
+        )
+
+
+def _field_value(tx: Transaction, name: str):
+    """``tx``'s value for a ``TransactionUpdate`` field, in the body's form."""
+    v = getattr(tx, name)
+    return v.value if isinstance(v, enum.Enum) else v
+
+
 async def update_transaction(
     db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate,
     *, learn: bool = True,
@@ -856,6 +899,21 @@ async def update_transaction(
     if tx.is_manual_adjustment:
         raise ValidationError("Manual balance adjustments cannot be edited")
 
+    # TBD-807: a bound pair's money (amount, dates, status, account, type) is
+    # the bank's; changing it on either row, or flipping the occurrence back
+    # to pending, would count or project the payment twice. Unbind first.
+    if tx.bound_bank_tx_id is not None or tx.bind_prev_status is not None:
+        _money_fields = ("amount", "date", "settled_date", "status", "account_id", "type")
+        if any(
+            getattr(body, f) is not None and getattr(body, f) != _field_value(tx, f)
+            for f in _money_fields
+        ):
+            raise ConflictError(
+                "This transaction is bound to a bank row as a recurring payment. "
+                "Unbind it first to change its amount, dates, status, account or type.",
+                code="transaction_bound",
+            )
+
     # TBD-272: moving a skipped RECURRING row onto another date would make that
     # date's real occurrence look materialised (the (recurring_id, date) probe
     # has no state term), silently suppressing it (TBD-271 exception 3).
@@ -870,6 +928,15 @@ async def update_transaction(
         raise ValidationError(
             f"The date of a {tx.reconciliation_state} transaction cannot be changed"
         )
+
+    # "This and future" re-keys the frontier with the row (``_plan_series_date_move``).
+    if (
+        body.date is not None
+        and body.date != tx.date
+        and tx.recurring_id is not None
+        and body.series_scope != "future"
+    ):
+        await refuse_row_date_at_frontier(db, org_id, tx.recurring_id, body.date)
 
     # Race detection: the unlocked preview saw an unlinked row, but a concurrent
     # pair_existing_transactions may have linked it. If the locked tx now has a
@@ -948,7 +1015,7 @@ async def update_transaction(
                 raise ValidationError("Account not found")
             if new_acct.id == pair_partner.account_id:
                 raise ValidationError("Account must differ from partner's account")
-            if new_acct.currency != pair_partner.account.currency:
+            if normalise_currency(new_acct.currency) != normalise_currency(pair_partner.account.currency):
                 raise ValidationError("New account currency must match partner's currency")
 
     # Validate references regardless of linked status
@@ -1137,6 +1204,22 @@ async def update_transaction(
                 # clear the historical actual so it doesn't leak as an
                 # "expected" date for the now-pending row.
                 tx.settled_date = None
+        # TBD-791: a pending transfer's expected settlement moves both legs
+        # together while both are pending (the partner is hidden in the list).
+        # Only on a real change: the edit form re-sends the field every save.
+        # A settled partner keeps its own date, as before.
+        if (
+            pair_partner is not None
+            and settled_date_supplied
+            and tx.status == TransactionStatus.PENDING
+            and pair_partner.status == TransactionStatus.PENDING
+            and tx.settled_date != old_settled_date
+        ):
+            if tx.settled_date is not None and tx.settled_date < pair_partner.date:
+                raise ValidationError(
+                    "settled_date must be on or after the other leg's date"
+                )
+            pair_partner.settled_date = tx.settled_date
         # TBD-756: on a "this and future" move, a still-pending row's expected
         # settlement keeps its offset, exactly as each moved sibling's does.
         # Only when the request left it as it was (the form re-sends it); a
@@ -1186,7 +1269,7 @@ async def update_transaction(
                 raise ValidationError("Pair amount mismatch after edit")
             if {tx.type, pair_partner.type} != {TransactionType.EXPENSE, TransactionType.INCOME}:
                 raise ValidationError("Pair must have opposite types after edit")
-            if tx.account.currency != pair_partner.account.currency:
+            if normalise_currency(tx.account.currency) != normalise_currency(pair_partner.account.currency):
                 raise ValidationError("Pair currencies differ after edit")
 
         if amount_was_changed and pair_partner is not None:
@@ -1369,6 +1452,15 @@ async def promote_to_recurring(
             raise ValidationError(
                 "Transaction is already linked to a recurring template"
             )
+        # TBD-755: a bound occurrence whose series was stopped keeps its
+        # back-pointer; seeding a new series from it would let unbind write the
+        # old series' snapshot onto the new series' row.
+        if tx.bound_bank_tx_id is not None or tx.bind_prev_status is not None:
+            raise ConflictError(
+                "This transaction is bound to a bank row as a recurring payment. "
+                "Unbind it first.",
+                code="transaction_bound",
+            )
 
         template = RecurringTransaction(
             org_id=org_id,
@@ -1411,6 +1503,8 @@ async def promote_to_recurring(
             # is also in the past, and a client is not where this invariant
             # belongs.
             occurrences_elapsed=0 if body.next_due_date <= tx.date else 1,
+            # TBD-509: the source row is the spent instalment 1 in that arm.
+            last_spent_date=None if body.next_due_date <= tx.date else tx.date,
         )
         db.add(template)
         await db.flush()
@@ -1887,6 +1981,14 @@ async def plan_transaction_delete(
     # rather than aborting the whole batch.
     if tx.is_manual_adjustment:
         raise ValidationError("Manual balance adjustments cannot be deleted")
+    # TBD-755: deleting either half of a bind would drop the payment from the
+    # books (TBD-294 rejects the referrer) or orphan the marker.
+    if tx.bound_bank_tx_id is not None or tx.bind_prev_status is not None:
+        raise ConflictError(
+            "This transaction is bound to a bank row as a recurring payment. "
+            "Unbind it first.",
+            code="transaction_bound",
+        )
 
     # TWO SEPARATE NAMES, on purpose (TBD-280). ``raw_partner`` is whatever
     # the link points at -- possibly an unrelated canonical row that
@@ -1987,11 +2089,15 @@ async def delete_transaction(
 
 async def bulk_delete_transactions(
     db: AsyncSession, org_id: int, ids: list[int]
-) -> tuple[int, list[int], list[int]]:
+) -> tuple[int, list[int], list[int], list[int]]:
     """Delete multiple transactions in one atomic commit.
 
-    Returns (deleted_count, skipped_ids, demoted_ids) -- the third element is
-    TBD-294's match-orphan demotion, see ``_settle_batch_counters_and_demote_orphans``.
+    Returns (deleted_count, skipped_ids, demoted_ids, skipped_adjustment_ids)
+    -- the third element is TBD-294's match-orphan demotion, see
+    ``_settle_batch_counters_and_demote_orphans``. ``skipped_ids`` is every
+    requested id that was not deleted; ``skipped_adjustment_ids`` is the
+    subset refused because it is a manual balance adjustment (TBD-491), so
+    the rest of ``skipped_ids`` is rows that are not there.
     Cross-org IDs are silently
     skipped. TRANSFER-pair halves cascade: deleting one half also deletes
     the linked half -- but only when the link is MUTUAL (TBD-280). A one-way
@@ -2001,7 +2107,7 @@ async def bulk_delete_transactions(
     order to prevent lost updates and deadlocks.
     """
     if not ids:
-        return (0, [], [])
+        return (0, [], [], [])
 
     # Dedupe input — caller may select both halves of a transfer
     requested = list(dict.fromkeys(ids))
@@ -2039,7 +2145,7 @@ async def bulk_delete_transactions(
         )
 
     if not all_ids_to_lock:
-        return (0, list(requested), [])
+        return (0, list(requested), [], [])
 
     # populate_existing=True refreshes the preview's ORM instances with the
     # locked DB state — otherwise SQLAlchemy returns the identity-map copy
@@ -2053,6 +2159,18 @@ async def bulk_delete_transactions(
     )
     locked_rows = {tx.id: tx for tx in result.scalars().all()}
     skipped_ids = [i for i in requested if i not in locked_rows]
+    # TBD-755: refused whole, as ``delete_transaction`` refuses; a skip would
+    # read as "already gone" on the transactions page.
+    if any(
+        r.bound_bank_tx_id is not None or r.bind_prev_status is not None
+        for rid in requested
+        if (r := locked_rows.get(rid)) is not None
+    ):
+        raise ConflictError(
+            "Some selected transactions are bound to a bank row as a recurring "
+            "payment. Unbind them first, or leave them out of the selection.",
+            code="transaction_bound",
+        )
 
     # THE LOCK SET IS NOT THE DELETE SET (TBD-280). ``locked_rows`` above is
     # deliberately a superset: it pulls every non-null link so reciprocity can
@@ -2065,8 +2183,9 @@ async def bulk_delete_transactions(
     #
     # Track E (architect override): manual balance adjustment rows are
     # immutable, but bulk delete skips them silently rather than aborting the
-    # whole batch. Their IDs land in skipped_ids so the caller can surface
-    # "N rows skipped" in the UI. That skip applies to REQUESTED rows only:
+    # whole batch. Their IDs land in skipped_ids, and again in
+    # skipped_adjustment_ids so the caller can say they were refused rather
+    # than missing (TBD-491). That skip applies to REQUESTED rows only:
     # the cascaded partner is NOT adjustment-filtered, matching
     # ``delete_transaction``, which has no such filter either. An adjustment
     # can never BE a reciprocal partner anyway -- ``adjust_account_balance``
@@ -2132,7 +2251,7 @@ async def bulk_delete_transactions(
             await db.delete(r)
 
     await db.commit()
-    return (len(delete_set), skipped_ids, demoted_ids)
+    return (len(delete_set), skipped_ids, demoted_ids, skipped_adjustments)
 
 
 async def bulk_update_transactions(
@@ -2154,7 +2273,8 @@ async def bulk_update_transactions(
     counts as updated; a row that can apply nothing is returned in ``skipped``
     with a human reason. Transfer legs only accept ``category_id`` (which
     cascades to the partner via update_transaction); ``status``/``account_id``/
-    ``tags``/``date``/``settled_date`` are skipped for them. Reuses
+    ``tags``/``date`` are skipped for them (``settled_date`` too, unless both
+    legs are pending, TBD-791). Reuses
     update_transaction for all balance, transfer-guard, and partner-cascade
     logic (it commits per row, so this is naturally partial-success).
 
@@ -2170,12 +2290,14 @@ async def bulk_update_transactions(
       row whose new date would pass its settled_date keeps its date unless the
       batch sets settled_date too: it is never auto-shifted, that would move
       its cash period silently.
-    - ``settled_date`` applies only to rows that are SETTLED, or are being
-      settled in this batch (they settle on that date instead of today). On a
-      row that stays pending it is only an expectation the auto-settle sweep
-      overwrites, so it is not applied. On a row that keeps its date (the
-      skips above) a settled_date before that date is dropped with a note,
-      so the row's other fields still land.
+    - ``settled_date`` applies to rows that are SETTLED, or are being
+      settled in this batch (they settle on that date instead of today), and
+      (TBD-791) to rows that stay PENDING, as their expected settlement; the
+      row stays pending and no balance moves. Not to a row being set to
+      pending. A transfer leg takes it only while both legs are pending
+      (``update_transaction`` moves the partner too). On a row that keeps
+      its date (the skips above) a settled_date before that date is dropped
+      with a note, so the row's other fields still land.
     - A row settled in this batch onto a date after today without a
       settled_date is skipped with that reason (settling stamps today).
 
@@ -2189,6 +2311,8 @@ async def bulk_update_transactions(
     updated = 0
     skipped: list[tuple[int, str]] = []
     notes: list[tuple[int, str]] = []
+    # TBD-791: transfer legs whose settled_date a partner's update moved.
+    moved_with_partner: set[int] = set()
 
     def _reason(exc: Exception) -> str:
         return getattr(exc, "detail", None) or str(exc)
@@ -2280,23 +2404,46 @@ async def bulk_update_transactions(
             else:
                 update_kwargs["date"] = date
         if settled_date is not None:
-            if is_transfer:
+            # TBD-791: a row that stays pending takes it as its expected
+            # settlement. A transfer leg only while both legs are pending:
+            # update_transaction then moves the partner with it.
+            stays_pending = not settles and row.status == TransactionStatus.PENDING
+            if is_transfer and not stays_pending:
                 row_notes.append("settlement date not applied to transfers")
-            elif not settles:
+            elif is_transfer and linked_row.status != TransactionStatus.PENDING:
                 row_notes.append(
-                    "settlement date not applied: set status to settled to apply"
+                    "settlement date not applied: the other leg of this transfer "
+                    "is settled"
+                )
+            elif not settles and not stays_pending:
+                row_notes.append(
+                    "settlement date not applied to rows being set to pending"
+                )
+            elif is_transfer and tx_id in moved_with_partner:
+                # Its leg earlier in this batch already moved it; not a second
+                # update.
+                row_notes.append(
+                    "settlement date already moved with the other leg of this "
+                    "transfer"
                 )
             elif (
-                date is not None
+                (date is not None or stays_pending)
                 and "date" not in update_kwargs
                 and settled_date < row.date
             ):
-                # Chosen for the new date, but this row keeps its old one: it
-                # would fail the ordering check and take the rest of the row
-                # down with it. Drop it so category/status/... still land.
+                # Before the date this row keeps (chosen for a new date it
+                # does not take, or a pending row's own date): it would fail
+                # the ordering check and take the rest of the row down with
+                # it. Drop it so category/status/... still land.
                 row_notes.append(
                     "settlement date not applied: before the unchanged date "
                     f"{row.date.isoformat()}"
+                )
+            elif is_transfer and settled_date < linked_row.date:
+                # TBD-791: update_transaction refuses it for the partner.
+                row_notes.append(
+                    "settlement date not applied: before the other leg's date "
+                    f"{linked_row.date.isoformat()}"
                 )
             else:
                 update_kwargs["settled_date"] = settled_date
@@ -2329,6 +2476,8 @@ async def bulk_update_transactions(
                     db, org_id, tx_id, TransactionUpdate(**update_kwargs)
                 )
                 applied = True
+                if is_transfer and "settled_date" in update_kwargs:
+                    moved_with_partner.add(linked_row.id)
             except (
                 ValidationError,
                 ConflictError,
@@ -2386,7 +2535,8 @@ async def bulk_update_transactions(
         else:
             # Nothing applied — every requested field was one this row does
             # not take (a transfer leg's status/account/tags/dates, a
-            # recurring occurrence's date, a pending row's settled_date...).
+            # recurring occurrence's date, the settled_date of a row being set
+            # to pending...).
             reason = (
                 "; ".join(row_notes)
                 if row_notes
@@ -2431,6 +2581,18 @@ async def _link_pair(
         raise ValidationError(
             "Manual balance adjustments cannot be paired as transfer legs"
         )
+    # TBD-807: a bound occurrence is settled by its bank row (and a bound bank
+    # row carries that settlement); pairing either would let the bank row be
+    # matched again and count the payment twice. Unbind first.
+    if any(
+        leg.bound_bank_tx_id is not None or leg.bind_prev_status is not None
+        for leg in (expense_tx, income_tx)
+    ):
+        raise ConflictError(
+            "This transaction is bound to a bank row as a recurring payment. "
+            "Unbind it first.",
+            code="transaction_bound",
+        )
     if expense_tx.org_id != income_tx.org_id:
         raise ValidationError("Transfer legs must belong to the same org")
     if expense_tx.type != TransactionType.EXPENSE:
@@ -2454,7 +2616,7 @@ async def _link_pair(
     expense_account = expense_tx.__dict__.get("account")
     income_account = income_tx.__dict__.get("account")
     if expense_account is not None and income_account is not None:
-        if expense_account.currency != income_account.currency:
+        if normalise_currency(expense_account.currency) != normalise_currency(income_account.currency):
             raise ValidationError("Transfer legs must have the same currency")
     # If account relationship is not loaded, fall back to a query
     else:
@@ -2464,7 +2626,7 @@ async def _link_pair(
                 Account.org_id == expense_tx.org_id,
             )
         )
-        currencies = {row.id: row.currency for row in result.all()}
+        currencies = {row.id: normalise_currency(row.currency) for row in result.all()}
         if currencies.get(expense_tx.account_id) != currencies.get(income_tx.account_id):
             raise ValidationError("Transfer legs must have the same currency")
 
@@ -2547,7 +2709,7 @@ async def find_match_candidates(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
         # NOTE: no SQL .limit() — the ±3-day window + strict filter set keeps
         # the result set naturally tiny. Sort in Python, then slice.
@@ -2598,7 +2760,7 @@ async def find_duplicate_of_linked_leg(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
         # NOTE: no SQL .limit() — see find_match_candidates for rationale.
     )
@@ -2680,7 +2842,7 @@ async def find_duplicate_of_linked_leg_batch(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
             Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
     )
     fetched = list((await db.execute(q)).scalars().all())
@@ -2725,7 +2887,7 @@ async def find_match_candidates_batch(
             Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= min(k[2] for k in keys) - _DETECTOR_WINDOW,
             Transaction.date <= max(k[2] for k in keys) + _DETECTOR_WINDOW,
-            Account.currency == currency,
+            account_currency_matches(currency),  # TBD-798
         )
     )
     fetched = list((await db.execute(q)).scalars().all())
@@ -2874,7 +3036,7 @@ async def convert_and_create_leg(
     )
     if dst_account_pre is None:
         raise NotFoundError("Account")
-    if src_account_pre.currency != dst_account_pre.currency:
+    if normalise_currency(src_account_pre.currency) != normalise_currency(dst_account_pre.currency):
         raise ValidationError("Source and destination accounts must have the same currency")
 
     # 3. Lock the source transaction FIRST (before accounts) to match the
@@ -2912,7 +3074,7 @@ async def convert_and_create_leg(
     dst_locked = first_acct if destination_account_id == first_id else second_acct
 
     # 6. Re-validate currency on the locked accounts.
-    if src_locked.currency != dst_locked.currency:
+    if normalise_currency(src_locked.currency) != normalise_currency(dst_locked.currency):
         raise ConflictError("Account currencies changed; refresh and retry")
 
     # Determine partner type by mirroring source.
@@ -3589,8 +3751,9 @@ def _transfer_collapse_clause(filtered_ids_subq):
     this rank is ever nullable, branch 4 fails CLOSED -- do not cite the old
     sentence.
 
-    ``linked_transaction_id`` is NOT a transfer marker: it has two writers
+    ``linked_transaction_id`` is NOT a transfer marker: it has three writers
     with different semantics. ``_link_pair`` sets it BIDIRECTIONALLY;
+    ``unpair_transactions`` clears both sides; and
     ``reconciliation_service._apply_match`` sets it ONE-WAY, and that
     direction is a load-bearing discriminator (see the
     ``Transaction.linked_transaction_id`` model docstring). Branch 3 is what

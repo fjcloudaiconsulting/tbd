@@ -1,5 +1,6 @@
 # Production overrides — use with:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Needs Docker Compose 2.24.4 or newer for the `!reset` tags below (TBD-799).
 #
 # Key differences from dev:
 # - Frontend uses production Dockerfile (multi-stage, standalone build)
@@ -46,7 +47,7 @@ services:
       migrate:
         condition: service_completed_successfully
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--workers", "2", "--proxy-headers"]
-    volumes: !reset []  # drop every dev mount: immutable container
+    volumes: !reset []  # Clear the dev mounts (a plain [] would merge with them): immutable container
 
   # TBD-561: the MCP component with its OWN JWT and MFA recovery secrets
   # (never the backend's) and no dev defaults.
@@ -70,7 +71,7 @@ services:
       - HOSTNAME=0.0.0.0
     depends_on:
       - backend
-    volumes: !reset []  # drop every dev mount: immutable container
+    volumes: !reset []  # Clear the dev mounts (a plain [] would merge with them): immutable container
 
   nginx:
     restart: unless-stopped

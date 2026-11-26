@@ -1186,11 +1186,13 @@ async def update_org_member(
         # The "platform superadmin" guard surfaces here as a
         # ConflictError; HTTP-wise it belongs at 403 because the
         # superadmin status is an authorization boundary, not a
-        # transient conflict. Detected by its code (BE-30, TBD-374).
+        # transient conflict. Detected by its code (BE-30, TBD-374), which
+        # the body carries so clients branch on it rather than the text.
         msg = str(e)
         if e.code == admin_org_members_service.CODE_TARGET_IS_SUPERADMIN:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=msg
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": e.code, "message": msg},
             )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=msg

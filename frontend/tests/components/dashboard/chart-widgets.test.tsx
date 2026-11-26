@@ -129,6 +129,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   forecastExpenseItems: [],
   forecastChartRows: [],
   chartFilter: null,
+  chartFilterMatch: "exact",
   chartFilterName: null,
   setChartFilter: MOCK_SETFILTER,
   transactions: [],
@@ -204,6 +205,10 @@ describe("SpendingDonutWidget", () => {
   it("renders 'Spending by Category' heading", () => {
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>);
     expect(screen.getByText("Spending by Category")).toBeInTheDocument();
+    // TBD-339: the slices are main categories; the tile says so.
+    expect(
+      screen.getByText("Subcategories are counted in their main category."),
+    ).toBeInTheDocument();
   });
 
   it("renders empty state 'No expense data yet' when donutData is empty", () => {
@@ -236,9 +241,9 @@ describe("SpendingDonutWidget", () => {
     // The legend buttons are the category rows — click the one with "Food"
     const btn = screen.getByRole("button", { name: /Food/i });
     fireEvent.click(btn);
-    // TBD-221: the id, not the name — the drilldown groups by category_id
-    // and category names are not unique.
-    expect(setChartFilter).toHaveBeenCalledWith(7);
+    // TBD-221: the id, not the name (names are not unique). TBD-339: the
+    // slice is a rolled-up master, so its drilldown is the subtree.
+    expect(setChartFilter).toHaveBeenCalledWith(7, "subtree");
   });
 
   it("shows active filter badge when chartFilter is set", () => {
@@ -250,6 +255,23 @@ describe("SpendingDonutWidget", () => {
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>);
     expect(screen.getByText(/Filtering: Food/)).toBeInTheDocument();
+  });
+
+  it("an EXACT filter on the same id (forecast bar) is not this slice's selection: no highlight, and a click switches to subtree", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      donutData: [{ categoryId: 7, name: "Food", value: 200 }],
+      sortedSpending: [{ categoryId: 7, name: "Food", value: 200, pct: 100, origIdx: 0 }],
+      chartFilter: 7,
+      chartFilterMatch: "exact",
+      chartFilterName: "Food",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>);
+    const row = screen.getByRole("button", { name: /^Food/ });
+    expect(row.className).not.toContain("bg-surface-overlay");
+    fireEvent.click(row);
+    expect(setChartFilter).toHaveBeenCalledWith(7, "subtree");
   });
 
   it("clicking filter badge clears chartFilter (calls setChartFilter(null))", () => {
@@ -336,7 +358,24 @@ describe("BudgetBarsWidget", () => {
     fireEvent.click(screen.getByTestId("bar-spent"));
     // TBD-221: the cross-tile filter is a category_id — the drilldown has to
     // reproduce the rollup's grouping, which is by id.
-    expect(setChartFilter).toHaveBeenCalledWith(MOCK_BUDGET.category_id);
+    // TBD-339: budgets roll a master up with its subcategories -> subtree.
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_BUDGET.category_id, "subtree");
+  });
+
+  it("an EXACT filter on the same id (forecast bar) is not this bar's: a click switches to subtree instead of clearing", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      budgets: [MOCK_BUDGET],
+      dashBudgets: [MOCK_BUDGET],
+      budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
+      chartFilter: MOCK_BUDGET.category_id,
+      chartFilterMatch: "exact",
+      chartFilterName: "Groceries",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
+    fireEvent.click(screen.getByTestId("bar-spent"));
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_BUDGET.category_id, "subtree");
   });
 
   it("clicking spent bar when already active toggles filter to null", () => {
@@ -346,12 +385,13 @@ describe("BudgetBarsWidget", () => {
       dashBudgets: [MOCK_BUDGET],
       budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
       chartFilter: MOCK_BUDGET.category_id,
+      chartFilterMatch: "subtree",
       chartFilterName: "Groceries",
       setChartFilter,
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
     fireEvent.click(screen.getByTestId("bar-spent"));
-    expect(setChartFilter).toHaveBeenCalledWith(null);
+    expect(setChartFilter).toHaveBeenCalledWith(null, "subtree");
   });
 
   it("chart area flex-fills its box (flex-1 min-h-0, no fixed inline height) so all categories fit the resizable tile", () => {
@@ -471,7 +511,24 @@ describe("ForecastBarsWidget", () => {
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
     fireEvent.click(screen.getByTestId("bar-planned"));
     // TBD-221: category_id, matching the rollup's identity.
-    expect(setChartFilter).toHaveBeenCalledWith(MOCK_FORECAST_EXPENSE_ITEM.category_id);
+    // TBD-339: forecast rows are per own category -> exact.
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_FORECAST_EXPENSE_ITEM.category_id, "exact");
+  });
+
+  it("a SUBTREE filter on the same id (budget bar) is not this bar's: a click switches to exact instead of clearing", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      forecast: MOCK_FORECAST,
+      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
+      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
+      chartFilter: MOCK_FORECAST_EXPENSE_ITEM.category_id,
+      chartFilterMatch: "subtree",
+      chartFilterName: "Transport",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
+    fireEvent.click(screen.getByTestId("bar-planned"));
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_FORECAST_EXPENSE_ITEM.category_id, "exact");
   });
 
   it("clicking planned bar when already active toggles filter to null", () => {
@@ -486,7 +543,7 @@ describe("ForecastBarsWidget", () => {
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
     fireEvent.click(screen.getByTestId("bar-planned"));
-    expect(setChartFilter).toHaveBeenCalledWith(null);
+    expect(setChartFilter).toHaveBeenCalledWith(null, "exact");
   });
 
   it("chart area flex-fills its box (flex-1 min-h-0, no fixed inline height) so all categories fit the resizable tile", () => {

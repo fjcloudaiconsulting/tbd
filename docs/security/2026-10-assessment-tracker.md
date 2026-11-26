@@ -248,7 +248,7 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | INF-01 | Origin client-IP trust | Medium | Partial | #1007, #1021 | partly | `adb3004e`, `0f243931` | Release #1007 after the production secret check (owner item 1); the cloud-infra checks are done | TBD-717 |
 | FE-01 | CORS origin list for the apex and www hosts | Low | Fixed | #1004 | 2026-10-24 | `d4b157be` | | TBD-720 |
 | FE-02 | Google SSO callback token binding | Low | Fixed | #1009 | 2026-10-24 | `ff722648` | Deploy the backend before or with the frontend | TBD-728 |
-| FE-03 | One-time tokens in URLs | Low | Partial | #1004, #1008, #1009 | 2026-10-24 | `33543891`, `3f00189c`, `582f71f9` | Delete existing stored CSP report rows; follow-up: send the invitation preview token in a request body | TBD-729, follow-up TBD-738 |
+| FE-03 | One-time tokens in URLs | Low | Partial | #1004, #1008, #1009 | 2026-10-24 | `33543891`, `3f00189c`, `582f71f9` | Delete existing stored CSP report rows. Follow-ups: the invitation preview token moved to a request body (#1038), and the GET form that took it in the URL is removed (TBD-751) | TBD-729, follow-ups TBD-738, TBD-751 |
 | FE-04 | CSV export formula neutralisation | Low | Fixed | #1004 | 2026-10-24 | `3385f921` | | TBD-730 |
 | BE-12 | Secret fields in validation error bodies | Low | Fixed | #1008 | 2026-10-24 | `1254d326` | | TBD-731 |
 | BE-13 | Upload size enforcement while reading | Low | Fixed | #1006 | 2026-10-24 | `cf41e6e8` | | TBD-732 |
@@ -331,7 +331,7 @@ titles only; the detail is in Jira.
 | TBD-653 | Sign-in and MFA attempt limits (earlier audit) | BE-02, BE-26 | Checked 2026-10-25: all three items shipped in #1009; the remaining paths are in #1033. Close when #1033 merges |
 | TBD-611 | Login timing (earlier audit) | BE-25 | Confirmed shipped in #1009; closed 2026-10-25 |
 | TBD-654 | Auth hardening lows (earlier audit) | BE-25, FE-03 | Items 1 and 3 (backend) shipped in #1009; item 3 (frontend) in #1034; item 4 in #1033; item 2 (register response): email-first sign-up, PR 1 (backend) merged in #1077, PRs 2 to 4 to follow |
-| TBD-609 | AI credential base URL handling | DB-02 | Shipped in #1008; confirm and close |
+| TBD-609 | AI credential base URL handling | DB-02 | Confirmed: #1008 masks the stored URL; #1121 adds tests that keep it masked. Closed 2026-11-08 |
 | TBD-655 | Database user separation | DB-04 | Same work as DB-04; the app part is #1030, the user split follows in cloud-infra |
 | TBD-477, TBD-401, TBD-475 | CSP report writer, audit retention, audit UI | BE-10 | The writer is bounded by #1008, and CSP rows have a 30-day retention since #1019; check each, then narrow or close |
 | TBD-607 | AI adapter error handling | BE-09 | Related hardening in the same code; #1042, stacked on #1035 |
@@ -345,6 +345,16 @@ titles only; the detail is in Jira.
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-11-08, overnight round: coding session (Claude Code, with Jira access)
+
+- **Did:** merged #1103, #1109, #1111 to #1115, #1117 to #1119 and #1121 to
+  #1125 (independent review on each).
+- **Security-relevant:** #1121 (TBD-609) adds tests that lock in the DB-02
+  masking; #1125 (TBD-374) refuses superadmin targets by error code; #1122
+  (TBD-348) gates broadcast resume.
+- **Changed here:** the TBD-609 row.
+- **Next:** DB-02 stays Partial until the stored-URL clean-up (TBD-711).
 
 ### 2026-11-03, backlog round: coding session (Claude Code, with Jira access)
 

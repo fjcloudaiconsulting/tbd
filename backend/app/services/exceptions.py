@@ -12,8 +12,11 @@ class NotFoundError(Exception):
 
 
 class ValidationError(Exception):
-    def __init__(self, detail: str):
+    def __init__(self, detail: str, *, code: str | None = None):
         self.detail = detail
+        # Optional machine-readable reason, the additive mirror of
+        # ``ConflictError.code``: the 400 body gains ``code`` only when set.
+        self.code = code
         super().__init__(detail)
 
 

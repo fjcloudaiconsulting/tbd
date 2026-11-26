@@ -25,7 +25,7 @@ from app.config import settings as app_settings, warn_open_production_defaults
 from app.database import engine
 from app import logs
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, agent_tokens, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, oauth, onboarding, org_data, org_members, orgs, plans, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
+from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, agent_tokens, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, oauth, onboarding, org_data, org_members, orgs, plan_goals, plans, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
 from app.routers import scheduler as scheduler_router
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.import_ofx_service import init_ofx_executor, shutdown_ofx_executor
@@ -336,8 +336,8 @@ tracing.configure("tbd-api")
 # default, so every flag is passed. Native metrics only, recorded on tracing's MeterProvider (its
 # View is the attribute allowlist).
 # `tracing` must stay False: FastAPI's native tracing redacts only cloud-signature query
-# params (fastapi/telemetry/_asgi.py) and secrets travel in query strings (invitations
-# preview ?token=, Google OAuth callback ?code=); TracingMiddleware is tbd's own allowlisted
+# params (fastapi/telemetry/_asgi.py) and secrets can travel in query strings (the Google
+# OAuth callback ?code=); TracingMiddleware is tbd's own allowlisted
 # SERVER span instead. Native logs export exception messages, and auto_configure would add a
 # second exporter to our providers.
 TELEMETRY = {
@@ -379,7 +379,7 @@ app.add_middleware(
     allow_origins=app_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key"],
     expose_headers=["X-Request-Id"],
 )
 
@@ -431,8 +431,11 @@ async def not_found_handler(request, exc: NotFoundError):
 
 @app.exception_handler(ValidationError)
 async def validation_handler(request, exc: ValidationError):
-    _log_client_error(request, 400, exc.detail)
-    return JSONResponse(status_code=400, content={"detail": exc.detail})
+    content = {"detail": exc.detail}
+    if exc.code:
+        content["code"] = exc.code
+    _log_client_error(request, 400, {"code": exc.code} if exc.code else exc.detail)
+    return JSONResponse(status_code=400, content=content)
 
 
 @app.exception_handler(PlanLimitReached)
@@ -675,6 +678,7 @@ app.include_router(notifications.router)
 app.include_router(reports.router)
 app.include_router(dashboard.router)
 app.include_router(scenarios.router)
+app.include_router(plan_goals.router)
 app.include_router(ai_providers.router)
 app.include_router(ai_status.router)
 app.include_router(ai_budget.router)

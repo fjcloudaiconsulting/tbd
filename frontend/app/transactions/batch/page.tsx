@@ -145,6 +145,10 @@ export default function BatchEntryPage() {
   // Synchronous in-flight guard: `submitting` only disables the button
   // after React re-renders, so a fast double click could post twice.
   const inFlightRef = useRef(false);
+  // TBD-784: the Idempotency-Key of the last submit that got no answer, with
+  // the body it was sent for. Retrying the same rows reuses it, so the server
+  // replays instead of writing twice; any answer or different rows get a new key.
+  const pendingKeyRef = useRef<{ body: string; key: string } | null>(null);
   // Row 1's first cell, focused after a full success resets the grid so
   // focus does not fall to <body> when Submit turns disabled.
   const firstRowFocusRef = useRef<HTMLInputElement | null>(null);
@@ -247,15 +251,22 @@ export default function BatchEntryPage() {
       })),
     };
 
+    const body = JSON.stringify(payload);
+    if (pendingKeyRef.current?.body !== body) {
+      pendingKeyRef.current = { body, key: crypto.randomUUID() };
+    }
+
     setSubmitting(true);
     try {
       const resp = await apiFetch<BatchTransactionsResponse>(
         "/api/v1/transactions/batch",
         {
           method: "POST",
-          body: JSON.stringify(payload),
+          headers: { "Idempotency-Key": pendingKeyRef.current.key },
+          body,
         },
       );
+      pendingKeyRef.current = null;
       // Drop the rows that committed so a second submit cannot duplicate
       // them, and keep the rest with their per-row error. Rows are
       // matched by key because blank rows between filled ones get no

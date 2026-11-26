@@ -37,9 +37,11 @@ explaining its absence. The AST only sees real keyword and assignment nodes.
     ``WRITING_CALLEES`` matches the callee SPELLING only
   * tuple/list assignment targets (``a.is_superadmin, b.x = ...``)
 
-None of those exists today — verified by grep — and there is no promote or
-demote path anywhere in the tree: the flag is only ever set at construction.
-That is a statement about today, not coverage.
+None of those exists today — verified by grep. Since TBD-443 there is
+exactly ONE promote path (``superadmin_recovery_service.promote_superadmin``,
+an operator CLI writer) and still NO demote path: outside that function the
+flag is only ever set at construction. That is a statement about today, not
+coverage.
 
 ⚠⚠ WHAT THESE TESTS CAN AND CANNOT SEE — read before relying on them.
 Structural fences pin SHAPE and PROVENANCE. They do NOT pin SEMANTICS. The
@@ -92,7 +94,22 @@ ALLOWED_WRITE_SITES: tuple[tuple[str, str, str], ...] = (
         "accept_invitation",
         "hardcoded False — an org invitation must never write a platform flag",
     ),
+    (
+        "services/superadmin_recovery_service.py",
+        "promote_superadmin",
+        "TBD-443 operator break-glass; literal True; reachable only from "
+        "scripts/promote_superadmin.py inside the backend container (which "
+        "already holds DB credentials), never from HTTP; refuses inactive, "
+        "unverified or MFA-less targets; same-transaction audit row",
+    ),
 )
+
+# The one promote path (TBD-443). It may only ever write the literal ``True``
+# by assignment, and no request-reachable module may import its module.
+PROMOTION_SITES: frozenset[tuple[str, str]] = frozenset({
+    ("services/superadmin_recovery_service.py", "promote_superadmin"),
+})
+RECOVERY_MODULE = "app.services.superadmin_recovery_service"
 
 # Sites that may only ever write the literal ``False``: they are not grant
 # sites, and both are public routes.
@@ -300,6 +317,13 @@ def test_grant_sites_bind_the_single_bootstrap_predicate() -> None:
     ``_is_first_user_setup``.
     """
     for site in _collect():
+        if (site.file, site.function) in PROMOTION_SITES:
+            assert site.value_repr == "assign:Constant(True)", (
+                f"{site.file}::{site.function}:{site.lineno} writes "
+                f"is_superadmin={site.value_repr}. The operator promote path "
+                "may only assign the literal True; a False here is a demote."
+            )
+            continue
         if (site.file, site.function) in HARDCODED_FALSE_SITES:
             assert site.value_repr == "Constant(False)", (
                 f"{site.file}::{site.function}:{site.lineno} writes "
@@ -371,29 +395,89 @@ def test_signup_complete_is_not_a_grant_site() -> None:
     assert all(s.value_repr == "Constant(False)" for s in sites), sites
 
 
-def test_no_promote_or_demote_path_exists() -> None:
-    """FENCE — the flag is set at construction ONLY.
+def test_no_demote_path_and_promote_is_operator_only() -> None:
+    """FENCE — outside TBD-443's operator writer, the flag is set at
+    construction ONLY, and nothing ever assigns it False.
 
     Wrong implementation killed: ``user.is_superadmin = <anything>`` anywhere
-    in ``backend/app/``. Today no such statement exists, and several guards
-    reason from that: ``user_merge_service`` refuses to merge a superadmin
-    source into a NON-superadmin target (superadmin-to-superadmin IS permitted
-    and is the only path that can decrement the count at all; it floors at 1
-    because the target keeps the flag), and
+    in ``backend/app/`` other than ``promote_superadmin``, and any assignment
+    there other than the literal ``True``. Several guards reason from the
+    count never DECREASING: ``user_merge_service`` refuses to merge a
+    superadmin source into a NON-superadmin target (superadmin-to-superadmin
+    IS permitted and floors at 1 because the target keeps the flag), and
     ``invitation_service``/``admin_users_service``/``admin_orgs_service`` all
     refuse to delete one. A demote path would make ``count(is_superadmin) ==
     0`` reachable on a live install for the first time.
 
-    ⚠ This does NOT make the collapse safe — the collapse is what makes
-    reaching zero harmless. It fences the REASONING the surrounding guards
-    depend on, so that adding a demote endpoint is a deliberate act that
-    fails CI first.
+    TBD-443 made zero RECOVERABLE (the operator CLI) without making it more
+    reachable: the promote path only ever raises the count.
     """
     assigns = [s for s in _collect() if s.value_repr.startswith("assign:")]
-    assert not assigns, (
-        "a promote/demote path for is_superadmin was introduced: "
-        + ", ".join(f"{s.file}::{s.function}:{s.lineno}" for s in assigns)
+    stray = [
+        s for s in assigns
+        if (s.file, s.function) not in PROMOTION_SITES
+        or s.value_repr != "assign:Constant(True)"
+    ]
+    assert not stray, (
+        "an is_superadmin assignment outside the operator promote path, or a "
+        "demote, was introduced: "
+        + ", ".join(f"{s.file}::{s.function}:{s.lineno} {s.value_repr}" for s in stray)
     )
+    # CONTROL: the collector still sees the one sanctioned assignment.
+    assert {(s.file, s.function) for s in assigns} == set(PROMOTION_SITES), assigns
+
+
+def _imported_modules(rel: str, node: ast.AST) -> set[str]:
+    """Absolute dotted names an import statement in ``app/<rel>`` reaches.
+
+    Relative imports resolve against the file's package, so
+    ``from . import superadmin_recovery_service`` inside ``app/services/``
+    names the module exactly as the absolute form does.
+    """
+    if isinstance(node, ast.Import):
+        return {a.name for a in node.names}
+    if not isinstance(node, ast.ImportFrom):
+        return set()
+    base = node.module or ""
+    if node.level:
+        package = ["app", *Path(rel).parts[:-1]]  # __init__.py: its own dir
+        anchor = package[: len(package) - (node.level - 1)]
+        base = ".".join([*anchor, *([node.module] if node.module else [])])
+    return {base} | {f"{base}.{a.name}" for a in node.names}
+
+
+def test_recovery_writer_is_not_reachable_from_app_code() -> None:
+    """FENCE — TBD-443. The promote writer is reachable from the operator
+    CLI only. Wrong implementations killed: a router, scheduler job or
+    dependency importing ``superadmin_recovery_service`` (absolute or
+    relative), which is how an HTTP promote path (rejected: a stolen
+    superadmin session could mint a persistent backdoor account) would
+    arrive; and any ``app/`` module importing from ``scripts``, the CLI side
+    of that same boundary.
+    """
+    offenders: list[str] = []
+    for rel, tree in _parsed():
+        if rel == "services/superadmin_recovery_service.py":
+            continue
+        for node in ast.walk(tree):
+            names = _imported_modules(rel, node)
+            if RECOVERY_MODULE in names or any(
+                n == "scripts" or n.startswith("scripts.") for n in names
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert not offenders, (
+        f"app code imports {RECOVERY_MODULE} or scripts: {offenders}. The "
+        "recovery writer must be reachable only from "
+        "scripts/promote_superadmin.py."
+    )
+
+
+def test_relative_import_resolution_control() -> None:
+    """CONTROL — the resolver above is what makes the relative form visible."""
+    tree = ast.parse("from . import superadmin_recovery_service\nfrom ..services import x")
+    first, second = tree.body
+    assert RECOVERY_MODULE in _imported_modules("services/foo.py", first)
+    assert "app.services.x" in _imported_modules("routers/foo.py", second)
 
 
 def test_audit_outcomes_read_the_row_not_the_local() -> None:

@@ -196,6 +196,10 @@ describe("TransactionsPage — dashboard deep links", () => {
 
     expect(desktopRow.className).toContain("ring-accent");
     expect(mobileRow.className).toContain("ring-accent");
+    // TBD-511: the tint took light-theme expense amounts under WCAG AA (4.47:1);
+    // the ring alone carries the highlight.
+    expect(desktopRow.className).not.toContain("bg-accent-dim");
+    expect(mobileRow.className).not.toContain("bg-accent-dim");
     await waitFor(() => {
       expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
     });

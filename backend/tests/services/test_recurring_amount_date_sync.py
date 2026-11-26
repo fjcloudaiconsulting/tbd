@@ -381,7 +381,10 @@ async def test_future_date_moves_template_and_later_siblings_on_the_grid(db_sess
     # The expected settlement date keeps its offset from the row's own date.
     assert later_row.settled_date == date(Y, 4, 10)
     assert (await _get_tx(db_session, later2)).date == date(Y, 5, 8)
-    assert (await _get_tmpl(db_session, rid)).next_due_date == date(Y, 6, 8)
+    tmpl = await _get_tmpl(db_session, rid)
+    assert tmpl.next_due_date == date(Y, 6, 8)
+    # TBD-509: the spent mark is re-keyed with the grid, onto May 8.
+    assert tmpl.last_spent_date == date(Y, 5, 8)
     assert (await _get_tx(db_session, settled)).date == date(Y, 2, 5)
 
 

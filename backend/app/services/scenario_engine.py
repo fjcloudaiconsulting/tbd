@@ -697,9 +697,8 @@ async def build_world_state(
     """Read accounts + active recurring for the given org and return a
     frozen ``WorldState`` for the engine.
 
-    Pre-launch architect lock: per-user. Plans are private to the
-    creator. World state for engine simulation uses the org's accounts
-    (every member of an org shares the books) but the per-user
+    World state for engine simulation uses the org's accounts (every
+    member of an org shares the books). Plans are org-scoped (TBD-601);
     visibility lives at the router scope, not here.
 
     No writes; READ ONLY.

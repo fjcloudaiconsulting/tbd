@@ -160,12 +160,30 @@ function fromEpochDay(day: number): string {
   return new Date(day * MS_PER_DAY).toISOString().slice(0, 10);
 }
 
+/** Epoch day of `y`-`m`-`d` with `m` 0-based and allowed to underflow; `d` past the month's end clamps to it. */
+function monthDay(y: number, m: number, d: number): number {
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return Date.UTC(y, m, Math.min(d, last)) / MS_PER_DAY;
+}
+
 /**
- * The window immediately before the resolved one, of the same REACHED length:
+ * The window immediately before the resolved one (TBD-488):
  *
  *     effective.end = min(window.end, today)
- *     prior.end     = window.start - 1 day
- *     prior.start   = prior.end - (effective.length - 1 day)
+ *
+ *   - WHOLE CALENDAR MONTHS (start on the 1st, end on a month's last day:
+ *     `this_month`, `last_month`, a custom quarter or year): shift both ends
+ *     back by that many calendar months. February maps to all of January, and
+ *     a clamped September 1-2 to August 1-2. Personal cashflow repeats by day
+ *     of month (rent, salary on the 1st), so a same-length window would drop
+ *     those days; a 28-day month against a 31-day one is the smaller error.
+ *     An effective end on its month's last day maps to the target month's
+ *     last day; any other day past the target's end clamps to it (March 29-31
+ *     all map to February's last day).
+ *   - ANY OTHER WINDOW: the same REACHED length, immediately before:
+ *     prior.end = window.start - 1 day, prior.start = prior.end - (effective.length - 1 day).
+ *     `ytd` and `last_12_months` end today, so they slide, except on a
+ *     month's last day, when they are whole months and shift by months.
  *
  * ⚠⚠ THE CLAMP TO `today` IS LOAD-BEARING, NOT A REFINEMENT (TBD-383 B1).
  * `draft.ts` seeds every new report with the `this_month` preset, and
@@ -180,9 +198,7 @@ function fromEpochDay(day: number): string {
  * ⚠ Only `this_month` breaks THE CLAMP. `last_month` needs no clamping (it is
  * fully past) and `ytd` / `last_12_months` end at `now`, so manual testing on
  * any other preset looks perfect. Do not "simplify" the clamp away on the
- * evidence of one preset. ⚠ "`last_month` is correct" is a statement about the
- * clamp ONLY — it is still subject to the sliding-window question below, where
- * a 28-day February maps to 2026-01-04..01-31 and drops January 1-3.
+ * evidence of one preset.
  *
  * ⚠ Refusing a future-ending window instead was rejected: it kills the delta
  * on the default preset entirely, which is worse than a clamped one.
@@ -241,6 +257,20 @@ export function resolvePriorWindow(
   // may set the comparison length.
   const effectiveEnd = Math.min(end, now);
   if (effectiveEnd < start) return { prior: null, refusal: "future_window" };
+  // Both values parsed as ISO days above, so they are strings.
+  const [sy, sm, sd] = String(date.value[0]).split("-").map(Number);
+  const [ey, em] = String(date.value[1]).split("-").map(Number);
+  if (sd === 1 && end === monthDay(ey, em - 1, 31)) {
+    const months = ey * 12 + em - (sy * 12 + sm) + 1;
+    const [cy, cm, cd] = fromEpochDay(effectiveEnd).split("-").map(Number);
+    return {
+      prior: [
+        fromEpochDay(monthDay(sy, sm - 1 - months, 1)),
+        fromEpochDay(monthDay(cy, cm - 1 - months, effectiveEnd === monthDay(cy, cm - 1, 31) ? 31 : cd)),
+      ],
+      refusal: null,
+    };
+  }
   const lengthDays = effectiveEnd - start + 1;
   return {
     prior: [fromEpochDay(start - lengthDays), fromEpochDay(start - 1)],

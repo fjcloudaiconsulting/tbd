@@ -214,7 +214,7 @@ jobs:
       - name: Install frontend dependencies
         if: env.HAS_CF_TOKEN == 'true'
         working-directory: frontend
-        run: corepack enable && pnpm install --frozen-lockfile
+        run: npm install -g corepack@0.36.0 && corepack enable && pnpm install --frozen-lockfile
 
       - name: Build apex static export
         if: env.HAS_CF_TOKEN == 'true'
