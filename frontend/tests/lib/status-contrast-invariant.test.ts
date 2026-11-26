@@ -251,7 +251,7 @@ describe.each(THEMES)("%s theme", (theme) => {
       }
     }
     expect(failures).toEqual([]);
-  }, 20000);
+  });
 });
 
 
@@ -459,7 +459,7 @@ describe("no ad-hoc status tint bypasses the checked primitives", () => {
       }
     }
     expect(failures).toEqual([]);
-  }, 20000);
+  });
 });
 
 // ─── state tints (hover:/focus:/... bg-<status>/N + text-<status>) ──────
@@ -517,6 +517,6 @@ describe.each(THEMES)("%s theme: paired tints (state fills, and static fills abo
       }
     }
     expect(failures).toEqual([]);
-  }, 20000);
+  });
 });
 
