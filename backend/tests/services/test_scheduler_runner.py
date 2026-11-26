@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import datetime
-import pytest
+
 import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
-
-from sqlalchemy.exc import IntegrityError
 
 from app.models import Base
 from app.models.audit_event import AuditEvent
@@ -237,8 +236,8 @@ async def test_mid_convergence_failure_is_audited_by_the_runner(
     Revision 2 required `BillingCloseJob.run` to emit its own partial audit row
     and notification before letting a mid-convergence exception propagate. That
     was deleted by SUBTRACTION: the runner already catches every job exception,
-    rolls back, and records a `scheduler.billing_close.failure` carrying the
-    original error — and `record_run` writes through its OWN session
+    rolls back, and records a `scheduler.billing_close.failure` with the
+    exception class. `record_run` writes through its own session
     (`scheduler/audit.py:20` -> `audit_service.py:117`), so the row lands even
     though the job left this session deactivated.
     """
@@ -261,7 +260,7 @@ async def test_mid_convergence_failure_is_audited_by_the_runner(
             return True
 
         async def run(self, db, org, today):
-            raise IntegrityError("stmt", {}, Exception("peer won at new_start"))
+            raise IntegrityError("stmt", {}, Exception("SECRET"))
 
     await R.run_all_due(
         datetime.date(2026, 7, 28),
@@ -281,7 +280,8 @@ async def test_mid_convergence_failure_is_audited_by_the_runner(
         )
     assert len(rows) == 1
     assert rows[0].outcome.value == "failure"
-    assert "peer won at new_start" in rows[0].detail["error"]
+    assert "SECRET" not in str(rows[0].detail)
+    assert rows[0].detail == {"error": "IntegrityError"}
 
 
 async def test_one_tick_hands_the_same_clock_to_is_due_and_run(
