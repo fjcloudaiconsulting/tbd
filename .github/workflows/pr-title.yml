@@ -9,4 +9,4 @@ permissions:
 
 jobs:
   pr-title:
-    uses: fjcloudaiconsulting/.github/.github/workflows/pr-title.yml@v1
+    uses: fjcloudaiconsulting/.github/.github/workflows/pr-title.yml@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0

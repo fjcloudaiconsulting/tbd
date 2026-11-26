@@ -4,7 +4,8 @@ The deploy step holds CLOUDFLARE_API_TOKEN. wrangler-action used to ``npm i wran
 there with no lockfile, so every transitive dependency floated to its newest release on each
 deploy. Now ``frontend/apex-worker`` pins wrangler exactly, ``package-lock.json`` pins the tree
 with integrity hashes, the job installs it with ``npm ci --ignore-scripts`` and runs that binary
-with ``npx --no-install``. In the backend container ``frontend/apex-worker`` and ``.github`` are
+with ``npx --no-install``. The frontend build runs in its own job with no secret and hands the
+deploy job only its static export. In the backend container ``frontend/apex-worker`` and ``.github`` are
 read-only mounts (docker-compose.yml).
 """
 
@@ -37,8 +38,12 @@ def _lock() -> dict:
     return json.loads((WORKER / "package-lock.json").read_text(encoding="utf-8"))
 
 
+def _jobs() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+
+
 def _deploy_steps() -> list[dict]:
-    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy-worker"]["steps"]
+    return _jobs()["deploy-worker"]["steps"]
 
 
 def test_wrangler_is_pinned_exactly_and_the_lockfile_hashes_its_whole_tree():
@@ -71,3 +76,26 @@ def test_no_unlocked_wrangler_is_fetched_anywhere_in_the_apex_path():
     sources = [WORKFLOW.read_text(encoding="utf-8"), (WORKER / "package.json").read_text(encoding="utf-8")]
     for text in sources:
         assert not re.search(r"npx\s+(-y|--yes)\b|wrangler@\d", text)
+
+
+def test_the_build_runs_on_its_own_runner_with_no_secret():
+    """INF-07: the build executes every frontend dependency's code. In the deploy job it could
+    leave something on the runner for the step that holds the token; in its own job it cannot."""
+    jobs = _jobs()
+    build = jobs["build-apex"]
+    assert "environment" not in build, "an environment would give the build its secrets"
+    assert "secrets." not in json.dumps(build)
+    assert any(step.get("run", "").startswith("pnpm build:apex") for step in build["steps"])
+    upload = next(s for s in build["steps"] if "upload-artifact" in s.get("uses", ""))
+    assert upload["with"]["path"] == "frontend/out-apex"
+    # The export holds .well-known/security.txt, which upload-artifact drops by default.
+    assert upload["with"]["include-hidden-files"] is True
+
+    deploy = jobs["deploy-worker"]
+    assert "build-apex" in deploy["needs"]
+    assert "needs.build-apex.result == 'success'" in deploy["if"]
+    assert deploy["environment"] == "landing"
+    runs = " ".join(step.get("run", "") for step in deploy["steps"])
+    assert "pnpm" not in runs, "the deploy job must not install or build the frontend"
+    download = next(s for s in deploy["steps"] if "download-artifact" in s.get("uses", ""))
+    assert download["with"] == {"name": upload["with"]["name"], "path": "frontend/out-apex"}

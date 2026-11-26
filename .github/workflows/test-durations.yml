@@ -93,7 +93,7 @@ jobs:
           persist-credentials: false
 
       - name: Install backend dependencies
-        uses: fjcloudaiconsulting/.github/actions/uv-sync@v1
+        uses: fjcloudaiconsulting/.github/actions/uv-sync@37942ebe72f7f8ce06d988a075d195ad871ebde6 # v1.7.0
 
       - name: Harvest this shard's durations
         working-directory: backend

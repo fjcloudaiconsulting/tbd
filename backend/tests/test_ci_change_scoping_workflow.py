@@ -123,11 +123,11 @@ def test_the_detector_uses_no_third_party_action():
         if not uses:
             continue
         assert uses.startswith("actions/") or (
-            uses.startswith("fjcloudaiconsulting/.github/actions/") and uses.endswith("@v1")
+            uses.startswith("fjcloudaiconsulting/.github/actions/")
         ), (
             f"`changes` uses the third-party action {uses!r}. Change detection "
-            "gates the required contexts; keep it to first-party actions and org-owned actions "
-            "on the released major tag (@v1) plus scripts/ci/detect-changed-areas.sh."
+            "gates the required contexts; keep it to first-party and org-owned actions "
+            "(SHA-pinned, test_workflow_action_pins.py) plus scripts/ci/detect-changed-areas.sh."
         )
 
 

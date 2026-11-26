@@ -228,9 +228,9 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 |---|---|---|---|---|---|---|
 | High | 1 | 1 | 0 | 0 | 0 | 0 |
 | Medium | 11 | 8 | 3 | 0 | 0 | 0 |
-| Low | 33 | 23 | 7 | 3 | 0 | 0 |
+| Low | 33 | 23 | 8 | 2 | 0 | 0 |
 | Info | 13 | 4 | 5 | 2 | 1 | 1 |
-| **All** | **58** | **36** | **15** | **5** | **1** | **1** |
+| **All** | **58** | **36** | **16** | **4** | **1** | **1** |
 
 | ID | Title | Severity | Status | PR | Merged | Commit | Owner action | Jira |
 |---|---|---|---|---|---|---|---|---|
@@ -274,7 +274,7 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | INF-03 | Production secret validation coverage | Low | Fixed | #1007 | no | `f5d32fec` | Deploy gate: check production secrets before releasing #1007 | TBD-724 |
 | INF-04 | `APP_ENV` default | Low | Partial | #1007 | no | `6c668014` | Make the default fail-safe; every production workload already sets `APP_ENV` | TBD-725 |
 | INF-05 | Captcha and first-user bootstrap defaults | Low | Partial | #1007 | no | `588344e3` | Decide on fail-closed captcha and a bootstrap token | TBD-673 |
-| INF-06 | Reusable workflow pinning and secret inheritance | Low | Needs owner | | – | | Pin org workflows to SHAs; replace `secrets: inherit` | TBD-675 |
+| INF-06 | Reusable workflow pinning and secret inheritance | Low | Partial | #1089 | no | `2301e541` | Known gap: nested org-workflow calls are still at `@v1`; pin them in `fjcloudaiconsulting/.github`, then bump tbd's pin to that release; drop `secrets: inherit` and confirm with one release run | TBD-675 |
 | INF-07 | Deploy secret isolation and wrangler pinning | Low | Partial | #1007 | no | `700aa0f3` | Split the apex build and deploy jobs | TBD-679 |
 | INF-08 | Smoke-account identifier in history | Low | Needs owner | | – | | Rotate the smoke account identifier | TBD-681 |
 | INF-09 | Health probe exposure | Low | Fixed | #1021 | 2026-10-24 | `f846e6e7` | | TBD-683 |
