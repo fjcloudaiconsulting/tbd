@@ -6,7 +6,6 @@
   ],
   "vulnerabilityAlerts": {
     "enabled": true,
-    "minimumReleaseAge": null,
     "labels": ["security"]
   },
   "packageRules": [
