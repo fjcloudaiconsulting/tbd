@@ -112,7 +112,7 @@ from app.services.notification_templates import (
     admin_initiated_email_change_requested_old_address as _tpl_admin_email_change_old,
 )
 from app.services.user_service import normalize_email
-from app import logs, tracing
+from app import logs
 
 
 logger = logging.getLogger(__name__)
@@ -228,7 +228,7 @@ async def merge_users(
                 "source_user_id": body.source_user_id,
                 "target_user_id": body.target_user_id,
                 "reason": "not_found",
-                "message": tracing.error_summary(e),
+                **({"missing": e.side} if isinstance(e, user_merge_service.MergeUserNotFoundError) else {}),
             },
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -254,7 +254,7 @@ async def merge_users(
                 "source_user_id": body.source_user_id,
                 "target_user_id": body.target_user_id,
                 "reason": reason,
-                "message": tracing.error_summary(e),
+                **({"code": e.code} if isinstance(e, ConflictError) else {}),
             },
         )
         raise HTTPException(status_code=status_code, detail=str(e))

@@ -199,7 +199,8 @@ async def test_merge_same_user_returns_400(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_merge_missing_user_returns_404(session_factory) -> None:
+@pytest.mark.parametrize("missing", ["source", "target"])
+async def test_merge_missing_user_returns_404(session_factory, missing) -> None:
     org_id = await _seed_org(session_factory)
     actor_id = await _seed_user(
         session_factory,
@@ -211,25 +212,28 @@ async def test_merge_missing_user_returns_404(session_factory) -> None:
     t_id = await _seed_user(
         session_factory, org_id=org_id, username="t", email="t@x.io"
     )
+    source_id, target_id = (99999, t_id) if missing == "source" else (t_id, 99999)
 
     app = _make_app(session_factory, actor_user_id=actor_id)
     with TestClient(app) as client:
         res = client.post(
             "/api/v1/admin/users/merge",
-            json={"source_user_id": 99999, "target_user_id": t_id},
+            json={"source_user_id": source_id, "target_user_id": target_id},
         )
     assert res.status_code == 404
 
     async with session_factory() as db:
         event = (await db.scalars(select(AuditEvent).where(AuditEvent.event_type == "admin.user.merge.failed"))).one()
-        assert event.detail is not None
-        assert event.detail["message"] == "NotFoundError"
+        assert event.detail == {
+            "source_user_id": source_id, "target_user_id": target_id, "reason": "not_found", "missing": missing,
+        }
 
 
 @pytest.mark.asyncio
-async def test_merge_cross_org_returns_409(session_factory) -> None:
+@pytest.mark.parametrize("code", ["cross_org", "source_superadmin"])
+async def test_merge_conflict_returns_409(session_factory, code) -> None:
     org_a = await _seed_org(session_factory, name="A")
-    org_b = await _seed_org(session_factory, name="B")
+    target_org = await _seed_org(session_factory, name="B") if code == "cross_org" else org_a
     actor_id = await _seed_user(
         session_factory,
         org_id=org_a,
@@ -238,10 +242,10 @@ async def test_merge_cross_org_returns_409(session_factory) -> None:
         is_superadmin=True,
     )
     s_id = await _seed_user(
-        session_factory, org_id=org_a, username="s", email="s@x.io"
+        session_factory, org_id=org_a, username="s", email="s@x.io", is_superadmin=code == "source_superadmin",
     )
     t_id = await _seed_user(
-        session_factory, org_id=org_b, username="t", email="t@x.io"
+        session_factory, org_id=target_org, username="t", email="t@x.io"
     )
 
     app = _make_app(session_factory, actor_user_id=actor_id)
@@ -251,6 +255,11 @@ async def test_merge_cross_org_returns_409(session_factory) -> None:
             json={"source_user_id": s_id, "target_user_id": t_id},
         )
     assert res.status_code == 409
+    async with session_factory() as db:
+        event = (await db.scalars(select(AuditEvent).where(AuditEvent.event_type == "admin.user.merge.failed"))).one()
+        assert event.detail == {
+            "source_user_id": s_id, "target_user_id": t_id, "reason": "conflict", "code": code,
+        }
 
 
 # ── actor-snapshot regression coverage (post-#222) ────────────────────────
@@ -342,7 +351,7 @@ async def test_merge_same_user_returns_400_with_shared_session(
         assert rows[0].actor_user_id == actor_id
         assert rows[0].actor_email == "root@x.io"
         assert rows[0].detail["reason"] == "validation"
-        assert rows[0].detail["message"] == "ValidationError"
+        assert "message" not in rows[0].detail
 
 
 @pytest.mark.asyncio
@@ -401,7 +410,8 @@ async def test_merge_last_active_owner_returns_409_with_shared_session(
         assert rows[0].actor_user_id == actor_id
         assert rows[0].actor_email == "root@x.io"
         assert rows[0].detail["reason"] == "conflict"
-        assert rows[0].detail["message"] == "ConflictError"
+        assert rows[0].detail["code"] == "last_active_owner"
+        assert "message" not in rows[0].detail
 
 
 @pytest.mark.asyncio
