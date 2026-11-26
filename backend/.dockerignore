@@ -8,3 +8,5 @@ __pycache__
 .venv*
 venv
 tests
+# INF-11: creates demo/demo1234; dev gets it through docker-compose.yml's bind mount.
+seed.py

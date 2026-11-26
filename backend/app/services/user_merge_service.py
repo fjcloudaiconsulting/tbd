@@ -28,6 +28,8 @@ workflow we don't have yet. Out of scope here.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 import logging
 import secrets
 from sqlalchemy import delete, func, select, update
@@ -114,6 +116,14 @@ LEFT_TO_ONDELETE: dict[str, str] = {
 }
 
 
+class MergeUserNotFoundError(NotFoundError):
+    """Identify the missing side of a user merge for the audit trail."""
+
+    def __init__(self, side: Literal["source", "target"], user_id: int):
+        self.side = side
+        super().__init__(f"{side} user {user_id} not found")
+
+
 async def merge_users(
     db: AsyncSession,
     *,
@@ -138,15 +148,16 @@ async def merge_users(
 
     source = await db.scalar(select(User).where(User.id == source_user_id))
     if source is None:
-        raise NotFoundError(f"source user {source_user_id} not found")
+        raise MergeUserNotFoundError("source", source_user_id)
     target = await db.scalar(select(User).where(User.id == target_user_id))
     if target is None:
-        raise NotFoundError(f"target user {target_user_id} not found")
+        raise MergeUserNotFoundError("target", target_user_id)
 
     if source.org_id != target.org_id:
         raise ConflictError(
             "cross-org merge is not supported; both users must belong to "
-            "the same organization"
+            "the same organization",
+            code="cross_org",
         )
 
     if source.is_superadmin and not target.is_superadmin:
@@ -155,7 +166,8 @@ async def merge_users(
         # first, then re-run the merge.
         raise ConflictError(
             "source user is a superadmin; promote target first or pick a "
-            "different target"
+            "different target",
+            code="source_superadmin",
         )
 
     # Last-active-owner invariant. Deleting source must not leave its
@@ -190,7 +202,8 @@ async def merge_users(
             raise ConflictError(
                 f"Cannot merge: source is the only active owner of org "
                 f"{source.org_id}. Promote another user to owner in that "
-                f"org first, then retry."
+                f"org first, then retry.",
+                code="last_active_owner",
             )
 
     counts: dict[str, int] = {}

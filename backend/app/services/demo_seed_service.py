@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 import logging
 from dateutil.relativedelta import relativedelta
@@ -61,7 +61,11 @@ DEMO_SENTINEL_SLUG = "demo_seed_sentinel"
 
 
 class DemoSeedAlreadyApplied(Exception):
-    """Raised when the org already has data (real or seeded)."""
+    """A refusal to seed demo data, with a stable audit reason."""
+
+    def __init__(self, message: str, *, code: Literal["no_account_types", "has_user_data", "already_seeded"]):
+        self.code = code
+        super().__init__(message)
 
 
 @dataclass
@@ -108,7 +112,7 @@ async def _checking_account_type(db: AsyncSession, org_id: int) -> AccountType:
             return at
     if rows:
         return rows[0]
-    raise DemoSeedAlreadyApplied("org has no account types — cannot seed")
+    raise DemoSeedAlreadyApplied("org has no account types — cannot seed", code="no_account_types")
 
 
 async def _pick_category(
@@ -157,9 +161,9 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
         select(Organization.id).where(Organization.id == org_id).with_for_update()
     )
     if await _has_real_data(db, org_id):
-        raise DemoSeedAlreadyApplied("org already has user data")
+        raise DemoSeedAlreadyApplied("org already has user data", code="has_user_data")
     if await _has_sentinel(db, org_id):
-        raise DemoSeedAlreadyApplied("org already seeded with demo data")
+        raise DemoSeedAlreadyApplied("org already seeded with demo data", code="already_seeded")
 
     today = date.today()
     # The history below starts on the 1st of last month; the accounts open

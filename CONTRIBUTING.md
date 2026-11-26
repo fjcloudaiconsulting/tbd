@@ -12,7 +12,7 @@ Sibling docs you will end up at:
 
 ## Prerequisites
 
-- Docker and Docker Compose.
+- Docker and Docker Compose 2.24 or later (`./tbd prod` relies on its `!reset` tag). The stack publishes on `127.0.0.1` only, so it is not reachable from other machines on your network.
 - Git.
 - Node.js 22+ and pnpm on the host (only needed if you want `tsc` outside the container). Run `corepack enable` once so `pnpm` follows `packageManager` in `frontend/package.json`. Use the corepack bundled with current Node 22; an older global corepack fails with `Cannot find module .../pnpm/12.8.1/bin/pnpm.cjs` (fix: `npm i -g corepack@latest`); Node 25+ no longer ships corepack, so install pnpm separately there. The app itself runs entirely in containers.
 
@@ -102,7 +102,7 @@ PR push (any branch):
 
 Merge to `main`:
 
-- The `release` job of `.github/workflows/ci.yml` (shared `release.yml@v1`, after the Backend and Frontend gates) also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images as vX.Y.Z and smoke them. Nothing here deploys: Renovate opens a PR in cloud-infra bumping the image tags, and merging it is the production deploy.
+- The `release` job of `.github/workflows/ci.yml` (shared `release.yml` pinned to a `v1` commit SHA, after the Backend and Frontend gates) also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images as vX.Y.Z and smoke them. Nothing here deploys: Renovate opens a PR in cloud-infra bumping the image tags, and merging it is the production deploy.
 - Every other merge (including `chore:` / `docs:` / `refactor:`) still runs the `release` job, but only updates the release PR; the gated jobs are skipped.
 - `.github/workflows/apex-deploy.yml` deploys the apex landing site (`thebetterdecision.com`) as the Cloudflare Worker `tbd-landing` on merges that touch the apex path filter. Independent of the release pipeline.
 

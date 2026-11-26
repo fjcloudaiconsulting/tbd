@@ -5,7 +5,9 @@
 # Key differences from dev:
 # - Frontend uses production Dockerfile (multi-stage, standalone build)
 # - Backend runs without --reload, multiple workers
-# - No volume mounts (immutable containers)
+# - No volume mounts (immutable containers) and no dev dependency group
+#   (needs Compose 2.24+ for `!reset`: a plain `volumes: []` MERGES with the
+#   dev mounts in docker-compose.yml instead of replacing them, INF-10)
 # - Migration runs as a one-shot service before backend starts
 # - All services restart unless-stopped
 
@@ -29,6 +31,9 @@ services:
     restart: "no"
 
   backend:
+    build:
+      args:
+        INSTALL_DEV: "false"
     restart: unless-stopped
     environment:
       - APP_ENV=production

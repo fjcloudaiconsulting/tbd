@@ -19,6 +19,7 @@ failure audit row exists.
 from __future__ import annotations
 
 import datetime
+import json
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from unittest.mock import patch, AsyncMock
@@ -277,7 +278,7 @@ async def test_delete_org_failure_writes_audit_and_returns_json(session_factory)
     app = make_app(session_factory, _superadmin_resolver())
 
     async def boom(*args, **kwargs):
-        raise RuntimeError("simulated cascade failure for Bug 2")
+        raise RuntimeError("simulated cascade failure with SECRET")
 
     with patch(
         "app.routers.admin_orgs.admin_orgs_service.delete_org_cascade",
@@ -318,7 +319,10 @@ async def test_delete_org_failure_writes_audit_and_returns_json(session_factory)
     row = rows[0]
     assert row.outcome == AuditOutcome.FAILURE
     assert row.target_org_id == seed["target_id"]
+    audit = {column.key: getattr(row, column.key) for column in AuditEvent.__table__.columns}
+    assert "SECRET" not in json.dumps(audit, default=str)
     assert row.detail is not None
+    assert row.detail["error"] == "RuntimeError"
     assert row.detail.get("error_type") == "RuntimeError"
     snapshot = row.detail.get("snapshot")
     assert snapshot is not None
