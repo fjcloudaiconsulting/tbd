@@ -217,7 +217,7 @@ async def ensure_local_tag_changes(
         select(TagDictionary.name_normalized)
         .join(TagDictionaryContributor)
         .where(TagDictionaryContributor.contributor_org_id == org_id, TagDictionary.name_normalized.in_(names))
-        .with_for_update()
+        .with_for_update(of=TagDictionaryContributor)
     ))
     if eligible - own or withdrawing in own:
         raise ConflictError("This change would affect the shared tag dictionary. Make the change in the app.")

@@ -248,6 +248,7 @@ _BENIGN = {
     ("app.deps", "get_caller_session"),
     ("app.rate_limit", "get_client_ip"),
     ("app.rate_limit_overrides", "load_rate_limit_overrides"),
+    ("app.routers.tags", "_rest_allows_dictionary_changes"),  # supplies a server-selected write mode
 }
 
 

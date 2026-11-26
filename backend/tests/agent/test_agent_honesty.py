@@ -60,6 +60,7 @@ from app.models.settings import OrgSetting
 from app.models.tag import Tag, TagDictionary, TagDictionaryContributor, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
+from app.schemas.tag import SHARED_DICTIONARY_MIN_CONTRIBUTORS, SHARED_DICTIONARY_MIN_ORG_AGE_DAYS
 from app.services import org_bootstrap_service
 from app.services.category_rules_service import normalize_description
 from app.models.report import Report, ReportVersion
@@ -1500,25 +1501,44 @@ TAG_SCENARIOS = [
 ]
 
 
-async def _contribution(f, org_id, name):
-    [dictionary_id] = await _ids(f, TagDictionary(name_normalized=name, contributor_org_count=1, usage_count=1))
-    await _add(f, TagDictionaryContributor(dictionary_tag_id=dictionary_id, contributor_org_id=org_id))
+DICTIONARY_STATES = ("absent", "seed", "below-floor", "above-floor")
+
+
+async def _dictionary_state(f, name, state, *, own_org=None):
+    count = {"below-floor": 1, "above-floor": SHARED_DICTIONARY_MIN_CONTRIBUTORS + 1}.get(state, 0)
+    if state == "absent" and own_org is None:
+        return
+    aged_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(
+        days=SHARED_DICTIONARY_MIN_ORG_AGE_DAYS + 1,
+    )
+    # When the caller already contributes, "absent" means no other org state.
+    other_orgs = await _ids(f, *(Organization(name=f"Peer {i}", created_at=aged_at) for i in range(count)))
+    contributors = other_orgs if own_org is None else [own_org, *other_orgs]
+    [dictionary_id] = await _ids(f, TagDictionary(
+        name_normalized=name, contributor_org_count=len(contributors), usage_count=len(contributors),
+        is_seed=state == "seed",
+    ))
+    await _add(f, *(TagDictionaryContributor(dictionary_tag_id=dictionary_id, contributor_org_id=org_id)
+                    for org_id in contributors))
 
 
 @pytest.mark.parametrize("sid,build,setup,auto", TAG_SCENARIOS, ids=[s[0] for s in TAG_SCENARIOS])
-async def test_tag_dictionary_refusal_writes_nothing(factory, w, sid, build, setup, auto):
+@pytest.mark.parametrize("dictionary_state", DICTIONARY_STATES)
+async def test_tag_dictionary_refusal_writes_nothing(factory, w, sid, build, setup, auto, dictionary_state):
     a = w["A"]
     await setup(factory, a)
     await _add(factory, OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
     tool, args = build(a)
     if tool in ("tags_rename", "tags_delete"):
-        await _contribution(factory, a["org"], "travel")
+        await _dictionary_state(factory, "travel", dictionary_state, own_org=a["org"])
     else:
-        await _contribution(factory, w["B"]["org"], "new tag")
+        await _dictionary_state(factory, "new tag", dictionary_state)
     async with factory() as db:
         before = await _snap(await db.connection())
     def check_refusal(err):
-        assert err.code == "conflict" and "Make the change in the app" in err.detail
+        assert (err.code, err.detail) == (
+            "conflict", "This change would affect the shared tag dictionary. Make the change in the app.",
+        )
 
     check_refusal(await _refused(_invoke(factory, a["member"], tool, args)))
     async with factory() as db:
@@ -1530,10 +1550,40 @@ async def test_tag_dictionary_refusal_writes_nothing(factory, w, sid, build, set
         assert await _snap(await db.connection()) == before
 
 
+@pytest.mark.parametrize("sid,build,setup,auto", TAG_SCENARIOS, ids=[s[0] for s in TAG_SCENARIOS])
+@pytest.mark.parametrize("dictionary_state", DICTIONARY_STATES)
+async def test_tag_dictionary_state_does_not_block_local_writes(
+    factory, w, windows, sid, build, setup, auto, dictionary_state,
+):
+    a = w["A"]
+    await setup(factory, a)
+    tool, args = build(a)
+    if tool in ("tags_rename", "tags_delete"):
+        await _add(factory, OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
+        await _dictionary_state(factory, "travel", dictionary_state)
+    else:
+        await _dictionary_state(factory, "new tag", dictionary_state)
+    changes = await honest_run(factory, windows, a["member"], tool, args, a["org"])
+    assert any(change["entity"] == "tags" for change in changes)
+
+
+async def test_tag_delete_lists_detachments_once_and_points_to_app_when_too_large(factory, w, monkeypatch):
+    a = w["A"]
+    await _tag_in_use(factory, a)
+    args = {"tag_id": a["tag"]}
+    preview = await _invoke(factory, a["member"], "tags_delete", args)
+    assert preview["context"]["deleted"] == [{"entity": "tags", "id": a["tag"]}]
+    assert [c["id"] for c in preview["changes"] if c["entity"] == "transaction_tags"] == [[a["tx"], a["tag"]]]
+
+    monkeypatch.setattr(actions, "MAX_PREVIEW_BYTES", 128)
+    err = await _refused(_invoke(factory, a["member"], "tags_delete", args))
+    assert (err.code, err.detail) == ("payload_too_large", "Too many links to preview. Delete the tag in the app.")
+
+
 async def _sharing_with_travel(f, a):
     await _two_tags(f, a)
     await _add(f, OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
-    await _contribution(f, a["org"], "travel")
+    await _dictionary_state(f, "travel", "absent", own_org=a["org"])
 
 
 # id, tool args builder, setup, auto

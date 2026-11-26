@@ -305,7 +305,7 @@ async def test_plans_start_refuses_at_preview_what_start_would_not_take(factory,
     async with factory() as db:  # sharing tag data: the new tag would reach the dictionary
         db.add(OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
         await db.commit()
-    await refused("conflict", "tag dictionary")
+    await refused("conflict", "Link a tag first (scenarios_update tag_id)")
     async with factory() as db:
         await db.execute(OrgSetting.__table__.delete().where(OrgSetting.org_id == a["org"]))
         await db.commit()

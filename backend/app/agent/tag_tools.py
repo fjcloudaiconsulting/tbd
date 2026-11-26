@@ -5,18 +5,36 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register
-from app.agent.route_tool import CascadeDisclosure, _delete_preview, _disclose, _session_factory, refusals
+from app.agent import actions
+from app.agent.registry import (
+    Change,
+    Preview,
+    ToolContext,
+    ToolError,
+    ToolSpec,
+    register,
+)
+from app.agent.route_tool import (
+    CascadeDisclosure,
+    _delete_preview,
+    _disclose,
+    _session_factory,
+    refusals,
+)
 from app.agent.sensitive_tools import CONFIRM
 from app.models.scenario import Scenario
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction
 from app.models.user import Role
 from app.routers import tags as routes
-from app.schemas.tag import MAX_TAGS_PER_TRANSACTION, TagCreate, TagRename, TransactionTagSetReplace
+from app.schemas.tag import (
+    MAX_TAGS_PER_TRANSACTION,
+    TagCreate,
+    TagRename,
+    TransactionTagSetReplace,
+)
 from app.services import tag_service
 from app.services.exceptions import NotFoundError
-
 
 _COLUMNS = Tag.__table__.c
 
@@ -39,7 +57,8 @@ async def _call_route(ctx: ToolContext, endpoint, **params):
     # route_limit has already drawn the shared user bucket for the limited routes.
     with refusals():
         result = await unwrap(endpoint)(
-            request=None, current_user=ctx.user, db=ctx.db, session_factory=_session_factory(ctx), **params,
+            request=None, current_user=ctx.user, db=ctx.db, session_factory=_session_factory(ctx),
+            allow_dictionary_changes=False, **params,
         )
     return jsonable_encoder(result)
 
@@ -120,8 +139,21 @@ async def _delete_links(ctx: ToolContext, tag: Tag, args: TagIdArgs) -> list[Cha
 async def _delete_present(ctx: ToolContext, tag: Tag, args: TagIdArgs, changes: list[Change]) -> Preview:
     return Preview(
         f"Delete tag {tag.id}", changes, warnings=["The tag is removed from linked transactions and plans."],
-        context={"deleted": [{"entity": c.entity, "id": c.id} for c in changes if c.entity == "transaction_tags"]},
     )
+
+
+_delete_with_cascade = _delete_preview(
+    "tags_delete", Tag, ("tag_id",), ("name", "name_normalized"),
+    CascadeDisclosure(frozenset({"transaction_tags.tag_id", "scenarios.tag_id"}), _delete_links),
+    _delete_check, _delete_present,
+)
+
+
+async def _preview_delete(ctx: ToolContext, args: TagIdArgs) -> Preview:
+    preview = await _delete_with_cascade(ctx, args)
+    if len(actions._canonical(actions._preview_dict(preview)).encode()) > actions.MAX_PREVIEW_BYTES:
+        raise ToolError("payload_too_large", "Too many links to preview. Delete the tag in the app.")
+    return preview
 
 
 async def _delete(ctx: ToolContext, args: TagIdArgs):
@@ -180,11 +212,7 @@ register(ToolSpec(
     name="tags_delete", risk="sensitive", args=TagIdArgs, product_area=None, min_role=Role.MEMBER,
     mirrors_route=("DELETE", "/api/v1/tags/{tag_id}"), domain="transactions",
     description=f"Delete an organization tag and detach it from transactions and plans. {CONFIRM}",
-    preview=_delete_preview(
-        "tags_delete", Tag, ("tag_id",), ("name", "name_normalized"),
-        CascadeDisclosure(frozenset({"transaction_tags.tag_id", "scenarios.tag_id"}), _delete_links),
-        _delete_check, _delete_present,
-    ),
+    preview=_preview_delete,
     execute=_delete,
 ))
 register(ToolSpec(

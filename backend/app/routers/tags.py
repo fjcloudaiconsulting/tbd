@@ -17,7 +17,7 @@ documented only).
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -55,6 +55,10 @@ transaction_tags_router = APIRouter(
 
 def _request_id() -> Optional[str]:
     return logs.CONTEXT.get({}).get("request_id")
+
+
+def _rest_allows_dictionary_changes() -> bool:
+    return True
 
 
 def _too_many_new_tags(exc: "tag_service.TagCreationLimited") -> HTTPException:
@@ -105,16 +109,17 @@ async def create_tag_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    *,
+    allow_dictionary_changes: Annotated[bool, Depends(_rest_allows_dictionary_changes)],
 ):
     """Create a new org-local tag."""
-    # An in-process agent call has no HTTP request and can disclose only org-local changes.
     try:
         tag = await tag_service.create_tag(
             db,
             org_id=current_user.org_id,
             name=body.name,
             created_by_user_id=current_user.id,
-            allow_dictionary_changes=request is not None,
+            allow_dictionary_changes=allow_dictionary_changes,
         )
         await db.commit()
         await db.refresh(tag)
@@ -157,6 +162,8 @@ async def rename_tag_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    *,
+    allow_dictionary_changes: Annotated[bool, Depends(_rest_allows_dictionary_changes)],
 ):
     """Rename an existing tag in place."""
     try:
@@ -165,7 +172,7 @@ async def rename_tag_endpoint(
             org_id=current_user.org_id,
             tag_id=tag_id,
             new_name=body.name,
-            allow_dictionary_changes=request is not None,
+            allow_dictionary_changes=allow_dictionary_changes,
         )
         old_normalized = tag.name_normalized  # already updated by the service
         await db.commit()
@@ -204,6 +211,8 @@ async def delete_tag_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    *,
+    allow_dictionary_changes: Annotated[bool, Depends(_rest_allows_dictionary_changes)],
 ):
     """Delete a tag. Cascade detaches it from every transaction."""
     try:
@@ -211,7 +220,7 @@ async def delete_tag_endpoint(
             db,
             org_id=current_user.org_id,
             tag_id=tag_id,
-            allow_dictionary_changes=request is not None,
+            allow_dictionary_changes=allow_dictionary_changes,
         )
         deleted_name = tag.name_normalized
         await db.commit()
@@ -282,6 +291,8 @@ async def replace_transaction_tags_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    *,
+    allow_dictionary_changes: Annotated[bool, Depends(_rest_allows_dictionary_changes)],
 ):
     """Replace the full tag set on a transaction.
 
@@ -296,7 +307,7 @@ async def replace_transaction_tags_endpoint(
             transaction_id=transaction_id,
             tag_names=body.tag_names,
             created_by_user_id=current_user.id,
-            allow_dictionary_changes=request is not None,
+            allow_dictionary_changes=allow_dictionary_changes,
         )
         await db.commit()
     except NotFoundError:
