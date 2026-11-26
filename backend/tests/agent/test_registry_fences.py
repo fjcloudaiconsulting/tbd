@@ -123,6 +123,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
         "plan_goal_create", "plan_goal_update", "plan_goal_delete",
         "plans_finish", "plans_start",  # TBD-604
+        "tags_create", "tags_rename", "tags_delete", "transactions_replace_tags",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
@@ -162,6 +163,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         *FORECAST_PLAN_CHANGES, "scenarios_create", "scenarios_update", "scenarios_delete",
         "plan_goal_create", "plan_goal_update", "plan_goal_delete",
         "plans_finish", "plans_start",  # TBD-604
+        "tags_create", "tags_rename", "tags_delete", "transactions_replace_tags",
     }
 
 
@@ -246,6 +248,7 @@ _BENIGN = {
     ("app.deps", "get_caller_session"),
     ("app.rate_limit", "get_client_ip"),
     ("app.rate_limit_overrides", "load_rate_limit_overrides"),
+    ("app.routers.tags", "_rest_allows_dictionary_changes"),  # supplies a server-selected write mode
 }
 
 
@@ -386,6 +389,10 @@ def _valid_base(tool) -> dict:
         "scenarios_delete": {"scenario_id": 1},
         "plans_finish": {"scenario_id": 1},
         "plans_start": {"scenario_id": 1},
+        "tags_create": {"name": "Travel"},
+        "tags_rename": {"tag_id": 1, "name": "Travel"},
+        "tags_delete": {"tag_id": 1},
+        "transactions_replace_tags": {"transaction_id": 1, "tag_names": ["Travel"]},
     }.get(tool.name, {})
 
 
@@ -449,13 +456,16 @@ def test_fr4_args_reject_everything_the_route_rejects(tool):
     tool.args.model_validate(base)  # the base itself is valid
     checked = 0
     for name in shared:
-        is_list = "list" in str(tool.args.model_fields[name].annotation)
+        is_query_list = (
+            params[name] in route.dependant.query_params
+            and "list" in str(tool.args.model_fields[name].annotation)
+        )
         for v in _VECTORS:
             if not _route_rejects(route, name, v):
                 continue
             checked += 1
             with pytest.raises(PydanticValidationError):
-                tool.args.model_validate({**base, name: [v] if is_list else v})
+                tool.args.model_validate({**base, name: [v] if is_query_list else v})
     if shared and tool.name not in _NOTHING_TO_REJECT:
         assert checked, f"{tool.name}: no vector was rejected by REST; the fence tested nothing"
 

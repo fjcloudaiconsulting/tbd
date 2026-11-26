@@ -160,6 +160,8 @@ def _find_decorated_routes() -> dict[tuple[str, str], tuple[str | None, str]]:
 STACKED_LIMITS: dict[tuple[str, str], list[tuple[str | None, str]]] = {
     ("reports", "run_query"): [(None, "300/minute")],
     ("reports", "run_sankey_query"): [(None, "300/minute")],
+    ("tags", "create_tag_endpoint"): [("tags.create", "30/minute")],
+    ("tags", "replace_transaction_tags_endpoint"): [("tags.set_transaction_tags", "60/minute")],
 }
 
 
