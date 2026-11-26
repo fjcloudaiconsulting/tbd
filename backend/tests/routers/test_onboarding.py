@@ -241,9 +241,9 @@ async def test_seed_demo_409_when_org_has_data(session_factory):
     assert res.status_code == 409
     assert res.json()["detail"] == "org_has_data"
     async with session_factory() as db:
-        rows = (await db.execute(select(AuditEvent))).scalars().all()
-        types = [r.event_type for r in rows]
-        assert "onboarding.seed_demo.refused" in types
+        event = (await db.scalars(select(AuditEvent).where(AuditEvent.event_type == "onboarding.seed_demo.refused"))).one()
+        assert event.detail is not None
+        assert event.detail["reason"] == "DemoSeedAlreadyApplied"
 
 
 @pytest.mark.asyncio

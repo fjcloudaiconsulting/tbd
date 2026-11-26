@@ -220,6 +220,11 @@ async def test_merge_missing_user_returns_404(session_factory) -> None:
         )
     assert res.status_code == 404
 
+    async with session_factory() as db:
+        event = (await db.scalars(select(AuditEvent).where(AuditEvent.event_type == "admin.user.merge.failed"))).one()
+        assert event.detail is not None
+        assert event.detail["message"] == "NotFoundError"
+
 
 @pytest.mark.asyncio
 async def test_merge_cross_org_returns_409(session_factory) -> None:
@@ -337,6 +342,7 @@ async def test_merge_same_user_returns_400_with_shared_session(
         assert rows[0].actor_user_id == actor_id
         assert rows[0].actor_email == "root@x.io"
         assert rows[0].detail["reason"] == "validation"
+        assert rows[0].detail["message"] == "ValidationError"
 
 
 @pytest.mark.asyncio
@@ -395,6 +401,7 @@ async def test_merge_last_active_owner_returns_409_with_shared_session(
         assert rows[0].actor_user_id == actor_id
         assert rows[0].actor_email == "root@x.io"
         assert rows[0].detail["reason"] == "conflict"
+        assert rows[0].detail["message"] == "ConflictError"
 
 
 @pytest.mark.asyncio

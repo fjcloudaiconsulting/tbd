@@ -64,7 +64,7 @@ from app.services.demo_seed_service import (
     DemoSeedAlreadyApplied,
     seed_org,
 )
-from app import logs
+from app import logs, tracing
 
 
 logger = logging.getLogger(__name__)
@@ -164,7 +164,7 @@ async def seed_demo(
             request_id=_request_id(),
             ip_address=get_client_ip(request),
             outcome="failure",
-            detail={"reason": str(exc), "empty_org_only": empty_org_only},
+            detail={"reason": tracing.error_summary(exc), "empty_org_only": empty_org_only},
         )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

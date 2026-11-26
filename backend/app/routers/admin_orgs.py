@@ -397,7 +397,7 @@ async def delete_org(
             outcome="failure",
             detail={
                 "snapshot": org_snapshot,
-                "error": str(e),
+                "error": tracing.error_summary(e),
                 "error_type": type(e).__name__,
             },
         )
