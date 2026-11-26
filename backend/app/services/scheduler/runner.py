@@ -78,19 +78,19 @@ async def run_all_due(
                     )
                 except Exception as exc:  # noqa: BLE001 — isolate per-job failures
                     await db.rollback()
-                    error_type = type(exc).__name__
+                    summary = tracing.error_summary(exc)
                     await record_run(
                         job_type=job.job_type,
                         outcome="failure",
                         org=org,
-                        detail={"error": error_type},
+                        detail={"error": summary},
                     )
                     logger.error(
                         "scheduler.job.failure",
                         extra={
                             "job": job.job_type,
                             "org_id": org.id,
-                            "error": error_type,
+                            "error": summary,
                         },
                     )
         if org_did_work:

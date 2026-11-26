@@ -35,11 +35,13 @@ itself is faked, to assert call kwargs and to inject a mid-run failure.
 from __future__ import annotations
 
 import datetime
+import json
 from decimal import Decimal
 
+import pymysql
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, select
+from sqlalchemy import event, inspect, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -366,7 +368,7 @@ async def test_one_card_failure_does_not_block_the_other(session_factory, monkey
 
     async def _flaky_dispatch(db, **kwargs):
         if kwargs["title"].startswith("Bad Card"):
-            raise RuntimeError("SECRET")
+            raise pymysql.err.OperationalError(1213, "SECRET")
         calls.append(kwargs)
         return 1
 
@@ -386,5 +388,7 @@ async def test_one_card_failure_does_not_block_the_other(session_factory, monkey
 
     failures = await _failure_markers(session_factory, org.id)
     assert len(failures) == 1
-    assert "SECRET" not in str(failures[0].detail)
-    assert failures[0].detail == {"account_id": bad.id, "error": "RuntimeError"}
+    row = failures[0]
+    columns = {column.key: getattr(row, column.key) for column in inspect(row).mapper.column_attrs}
+    assert "SECRET" not in json.dumps(columns, default=str)
+    assert row.detail == {"account_id": bad.id, "error": "OperationalError errno=1213"}

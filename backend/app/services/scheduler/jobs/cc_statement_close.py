@@ -34,6 +34,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import tracing
 from app.models.notification import NotificationCategory
 from app.models.user import Organization
 from app.services.cc_statement_service import statement_outstanding
@@ -182,7 +183,7 @@ class CcStatementCloseJob:
                     job_type=self.job_type,
                     outcome="failure",
                     org=org,
-                    detail={"account_id": card.account_id, "error": type(exc).__name__},
+                    detail={"account_id": card.account_id, "error": tracing.error_summary(exc)},
                 )
                 continue
 
