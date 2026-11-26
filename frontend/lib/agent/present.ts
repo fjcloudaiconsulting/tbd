@@ -113,6 +113,10 @@ const TOOL_LABELS: Record<string, string> = {
   plan_goal_delete: "Delete a plan goal",
   plans_finish: "Finish a plan",
   plans_start: "Start a plan",
+  tags_create: "Create a tag",
+  tags_rename: "Rename a tag",
+  tags_delete: "Delete a tag",
+  transactions_replace_tags: "Replace tags on a transaction",
 };
 
 export function toolLabel(name: string): string {
@@ -185,6 +189,7 @@ const FIELD_LABELS: Record<string, string> = {
   "transactions.status": "Status",
   "transactions.linked_transaction_id": "Linked to",
   "transactions.reconciliation_state": "Import review",
+  "transaction_tags.transaction_id": "Transaction",
   "transaction_tags.tag_id": "Tag",
   "category_rules.category_id": "Categorization rule",
   "accounts.balance_delta": "Balance",
@@ -271,6 +276,7 @@ const ROW_NOUN: Record<string, string> = {
   forecast_plan_items: "Forecast item", forecast_plans: "Forecast plan", scenarios: "Plan",
   plan_goals: "Plan goal",
   reports: "Report", report_versions: "Saved version", user_notification_preferences: "Notification preferences",
+  tags: "Tag", transaction_tags: "Tag assignment",
 };
 
 // Which row a change is on, for a preview that touches several rows of one
