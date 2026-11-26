@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import User
-from app.rate_limit import get_client_ip, limiter
+from app.rate_limit import get_client_ip, limiter, user_rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.tag import (
     TagCreate,
@@ -90,6 +90,7 @@ async def list_tags(
 # through the rate-limit override catalogue. The transaction route carries
 # ``{transaction_id}``, so it uses ``shared_limit``: a plain ``limit`` would
 # give every transaction its own budget.
+# REST and agent calls draw the same per-user budget beside the IP backstop.
 @router.post(
     "",
     response_model=TagResponse,
@@ -97,6 +98,7 @@ async def list_tags(
     dependencies=[Depends(load_rate_limit_overrides)],
 )
 @limiter.limit(dynamic_limit("tags.create", "30/minute"))
+@limiter.limit(dynamic_limit("tags.create", "30/minute"), key_func=user_rate_limit_key)
 async def create_tag_endpoint(
     body: TagCreate,
     request: Request,
@@ -105,12 +107,14 @@ async def create_tag_endpoint(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Create a new org-local tag."""
+    # An in-process agent call has no HTTP request and can disclose only org-local changes.
     try:
         tag = await tag_service.create_tag(
             db,
             org_id=current_user.org_id,
             name=body.name,
             created_by_user_id=current_user.id,
+            allow_dictionary_changes=request is not None,
         )
         await db.commit()
         await db.refresh(tag)
@@ -132,7 +136,7 @@ async def create_tag_endpoint(
         target_org_id=current_user.org_id,
         target_org_name=None,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=get_client_ip(request) if request is not None else None,
         outcome="success",
         detail={"tag_id": tag.id, "name": tag.name_normalized},
     )
@@ -161,6 +165,7 @@ async def rename_tag_endpoint(
             org_id=current_user.org_id,
             tag_id=tag_id,
             new_name=body.name,
+            allow_dictionary_changes=request is not None,
         )
         old_normalized = tag.name_normalized  # already updated by the service
         await db.commit()
@@ -180,7 +185,7 @@ async def rename_tag_endpoint(
         target_org_id=current_user.org_id,
         target_org_name=None,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=get_client_ip(request) if request is not None else None,
         outcome="success",
         detail={"tag_id": tag.id, "name": tag.name_normalized},
     )
@@ -206,12 +211,16 @@ async def delete_tag_endpoint(
             db,
             org_id=current_user.org_id,
             tag_id=tag_id,
+            allow_dictionary_changes=request is not None,
         )
         deleted_name = tag.name_normalized
         await db.commit()
     except NotFoundError:
         await db.rollback()
         raise HTTPException(status_code=404, detail="Tag not found")
+    except ConflictError:
+        await db.rollback()
+        raise
 
     await audit_service.record_audit_event(
         session_factory,
@@ -221,7 +230,7 @@ async def delete_tag_endpoint(
         target_org_id=current_user.org_id,
         target_org_name=None,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=get_client_ip(request) if request is not None else None,
         outcome="success",
         detail={"tag_id": tag_id, "name": deleted_name},
     )
@@ -261,6 +270,11 @@ async def suggest_endpoint(
     dynamic_limit("tags.set_transaction_tags", "60/minute"),
     scope="tags.set_transaction_tags",
 )
+@limiter.shared_limit(
+    dynamic_limit("tags.set_transaction_tags", "60/minute"),
+    scope="tags.set_transaction_tags",
+    key_func=user_rate_limit_key,
+)
 async def replace_transaction_tags_endpoint(
     transaction_id: int,
     body: TransactionTagSetReplace,
@@ -282,6 +296,7 @@ async def replace_transaction_tags_endpoint(
             transaction_id=transaction_id,
             tag_names=body.tag_names,
             created_by_user_id=current_user.id,
+            allow_dictionary_changes=request is not None,
         )
         await db.commit()
     except NotFoundError:
@@ -302,7 +317,7 @@ async def replace_transaction_tags_endpoint(
         target_org_id=current_user.org_id,
         target_org_name=None,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=get_client_ip(request) if request is not None else None,
         outcome="success",
         detail={
             "transaction_id": transaction_id,

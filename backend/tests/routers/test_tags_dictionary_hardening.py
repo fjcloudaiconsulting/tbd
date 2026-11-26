@@ -19,6 +19,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app import logs
 from app._time import utcnow_naive
 from app.models import Base
 from app.models.account import Account, AccountType
@@ -112,6 +113,7 @@ async def _seed(factory) -> dict:
 
 def _app(factory, user_id: int):
     async def resolve_user(session_factory) -> User:
+        logs.bind(user_id=user_id)
         async with session_factory() as db:
             return (await db.execute(select(User).where(User.id == user_id))).scalar_one()
 

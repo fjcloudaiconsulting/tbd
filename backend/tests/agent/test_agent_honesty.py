@@ -56,7 +56,8 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioStatus, ScenarioType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.recurring import Frequency, RecurringTransaction
-from app.models.tag import Tag, TransactionTag
+from app.models.settings import OrgSetting
+from app.models.tag import Tag, TagDictionary, TagDictionaryContributor, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
 from app.services import org_bootstrap_service
@@ -342,6 +343,11 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summar
         def problems(row):
             out = [f"{f}: row {_norm(tobj.c[f], row[f])!r}, preview {v!r}"
                    for f, v in named.items() if f not in linked and _norm(tobj.c[f], row[f]) != v]
+            # A resolved FK distinguishes join rows that share all other fields.
+            for field, ref in linked.items():
+                target = matched.get(json.dumps(ref))
+                if target is not None and (row[field],) != target[1]:
+                    out.append(f"{field}: row {row[field]!r} does not link to {ref!r}")
             out += [f"{col.name}: unnamed, row {_norm(col, row[col.name])!r}, default {_default(col)!r}"
                     for col in tobj.c
                     if col.name not in named and not _insert_exempt(tobj, col, natural)
@@ -1465,6 +1471,71 @@ FORECAST_PLAN_SCENARIOS = [
 ]
 
 
+async def _attached_tag(f, a):
+    [a["tag"]] = await _ids(f, Tag(org_id=a["org"], name="Travel", name_normalized="travel"))
+    await _add(f, TransactionTag(transaction_id=a["tx"], tag_id=a["tag"]))
+
+
+async def _tag_in_use(f, a):
+    await _attached_tag(f, a)
+    await _add(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
+        params_json={}, horizon_months=12, status=ScenarioStatus.DRAFT, tag_id=a["tag"],
+    ))
+
+
+async def _two_tags(f, a):
+    await _attached_tag(f, a)
+    await _add(f, Tag(org_id=a["org"], name="Food", name_normalized="food"))
+
+
+TAG_SCENARIOS = [
+    ("tag-create", _tool("tags_create", name="  New   Tag  "), _none, False),
+    ("tag-rename", _tool("tags_rename", tag_id="@tag", name="New Tag"), _attached_tag, False),
+    ("tag-delete-detaches-transactions-and-plans", _tool("tags_delete", tag_id="@tag"), _tag_in_use, False),
+    ("tag-replace-removes-attaches-and-creates", _tool(
+        "transactions_replace_tags", transaction_id="@tx",
+        tag_names=["Long Local Tag Name", " Food ", "New Tag", "new tag"]),
+     _two_tags, False),
+]
+
+
+async def _contribution(f, org_id, name):
+    [dictionary_id] = await _ids(f, TagDictionary(name_normalized=name, contributor_org_count=1, usage_count=1))
+    await _add(f, TagDictionaryContributor(dictionary_tag_id=dictionary_id, contributor_org_id=org_id))
+
+
+@pytest.mark.parametrize("sid,build,setup,auto", TAG_SCENARIOS, ids=[s[0] for s in TAG_SCENARIOS])
+async def test_tag_dictionary_refusal_writes_nothing(factory, w, sid, build, setup, auto):
+    a = w["A"]
+    await setup(factory, a)
+    await _add(factory, OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
+    tool, args = build(a)
+    if tool in ("tags_rename", "tags_delete"):
+        await _contribution(factory, a["org"], "travel")
+    else:
+        await _contribution(factory, w["B"]["org"], "new tag")
+    async with factory() as db:
+        before = await _snap(await db.connection())
+    def check_refusal(err):
+        assert err.code == "conflict" and "Make the change in the app" in err.detail
+
+    check_refusal(await _refused(_invoke(factory, a["member"], tool, args)))
+    async with factory() as db:
+        user = await db.get(User, a["member"])
+        ctx = registry.ToolContext(db, user, a["org"], "in_app", None)
+        spec = registry.get_tool(tool)
+        check_refusal(await _refused(spec.execute(ctx, spec.args.model_validate(args))))
+    async with factory() as db:
+        assert await _snap(await db.connection()) == before
+
+
+async def _sharing_with_travel(f, a):
+    await _two_tags(f, a)
+    await _add(f, OrgSetting(org_id=a["org"], key="share_tag_data", value="true"))
+    await _contribution(f, a["org"], "travel")
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -1486,6 +1557,10 @@ SCENARIOS = [
     *PLANNING_SCENARIOS,
     *REPORT_SCENARIOS,
     *FORECAST_PLAN_SCENARIOS,
+    *TAG_SCENARIOS,
+    ("tag-rename-keeps-contribution", _tool("tags_rename", tag_id="@tag", name="TRAVEL"), _sharing_with_travel, False),
+    ("tag-replace-uses-existing-tags-in-a-sharing-org", _tool(
+        "transactions_replace_tags", transaction_id="@tx", tag_names=["Food"]), _sharing_with_travel, False),
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 

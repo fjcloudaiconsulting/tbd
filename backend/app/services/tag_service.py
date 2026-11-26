@@ -138,6 +138,10 @@ def normalize_tag_name(raw: str) -> str:
     return cleaned
 
 
+def tag_display_name(raw: str) -> str:
+    return _WHITESPACE_RUN_RE.sub(" ", raw.strip())
+
+
 def _is_dictionary_eligible(name_normalized: str) -> bool:
     """Length / hyphen-group filter for cross-org promotion.
 
@@ -197,6 +201,28 @@ async def _share_tag_data_still_enabled(db: AsyncSession, org_id: int) -> bool:
     return share_tag_data_value_enabled(row.scalar_one_or_none())
 
 
+async def ensure_local_tag_changes(
+    db: AsyncSession, org_id: int, *, adding: Iterable[str] = (), withdrawing: str | None = None,
+) -> None:
+    """Refuse dictionary mutations when the caller can disclose only org-local changes."""
+    eligible = {name for name in adding if _is_dictionary_eligible(name)}
+    if eligible and not await _share_tag_data_still_enabled(db, org_id):
+        eligible.clear()
+    names = eligible | ({withdrawing} if withdrawing else set())
+    if not names:
+        return
+    # The dictionary supplies the name for the caller's own contribution. Its
+    # counts and the presence of contributions from other orgs are immaterial.
+    own = set(await db.scalars(
+        select(TagDictionary.name_normalized)
+        .join(TagDictionaryContributor)
+        .where(TagDictionaryContributor.contributor_org_id == org_id, TagDictionary.name_normalized.in_(names))
+        .with_for_update()
+    ))
+    if eligible - own or withdrawing in own:
+        raise ConflictError("This change would affect the shared tag dictionary. Make the change in the app.")
+
+
 # ---------------------------------------------------------------------------
 # Per-org tag CRUD
 # ---------------------------------------------------------------------------
@@ -239,14 +265,12 @@ async def list_org_tags(
 
 
 async def _get_tag_by_normalized(
-    db: AsyncSession, org_id: int, name_normalized: str
+    db: AsyncSession, org_id: int, name_normalized: str, *, lock: bool = False,
 ) -> Optional[Tag]:
-    row = await db.execute(
-        select(Tag).where(
-            Tag.org_id == org_id,
-            Tag.name_normalized == name_normalized,
-        )
-    )
+    query = select(Tag).where(Tag.org_id == org_id, Tag.name_normalized == name_normalized)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    row = await db.execute(query)
     return row.scalar_one_or_none()
 
 
@@ -256,6 +280,7 @@ async def create_tag(
     org_id: int,
     name: str,
     created_by_user_id: Optional[int],
+    allow_dictionary_changes: bool = True,
 ) -> Tag:
     """Create a new tag for the org, normalizing first.
 
@@ -266,10 +291,12 @@ async def create_tag(
     tag passes the eligibility filter, both inside the same transaction.
     """
     name_normalized = normalize_tag_name(name)
-    display_name = _WHITESPACE_RUN_RE.sub(" ", name.strip())
-    existing = await _get_tag_by_normalized(db, org_id, name_normalized)
+    display_name = tag_display_name(name)
+    existing = await _get_tag_by_normalized(db, org_id, name_normalized, lock=not allow_dictionary_changes)
     if existing is not None:
         raise ConflictError(f"Tag '{name_normalized}' already exists")
+    if not allow_dictionary_changes:
+        await ensure_local_tag_changes(db, org_id, adding=[name_normalized])
     await _admit_tag_creation(org_id)
     tag = Tag(
         org_id=org_id,
@@ -287,7 +314,7 @@ async def create_tag(
     # behaviour because the caller asked for an atomic "create + maybe
     # contribute" operation.
     # The plain read keeps non-sharing orgs (the default) lock-free.
-    if await is_share_tag_data_enabled(db, org_id) and await _share_tag_data_still_enabled(
+    if allow_dictionary_changes and await is_share_tag_data_enabled(db, org_id) and await _share_tag_data_still_enabled(
         db, org_id
     ):
         await _record_dictionary_contribution(
@@ -302,6 +329,7 @@ async def rename_tag(
     org_id: int,
     tag_id: int,
     new_name: str,
+    allow_dictionary_changes: bool = True,
 ) -> Tag:
     """Rename a tag in place, refreshing ``name_normalized``.
 
@@ -312,10 +340,11 @@ async def rename_tag(
     contribution to that name is withdrawn (BE-18).
     """
     new_name_normalized = normalize_tag_name(new_name)
-    new_display = _WHITESPACE_RUN_RE.sub(" ", new_name.strip())
-    row = await db.execute(
-        select(Tag).where(Tag.id == tag_id, Tag.org_id == org_id)
-    )
+    new_display = tag_display_name(new_name)
+    query = select(Tag).where(Tag.id == tag_id, Tag.org_id == org_id)
+    if not allow_dictionary_changes:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    row = await db.execute(query)
     tag = row.scalar_one_or_none()
     if tag is None:
         raise NotFoundError("tag")
@@ -323,12 +352,13 @@ async def rename_tag(
         # No-op rename (only display casing or whitespace changed).
         tag.name = new_display
         return tag
-    collision = await _get_tag_by_normalized(db, org_id, new_name_normalized)
+    collision = await _get_tag_by_normalized(db, org_id, new_name_normalized, lock=not allow_dictionary_changes)
     if collision is not None and collision.id != tag.id:
         raise ConflictError(f"Tag '{new_name_normalized}' already exists")
-    await withdraw_dictionary_contributions(
-        db, org_id=org_id, names=[tag.name_normalized]
-    )
+    if allow_dictionary_changes:
+        await withdraw_dictionary_contributions(db, org_id=org_id, names=[tag.name_normalized])
+    else:
+        await ensure_local_tag_changes(db, org_id, withdrawing=tag.name_normalized)
     tag.name = new_display
     tag.name_normalized = new_name_normalized
     return tag
@@ -339,6 +369,7 @@ async def delete_tag(
     *,
     org_id: int,
     tag_id: int,
+    allow_dictionary_changes: bool = True,
 ) -> Tag:
     """Delete a tag. Cascade detaches it from every transaction via the
     DB-side ``ON DELETE CASCADE`` on ``transaction_tags``.
@@ -349,15 +380,17 @@ async def delete_tag(
     Returns the deleted tag (still in-memory so the caller can include
     its name in audit details).
     """
-    row = await db.execute(
-        select(Tag).where(Tag.id == tag_id, Tag.org_id == org_id)
-    )
+    query = select(Tag).where(Tag.id == tag_id, Tag.org_id == org_id)
+    if not allow_dictionary_changes:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    row = await db.execute(query)
     tag = row.scalar_one_or_none()
     if tag is None:
         raise NotFoundError("tag")
-    await withdraw_dictionary_contributions(
-        db, org_id=org_id, names=[tag.name_normalized]
-    )
+    if allow_dictionary_changes:
+        await withdraw_dictionary_contributions(db, org_id=org_id, names=[tag.name_normalized])
+    else:
+        await ensure_local_tag_changes(db, org_id, withdrawing=tag.name_normalized)
     await db.delete(tag)
     return tag
 
@@ -367,6 +400,13 @@ async def delete_tag(
 # ---------------------------------------------------------------------------
 
 
+def replacement_tag_names(tag_names: Iterable[str]) -> list[str]:
+    normalized = list(dict.fromkeys(normalize_tag_name(raw) for raw in tag_names))
+    if len(normalized) > MAX_TAGS_PER_TRANSACTION:
+        raise ValidationError(f"A transaction may have at most {MAX_TAGS_PER_TRANSACTION} tags")
+    return normalized
+
+
 async def set_transaction_tags(
     db: AsyncSession,
     *,
@@ -374,6 +414,7 @@ async def set_transaction_tags(
     transaction_id: int,
     tag_names: Iterable[str],
     created_by_user_id: Optional[int],
+    allow_dictionary_changes: bool = True,
 ) -> list[Tag]:
     """Replace the tag set on a transaction.
 
@@ -397,29 +438,24 @@ async def set_transaction_tags(
 
     # Normalize + dedupe before the cap check (a user typing "Insurance"
     # twice should count as one tag, not two).
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw in tag_names:
-        n = normalize_tag_name(raw)
-        if n in seen:
-            continue
-        seen.add(n)
-        normalized.append(n)
-    if len(normalized) > MAX_TAGS_PER_TRANSACTION:
-        raise ValidationError(
-            f"A transaction may have at most {MAX_TAGS_PER_TRANSACTION} tags"
-        )
+    normalized = replacement_tag_names(tag_names)
+    if not allow_dictionary_changes:
+        existing_names = await db.scalars(select(Tag.name_normalized).where(
+            Tag.org_id == org_id, Tag.name_normalized.in_(normalized),
+        ).with_for_update())
+        await ensure_local_tag_changes(db, org_id, adding=set(normalized).difference(existing_names))
 
     # Resolve each normalized name to a Tag, creating new ones as needed.
     resolved_tags: list[Tag] = []
     for name_normalized in normalized:
-        tag = await _get_tag_by_normalized(db, org_id, name_normalized)
+        tag = await _get_tag_by_normalized(db, org_id, name_normalized, lock=not allow_dictionary_changes)
         if tag is None:
             tag = await create_tag(
                 db,
                 org_id=org_id,
                 name=name_normalized,
                 created_by_user_id=created_by_user_id,
+                allow_dictionary_changes=allow_dictionary_changes,
             )
         resolved_tags.append(tag)
 
