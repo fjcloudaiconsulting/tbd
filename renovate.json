@@ -4,6 +4,10 @@
     "github>fjcloudaiconsulting/.github#v1",
     "github>fjcloudaiconsulting/.github:app-stack#v1"
   ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
   "packageRules": [
     {
       "description": "SQLAlchemy patches ride in the python group; minors (2.1 is a real migration) get their own PR on dashboard approval. separateMultipleMinor, not separateMinorPatch, which would move the patch to its own branch.",
