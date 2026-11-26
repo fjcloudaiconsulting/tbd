@@ -33,7 +33,8 @@ SECRET_FIELDS = (
 # published images with APP_ENV=production, and the shared smoke workflow passes it no secret,
 # so refusing them would fail every release. That fence pins them as the only exception.
 _PUBLIC_SECRET_VALUES = frozenset(
-    {
+    value.casefold()
+    for value in {
         "change-me-generate-a-real-secret",  # .env.example, the field default
         "dev-only-shared-api-token-hmac-key-not-for-prod",  # docker-compose.yml
         "dev-only-mcp-jwt-secret-never-the-backend-value",  # docker-compose.yml, mcp
@@ -624,7 +625,7 @@ class Settings(BaseSettings):
         if self.app_env != "production":
             return self
         for name in SECRET_FIELDS:
-            value = getattr(self, name) or ""
+            value = (getattr(self, name) or "").strip().casefold()
             if value in _PUBLIC_SECRET_VALUES or value.startswith("dev-only"):
                 raise ValueError(
                     f"{name.upper()} is a value committed to this public repository; "
