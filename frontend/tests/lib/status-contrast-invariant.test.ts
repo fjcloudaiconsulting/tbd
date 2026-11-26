@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 /**
  * Status ink / tint contrast invariants (TBD-483).
  *
@@ -433,9 +435,8 @@ function classStrings(file: string): { text: string; line: number }[] {
   return out;
 }
 
-/** Every scanned file, computed once: shared by the population guard and by
- * every scan below so a >50-file walk isn't repeated per test. */
 const SCANNED_FILES = SCAN_ROOTS.flatMap(walk);
+const SCANNED_CLASSES = SCANNED_FILES.map((file) => ({ file, strings: classStrings(file) }));
 
 describe("no ad-hoc status tint bypasses the checked primitives", () => {
   it("the scan actually walked the tree (population guard)", () => {
@@ -448,11 +449,8 @@ describe("no ad-hoc status tint bypasses the checked primitives", () => {
 
   it("app/, components/ and lib/ hold no static bg-<status>/<alpha> <= 30%, outside a state variant", () => {
     const failures: string[] = [];
-    // ponytail: walking + TS-parsing every app/components/lib file is slow
-    // under CI/container CPU contention (measured >5s cold); this is the
-    // full-tree scan focus-baseline.test.ts also does, at its own timeout.
-    for (const file of SCANNED_FILES) {
-      for (const { text, line } of classStrings(file)) {
+    for (const { file, strings } of SCANNED_CLASSES) {
+      for (const { text, line } of strings) {
         for (const token of text.split(/\s+/).filter(Boolean)) {
           const parsed = parseTintToken(token);
           if (!parsed || parsed.kind !== "banned") continue;
@@ -478,8 +476,8 @@ interface StateTintPair {
  * will actually sit on that tint. An unpaired tint has nothing to measure. */
 function deriveStateTintPairs(): StateTintPair[] {
   const byKey = new Map<string, StateTintPair>();
-  for (const file of SCANNED_FILES) {
-    for (const { text, line } of classStrings(file)) {
+  for (const { file, strings } of SCANNED_CLASSES) {
+    for (const { text, line } of strings) {
       const inks = new Set(matchesOf(INK_RE, text));
       for (const token of text.split(/\s+/).filter(Boolean)) {
         const parsed = parseTintToken(token);
@@ -495,19 +493,19 @@ function deriveStateTintPairs(): StateTintPair[] {
   return [...byKey.values()];
 }
 
+const STATE_TINT_PAIRS = deriveStateTintPairs();
+
 describe("paired tint population", () => {
   it("finds at least one (status, alpha) paired tint, including danger at 10%", () => {
-    const pairs = deriveStateTintPairs();
-    expect(pairs.length).toBeGreaterThan(0);
-    expect(pairs.some((p) => p.status === "danger" && p.alphaPct === 10)).toBe(true);
+    expect(STATE_TINT_PAIRS.length).toBeGreaterThan(0);
+    expect(STATE_TINT_PAIRS.some((p) => p.status === "danger" && p.alphaPct === 10)).toBe(true);
   });
 });
 
 describe.each(THEMES)("%s theme: paired tints (state fills, and static fills above 30%%)", (theme) => {
   it("every (status, alpha) paired tint is >= 4.5:1 composited over every host", () => {
-    const pairs = deriveStateTintPairs();
     const failures: string[] = [];
-    for (const { status, alphaPct, sources } of pairs) {
+    for (const { status, alphaPct, sources } of STATE_TINT_PAIRS) {
       for (const host of HOSTS) {
         const cr = contrast(inkRgb(theme, status), stateTintOnHost(theme, status, alphaPct, host));
         if (cr < CONTRAST_MIN) {

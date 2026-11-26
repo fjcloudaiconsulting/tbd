@@ -1000,6 +1000,7 @@ jobs:
       - name: Run frontend tests
         working-directory: frontend
         env:
+          VITEST_MAX_WORKERS: '4'
           TEST_SCRIPT: ${{ github.event_name == 'pull_request' && 'test:nocov' || 'test' }}
         run: pnpm run "$TEST_SCRIPT" | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
 
