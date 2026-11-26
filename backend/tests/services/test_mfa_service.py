@@ -63,10 +63,11 @@ def test_generate_totp_secret_produces_base32_secret() -> None:
 
     assert len(secret) >= 32
     assert secret.isupper()
+    assert len(base64.b32decode(secret)) * 8 >= 112
 
 
 def test_get_totp_uri_includes_issuer_and_email() -> None:
-    secret = "JBSWY3DPEHPK3PXP"
+    secret = generate_totp_secret()
     uri = get_totp_uri(secret, "alice@example.com")
 
     assert "alice%40example.com" in uri
