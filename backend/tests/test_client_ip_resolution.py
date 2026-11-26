@@ -12,8 +12,8 @@ prod instead of the real client IP. The fix has two layers:
    discarded at the edge. Defense-in-depth - even if right-to-left
    had a bug, the chain reaching the backend is always controlled by
    our infrastructure.
-3. ``do-connecting-ip`` is never read (INF-01): DigitalOcean App
-   Platform, its only writer, is gone, and anyone can send the header.
+3. ``do-connecting-ip`` is never read (INF-01): the previous platform,
+   its only writer, is gone, and anyone can send the header.
 
 These tests pin all three layers. They use synthetic ``Request``
 objects so they don't depend on uvicorn at all - the helper must be
@@ -197,7 +197,7 @@ def test_xff_entirely_trusted_falls_back_to_peer():
 
 
 def test_xff_entirely_trusted_ignores_do_connecting_ip():
-    """INF-01: the old DigitalOcean fallback, a private chain plus
+    """INF-01: the previous platform's fallback, a private chain plus
     ``do-connecting-ip``, no longer lets the header pick the IP."""
     request = _make_request(
         client_host="10.244.0.3",
