@@ -74,12 +74,13 @@ def _extra_dict(call: ast.Call) -> ast.Dict | None:
     return None
 
 
-def call_problems(source: str) -> list[str]:
-    """F15: what is wrong with each logger call's shape."""
+def call_problems(source: str) -> tuple[int, list[str]]:
+    """F15: logger call count and shape violations."""
     tree = ast.parse(source)
     awaited = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Await)}
+    calls = logger_calls(tree)
     problems: list[str] = []
-    for call in logger_calls(tree):
+    for call in calls:
         where = f"line {call.lineno}"
         if id(call) in awaited:
             problems.append(f"{where}: awaited")
@@ -96,7 +97,7 @@ def call_problems(source: str) -> list[str]:
                     problems.append(f"{where}: non-literal extra key")
                 elif key.value in logs.STANDARD | logs.RESERVED:
                     problems.append(f"{where}: extra key {key.value!r} is a LogRecord field")
-    return problems
+    return len(calls), problems
 
 
 def _safe_use(node: ast.AST, parents: dict[int, ast.AST], bound: str) -> bool:
@@ -199,9 +200,9 @@ def test_f15_every_logger_call_has_a_runtime_safe_shape():
     problems = {}
     total = 0
     for path in RUNTIME:
-        source = path.read_text(encoding="utf-8")
-        total += len(logger_calls(ast.parse(source)))
-        if found := call_problems(source):
+        call_count, found = call_problems(path.read_text(encoding="utf-8"))
+        total += call_count
+        if found:
             problems[path.relative_to(BACKEND).as_posix()] = found
     assert total > 250, f"only {total} logger calls found: the receiver detection went blind"
     assert not problems, problems
@@ -220,7 +221,8 @@ def test_f15_every_logger_call_has_a_runtime_safe_shape():
     ],
 )
 def test_f15_the_scanner_catches_each_wrong_shape(source, fragment):
-    assert any(fragment in problem for problem in call_problems(source)), call_problems(source)
+    _, problems = call_problems(source)
+    assert any(fragment in problem for problem in problems), problems
 
 
 def test_f15_the_scanner_passes_the_right_shape():
@@ -228,7 +230,7 @@ def test_f15_the_scanner_passes_the_right_shape():
         "import logging\nlog = logging.getLogger('x')\n"
         "log.info('m', extra={'org_id': 1, **d}, exc_info=True)\n"
     )
-    assert call_problems(source) == []
+    assert call_problems(source) == (1, [])
 
 
 # No client address in a log field (telemetry standard) ---------------------------------------
