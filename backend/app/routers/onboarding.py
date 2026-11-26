@@ -164,7 +164,7 @@ async def seed_demo(
             request_id=_request_id(),
             ip_address=get_client_ip(request),
             outcome="failure",
-            detail={"reason": str(exc), "empty_org_only": empty_org_only},
+            detail={"reason": exc.code, "empty_org_only": empty_org_only},
         )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

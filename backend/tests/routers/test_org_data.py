@@ -288,12 +288,12 @@ async def test_reset_logs_audit_event(session_factory, capture_logger):
 @pytest.mark.asyncio
 async def test_reset_failure_logs_failed_event(monkeypatch, session_factory, capture_logger):
     seed = await _seed(session_factory)
-    app = make_app(session_factory, _resolver_for(Role.OWNER))
+    app = _make_app_with_factory(session_factory, _resolver_for(Role.OWNER))
 
     from app.services import org_data_service
 
     async def boom(*a, **kw):
-        raise RuntimeError("simulated DB failure")
+        raise RuntimeError("simulated DB failure with SECRET")
     monkeypatch.setattr(org_data_service, "reset_org_data", boom)
 
     with TestClient(app) as client:
@@ -311,7 +311,14 @@ async def test_reset_failure_logs_failed_event(monkeypatch, session_factory, cap
     assert payload["error_type"] == "RuntimeError"
     # The class, never the message (which could quote a row value).
     assert payload["error"] == "RuntimeError"
-    assert "simulated DB failure" not in json.dumps(capture_logger.events)
+    assert "SECRET" not in json.dumps(capture_logger.events)
+
+    async with session_factory() as db:
+        row = (await db.scalars(select(AuditEvent).where(AuditEvent.event_type == "org.data.reset.failed"))).one()
+    audit = {column.key: getattr(row, column.key) for column in AuditEvent.__table__.columns}
+    assert "SECRET" not in json.dumps(audit, default=str)
+    assert row.detail is not None
+    assert row.detail["error"] == "RuntimeError"
 
 
 # ── Concurrent-reset guard (residual-risk follow-up to PR #134) ─────────────

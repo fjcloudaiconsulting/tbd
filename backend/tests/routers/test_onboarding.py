@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import event, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -45,6 +45,7 @@ from app.models.transaction import (
 from app.models.user import Organization, Role, User
 from app.routers.onboarding import router as onboarding_router
 from app.security import hash_password
+from app.services.demo_seed_service import DEMO_SENTINEL_SLUG
 
 
 @pytest.fixture(autouse=True)
@@ -240,10 +241,33 @@ async def test_seed_demo_409_when_org_has_data(session_factory):
         res = client.post("/api/v1/users/me/onboarding/seed-demo")
     assert res.status_code == 409
     assert res.json()["detail"] == "org_has_data"
+    assert await _seed_refusal_reason(session_factory) == "has_user_data"
+
+
+async def _seed_refusal_reason(session_factory):
     async with session_factory() as db:
-        rows = (await db.execute(select(AuditEvent))).scalars().all()
-        types = [r.event_type for r in rows]
-        assert "onboarding.seed_demo.refused" in types
+        event = (await db.scalars(select(AuditEvent).where(AuditEvent.event_type == "onboarding.seed_demo.refused"))).one()
+        assert event.detail is not None
+        return event.detail["reason"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["already_seeded", "no_account_types"])
+async def test_seed_demo_audits_other_refusal_reasons(session_factory, reason):
+    seeds = await _seed_user(session_factory)
+    async with session_factory() as db:
+        if reason == "already_seeded":
+            db.add(Category(org_id=seeds["org_id"], name="Demo marker", slug=DEMO_SENTINEL_SLUG, type=CategoryType.BOTH))
+        else:
+            await db.execute(delete(AccountType).where(AccountType.org_id == seeds["org_id"]))
+        await db.commit()
+
+    app = make_app(session_factory, seeds["user_id"])
+    with TestClient(app) as client:
+        res = client.post("/api/v1/users/me/onboarding/seed-demo")
+    assert res.status_code == 409
+    assert res.json()["detail"] == "org_has_data"
+    assert await _seed_refusal_reason(session_factory) == reason
 
 
 @pytest.mark.asyncio

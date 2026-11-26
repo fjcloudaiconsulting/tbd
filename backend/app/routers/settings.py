@@ -61,7 +61,7 @@ from app.services.transaction_filters import (
     reportable_transaction_filter,
     signed_amount_expr,
 )
-from app import logs
+from app import logs, tracing
 
 logger = logging.getLogger(__name__)
 
@@ -1169,8 +1169,7 @@ async def close_period(
                 "actor_email": actor_email,
                 "target_org_id": actor_org_id,
                 "outcome": outcome,
-                # "message" is an exception's text (audit row only): a log field never is, and
-                # `message` is a LogRecord attribute, so stdlib raises KeyError on it.
+                # `message` is reserved by LogRecord and belongs in the audit detail.
                 **{k: v for k, v in payload.items() if k != "message"},
             },
         )
@@ -1204,7 +1203,7 @@ async def close_period(
             "failure",
             close_date=close_date.isoformat() if close_date else None,
             reason="validation" if isinstance(exc, ValidationError) else "error",
-            message=getattr(exc, "detail", None) or str(exc),
+            message=exc.detail if isinstance(exc, ValidationError) else tracing.error_summary(exc),
             error_type=type(exc).__name__,
         )
         raise
