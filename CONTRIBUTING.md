@@ -12,7 +12,7 @@ Sibling docs you will end up at:
 
 ## Prerequisites
 
-- Docker and Docker Compose.
+- Docker and Docker Compose 2.24 or later (`./tbd prod` relies on its `!reset` tag). The stack publishes on `127.0.0.1` only, so it is not reachable from other machines on your network.
 - Git.
 - Node.js 22+ and pnpm on the host (only needed if you want `tsc` outside the container). Run `corepack enable` once so `pnpm` follows `packageManager` in `frontend/package.json`. Use the corepack bundled with current Node 22; an older global corepack fails with `Cannot find module .../pnpm/12.8.1/bin/pnpm.cjs` (fix: `npm i -g corepack@latest`); Node 25+ no longer ships corepack, so install pnpm separately there. The app itself runs entirely in containers.
 

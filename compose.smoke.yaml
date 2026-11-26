@@ -2,6 +2,8 @@
 # build. The workflow runs `migrations` twice (the second must be a no-op), then `up --wait`, then asserts /health
 # reports the release's version and revision. APP_ENV=production so the backend boots with production validation and
 # does NOT migrate on startup. Every credential is a throwaway literal for a database that lives for one CI run.
+# Production refuses every other committed secret; these two are its only exception (INF-03,
+# backend/tests/test_public_secret_defaults.py). Do not add a third: pass a per-run secret instead.
 x-backend-env: &backend-env
   APP_ENV: production
   DATABASE_URL: mysql+aiomysql://tbd:smoke@mysql:3306/tbd
