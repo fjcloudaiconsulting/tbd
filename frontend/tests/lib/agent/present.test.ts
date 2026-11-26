@@ -89,6 +89,11 @@ describe("present (TBD-664)", () => {
     expect(actionHeadline("transactions_transfer", "s", [])).toBe("Move money between accounts");
   });
 
+  it("the pair and unpair tools have headlines", () => {
+    expect(actionHeadline("transactions_pair", "s", [])).toBe("Pair two transactions as a transfer");
+    expect(actionHeadline("transactions_unpair", "s", [])).toBe("Unpair two transfer transactions");
+  });
+
   it("the recurring and billing-period tools read by their rows (TBD-667)", () => {
     expect(actionHeadline("recurring_stop", "s", [])).toBe("Stop a recurring transaction");
     expect(actionHeadline("billing_period_close", "s", [])).toBe("Close the billing period");

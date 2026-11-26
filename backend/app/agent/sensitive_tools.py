@@ -1,8 +1,6 @@
-"""The sensitive transaction tools (TBD-664 PR B): ``transactions_update_money``,
-``transactions_create``, ``transactions_delete`` and ``transactions_transfer``.
+"""The sensitive transaction tools, including transfer pair and unpair.
 
-They move money, so each is ``sensitive``: never auto-applied, and never
-confirmed by an agent. ``actions.confirm`` refuses an MCP confirm with
+These tools require browser confirmation. ``actions.confirm`` refuses an MCP confirm with
 ``requires_browser_confirmation``; the person applies the change in the app.
 
 Each is route-bound (``app.agent.route_tool``): execute runs the REST handler.
@@ -21,19 +19,23 @@ from sqlalchemy import func, select
 from app.agent.registry import Change, Preview, ToolContext, ToolError, register
 from app.agent.route_tool import CascadeDisclosure, route_tool
 from app.models import Account, Category, Transaction
+from app.models.category import CategoryType
 from app.models.category_rule import CategoryRule
 from app.models.import_batch import ImportBatch, ImportBatchStatus
 from app.models.tag import TransactionTag
 from app.models.transaction import TransactionStatus, TransactionType
 from app.models.user import Role
 from app.routers import transactions as transactions_router
-from app.schemas.transaction import TransferCreate
+from app.schemas.transaction import TransactionPairRequest, TransferCreate
 from app.services import transaction_service
 from app.services.category_rules_service import normalize_description
 from app.services.currency_service import normalise_currency
-from app.services.exceptions import ValidationError
+from app.services.exceptions import NotFoundError, ValidationError
 from app.services.reconciliation_service import PENDING_STATES
-from app.services.transaction_filters import contributes_to_cached_balance
+from app.services.transaction_filters import (
+    contributes_to_cached_balance,
+    is_reciprocal_pair,
+)
 
 MONEY = "Moves money: the account balances listed here change."
 CONFIRM = "Returns a preview; nothing changes until the user confirms it in the app."
@@ -469,4 +471,170 @@ register(route_tool(
         f"category_id it uses the Transfer category. {CONFIRM}"
     ),
     preview=_transfer_preview,
+))
+
+
+async def _lock_pair_rows(ctx: ToolContext, ids: set[int]) -> dict[int, Transaction]:
+    rows = await ctx.db.scalars(
+        select(Transaction)
+        .where(Transaction.org_id == ctx.org_id, Transaction.id.in_(ids))
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return {row.id: row for row in rows}
+
+
+async def _check_pair_reconciliation(
+    ctx: ToolContext, expense: Transaction, income: Transaction,
+) -> None:
+    if any(leg.bound_bank_tx_id is not None or leg.bind_prev_status is not None for leg in (expense, income)):
+        raise ToolError(
+            "conflict", "A transaction is bound to a recurring payment. Unbind it in the app first.",
+            data={"reason": "transaction_bound"},
+        )
+    ids = [expense.id, income.id]
+    # A match can point to a leg without a link back. Match writers lock the
+    # target, so the same locks protect this check through browser confirm.
+    incoming = await ctx.db.scalar(
+        select(Transaction.id)
+        .where(Transaction.org_id == ctx.org_id, Transaction.linked_transaction_id.in_(ids),
+               Transaction.id.not_in(ids))
+        .limit(1)
+        .with_for_update()
+    )
+    if incoming is not None or any(leg.reconciliation_state == "matched" for leg in (expense, income)):
+        raise ToolError(
+            "conflict", "A transaction has a reconciliation match. Make the change in the app.",
+            data={"reason": "reconciliation_match"},
+        )
+
+
+async def _lock_pair_categories(ctx: ToolContext, ids: set[int]) -> dict[int, Category]:
+    rows = await ctx.db.scalars(
+        select(Category)
+        .where(Category.org_id == ctx.org_id, Category.id.in_(ids))
+        .order_by(Category.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    categories = {row.id: row for row in rows}
+    if categories.keys() != ids:
+        raise ValidationError("Invalid category")
+    return categories
+
+
+def _pair_changes(leg: Transaction, link: int | None, category_id: int | None) -> list[Change]:
+    changes = [Change("transactions", leg.id, "linked_transaction_id", leg.linked_transaction_id, link)]
+    if category_id is not None and leg.category_id != category_id:
+        changes.append(Change("transactions", leg.id, "category_id", leg.category_id, category_id))
+    return changes
+
+
+async def _pair_preview(ctx: ToolContext, args) -> Preview:
+    body = TransactionPairRequest.model_validate(args.model_dump(exclude_unset=True))
+    if body.expense_id == body.income_id:
+        raise ValidationError("Expense and income IDs must differ")
+    legs = await _lock_pair_rows(ctx, {body.expense_id, body.income_id})
+    if len(legs) != 2:
+        raise NotFoundError("Transaction")
+    expense, income = legs[body.expense_id], legs[body.income_id]
+    await _check_pair_reconciliation(ctx, expense, income)
+    if expense.linked_transaction_id is not None or income.linked_transaction_id is not None:
+        raise ValidationError("Both transactions must be unlinked before pairing")
+    if expense.is_manual_adjustment or income.is_manual_adjustment:
+        raise ValidationError("Manual balance adjustments cannot be paired as transfer legs")
+    if (expense.type, income.type) != (TransactionType.EXPENSE, TransactionType.INCOME):
+        raise ValidationError("Pair one expense with one income")
+    if expense.account_id == income.account_id or abs(expense.amount) != abs(income.amount):
+        raise ValidationError("Transfer legs must have equal absolute amounts and different accounts")
+    currencies = await _currencies(ctx, [expense.account_id, income.account_id])
+    if len(currencies) != 2 or len({normalise_currency(v) for v in currencies.values()}) != 1:
+        raise ValidationError("Transfer legs must have the same currency")
+
+    category_id = body.transfer_category_id
+    if body.recategorize:
+        if category_id is None:
+            category_id = await ctx.db.scalar(select(Category.id).where(
+                Category.slug == "transfer", Category.org_id == ctx.org_id,
+            ))
+            if category_id is None:
+                # As with transfer creation, refuse the service's implicit category insert.
+                raise ToolError(
+                    "unsupported_in_v1",
+                    "The organization has no Transfer category. Pass an existing transfer_category_id.",
+                    data={"reason": "no_transfer_category"},
+                )
+        category = (await _lock_pair_categories(ctx, {category_id}))[category_id]
+        if body.transfer_category_id is not None:
+            await transaction_service.validate_transfer_category(ctx.db, category_id, ctx.org_id)
+        elif category.slug != "transfer":
+            raise ValidationError("The Transfer category has changed")
+    else:
+        category_id = None
+    return Preview(
+        "Pair two transactions as a transfer",
+        _pair_changes(expense, income.id, category_id) + _pair_changes(income, expense.id, category_id),
+    )
+
+
+async def _unpair_preview(ctx: ToolContext, args) -> Preview:
+    subject = (await ctx.db.execute(
+        select(Transaction.linked_transaction_id).where(
+            Transaction.org_id == ctx.org_id, Transaction.id == args.transaction_id,
+        )
+    )).one_or_none()
+    if subject is None:
+        raise NotFoundError("Transaction")
+    partner_id = subject.linked_transaction_id
+    if partner_id is None:
+        raise ValidationError("Transaction is not part of a transfer pair")
+    legs = await _lock_pair_rows(ctx, {args.transaction_id, partner_id})
+    transaction, partner = legs.get(args.transaction_id), legs.get(partner_id)
+    if transaction is None:
+        raise NotFoundError("Transaction")
+    if partner is None or not is_reciprocal_pair(transaction, partner):
+        raise ValidationError("Transaction is not part of a transfer pair")
+    by_type = {leg.type: leg for leg in legs.values()}
+    expense, income = by_type.get(TransactionType.EXPENSE), by_type.get(TransactionType.INCOME)
+    if expense is None or income is None:
+        raise ValidationError("Pair has invalid type composition")
+    await _check_pair_reconciliation(ctx, expense, income)
+
+    expense_id, income_id = args.expense_fallback_category_id, args.income_fallback_category_id
+    categories = await _lock_pair_categories(ctx, {expense_id, income_id})
+    if categories[expense_id].type not in (CategoryType.EXPENSE, CategoryType.BOTH):
+        raise ValidationError("expense_fallback_category_id must be EXPENSE or BOTH")
+    if categories[income_id].type not in (CategoryType.INCOME, CategoryType.BOTH):
+        raise ValidationError("income_fallback_category_id must be INCOME or BOTH")
+    return Preview(
+        "Unpair two transfer transactions",
+        _pair_changes(expense, None, expense_id) + _pair_changes(income, None, income_id),
+    )
+
+
+register(route_tool(
+    name="transactions_pair", risk="sensitive",
+    router=ROUTER, method="POST", path="/api/v1/transactions/pair",
+    fields=("expense_id", "income_id", "transfer_category_id", "recategorize"),
+    required=("expense_id", "income_id"), nullable=("transfer_category_id",),
+    product_area=None, min_role=Role.MEMBER,
+    description=(
+        "Link an existing expense and income as a transfer. Optionally recategorize both. "
+        f"Account balances stay the same. {CONFIRM}"
+    ),
+    preview=_pair_preview,
+))
+
+register(route_tool(
+    name="transactions_unpair", risk="sensitive",
+    router=ROUTER, method="POST", path="/api/v1/transactions/{transaction_id}/unpair",
+    fields=("expense_fallback_category_id", "income_fallback_category_id"),
+    required=("expense_fallback_category_id", "income_fallback_category_id"),
+    product_area=None, min_role=Role.MEMBER,
+    description=(
+        "Unlink both legs of a transfer and give each its fallback category. "
+        f"Account balances stay the same. {CONFIRM}"
+    ),
+    preview=_unpair_preview,
 ))

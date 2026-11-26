@@ -61,7 +61,7 @@ from app.models.tag import Tag, TagDictionary, TagDictionaryContributor, Transac
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
 from app.schemas.tag import SHARED_DICTIONARY_MIN_CONTRIBUTORS, SHARED_DICTIONARY_MIN_ORG_AGE_DAYS
-from app.services import org_bootstrap_service
+from app.services import org_bootstrap_service, transaction_service
 from app.services.category_rules_service import normalize_description
 from app.models.report import Report, ReportVersion
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
@@ -1586,6 +1586,103 @@ async def _sharing_with_travel(f, a):
     await _dictionary_state(f, "travel", "absent", own_org=a["org"])
 
 
+async def _unlinked_transactions(f, a):
+    await _savings(f, a)
+    [a["income_cat"]] = await _ids(f, Category(org_id=a["org"], name="Income", type=CategoryType.INCOME))
+    [a["income_tx"]] = await _ids(f, Transaction(
+        org_id=a["org"], account_id=a["savings"], category_id=a["income_cat"], description="Incoming transfer",
+        amount=Decimal("9.99"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=P_START, settled_date=P_START,
+    ))
+
+
+async def _linked_transactions(f, a):
+    await _unlinked_transactions(f, a)
+    async with f() as db:
+        await transaction_service.pair_existing_transactions(db, a["org"], a["tx"], a["income_tx"])
+
+
+_PAIR_TOOL = _tool("transactions_pair", expense_id="@tx", income_id="@income_tx")
+_UNPAIR_TOOL = _tool(
+    "transactions_unpair", transaction_id="@income_tx",
+    expense_fallback_category_id="@c1", income_fallback_category_id="@income_cat",
+)
+
+
+async def _match_to_pair_leg(f, a, *, bound=False):
+    [imported] = await _ids(f, Transaction(
+        org_id=a["org"], account_id=a["acct"], category_id=a["c1"], description="Matched import",
+        amount=Decimal("9.99"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=P_START, settled_date=P_START,
+        linked_transaction_id=a["tx"], reconciliation_state="matched", is_imported=True,
+        bind_prev_status=TransactionStatus.PENDING if bound else None,
+    ))
+    if bound:
+        async with f() as db:
+            (await db.get(Transaction, a["tx"])).bound_bank_tx_id = imported
+            await db.commit()
+
+
+@pytest.mark.parametrize("operation,case,code,reason", [
+    ("pair", "reconcile_target", "conflict", "reconciliation_match"),
+    ("pair", "bank_bound", "conflict", "transaction_bound"),
+    ("pair", "foreign", "not_found", None),
+    ("pair", "missing_category", "unsupported_in_v1", "no_transfer_category"),
+    ("unpair", "reconcile_target", "conflict", "reconciliation_match"),
+    ("unpair", "leg_matched", "conflict", "reconciliation_match"),
+    ("unpair", "bank_bound", "conflict", "transaction_bound"),
+    ("unpair", "one_way", "invalid_arguments", None),
+    ("unpair", "foreign", "not_found", None),
+])
+async def test_transaction_pair_refusal_writes_nothing(factory, w, operation, case, code, reason):  # noqa: F811
+    a = w["A"]
+    if operation == "unpair" and case != "one_way":
+        await _linked_transactions(factory, a)
+    else:
+        await _unlinked_transactions(factory, a)
+    tool, args = (_PAIR_TOOL if operation == "pair" else _UNPAIR_TOOL)(a)
+    if case == "reconcile_target":
+        await _match_to_pair_leg(factory, a)
+    elif operation == "pair" and case == "bank_bound":
+        await _match_to_pair_leg(factory, a, bound=True)
+    elif case == "foreign":
+        args["income_id" if operation == "pair" else "transaction_id"] = w["B"]["tx"]
+    elif case in ("one_way", "missing_category", "leg_matched", "bank_bound"):
+        async with factory() as db:
+            if case == "one_way":
+                (await db.get(Transaction, a["income_tx"])).linked_transaction_id = a["tx"]
+            elif case == "missing_category":
+                (await db.get(Category, a["transfer_cat"])).slug = "other"
+            elif case == "leg_matched":
+                (await db.get(Transaction, a["tx"])).reconciliation_state = "matched"
+            else:
+                (await db.get(Transaction, a["income_tx"])).bind_prev_status = TransactionStatus.PENDING
+            await db.commit()
+    async with factory() as db:
+        before = await _snap(await db.connection())
+    err = await _refused(_invoke(factory, a["member"], tool, args))
+    assert err.code == code
+    if reason:
+        assert err.data == {"reason": reason}
+    async with factory() as db:
+        assert await _snap(await db.connection()) == before
+
+
+async def test_transaction_unpair_rechecks_reconciliation_before_confirm(factory, w):  # noqa: F811
+    a = w["A"]
+    await _linked_transactions(factory, a)
+    tool, args = _UNPAIR_TOOL(a)
+    staged = await _invoke(factory, a["member"], tool, args)
+    await _match_to_pair_leg(factory, a)
+    async with factory() as db:
+        before = (await _snap(await db.connection()))["transactions"]
+    err = await _refused(_confirm(factory, a["member"], staged["action_id"]))
+    assert err.code == "conflict"
+    assert err.data == {"reason": "reconciliation_match"}
+    async with factory() as db:
+        assert (await _snap(await db.connection()))["transactions"] == before
+
+
 # id, tool args builder, setup, auto
 SCENARIOS = [
     ("budget-in-app", _budget, _none, False),
@@ -1599,6 +1696,11 @@ SCENARIOS = [
     ("tx-update-dates-of-a-settled-row", _tx_dates, _none, False),
     ("money-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
+    ("pair-existing-transactions", _PAIR_TOOL, _unlinked_transactions, False),
+    ("pair-without-recategorizing", _tool(
+        "transactions_pair", expense_id="@tx", income_id="@income_tx", recategorize=False),
+     _unlinked_transactions, False),
+    ("unpair-existing-transactions", _UNPAIR_TOOL, _linked_transactions, False),
     *SENSITIVE_SCENARIOS,
     *RECURRING_SCENARIOS,
     *ACCOUNT_SCENARIOS,

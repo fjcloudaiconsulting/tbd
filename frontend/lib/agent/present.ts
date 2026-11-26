@@ -35,6 +35,8 @@ const TOOL_LABELS: Record<string, string> = {
   transactions_create: "Add a transaction",
   transactions_delete: "Delete a transaction",
   transactions_transfer: "Move money between accounts",
+  transactions_pair: "Pair two transactions as a transfer",
+  transactions_unpair: "Unpair two transfer transactions",
   recurring_list: "Looked up recurring transactions",
   recurring_create: "Add a recurring transaction",
   recurring_update: "Edit a recurring transaction",
