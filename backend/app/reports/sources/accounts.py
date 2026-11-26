@@ -36,6 +36,7 @@ from app.schemas.reports_query import (
     MeasureField,
     ReportsQuery,
 )
+from app.services.transaction_filters import account_currency_key
 
 _DIMENSIONS = [
     SourceDimension("account", "Account", "account"),
@@ -64,7 +65,8 @@ _FILTERS = [
 _DIM_EXPR = {
     Dimension.ACCOUNT: ("account", Account.name),
     Dimension.ACCOUNT_TYPE: ("account_type", AccountType.name),
-    Dimension.CURRENCY: ("currency", Account.currency),
+    # TBD-550: canonical key, never the bare column (legacy lowercase rows).
+    Dimension.CURRENCY: ("currency", account_currency_key()),
     Dimension.ACCOUNT_ACTIVE: (
         "account_active",
         case((Account.is_active.is_(True), "Active"), else_="Inactive"),
@@ -128,9 +130,9 @@ def _apply_filter(stmt, f):
         raise ValueError(f"accounts: unsupported op {op.value!r} for account_type")
     if field is FilterField.CURRENCY:
         if op is FilterOp.IN:
-            return stmt.where(Account.currency.in_(value))
+            return stmt.where(account_currency_key().in_(value))
         if op is FilterOp.EQ:
-            return stmt.where(Account.currency == value)
+            return stmt.where(account_currency_key() == value)
         raise ValueError(f"accounts: unsupported op {op.value!r} for currency")
     if field is FilterField.ACCOUNT_ACTIVE:
         if op is FilterOp.EQ and isinstance(value, bool):

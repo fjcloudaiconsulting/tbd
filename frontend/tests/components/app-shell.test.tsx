@@ -726,3 +726,94 @@ describe("AppShell — sidebar feedback entry (TBD-467)", () => {
     expect(screen.queryByRole("button", { name: /give feedback/i })).toBeNull();
   });
 });
+
+describe("AppShell — closed mobile drawer leaves the tab order (TBD-536)", () => {
+  const useAuthMock = vi.mocked(useAuth);
+
+  // jsdom ships no matchMedia; `belowLg` answers AppShell's "below lg" query.
+  function stubViewport(belowLg: boolean) {
+    window.matchMedia = vi.fn((query: string) => ({
+      matches: belowLg,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  beforeEach(() => {
+    useAuthMock.mockReset();
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      billingUiEnabled: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    // @ts-expect-error -- remove the stub so other suites see jsdom's default
+    delete window.matchMedia;
+  });
+
+  function aside() {
+    const el = document.querySelector("aside");
+    expect(el).not.toBeNull();
+    return el!;
+  }
+
+  it("makes the closed drawer inert at mobile width, so Tab skips its links", async () => {
+    stubViewport(true);
+    await renderShell();
+
+    expect(aside()).toHaveAttribute("inert");
+    // Every nav link and the feedback button sit inside the inert subtree,
+    // while the Open menu button (the Tab origin) does not.
+    const links = within(aside()).getAllByRole("link", { hidden: true });
+    expect(links.length).toBeGreaterThan(0);
+    for (const el of [...links, screen.getByTestId("sidebar-feedback-trigger")]) {
+      expect(el.closest("[inert]")).toBe(aside());
+    }
+    expect(screen.getByRole("button", { name: "Open menu" }).closest("[inert]")).toBeNull();
+  });
+
+  it("makes the open drawer interactive at mobile width and moves focus into it", async () => {
+    stubViewport(true);
+    await renderShell();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+    });
+
+    expect(aside()).not.toHaveAttribute("inert");
+    expect(aside().contains(document.activeElement)).toBe(true);
+  });
+
+  it("re-inerts the drawer when Escape closes it at mobile width", async () => {
+    stubViewport(true);
+    await renderShell();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
+
+    expect(aside()).toHaveAttribute("inert");
+  });
+
+  it("keeps the sidebar interactive at desktop width", async () => {
+    stubViewport(false);
+    await renderShell();
+
+    expect(aside()).not.toHaveAttribute("inert");
+  });
+});

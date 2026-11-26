@@ -25,6 +25,7 @@ export default function SpendingDonutWidget() {
     sortedSpending,
     chartFilter,
     chartFilterName,
+    chartFilterMatch,
     setChartFilter,
     spendingSort,
     toggleSpendingSort,
@@ -32,10 +33,15 @@ export default function SpendingDonutWidget() {
     rollupLoading,
     onRetryRollup,
   } = useDashboard();
+  // A slice is selected only by a SUBTREE filter on its id: a forecast bar's
+  // exact filter on the same master is a different (90.00 vs 250.00) set.
+  const isSelected = (id: number) => chartFilter === id && chartFilterMatch === "subtree";
 
   return (
     <div className={`${card} p-5`} data-testid="spending-donut">
-      <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
+      <h2 className={cardTitle}>Spending by Category</h2>
+      {/* TBD-339: slices are main categories, as in Budget Progress. */}
+      <p className="mb-3 mt-1 text-xs text-text-muted">Subcategories are counted in their main category.</p>
       {chartFilter !== null && (
         <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised">
           {/* The fallback is reachable: a category can be filtered from the
@@ -90,13 +96,14 @@ export default function SpendingDonutWidget() {
                   onClick={(_, idx) => {
                     // Keyed by category_id (the rollup's identity), never by
                     // name — names are not unique across subcategories.
+                    // TBD-339: a slice is a master + its subs -> subtree.
                     const cid = donutData[idx]?.categoryId;
-                    if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
+                    if (cid != null) setChartFilter(isSelected(cid) ? null : cid, "subtree");
                   }}
                 >
                   {donutData.map((d, i) => (
                     <Cell key={d.categoryId} fill={CHART_SERIES[i % CHART_SERIES.length]}
-                      opacity={chartFilter !== null && chartFilter !== d.categoryId ? 0.3 : 1} />
+                      opacity={chartFilter !== null && !isSelected(d.categoryId) ? 0.3 : 1} />
                   ))}
                 </Pie>
                 {/* Single-series pie: recharts renders the slice
@@ -229,8 +236,8 @@ export default function SpendingDonutWidget() {
               </div>
             </div>
             {sortedSpending.slice(0, 10).map((d) => (
-              <button key={d.categoryId} onClick={() => setChartFilter(chartFilter === d.categoryId ? null : d.categoryId)}
-                className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.categoryId ? "bg-surface-overlay" : ""}`}>
+              <button key={d.categoryId} onClick={() => setChartFilter(isSelected(d.categoryId) ? null : d.categoryId, "subtree")}
+                className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${isSelected(d.categoryId) ? "bg-surface-overlay" : ""}`}>
                 <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_SERIES[d.origIdx % CHART_SERIES.length] }} />
                 <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
                 {/* %/amount carry data, so they ride text-secondary

@@ -9,10 +9,12 @@ from opentelemetry.trace import SpanKind
 from app import state_db, tracing
 from app.services.scheduler.jobs.agent_action_purge import run_agent_action_purge
 from app.services.scheduler.jobs.api_token_expiry import run_api_token_expiry_reminders
+from app.services.scheduler.jobs.batch_key_purge import run_batch_key_purge
 from app.services.scheduler.jobs.csp_audit_purge import run_csp_audit_purge
 from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
 from app.services.scheduler.jobs.platform_ai_catalog import run_platform_ai_catalog_sync
 from app.services.scheduler.jobs.platform_ai_spend_watch import run_platform_ai_spend_watch
+from app.services.scheduler.jobs.superadmin_floor import run_superadmin_floor_probe
 from app.services.scheduler.runner import run_all_due
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,9 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # first so a failing org sweep cannot starve the 48h retention promise.
     with tracing.span("job agent_action_purge", SpanKind.INTERNAL, {"job.kind": "agent_action_purge"}):
         await run_agent_action_purge()
+    # TBD-784: batch-create idempotency keys past their 24h window. Never raises.
+    with tracing.span("job batch_key_purge", SpanKind.INTERNAL, {"job.kind": "batch_key_purge"}):
+        await run_batch_key_purge()
     await run_all_due(today, max_orgs=max_orgs)
     # Platform-level PAT expiry reminders run once per tick under this same lock.
     # They are NOT part of the per-org registry (PAT tokens have no org
@@ -53,6 +58,9 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # TBD-633: OpenRouter spend reconciliation and spike alarm. Never raises.
     with tracing.span("job platform_ai_spend_watch", SpanKind.INTERNAL, {"job.kind": "platform_ai_spend_watch"}):
         await run_platform_ai_spend_watch()
+    # TBD-443: zero (or one) active platform superadmin. Never raises.
+    with tracing.span("job superadmin_floor", SpanKind.INTERNAL, {"job.kind": "superadmin_floor"}):
+        await run_superadmin_floor_probe()
     logger.info("scheduler.tick.complete")
     return True
 

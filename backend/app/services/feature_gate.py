@@ -49,6 +49,10 @@ from app.deps import get_current_user
 from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.models.user import User
+from app.services import feature_service
+
+# The catalog key that sells Plans (``feature_catalog.FeatureKey``).
+PLANS_ENTITLEMENT_KEY = "plans"
 
 
 class Feature(str, Enum):
@@ -188,7 +192,8 @@ async def upsert_org_setting(
 async def resolve_feature(feature: Feature, org_id: int | None, db: AsyncSession) -> bool:
     """Return the effective, TENANT-FACING on/off state for *feature*.
 
-    ``platform answer AND NOT org opted out``. This is the answer every
+    ``platform answer AND NOT org opted out``, and for Plans also ``AND the
+    org is entitled to plans`` (TBD-564). This is the answer every
     tenant-facing gate and payload must use — see the module docstring for why
     the masked answer, not the raw chain, owns this name.
 
@@ -261,6 +266,12 @@ async def resolve_features(
         # platform answer.
         opted_out = _parse_onoff(org_pref.get(feature)) is False
         resolved[feature] = platform and not opted_out
+    # TBD-564: Plans is also a paid entitlement. The switch above stays the
+    # kill switch and tenant opt-out; no org means no plan to grant it.
+    if resolved.get(Feature.PLANS):
+        resolved[Feature.PLANS] = org_id is not None and await feature_service.has_feature(
+            db, org_id, PLANS_ENTITLEMENT_KEY
+        )
     return resolved
 
 

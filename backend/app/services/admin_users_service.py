@@ -60,6 +60,9 @@ delete handler walks them explicitly so we never rely on implicit
      transferred to the org's active OWNER, private reports are
      hard-deleted (their ``report_versions`` cascade). A bare delete
      would otherwise trip the RESTRICT FK for any report author.
+  9. ``scenarios.user_id`` — ``ON DELETE CASCADE``. Plans are
+     org-shared (TBD-601), so they move to the same active OWNER;
+     legacy scenarios are private and cascade.
 
 The 6 + 7 + 8 explicit handlers mirror the FK-ordered delete pattern
 ``org_data_service.wipe_org_data`` established for the org-wipe
@@ -83,6 +86,7 @@ from app.models.import_batch import ImportBatch
 from app.models.invitation import Invitation
 from app.models.dashboard import DashboardLayout
 from app.models.report import Report, ReportVisibility
+from app.models.scenario import Scenario
 from app.models.user import Role, User
 from app.services.exceptions import ConflictError, NotFoundError
 
@@ -218,6 +222,16 @@ async def delete_user(
         )
         reports_transferred = shared_result.rowcount or 0
         reports_deleted_shared = 0
+        # TBD-601: plans are org-shared too, so they go to the same owner
+        # rather than down the users CASCADE. Legacy scenarios (no currency,
+        # see plan_draft_service.is_plan) are private and cascade, like
+        # private reports.
+        plans_result = await db.execute(
+            update(Scenario)
+            .where(Scenario.user_id == target_user_id, Scenario.currency.is_not(None))
+            .values(user_id=new_owner_id)
+        )
+        plans_transferred = plans_result.rowcount or 0
     else:
         shared_result = await db.execute(
             delete(Report).where(
@@ -227,6 +241,7 @@ async def delete_user(
         )
         reports_transferred = 0
         reports_deleted_shared = shared_result.rowcount or 0
+        plans_transferred = 0
 
     # dashboard_layouts.owner_user_id is ON DELETE RESTRICT (TBD-342) and had
     # NO service-layer delete, so this function raised for essentially every
@@ -244,6 +259,7 @@ async def delete_user(
         "reports_deleted_private": private_delete.rowcount or 0,
         "reports_deleted_shared": reports_deleted_shared,
         "reports_transferred": reports_transferred,
+        "plans_transferred": plans_transferred,
         "dashboard_layouts": layout_result.rowcount or 0,
     }
 

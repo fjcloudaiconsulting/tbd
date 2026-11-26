@@ -653,10 +653,11 @@ async def test_auto_settle_is_atomic_per_pair(db, seed, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("side", ["account_id", "to_account_id"])
-async def test_pair_sync_refuses_a_card_or_loan(db, seed, side):
-    """The sync re-checks the accounts it moves legs onto. Unreachable through
+async def test_pair_sync_refuses_a_card_source_and_moves_onto_a_card_destination(db, seed, side):
+    """The sync re-checks the source it moves legs onto. Unreachable through
     ``update_recurring`` (which validates first) or a later account-type
-    change (refused), so it is driven directly."""
+    change (refused), so it is driven directly. A card destination is
+    supported (TBD-789): the income leg moves onto it."""
     r_id, exp, inc = await _pending_pair(db, seed)
     card_type = AccountType(org_id=seed["org_id"], name="Card", slug="credit_card",
                             is_system=True)
@@ -669,11 +670,18 @@ async def test_pair_sync_refuses_a_card_or_loan(db, seed, side):
     r = await db.get(RecurringTransaction, r_id)
     old_account, old_to = r.account_id, r.to_account_id
     setattr(r, side, card.id)
-    with pytest.raises(ValidationError, match="credit card or loan"):
+
+    async def sync():
         await recurring_service._sync_pending_transfer_pairs(
             db, seed["org_id"], r, amount_was=r.amount, description_was=r.description,
             category_was=r.category_id, account_was=old_account, to_account_was=old_to,
         )
+    if side == "account_id":
+        with pytest.raises(ValidationError, match="credit card or loan"):
+            await sync()
+    else:
+        await sync()
+        assert inc.account_id == card.id and exp.account_id == old_account
 
 
 @pytest.mark.asyncio

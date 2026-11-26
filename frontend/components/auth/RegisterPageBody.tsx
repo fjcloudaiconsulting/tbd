@@ -1,7 +1,7 @@
 "use client";
 
 import { runtimeConfig } from "@/lib/runtime-config";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
@@ -9,21 +9,8 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
 import { apiFetch, ApiResponseError } from "@/lib/api";
 import { startGoogleSignIn } from "@/lib/google-sso";
-import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { input, label, btnPrimary, error as errorCls, success } from "@/lib/styles";
-import {
-  USERNAME_MAX_LENGTH,
-  USERNAME_MIN_LENGTH,
-  USERNAME_PATTERN,
-  USERNAME_PATTERN_RE,
-  USERNAME_RULE_HINT,
-} from "@/lib/validation";
-
-interface UsernameCheck {
-  available: boolean;
-  suggestion: string | null;
-}
+import { input, label, btnPrimary, btnLink, error as errorCls, success } from "@/lib/styles";
 
 interface AuthStatus {
   needs_setup: boolean;
@@ -34,27 +21,30 @@ interface RegisterPageBodyProps {
   cspNonce: string;
 }
 
+/**
+ * Email-first sign-up, step 1 (TBD-654). Only the address is asked for; the
+ * emailed link leads to /signup/complete. The backend answers the same 202
+ * for every address, so this page shows the same "Check your email" panel
+ * whatever the address's state, and nothing here may tell those states apart.
+ */
 export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
-  const { user, register, loading } = useAuth();
+  const { user, needsSetup, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
+    if (!loading && needsSetup) router.replace("/setup");
     if (!loading && user) router.replace("/dashboard");
-  }, [loading, user, router]);
+  }, [loading, needsSetup, user, router]);
 
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [username, setUsername] = useState("");
-  const [usernameManual, setUsernameManual] = useState(false);
-  const [usernameStatus, setUsernameStatus] = useState<"" | "checking" | "available" | "taken">("");
-  const [usernameSuggestion, setUsernameSuggestion] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [password2, setPassword2] = useState("");
-  const [orgName, setOrgName] = useState("");
   const [error, setError] = useState("");
+  // A 422 is about the address itself; other errors are not the field's fault.
+  const [emailInvalid, setEmailInvalid] = useState(false);
+  // The per-IP limit on /signup/start (429). It depends on the caller, never
+  // on the address, so naming it reveals nothing about any account.
+  const [limited, setLimited] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [registered, setRegistered] = useState(false);
+  const [sent, setSent] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   // Backend-driven captcha gate. Read once on mount from /auth/status so
   // a backend CAPTCHA_REQUIRED flip is also a real frontend rollback on
@@ -62,7 +52,11 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
   const [captchaRequired, setCaptchaRequired] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
   const turnstileRef = useRef<TurnstileInstance>(null);
+  const sentHeadingRef = useRef<HTMLHeadingElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const returnedRef = useRef(false);
   const captchaSiteKey = runtimeConfig().captchaSiteKey;
+  const googleEnabled = runtimeConfig().googleSsoEnabled;
 
   useEffect(() => {
     let cancelled = false;
@@ -80,79 +74,54 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
     };
   }, []);
 
-  // Auto-suggest username from name
+  // Move focus with the screen change so a screen reader announces it.
   useEffect(() => {
-    if (usernameManual) return;
-    const parts = [firstName, lastName].filter(Boolean).join(" ");
-    if (!parts.trim()) return;
-    const slug = parts.toLowerCase().trim().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-suggest the username slug from the entered name until the user manually edits the field
-    if (slug) setUsername(slug);
-  }, [firstName, lastName, usernameManual]);
-
-  // Check username availability (debounced, cancels stale requests).
-  // We only call the endpoint when the value satisfies the server rules —
-  // otherwise /check-username returns 422 and confuses the UI.
-  const checkRef = useRef(0);
-  const checkUsername = useCallback(async (name: string) => {
-    if (name.length < USERNAME_MIN_LENGTH || !USERNAME_PATTERN_RE.test(name)) {
-      setUsernameStatus("");
-      return;
-    }
-    const id = ++checkRef.current;
-    setUsernameStatus("checking");
-    try {
-      const result = await apiFetch<UsernameCheck>(`/api/v1/auth/check-username?username=${encodeURIComponent(name)}`);
-      if (id !== checkRef.current) return; // stale response
-      if (result.available) {
-        setUsernameStatus("available");
-        setUsernameSuggestion("");
-      } else {
-        setUsernameStatus("taken");
-        setUsernameSuggestion(result.suggestion ?? "");
-      }
-    } catch {
-      if (id === checkRef.current) setUsernameStatus("");
-    }
-  }, []);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the availability status when the username is cleared, before the debounced check
-    if (!username) { setUsernameStatus(""); return; }
-    const timer = setTimeout(() => checkUsername(username), 400);
-    return () => clearTimeout(timer);
-  }, [username, checkUsername]);
+    if (sent) sentHeadingRef.current?.focus();
+    else if (returnedRef.current) emailRef.current?.focus();
+  }, [sent]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
-    if (password !== password2) { setError("Passwords do not match"); return; }
+    setEmailInvalid(false);
+    setLimited(false);
     setSubmitting(true);
     try {
-      await register(
-        username,
-        email,
-        password,
-        orgName || undefined,
-        firstName || undefined,
-        lastName || undefined,
-        captchaToken || undefined,
-      );
-      setRegistered(true);
+      await apiFetch("/api/v1/auth/signup/start", {
+        method: "POST",
+        body: JSON.stringify({ email, captcha_token: captchaToken || undefined }),
+      });
+      // The widget unmounts with the form; its token is single-use anyway.
+      setCaptchaToken("");
+      setSent(true);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Registration failed";
+      if (err instanceof ApiResponseError && err.code === "setup_required") {
+        router.replace("/setup");
+        return;
+      }
+      if (err instanceof ApiResponseError && err.status === 429) {
+        setLimited(true);
+        return;
+      }
       // The Cloudflare Turnstile token is single-use AND short-lived
       // (5 min). Match the backend's structured ``code=captcha_failed``
       // (NOT the human-readable message) so a copy edit to the message
-      // never silently breaks the widget reset.
-      if (err instanceof ApiResponseError && err.code === "captcha_failed") {
+      // never silently breaks the widget reset. A 5xx comes after the
+      // captcha check, so the token is spent then too.
+      if (err instanceof ApiResponseError && (err.code === "captcha_failed" || err.status >= 500)) {
         turnstileRef.current?.reset();
         setCaptchaToken("");
       }
-      setError(message);
+      setEmailInvalid(err instanceof ApiResponseError && err.status === 422);
+      setError(err instanceof Error ? err.message : "Sign-up failed");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function startOver() {
+    returnedRef.current = true;
+    setSent(false);
   }
 
   async function handleGoogleLogin() {
@@ -166,23 +135,47 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
     }
   }
 
-  if (registered) {
+  const googleButton = googleEnabled && (
+    <>
+      <div className="flex items-center gap-3 my-4">
+        <div className="flex-1 border-t border-border" />
+        <span className="text-xs text-text-muted">or</span>
+        <div className="flex-1 border-t border-border" />
+      </div>
+      <GoogleSSOButton mode="signup" loading={googleLoading} onClick={handleGoogleLogin} />
+    </>
+  );
+
+  if (sent) {
     return (
       <div className="relative flex min-h-screen items-center justify-center px-4">
         <ThemeToggle className="absolute right-6 top-6" />
         <div className="w-full max-w-sm">
           <div className="mb-10 text-center">
-            <h1 className="font-display text-3xl font-semibold text-text-primary">Check Your Email</h1>
+            <h1
+              ref={sentHeadingRef}
+              tabIndex={-1}
+              className="font-display text-3xl font-semibold text-text-primary"
+            >
+              Check Your Email
+            </h1>
           </div>
           <div className="space-y-5">
-            <div className={success}>
-              Account created! Check your email to verify your account.
+            <div className={success} role="status">
+              We sent a message to <span className="font-medium">{email}</span>. Follow the link in
+              it to continue signing up. The link expires in 1 hour.
             </div>
-            <p className="text-center text-sm text-text-muted">
-              <Link href="/login" className="text-accent hover:text-accent-hover">
-                Go to login
-              </Link>
+            {/* Same help for every address: a capped address also gets a 202. */}
+            <p className="text-sm text-text-muted">
+              No email after a few minutes? Check your spam folder. We send at most one email to an
+              address every 10 minutes, so try again later
+              {googleEnabled ? ", or sign up with Google instead." : "."}
             </p>
+            <button type="button" onClick={startOver} className={`w-full ${btnLink}`}>
+              Use a different email
+            </button>
+            {error && <div className={errorCls} role="alert">{error}</div>}
+            {googleButton}
           </div>
         </div>
       </div>
@@ -199,60 +192,32 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
           <p className="mt-1.5 text-sm text-text-muted">Join The Better Decision</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
-          {error && <div className={errorCls}>{error}</div>}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="reg-firstname" className={label}>First Name</label>
-              <input id="reg-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} autoComplete="given-name" placeholder="John" />
+          {error && <div id="reg-error" className={errorCls} role="alert">{error}</div>}
+          {limited && (
+            <div className={errorCls} role="alert">
+              Too many sign-up attempts from this connection. Try again later
+              {googleEnabled ? ", or sign up with Google instead." : "."}
             </div>
-            <div>
-              <label htmlFor="reg-lastname" className={label}>Last Name</label>
-              <input id="reg-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} autoComplete="family-name" placeholder="Doe" />
-            </div>
-          </div>
-          <div>
-            <label htmlFor="reg-username" className={label}>Username</label>
-            <input
-              id="reg-username"
-              type="text"
-              required
-              minLength={USERNAME_MIN_LENGTH}
-              maxLength={USERNAME_MAX_LENGTH}
-              pattern={USERNAME_PATTERN}
-              title={USERNAME_RULE_HINT}
-              value={username}
-              onChange={(e) => { setUsername(e.target.value); setUsernameManual(true); }}
-              className={input}
-              autoComplete="username"
-            />
-            {usernameStatus === "checking" && <p className="mt-1 text-xs text-text-muted">Checking...</p>}
-            {usernameStatus === "available" && <p className="mt-1 text-xs text-success">Available</p>}
-            {usernameStatus === "taken" && (
-              <p className="mt-1 text-xs text-danger">
-                Taken{usernameSuggestion && (
-                  <>, try <button type="button" onClick={() => { setUsername(usernameSuggestion); setUsernameManual(true); }} className="text-accent underline">{usernameSuggestion}</button></>
-                )}
-              </p>
-            )}
-            {!usernameStatus && (
-              <p className="mt-1 text-xs text-text-muted">{USERNAME_RULE_HINT}</p>
-            )}
-          </div>
+          )}
           <div>
             <label htmlFor="reg-email" className={label}>Email</label>
-            <input id="reg-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={input} autoComplete="email" placeholder="you@example.com" />
-          </div>
-          <div>
-            <label htmlFor="reg-org" className={label}>Organization <span className="normal-case tracking-normal">(optional)</span></label>
-            <input id="reg-org" type="text" value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="My Household" className={input} />
-          </div>
-          <div>
-            <label htmlFor="reg-password" className={label}>Password</label>
-            <PasswordInput id="reg-password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
-          </div>
-          <div>
-            <label htmlFor="reg-password2" className={label}>Confirm Password</label>
-            <PasswordInput id="reg-password2" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
+            <input
+              ref={emailRef}
+              id="reg-email"
+              type="email"
+              required
+              maxLength={120}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className={input}
+              autoComplete="email"
+              placeholder="you@example.com"
+              aria-invalid={emailInvalid ? true : undefined}
+              aria-describedby={error ? "reg-email-hint reg-error" : "reg-email-hint"}
+            />
+            <p id="reg-email-hint" className="mt-1 text-xs text-text-muted">
+              We&apos;ll email you a link to choose your username and password.
+            </p>
           </div>
           <p className="text-xs text-text-muted">
             By creating an account you agree to our{" "}
@@ -278,23 +243,10 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
               />
             </div>
           )}
-          <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
-            {submitting ? "Creating account..." : "Create Account"}
+          <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
+            {submitting ? "Sending..." : "Continue"}
           </button>
-          {runtimeConfig().googleSsoEnabled && (
-            <>
-              <div className="flex items-center gap-3 my-4">
-                <div className="flex-1 border-t border-border" />
-                <span className="text-xs text-text-muted">or</span>
-                <div className="flex-1 border-t border-border" />
-              </div>
-              <GoogleSSOButton
-                mode="signup"
-                loading={googleLoading}
-                onClick={handleGoogleLogin}
-              />
-            </>
-          )}
+          {googleButton}
         </form>
         <p className="mt-6 text-center text-sm text-text-muted">
           Already have an account?{" "}

@@ -257,6 +257,34 @@ describe("TransactionsPage - batch edit wiring", () => {
     );
   });
 
+  // TBD-791
+  it("posts only a new expected settlement for pending rows", async () => {
+    const txs = [
+      makeTx({ id: 93, description: "One", status: "pending", settled_date: "2026-05-03" }),
+      makeTx({ id: 94, description: "Two", status: "pending" }),
+    ];
+    setupApiFetch(txs, { requested_count: 2, updated_count: 2, skipped: [], notes: [] });
+    renderWithSWR(<TransactionsPage />);
+
+    const dialog = await selectAllAndOpenModal();
+    fireEvent.change(within(dialog).getByLabelText(/^set settlement date$/i), {
+      target: { value: "2026-05-09" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /apply/i }));
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    const findPost = () =>
+      apiFetchMock.mock.calls.find(
+        (c) =>
+          c[0] === "/api/v1/transactions/bulk-update" &&
+          (c[1] as RequestInit | undefined)?.method === "POST",
+      );
+    await waitFor(() => expect(findPost()).toBeTruthy());
+    const body = JSON.parse((findPost()![1] as RequestInit).body as string);
+    expect(body).toEqual({ ids: expect.any(Array), settled_date: "2026-05-09" });
+    expect(body.ids.slice().sort((a: number, b: number) => a - b)).toEqual([93, 94]);
+  });
+
   it("announces fields a row did not take in the status region, not as an error", async () => {
     const txs = [
       makeTx({ id: 92, description: "One" }),

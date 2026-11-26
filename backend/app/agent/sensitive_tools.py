@@ -30,6 +30,7 @@ from app.routers import transactions as transactions_router
 from app.schemas.transaction import TransferCreate
 from app.services import transaction_service
 from app.services.category_rules_service import normalize_description
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import ValidationError
 from app.services.reconciliation_service import PENDING_STATES
 from app.services.transaction_filters import contributes_to_cached_balance
@@ -100,7 +101,8 @@ RULE = "Also updates the organization's categorization rule for this description
 # ── transactions_update_money ─────────────────────────────────────────────
 #
 # The four ``PUT /transactions/{id}`` fields ``transactions_update`` leaves
-# out because they move ``accounts.balance``. Refused here, as the service
+# out because they move ``accounts.balance``, and (TBD-791) a pending row's
+# expected settlement date, which schedules when auto-settle moves it. Refused here, as the service
 # would write beyond the row: a linked row (a transfer leg mirrors its amount
 # to the partner; a matched import row's amount is outside the balance), and
 # an account move inside a recurring series (it moves the template and every
@@ -108,14 +110,19 @@ RULE = "Also updates the organization's categorization rule for this description
 
 def _money_after(tx: Transaction, args) -> tuple:
     """(status, type, amount, account_id, settled_date) once the update runs,
-    resolved as ``update_transaction`` resolves them with no settled_date sent."""
+    resolved as ``update_transaction`` resolves them."""
     sent = args.model_fields_set
     status = TransactionStatus(args.status) if "status" in sent else tx.status
     tx_type = TransactionType(args.type) if "type" in sent else tx.type
     amount = args.amount if "amount" in sent else tx.amount
     account_id = args.account_id if "account_id" in sent else tx.account_id
     if status == SETTLED:
-        settled = tx.settled_date if tx.status == SETTLED else datetime.date.today()
+        if args.settled_date is not None:
+            settled = args.settled_date
+        else:
+            settled = tx.settled_date if tx.status == SETTLED else datetime.date.today()
+    elif "settled_date" in sent:
+        settled = args.settled_date
     else:
         settled = None if tx.status == SETTLED else tx.settled_date
     return status, tx_type, amount, account_id, settled
@@ -127,10 +134,13 @@ async def _money_check(ctx: ToolContext, tx: Transaction, args) -> None:
     if tx.linked_transaction_id is not None:
         raise ToolError(
             "unsupported_in_v1",
-            "the amount, account, type or status of a linked transaction cannot be changed here",
+            "the amount, account, type, status or settlement date of a linked transaction cannot be "
+            "changed here",
             data={"reason": "linked_transaction"},
         )
     status, tx_type, amount, account_id, settled = _money_after(tx, args)
+    if "settled_date" in args.model_fields_set and args.settled_date is None and status == SETTLED:
+        raise ValidationError("A settled transaction keeps its settlement date")
     if account_id != tx.account_id:
         if tx.recurring_id is not None:
             raise ToolError(
@@ -148,8 +158,11 @@ async def _money_check(ctx: ToolContext, tx: Transaction, args) -> None:
 async def _money_present(ctx: ToolContext, tx: Transaction, args, changes: list[Change]) -> Preview:
     status, tx_type, amount, account_id, settled = _money_after(tx, args)
     cur = await _currencies(ctx, {tx.account_id, account_id})
-    changes = _priced(changes, {tx.id: cur.get(account_id)})
-    fields = [c.field for c in changes]
+    # The settlement date the service resolves, not the one sent (a
+    # settled transition stamps today when none is sent).
+    changes = _priced([c for c in changes if c.field != "settled_date"], {tx.id: cur.get(account_id)})
+    sent_date = "settled_date" in args.model_fields_set and settled != tx.settled_date
+    fields = [c.field for c in changes] + (["settled_date"] if sent_date else [])
     if settled != tx.settled_date:
         changes.append(Change("transactions", tx.id, "settled_date", _iso(tx.settled_date), _iso(settled)))
     deltas: dict[int, Decimal] = {}
@@ -172,12 +185,13 @@ async def _money_present(ctx: ToolContext, tx: Transaction, args, changes: list[
 register(route_tool(
     name="transactions_update_money", risk="sensitive",
     router=ROUTER, method="PUT", path="/api/v1/transactions/{transaction_id}",
-    fields=("amount", "account_id", "type", "status"),
+    fields=("amount", "account_id", "type", "status", "settled_date"), nullable=("settled_date",),
     product_area=None, min_role=Role.MEMBER,
     description=(
-        "Change the amount, account, type (income or expense) or status (settled or pending) "
-        "of one transaction. This moves account balances. Transactions linked to another one "
-        f"(a transfer leg, a matched import) are refused. {CONFIRM}"
+        "Change the amount, account, type (income or expense), status (settled or pending) or "
+        "settlement date of one transaction (for a pending one, the expected settlement date "
+        "auto-settle uses; null clears it). This moves account balances or when they move. "
+        f"Transactions linked to another one (a transfer leg, a matched import) are refused. {CONFIRM}"
     ),
     entity=Transaction, check=_money_check, present=_money_present,
     no_change="the transaction already has these values",
@@ -233,12 +247,15 @@ register(route_tool(
 #
 # ``plan_transaction_delete`` (TBD-664 A2) is the decision ``delete_transaction``
 # applies, so this disclosure is the delete itself, not a second copy of its
-# rules. The two foreign keys onto ``transactions``:
+# rules. The foreign keys onto ``transactions``:
 #
 # * ``transactions.linked_transaction_id`` (SET NULL): every surviving row that
 #   pointed at a deleted one loses its link, and a matched import row whose
 #   amount is outside the balance is also demoted to REJECTED (TBD-294);
-# * ``transaction_tags.transaction_id`` (CASCADE): the deleted rows' tags.
+# * ``transaction_tags.transaction_id`` (CASCADE): the deleted rows' tags;
+# * ``transactions.bound_bank_tx_id`` (SET NULL): never fires here, because
+#   ``plan_transaction_delete`` refuses either half of a bind (TBD-755), so
+#   there is nothing to disclose.
 
 DESCRIBE = ("description", "amount", "type", "status", "date", "account_id")
 
@@ -361,7 +378,10 @@ register(route_tool(
     ),
     entity=Transaction, describe=DESCRIBE, present=_delete_present,
     cascade=CascadeDisclosure(
-        covers=frozenset({"transactions.linked_transaction_id", "transaction_tags.transaction_id"}),
+        covers=frozenset({
+            "transactions.linked_transaction_id", "transaction_tags.transaction_id",
+            "transactions.bound_bank_tx_id",
+        }),
         disclose=_delete_cascade, locks=True,
     ),
 ))
@@ -389,7 +409,7 @@ async def _transfer_preview(ctx: ToolContext, args) -> Preview:
     if len(accounts) != 2:
         raise ValidationError("Invalid account")
     src, dst = accounts[body.from_account_id], accounts[body.to_account_id]
-    if src.currency != dst.currency:
+    if normalise_currency(src.currency) != normalise_currency(dst.currency):
         raise ValidationError("Transfer legs must have the same currency")
     description = body.description.strip() or f"Transfer from {src.name} to {dst.name}"
     if body.category_id is not None:

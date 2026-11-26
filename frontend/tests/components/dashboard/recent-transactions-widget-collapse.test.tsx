@@ -101,6 +101,7 @@ const BASE: DashboardData = {
   forecastExpenseItems: [],
   forecastChartRows: [],
   chartFilter: null,
+  chartFilterMatch: "exact",
   chartFilterName: null,
   setChartFilter: vi.fn(),
   transactions: [],

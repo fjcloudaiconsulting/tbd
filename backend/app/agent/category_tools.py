@@ -244,7 +244,7 @@ async def _plan(ctx: ToolContext, cat: Category, args):
         if exc.detail.startswith("migration_target_required"):
             raise ToolError(
                 "invalid_arguments", "the category is in use: pass target_category_id, the category "
-                "its transactions, recurring items and forecast items move to",
+                "its transactions, recurring items, forecast items and plans move to",
             ) from None
         if exc.detail.startswith("type_mismatch"):
             raise ValidationError("the target category's type does not fit the rows that move to it") from None
@@ -270,6 +270,13 @@ async def _delete_cascade(ctx: ToolContext, cat: Category, args) -> list[Change]
                 Change("forecast_plan_items", item.id, "category_id", cat.id, None),
                 Change("forecast_plan_items", item.id, "planned_amount", f"{item.planned_amount:.2f}", None),
             ]
+        # TBD-601: plans and plan goals on it move too.
+        for model in (Scenario, PlanGoal):
+            ids = (await ctx.db.scalars(
+                select(model.id).where(model.org_id == ctx.org_id, model.category_id == cat.id)
+                .order_by(model.id)
+            )).all()
+            out += [Change(model.__tablename__, i, "category_id", cat.id, to) for i in ids]
         out += [Change("category_rules", _u(r.normalized_token), "category_id", cat.id, to)
                 for r in plan.rules_to_migrate]
     out += [Change("category_rules", _u(r.normalized_token), "category_id", cat.id, None)
@@ -279,10 +286,6 @@ async def _delete_cascade(ctx: ToolContext, cat: Category, args) -> list[Change]
     )).all():
         out += [Change("budgets", b.id, "amount", f"{b.amount:.2f}", None),
                 Change("budgets", b.id, "period_start", b.period_start.isoformat(), None)]
-    # Plans and plan goals pointing at it lose that link (SET NULL).
-    for model in (Scenario, PlanGoal):
-        linked = await ctx.db.scalars(select(model.id).where(model.category_id == cat.id).order_by(model.id))
-        out += [Change(model.__tablename__, i, "category_id", cat.id, None) for i in linked]
     return out
 
 
@@ -290,12 +293,14 @@ async def _delete_present(ctx: ToolContext, cat: Category, args, changes: list[C
     unlinked = ("categories", "scenarios", "plan_goals")  # SET NULL: the row stays
     gone = {(c.entity, str(c.id)): c.id for c in changes if c.after is None and c.entity not in unlinked}
     moved = sum(1 for c in changes if c.entity in ("transactions", "recurring_transactions"))
+    plans = sum(1 for c in changes if c.entity in ("scenarios", "plan_goals") and c.after is not None)
     warnings = ["A delete cannot be undone."]
     target = args.target_category_id if any(c.after is not None for c in changes) else None
     if target is not None:
         warnings.append(
             f"{moved} transaction(s) and recurring item(s), its forecast items and its "
             f"categorization rules move to category {target}."
+            + (f" {plans} plan(s) and goal(s) on it move too." if plans else "")
         )
     if any(e == "budgets" for e, _ in gone):
         warnings.append("Its budgets are deleted with it.")

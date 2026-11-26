@@ -129,39 +129,20 @@ async def _seed_invitation(factory) -> tuple[str, str]:
 
 
 async def test_invitation_preview_with_literal_secret_exports_one_clean_server_span(real_app, spans):
-    response = TestClient(real_app).get(f"/api/v1/orgs/invitations/preview?token={SECRET}")
+    response = TestClient(real_app).post("/api/v1/orgs/invitations/preview", json={"token": SECRET})
     assert response.status_code == 410
 
     finished = spans()
     server = _server(finished)
     assert set(server.attributes) == SERVER_KEYS
     assert server.attributes["http.route"] == "/api/v1/orgs/invitations/preview"
-    assert server.name == "GET /api/v1/orgs/invitations/preview"
+    assert server.name == "POST /api/v1/orgs/invitations/preview"
     _assert_absent(finished, SECRET)
 
 
 async def test_invitation_preview_with_a_real_token_keeps_token_and_email_out_of_every_span(
     real_app, session_factory, spans
 ):
-    token, email = await _seed_invitation(session_factory)
-    response = TestClient(real_app).get(f"/api/v1/orgs/invitations/preview?token={token}")
-    assert response.status_code == 200
-    assert response.json()["email"] == email
-
-    finished = spans()
-    server = _server(finished)
-    assert set(server.attributes) == SERVER_KEYS
-    sql = [s for s in finished if s.kind == SpanKind.CLIENT]
-    # The lookup that binds the invitee's email ran inside the request, as a child of it.
-    assert any("users" in s.attributes["db.query.text"] for s in sql)
-    assert all(s.parent is not None and s.parent.span_id == server.context.span_id for s in sql)
-    _assert_absent(finished, token, email)
-
-
-async def test_invitation_preview_by_body_keeps_token_and_email_out_of_every_span(
-    real_app, session_factory, spans
-):
-    """TBD-738: the frontend now posts the token in the body."""
     token, email = await _seed_invitation(session_factory)
     response = TestClient(real_app).post(
         "/api/v1/orgs/invitations/preview", json={"token": token}
@@ -172,7 +153,10 @@ async def test_invitation_preview_by_body_keeps_token_and_email_out_of_every_spa
     finished = spans()
     server = _server(finished)
     assert set(server.attributes) == SERVER_KEYS
-    assert server.name == "POST /api/v1/orgs/invitations/preview"
+    sql = [s for s in finished if s.kind == SpanKind.CLIENT]
+    # The lookup that binds the invitee's email ran inside the request, as a child of it.
+    assert any("users" in s.attributes["db.query.text"] for s in sql)
+    assert all(s.parent is not None and s.parent.span_id == server.context.span_id for s in sql)
     _assert_absent(finished, token, email)
 
 
@@ -208,8 +192,8 @@ async def test_an_unhandled_error_quoting_the_secret_exports_only_its_class(
         raise ValueError(f"cannot preview {token}")
 
     monkeypatch.setattr(invitation_service, "preview_invitation", boom)
-    response = TestClient(real_app, raise_server_exceptions=False).get(
-        f"/api/v1/orgs/invitations/preview?token={SECRET}"
+    response = TestClient(real_app, raise_server_exceptions=False).post(
+        "/api/v1/orgs/invitations/preview", json={"token": SECRET}
     )
     assert response.status_code == 500
 
@@ -250,7 +234,7 @@ def _duration_points(reader) -> list:
 
 
 def test_http_metrics_carry_only_the_allowlisted_attributes(real_app, metric_reader):
-    TestClient(real_app).get(f"/api/v1/orgs/invitations/preview?token={SECRET}")
+    TestClient(real_app).post("/api/v1/orgs/invitations/preview", json={"token": SECRET})
     points = _duration_points(metric_reader)
     assert points, "FastAPI's native duration histogram should record on our MeterProvider"
     for point in points:
@@ -598,6 +582,7 @@ async def test_the_agent_action_purge_is_a_job_span(spans, monkeypatch):
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", nothing)
     monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", purge)
     monkeypatch.setattr(scheduler_loop_module, "run_csp_audit_purge", nothing)
+    monkeypatch.setattr(scheduler_loop_module, "run_batch_key_purge", nothing)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 16), lock_ttl=1)
     (job,) = [s for s in spans() if s.name == "job agent_action_purge"]
     assert dict(job.attributes) == {"job.kind": "agent_action_purge"}
@@ -625,6 +610,7 @@ async def test_the_api_token_expiry_reminder_is_a_job_span(spans, monkeypatch):
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
     monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", _quiet_purge)
     monkeypatch.setattr(scheduler_loop_module, "run_csp_audit_purge", _quiet_purge)
+    monkeypatch.setattr(scheduler_loop_module, "run_batch_key_purge", _quiet_purge)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     assert len(calls) == 1
     (job,) = [s for s in spans() if s.name == "job api_token_expiry"]
@@ -652,6 +638,7 @@ async def test_the_oauth_client_purge_is_a_job_span(spans, monkeypatch):
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
     monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", _quiet_purge)
     monkeypatch.setattr(scheduler_loop_module, "run_csp_audit_purge", _quiet_purge)
+    monkeypatch.setattr(scheduler_loop_module, "run_batch_key_purge", _quiet_purge)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     (job,) = [s for s in spans() if s.name == "job oauth_client_purge"]
     assert dict(job.attributes) == {"job.kind": "oauth_client_purge"}
@@ -677,6 +664,7 @@ async def test_the_csp_audit_purge_is_a_job_span(spans, monkeypatch):
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", nothing)
     monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", _quiet_purge)
     monkeypatch.setattr(scheduler_loop_module, "run_csp_audit_purge", purge)
+    monkeypatch.setattr(scheduler_loop_module, "run_batch_key_purge", _quiet_purge)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 24), lock_ttl=1)
     (job,) = [s for s in spans() if s.name == "job csp_audit_purge"]
     assert dict(job.attributes) == {"job.kind": "csp_audit_purge"}
@@ -710,6 +698,7 @@ async def test_a_swallowed_oauth_client_purge_failure_ends_its_job_span_as_an_er
     monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
     monkeypatch.setattr(scheduler_loop_module, "run_agent_action_purge", _quiet_purge)
     monkeypatch.setattr(scheduler_loop_module, "run_csp_audit_purge", _quiet_purge)
+    monkeypatch.setattr(scheduler_loop_module, "run_batch_key_purge", _quiet_purge)
     try:
         assert await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     finally:

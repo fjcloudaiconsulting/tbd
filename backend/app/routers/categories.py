@@ -150,11 +150,12 @@ def _type_mismatch_response(detail_str: str) -> HTTPException:
 
 
 def _migration_target_required_response(detail_str: str) -> HTTPException:
-    parts = detail_str.split("::", 3)
+    parts = detail_str.split("::")
     try:
         tx_count = int(parts[1])
         rec_count = int(parts[2])
         fpi_count = int(parts[3])
+        plan_count = int(parts[4])
     except (IndexError, ValueError):
         return HTTPException(
             status_code=422, detail={"detail": "migration_target_required"},
@@ -167,6 +168,7 @@ def _migration_target_required_response(detail_str: str) -> HTTPException:
                 "transactions": tx_count,
                 "recurring": rec_count,
                 "forecast_items": fpi_count,
+                "plans": plan_count,
             },
         },
     )

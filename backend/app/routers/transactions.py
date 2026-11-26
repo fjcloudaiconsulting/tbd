@@ -2,7 +2,7 @@ import datetime
 from typing import Literal, Optional
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -45,12 +45,14 @@ from app.schemas.transaction_suggestions import (
 )
 from app.services import (
     audit_service,
+    reconciliation_service,
     recurring_service,
     spending_service,
     transaction_batch_service,
     transaction_service as svc,
     transaction_suggestions_service as suggestions_svc,
 )
+from app.services.currency_service import normalise_currency
 from app.services.exceptions import NotFoundError, ValidationError
 from app import logs
 
@@ -66,6 +68,7 @@ def _request_id() -> Optional[str]:
 # contract: we log only org_id, type, query_length, result_count,
 # never the raw ``q`` or returned descriptions.
 suggestions_logger = logging.getLogger("app.routers.transactions.suggestions")
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
@@ -308,6 +311,25 @@ async def unpair_transaction(
     return pair
 
 
+@router.post(
+    "/{transaction_id}/unbind",
+    response_model=list[TransactionResponse],
+    status_code=200,
+)
+async def unbind_transaction(
+    transaction_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo a bank row's bind to the recurring occurrence it settles (TBD-755).
+    Returns the bank row and the restored occurrence, sorted by id."""
+    bank, occ = await reconciliation_service.unbind_occurrence(
+        db, org_id=current_user.org_id, bank_tx_id=transaction_id,
+    )
+    rows = [await svc.get_transaction(db, current_user.org_id, t.id) for t in (bank, occ)]
+    return sorted((svc.to_response(r) for r in rows), key=lambda r: r.id)
+
+
 @router.get(
     "/{transaction_id}/transfer-candidates",
     response_model=TransferCandidatesResponse,
@@ -327,7 +349,7 @@ async def transfer_candidates(
     )
     if dst_acct is None:
         raise NotFoundError("Account")
-    if source.account.currency != dst_acct.currency:
+    if normalise_currency(source.account.currency) != normalise_currency(dst_acct.currency):
         raise ValidationError("Source and destination must have the same currency")
     candidates = await svc.find_match_candidates(
         db,
@@ -379,6 +401,11 @@ async def batch_create_transactions(
     session_factory: async_sessionmaker[AsyncSession] = Depends(
         get_session_factory
     ),
+    # TBD-784: optional so older clients keep working, without repeat detection.
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key",
+        min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",
+    ),
 ):
     """Manual batch transaction entry (L3.2 Wave 2A).
 
@@ -405,11 +432,23 @@ async def batch_create_transactions(
     Frozen contract: see spec at
     ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
     §0.2 and ``app/schemas/import_batch.py``.
+
+    TBD-784: with an ``Idempotency-Key`` header, a repeat of the same key by
+    the same user within 24 hours returns the first response with
+    ``replayed=true`` and writes nothing (no audit event either); the same key
+    with a different body is a 409.
     """
-    response = await transaction_batch_service.create_batch(
-        db, current_user.org_id, body
-    )
+    org_id = current_user.org_id
+    if idempotency_key is None:
+        response = await transaction_batch_service.create_batch(db, org_id, body)
+    else:
+        response = await transaction_batch_service.create_batch_with_key(
+            db, org_id, current_user.id, body, idempotency_key
+        )
     await db.commit()
+    if response.replayed:
+        logger.info("transactions.batch.replayed", extra={"org_id": org_id})
+        return response
 
     # One audit event per batch invocation. Carries counters + the
     # length of the input list so a future regression in the request
@@ -542,19 +581,17 @@ async def spending_by_category(
     IDEMPOTENCE — two calls, one period row — and deliberately does NOT fence
     the write, which would bless it as contract.
 
-    ⚠⚠ **Drilldown callers must pass ``category_match=exact``.** This rollup
-    groups by the row's **own** ``category_id`` and returns ``parent_id``
-    alongside — the same shape ``GET /api/v1/forecast`` returns — so a master
-    category and its subcategory are two separate slices. But ``category_id``
-    on ``GET /api/v1/transactions`` is **master-includes-subs**, a deliberate
-    2026-05-13 regression guard. Wiring a donut slice straight to the list
-    endpoint without ``category_match=exact`` (the parameter added for exactly
-    this — see the ``category_match`` ``Query`` on ``list_transactions``
-    above) therefore opens a slice labelled with the master's DIRECT total and
-    fills it with the master's rows PLUS every subcategory's: Home 90.00 direct
-    + Utilities 160.00 renders two slices, and clicking the 90.00 Home slice
-    returns 250.00 of rows. Both endpoints are correct on their own; only the
-    unqualified pairing is wrong.
+    ⚠⚠ **Drilldown callers pass the ``category_match`` of the figure they
+    were opened from.** This rollup groups by the row's **own**
+    ``category_id`` and returns ``parent_id`` / ``parent_name`` alongside — the
+    forecast and the agent tool read it that way. The dashboard donut
+    (TBD-339) sums the rows under their master so it agrees with Budget
+    Progress: Home 90.00 direct + Utilities 160.00 is ONE 250.00 slice. Its
+    drilldown, and a budget bar's, therefore sends ``category_match=subtree``
+    (master-includes-subs, the list endpoint's default). A forecast bar is
+    still grouped by own category and sends ``category_match=exact``. Pairing
+    a figure with the other mode opens a list that disagrees with the number
+    the user clicked: 90.00 of rows under a 250.00 slice, or the reverse.
     """
     return await spending_service.compute_spending_by_category(
         db, current_user.org_id, period_start=period_start
@@ -653,14 +690,18 @@ async def bulk_delete_transactions(
     Cap: 500 IDs per request (enforced by Pydantic).
     """
     unique_ids = list(dict.fromkeys(body.ids))
-    deleted_count, skipped_ids, demoted_ids = await svc.bulk_delete_transactions(
-        db, current_user.org_id, unique_ids
-    )
+    (
+        deleted_count,
+        skipped_ids,
+        demoted_ids,
+        skipped_adjustment_ids,
+    ) = await svc.bulk_delete_transactions(db, current_user.org_id, unique_ids)
     return BulkDeleteResponse(
         requested_count=len(unique_ids),
         deleted_count=deleted_count,
         skipped_ids=skipped_ids,
         demoted_ids=demoted_ids,
+        skipped_adjustment_ids=skipped_adjustment_ids,
     )
 
 
@@ -684,8 +725,10 @@ async def bulk_update_transactions(
     together: if that update fails (e.g. a settled_date before the row's date)
     none of them land and the row is skipped with the reason (TBD-763).
     ``date`` and ``settled_date`` set a date, they do not shift one; ``date``
-    is not applied to recurring occurrences or transfer legs, and
-    ``settled_date`` only to rows that are, or are being, settled.
+    is not applied to recurring occurrences or transfer legs. ``settled_date``
+    applies to rows that are, or are being, settled, and to rows that stay
+    pending as their expected settlement (TBD-791; a transfer only while both
+    legs are pending, and both move).
     """
     updated_count, skipped, notes = await svc.bulk_update_transactions(
         db,

@@ -39,6 +39,7 @@ export default function BudgetBarsWidget() {
     dashBudgets,
     budgetChartData,
     chartFilter,
+    chartFilterMatch,
     setChartFilter,
     isPastSelectedPeriod,
     isFutureSelectedPeriod,
@@ -77,8 +78,9 @@ export default function BudgetBarsWidget() {
                 onClick={(_, idx) => {
                   // TBD-221: the cross-tile filter is a category_id now, so
                   // the drilldown can reproduce the rollup's grouping.
+                  // TBD-339: a budget is master + subs -> subtree.
                   const cid = dashBudgets[idx]?.category_id;
-                  if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
+                  if (cid != null) setChartFilter(chartFilter === cid && chartFilterMatch === "subtree" ? null : cid, "subtree");
                 }}
               >
                 {dashBudgets.map((b) => (
