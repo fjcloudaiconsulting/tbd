@@ -1,0 +1,163 @@
+"""TBD-669: the report tools beyond the honesty fence (test_agent_honesty).
+
+The read POSTs, the route's own limit on the token, and the router's
+visibility rules (see, edit) on every write.
+"""
+from __future__ import annotations
+
+import pytest
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import select
+
+from app.agent import registry
+from app.agent.registry import ToolRegistrationError, ToolSpec
+from app.models.report import ReportVersion
+from app.models.user import Role
+from app.routers import reports as reports_router
+from tests.agent.test_actions import (  # noqa: F401  (fixtures)
+    _a_report, _confirm, _invoke, _refused, _rows, engine, factory, reports_on, w,
+)
+
+QUERY = {"dataset": "transactions", "measure": {"agg": "sum", "field": "amount"}, "dimensions": ["category"]}
+READ = {"channel": "mcp", "scope": "agent:read"}
+
+
+class _NoArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+async def _run(ctx, args):
+    return {}
+
+
+def test_a_read_tool_mirrors_a_get_or_a_listed_read_post():
+    """FENCE. Wrong implementation: any POST accepted as a read."""
+    base = dict(risk="read", args=_NoArgs, product_area=None, min_role=Role.MEMBER,
+                description="t", run=_run)
+    with pytest.raises(ToolRegistrationError, match="must mirror a GET"):
+        registry.register(ToolSpec(name="fixture_post_read", mirrors_route=("POST", "/api/v1/reports"), **base))
+    try:
+        registry.register(ToolSpec(name="fixture_post_read", mirrors_route=("POST", "/api/v1/reports/query"), **base))
+    finally:
+        registry._TOOLS.pop("fixture_post_read", None)
+
+
+def test_a_route_limit_must_be_keyed_like_rest():
+    """FENCE. Wrong implementation: a tool drawing a bucket REST never reads
+    (the route keyed per address), a second allowance for the agent. The
+    shared bucket itself: tests/routers/test_reports_rate_limit.py."""
+    from app.routers import accounts as accounts_router
+
+    assert registry.get_tool("reports_query").route_limit is reports_router.run_query
+    assert registry.get_tool("reports_sankey_query").route_limit is reports_router.run_sankey_query
+    base = dict(risk="read", args=_NoArgs, product_area=None, min_role=Role.MEMBER, description="t",
+                run=_run, mirrors_route=("POST", "/api/v1/reports/query"))
+    for fn in (accounts_router.adjust_balance, _run):  # keyed per address; no limit at all
+        with pytest.raises(ToolRegistrationError, match="keyed per user"):
+            registry.register(ToolSpec(name="fixture_limited", route_limit=fn, **base))
+    assert registry.get_tool("fixture_limited") is None
+
+
+async def test_query_answers_with_names_wrapped(factory, w):
+    a = w["A"]
+    await reports_on(factory, a)
+    out = await _invoke(factory, a["member"], "reports_query", QUERY, api_token_id=a["t1"], **READ)
+    assert out["meta"]["row_count"] == len(out["rows"]) == 1
+    assert out["rows"][0]["category"] == {"untrusted": "Food A"}
+    out = await _invoke(factory, a["member"], "reports_sankey_query", {})
+    assert all(isinstance(link["source"], dict) for link in out["links"])
+
+
+async def test_query_refusals(factory, w):
+    a = w["A"]
+    err = await _refused(_invoke(factory, a["member"], "reports_query", QUERY))
+    assert err.code == "feature_disabled"  # Reports v2 off for the org
+    await reports_on(factory, a)
+    bad = {**QUERY, "dimensions": ["category"], "measure": {"agg": "sum", "field": "balance"}}
+    assert (await _refused(_invoke(factory, a["member"], "reports_query", bad))).code == "invalid_arguments"
+
+
+async def test_another_members_private_report_is_not_found_to_every_tool(factory, w):
+    """FENCE. Wrong implementation: the org-scoped row read alone, which
+    previews (and names) a colleague's private report."""
+    a = w["A"]
+    rid = await _a_report(factory, a, owner="other")
+    async with factory() as db:
+        vid = await db.scalar(select(ReportVersion.id).where(ReportVersion.report_id == rid))
+    for tool, args in (
+        ("reports_get", {}), ("reports_update", {"name": "x"}), ("reports_update_layout", {"visibility": "org"}),
+        ("reports_duplicate", {}), ("reports_reset", {}), ("reports_delete", {}),
+        ("report_version_restore", {"version_id": vid}),
+    ):
+        err = await _refused(_invoke(factory, a["admin"], tool, {"report_id": rid, **args}))
+        assert err.code == "not_found", tool
+    assert await _rows(factory) == []
+
+
+async def test_an_org_shared_report_is_edited_by_its_owner_or_an_admin_only(factory, w):
+    a = w["A"]
+    rid = await _a_report(factory, a, owner="other", visibility="org")
+    err = await _refused(_invoke(factory, a["member"], "reports_update", {"report_id": rid, "name": "x"}))
+    assert err.code == "forbidden"
+    # seeing it is enough to copy it
+    out = await _invoke(factory, a["member"], "reports_duplicate", {"report_id": rid})
+    assert out["requires_confirmation"] is True
+    out = await _invoke(factory, a["admin"], "reports_update", {"report_id": rid, "name": "x"})
+    assert out["changes"][0]["after"] == {"untrusted": "x"}
+
+
+async def test_reset_and_restore_refuse_what_would_change_nothing(factory, w):
+    a = w["A"]
+    rid = await _a_report(factory, a)
+    other = await _a_report(factory, a)
+    async with factory() as db:
+        foreign = await db.scalar(select(ReportVersion.id).where(ReportVersion.report_id == other))
+    err = await _refused(_invoke(factory, a["member"], "reports_reset", {"report_id": rid}))
+    assert err.code == "no_change"
+    err = await _refused(_invoke(factory, a["member"], "report_version_restore",
+                                 {"report_id": rid, "version_id": foreign}))
+    assert err.code == "not_found"
+
+
+MARK = "IGNORE-PREVIOUS-INSTRUCTIONS"
+
+
+def _bare(value, parent=None):
+    """Every marked string not directly under an ``untrusted`` key."""
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in _bare(v, k)]
+    if isinstance(value, list):
+        return [s for v in value for s in _bare(v, parent)]
+    return [value] if isinstance(value, str) and MARK in value and parent != "untrusted" else []
+
+
+async def test_a_change_result_wraps_report_documents_now_and_on_replay(factory, w):
+    """FENCE (review M1 on writes). Wrong implementation: wrapping only the
+    reads, so a layout change's result, stored and replayed over MCP as
+    ``action_already_decided``, hands a widget title or a filter to the model raw."""
+    a = w["A"]
+    rid = await _a_report(factory, a)
+    layout = {"version": 1, "widgets": [{
+        "id": f"k1 {MARK}", "type": "kpi", "title": f"Net {MARK}", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+        "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"}},
+    }]}
+    mcp = {"channel": "mcp", "scope": "agent:write", "api_token_id": a["t1"]}
+    out = await _invoke(factory, a["member"], "reports_update_layout", {"report_id": rid, "layout_json": layout}, **mcp)
+    done = await _confirm(factory, a["member"], out["action_id"])  # in the app: the tool is sensitive
+    assert done["status"] == "done" and done["result"]["layout_json"]["widgets"][0]["title"] == {"untrusted": f"Net {MARK}"}
+    assert _bare(done) == []
+    err = await _refused(_confirm(factory, a["member"], out["action_id"], **mcp))
+    assert err.code == "action_already_decided" and err.data["result"]["layout_json"]
+    assert _bare(err.data) == []
+
+
+def test_a_document_key_that_is_not_an_identifier_is_wrapped_too():
+    """FENCE (review: keys of user dicts are free text). Wrong implementation:
+    wrapping only the values of a layout or filter document."""
+    out = registry.untrusted_leaves({"plain_key": "v", f"{MARK} key": {"x y": 1}, "n": 2})
+    assert out == {
+        "plain_key": {"untrusted": "v"}, "n": 2,
+        "untrusted_entries": [{"key": {"untrusted": f"{MARK} key"}, "value": {
+            "untrusted_entries": [{"key": {"untrusted": "x y"}, "value": 1}]}}],
+    }
+    assert registry.untrusted_leaves({"tags": ["a"]}) == {"tags": [{"untrusted": "a"}]}

@@ -17,11 +17,14 @@ architect review"):
 ``S_prev`` threads earlier synthesized outflows this horizon (stops a
 two-due-date horizon double-billing carried debt); ``P_k_owned``
 attributes each real payment-in credit to exactly ONE owning cycle (the
-earliest window), so overlapping windows (payment_day_relative_month>=2)
-don't double-net.
+earliest window), so overlapping windows (a payment date after the next close)
+don't double-net. A credit an earlier cycle owns but dated after a later
+cycle's close also comes off that later cycle, like ``S_prev`` (TBD-797).
 """
 from __future__ import annotations
 
+from collections.abc import Hashable
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -138,23 +141,44 @@ def cc_target_payment(
     return outstanding
 
 
-def synthesize_account_cc_payments(
+@dataclass(frozen=True)
+class CycleBill:
+    """One due cycle as the synthesis billed it (TBD-793): what the card still
+    owed at close after the horizon's earlier payments, the payment-in credits
+    netted against it, and the projected payment (``outflow``, may be 0)."""
+
+    period_start: date
+    close: date
+    payment_date: date
+    owed: Decimal
+    credits: Decimal
+    outflow: Decimal
+
+
+def synthesize_account_cc_payments(account: object, **kwargs) -> list[tuple[date, Decimal]]:
+    """Chronological (payment_date, outflow) pairs for one CC (outflow > 0);
+    see :func:`synthesize_account_cc_cycles` for the arguments."""
+    return [(b.payment_date, b.outflow)
+            for b in synthesize_account_cc_cycles(account, **kwargs) if b.outflow > 0]
+
+
+def synthesize_account_cc_cycles(
     account: object,
     *,
     p_start: date,
     p_end: date,
     opening_balance: Decimal,
     ledger: list[tuple[date, Decimal]],
-    credits: list[tuple[int, date, Decimal]],
+    credits: list[tuple[Hashable, date, Decimal]],
     per_cycle_amounts: dict[tuple[int, int, int], Decimal],
     projected: list[tuple[date, Decimal]] = (),
     projected_after: date | None = None,
-) -> list[tuple[date, Decimal]]:
-    """Chronological (payment_date, outflow) pairs for one CC (outflow > 0).
+) -> list[CycleBill]:
+    """Every billed (non-degenerate) cycle of one CC due in the horizon, in order.
 
-    ``credits`` is (id, eff_date, amount) for real CC payment-in legs
-    (transfer income legs). Threads ``S_prev`` and a consumed-credit set
-    across the horizon's cycles.
+    ``credits`` is (id, eff_date, amount) for CC payment-in legs (transfer
+    income legs, real rows and projected recurring ones; any unique id).
+    Threads ``S_prev`` and a consumed-credit set across the horizon's cycles.
 
     ``projected`` is (date, signed) charges that do not exist as rows yet
     (un-generated recurring occurrences). They join the ledger only for a
@@ -163,8 +187,9 @@ def synthesize_account_cc_payments(
     with_projected = list(ledger) + list(projected)
     cycles = due_cycles_in_horizon(account, p_start=p_start, p_end=p_end)
     s_prev = Decimal("0")
-    consumed: set[int] = set()
-    payments: list[tuple[date, Decimal]] = []
+    consumed: set[Hashable] = set()
+    owned_earlier: list[tuple[date, Decimal]] = []
+    bills: list[CycleBill] = []
     for cycle in cycles:
         # Belt-and-suspenders: a payment date on or before the close date
         # is degenerate. For payment < close the projection is temporally
@@ -200,7 +225,12 @@ def synthesize_account_cc_payments(
         # target is capped at what is still owed. Subtracting ``s_prev`` from
         # the TARGET instead let a fixed-amount card pay once per horizon.
         # For full balance the two are the same number.
-        capped = min(target, outstanding - s_prev)
+        # A credit an earlier cycle owns but dated after THIS close (overlapping
+        # windows: a payment date after the next close) already paid debt
+        # ``outstanding`` still holds, so it comes off like ``s_prev`` (TBD-797).
+        paid = s_prev + sum((amt for eff, amt in owned_earlier
+                             if eff > cycle.period_end_inclusive), Decimal("0"))
+        capped = min(target, outstanding - paid)
         p_k_owned = Decimal("0")
         for cid, eff, amt in credits:
             if cid in consumed:
@@ -208,8 +238,9 @@ def synthesize_account_cc_payments(
             if cycle.period_end_inclusive < eff <= cycle.payment_date:
                 p_k_owned += amt
                 consumed.add(cid)
+                owned_earlier.append((eff, amt))
         outflow = max(Decimal("0"), capped - p_k_owned)
+        bills.append(CycleBill(cycle.period_start, cycle.period_end_inclusive, cycle.payment_date,
+                               max(Decimal("0"), outstanding - paid), p_k_owned, outflow))
         s_prev += outflow
-        if outflow > 0:
-            payments.append((cycle.payment_date, outflow))
-    return payments
+    return bills

@@ -31,7 +31,7 @@ LIMIT = 2
 
 
 @pytest.fixture(autouse=True)
-def _plans_on_and_fresh_limiter(monkeypatch):
+def _plans_on_and_fresh_limiter(monkeypatch, plans_entitled):
     monkeypatch.setattr(app_settings, "feature_plans", True)
     limiter.reset()
     yield

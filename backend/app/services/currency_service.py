@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.account import Account
 from app.models.user import Organization
 from app.services.exceptions import ConflictError
+from app.services.transaction_filters import account_currency_key
 
 # ISO 4217 codes a consumer bank account can actually be denominated in.
 #
@@ -128,24 +129,24 @@ async def assert_org_currency_allows(
     # the org_id range, which serialises the second transaction behind the first.
     # The second then sees the committed row and refuses.
     #
-    # ⚠ THE TESTS CANNOT PROVE THIS. They run on aiosqlite, which ignores
+    # ⚠ THE SQLITE SHARDS CANNOT PROVE THIS. aiosqlite ignores
     # ``with_for_update()`` entirely (same caveat recorded in
-    # tests/routers/test_accounts_change_type.py). The lock is justified by the
-    # engine's documented semantics, not by a green fence — do not read the
-    # suite passing as evidence the race is closed, and do not remove this
-    # because "no test covers it".
+    # tests/routers/test_accounts_change_type.py). The fence is
+    # tests/routers/test_first_account_currency_mysql.py, which runs on real
+    # MySQL in the Backend Migrations CI job and asserts both no 500 and a
+    # single-currency org over repeated concurrent trials (TBD-508).
     #
     # A UNIQUE constraint cannot express this rule: it is "at most one DISTINCT
     # currency per org", not "one row per org". A generated column or a trigger
     # could, and would be a stronger guarantee if this ever needs one.
-    # ⚠ TBD-508 MITIGATION: LOCK THE ORG ROW FIRST. This is a lock-ORDER fix,
-    # not decoration.
+    # ⚠ TBD-508: LOCK THE ORG ROW FIRST. This is a lock-ORDER fix, not
+    # decoration.
     #
     # The ``FOR UPDATE`` below takes a GAP lock when the org has no accounts
     # (an empty range), and a gap lock conflicts with the other transaction's
     # insert-intention lock. Two concurrent ``POST /accounts`` on a fresh org
     # therefore deadlock: MySQL error 1213, and the loser gets a 500. Measured
-    # 2026-09-12 on MySQL 8.4.11 -- 3 of 12 concurrent trials before this PR,
+    # 2026-09-12 on real MySQL -- 3 of 12 concurrent trials before this PR,
     # and 6 of 12 with PR 2's ``UPDATE organizations`` added to the same
     # transaction, because that second exclusive lock widens the window.
     #
@@ -154,12 +155,13 @@ async def assert_org_currency_allows(
     # the inversion. It also happens to be the row this function goes on to
     # UPDATE, so it is a lock we need regardless.
     #
+    # Every caller must take this lock before touching ``accounts`` (the
+    # demo seed takes it first thing). Removing it brings the deadlock back:
+    # the MySQL fence above fails in most of its trials without it.
+    #
     # ⚠ AIOSQLITE CANNOT SEE ANY OF THIS. It ignores ``with_for_update()``,
     # has no gap locks and no error 1213, and every backend shard runs on it --
-    # which is exactly why the deadlock shipped in PR 1 unnoticed. The suite
-    # passing is not evidence this is fixed; the measurement is. Full fix
-    # (retry vs. re-ordering, and where a fence for it can even live) is
-    # TBD-508.
+    # which is exactly why the deadlock shipped in PR 1 unnoticed.
     await db.execute(
         select(Organization.id)
         .where(Organization.id == org_id)
@@ -221,14 +223,16 @@ async def resolve_currency_scope(db: AsyncSession, *, org_id: int) -> dict:
     response-model round-trip -- correctly. The predicate takes the whole dict
     and decides for itself; see ``transaction_filters.org_currency_filter``.
     """
+    # TBD-798: group on the canonical key, so ``'usd'`` and ``'USD'`` are one
+    # excluded currency on SQLite too, not two.
+    ccy = account_currency_key()
     rows = (
         await db.execute(
-            select(Organization.primary_currency, Account.currency,
-                   func.count(Account.id))
+            select(Organization.primary_currency, ccy, func.count(Account.id))
             .select_from(Organization)
             .outerjoin(Account, Account.org_id == Organization.id)
             .where(Organization.id == org_id)
-            .group_by(Organization.primary_currency, Account.currency)
+            .group_by(Organization.primary_currency, ccy)
         )
     ).all()
     # ⚠ NORMALISE BOTH SIDES. An earlier cut normalised only ``code`` and
@@ -258,7 +262,11 @@ async def resolve_currency_scope(db: AsyncSession, *, org_id: int) -> dict:
         for _, code, n in rows
         if code is not None
         and org_currency is not None
-        and normalise_currency(code) != org_currency
+        # ``code`` is already the SQL key. Compare it as-is, exactly as
+        # ``org_currency_filter`` will: re-folding it with Python's ``strip()``
+        # (which also drops tabs) would count an ``'EUR\t'`` account as in
+        # scope while the filter drops it (TBD-798).
+        and code != org_currency
     ]
     count = sum(n for _, n in excluded)
     return {

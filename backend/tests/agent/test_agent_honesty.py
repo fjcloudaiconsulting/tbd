@@ -38,9 +38,10 @@ from pydantic import BaseModel, ConfigDict
 from dateutil.relativedelta import relativedelta
 from types import SimpleNamespace
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import JSON, delete, func, select, update
 
 from app.agent import actions, registry
+from app.config import settings as app_settings
 from app.agent.registry import Change, Preview, ToolSpec
 from app.models import Account, AccountType, Organization
 from app.models.cc_cycle_payment import CcCyclePayment
@@ -50,9 +51,9 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
-from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem
+from app.models.forecast_plan import ForecastItemType, ForecastPlan, ForecastPlanItem, ItemSource, PlanStatus
 from app.models.recurring import Frequency, RecurringTransaction
-from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioType
+from app.models.scenario import PlanGoal, PlanGoalKind, PlanGoalTier, Scenario, ScenarioStatus, ScenarioType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.tag import Tag, TransactionTag
@@ -60,8 +61,9 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Role, User
 from app.services import org_bootstrap_service
 from app.services.category_rules_service import normalize_description
+from app.models.report import Report, ReportVersion
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    P_START, _confirm, _invoke, _refused, engine, factory, w,
+    P_START, PREFS_ON, _a_report, _confirm, _invoke, _prefs, _refused, engine, factory, reports_on, w,
 )
 
 # Counters are named only as signed nonzero deltas, never as absolutes.
@@ -79,6 +81,12 @@ BOOKKEEPING = {
     ("category_rules", "source"),
     # The clock stamp of an auto-close; the close itself is named as ``status``.
     ("import_batches", "closed_at"),
+    # The clock stamp of a plan's Finish (TBD-604); the transition is named as ``status``.
+    ("scenarios", "finished_at"),
+    # Start's clock stamp, and the projection it freezes: derived from what the
+    # preview names, and far past the preview cap (architects' ruling, TBD-604).
+    ("scenarios", "started_at"),
+    ("scenarios", "baseline_projection_json"),
 }
 BOOKKEEPING_TABLES = {"audit_events"}
 # Insert identity beyond the PK and org_id: columns a natural-key group id names.
@@ -164,6 +172,8 @@ def windows(monkeypatch):
 def _norm(col, v):
     if v is None:
         return None
+    if isinstance(col.type, JSON):  # a JSON document is named as its canonical text (TBD-668)
+        return json.dumps(v, sort_keys=True)
     if isinstance(v, enum.Enum):
         return v.value
     if isinstance(v, Decimal):
@@ -233,8 +243,9 @@ def _locate(table, id_, pre, post, org_id):
 
 
 def _unwrap(v):
-    """Rule 6: user text is disclosed wrapped (F-R10); the row holds the string."""
-    if isinstance(v, dict):
+    """Rule 6: user text is disclosed wrapped (F-R10); the row holds the string.
+    Any other dict is a JSON column's value (a report layout, TBD-669)."""
+    if isinstance(v, dict) and "untrusted" in v:
         assert set(v) == {"untrusted"} and isinstance(v["untrusted"], str), f"rule 6: value {v!r}"
         return v["untrusted"]
     return v
@@ -268,6 +279,7 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summar
     del_rows = {t: {pk for pk in pre[t] if pk not in post[t]} for t in TABLES if t not in BOOKKEEPING_TABLES}
     claimed_del: set[tuple] = set()
     insert_groups = []
+    refs: list[tuple] = []  # (table, pk, column, group id it names): checked once inserts match
 
     for (table, _), cs in groups.items():
         tobj = TABLES[table]
@@ -289,6 +301,14 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summar
                     claimed.add((table, pk, base))
                     continue
                 assert f in tobj.c, f"rule 3: {table} has no column {f!r}"
+                a = c["after"]
+                if isinstance(a, str) and a.startswith("new:") and tobj.c[f].foreign_keys:
+                    # A link to a row this call inserts (TBD-604): rule 4 resolves it.
+                    assert _norm(tobj.c[f], pre[table][pk][f]) == c["before"], (
+                        f"rule 3: {table}.{f} before {c['before']!r} is not the row's")
+                    refs.append((table, pk, f, a))
+                    claimed.add((table, pk, f))
+                    continue
                 p, q = _norm(tobj.c[f], pre[table][pk][f]), _norm(tobj.c[f], post[table][pk][f])
                 assert p == c["before"] and q == c["after"] and (p != q or c["before"] == c["after"]), (
                     f"rule 3: {table}.{f} names {c['before']!r} -> {c['after']!r}, row went {p!r} -> {q!r}"
@@ -308,7 +328,6 @@ def check_execute(w: Window, changes: list[dict], org_id: int, risk: str, summar
 
     # 4. inserts: one-to-one, named values equal the row, the rest default
     matched: dict[str, tuple] = {}  # insert group id -> (table, pk)
-    refs: list[tuple] = []  # (table, pk, column, group id it names)
     for table, id_, pk, cs in insert_groups:
         tobj = TABLES[table]
         natural = not (isinstance(id_, str) and id_.startswith("new:"))
@@ -476,7 +495,8 @@ def _tx_dates(a):
 
 
 def _tx_clear_expected(a):
-    return "transactions_update", {"transaction_id": a["tx"], "settled_date": None}
+    # TBD-791: a pending row's expected settlement is the sensitive tool's.
+    return "transactions_update_money", {"transaction_id": a["tx"], "settled_date": None}
 
 
 async def _pending(f, a):
@@ -894,6 +914,11 @@ SENSITIVE_SCENARIOS = [
     ("money-settled-to-pending", _money(status="pending"), _none, False),
     ("money-pending-to-settled-with-a-new-amount", _money(status="settled", amount="12.00"), _pending, False),
     ("money-account-move", _money(account_id="@savings"), _savings, False),
+    ("money-moves-a-pending-expected-date",
+     _money(settled_date=(P_START + datetime.timedelta(days=9)).isoformat()), _pending, False),
+    ("money-settles-a-pending-row-on-a-chosen-date",
+     _money(status="settled", settled_date=(P_START + datetime.timedelta(days=2)).isoformat()),
+     _pending, False),
     ("money-on-a-skipped-import-row-moves-no-money", _money(amount="30.00"), _skipped_import, False),
     ("create-settled-learns-a-new-rule", _create(), _none, False),
     ("create-pending-onto-an-existing-rule",
@@ -1189,8 +1214,254 @@ PLAN_LINK_SCENARIOS = [
      _seq(_cc, _doomed, _plan({"funding_account_id": "old"}, {"account_id": "old"})), False),
     ("recurring-delete-unlinks-the-goal-it-funds", _rec("recurring_delete"),
      _seq(_series_matched, _plan({}, {"funding_recurring_id": "rec"})), False),
-    ("category-delete-unlinks-the-plans-and-goals-on-it", _tool("categories_delete", category_id="@c2"),
+    # TBD-601: they follow a deleted category to its target, as transactions do.
+    ("category-delete-carries-the-plans-and-goals-on-it",
+     _tool("categories_delete", category_id="@c2", target_category_id="@c1"),
      _seq(_floor, _rule_to_c2, _plan({"category_id": "c2"}, {"category_id": "c2"})), False),
+]
+
+# ── the report and notification-preference tools (TBD-669, TBD-787) ─────
+
+KPI = {"version": 1, "widgets": [{
+    "id": "k1", "type": "kpi", "title": "Net", "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+    "config": {"dataset": "transactions", "measure": {"agg": "sum", "field": "net_amount"}},
+}]}
+THIS_MONTH = {"date_range": {"preset": "this_month"}}
+
+
+async def _report(f, a):
+    await _a_report(f, a)
+
+
+async def _versions(f, a, n, **live):
+    """``n`` saved (non-original) versions on the report, then ``live`` on it."""
+    await _a_report(f, a)
+    async with f() as db:
+        db.add_all([ReportVersion(report_id=a["report"], is_original=False, canvas_filters_json={},
+                                  layout_json={"version": 1, "widgets": [], "n": k}) for k in range(n)])
+        await db.flush()
+        a["version"] = (await db.scalars(select(ReportVersion.id).where(
+            ReportVersion.report_id == a["report"], ReportVersion.is_original.is_(False),
+        ).order_by(ReportVersion.id))).first()
+        if live:
+            await db.execute(update(Report).where(Report.id == a["report"]).values(**live))
+        await db.commit()
+
+
+async def _full_history(f, a):
+    await _versions(f, a, 4)
+
+
+async def _edited(f, a):
+    await _versions(f, a, 1, layout_json=KPI, canvas_filters_json=THIS_MONTH)
+
+
+REPORT_SCENARIOS = [
+    ("report-rename", _t("reports_update", report_id="@report", name="Monthly spend"), _report, False),
+    ("report-clear-description", _t("reports_update", report_id="@report", description=None), _report, False),
+    ("report-layout-saves-a-version",
+     _t("reports_update_layout", report_id="@report", layout_json=KPI, canvas_filters_json=THIS_MONTH),
+     _report, False),
+    ("report-layout-evicts-the-oldest-version",
+     _t("reports_update_layout", report_id="@report", layout_json=KPI), _full_history, False),
+    ("report-share-with-the-org", _t("reports_update_layout", report_id="@report", visibility="org"),
+     _report, False),
+    ("report-create-blank", _t("reports_create", name="  Blank "), reports_on, False),
+    ("report-create-with-a-layout",
+     _t("reports_create", name="KPIs", description="Net", visibility="org", layout_json=KPI,
+        canvas_filters_json=THIS_MONTH), reports_on, False),
+    ("report-duplicate", _t("reports_duplicate", report_id="@report"), _edited, False),
+    ("report-reset-to-the-original", _t("reports_reset", report_id="@report"), _edited, False),
+    ("report-restore-a-version", _t("report_version_restore", report_id="@report", version_id="@version"),
+     _edited, False),
+    ("report-delete-takes-its-versions", _t("reports_delete", report_id="@report"), _edited, False),
+    ("prefs-turn-one-off", _t("notification_preferences_update", **{**PREFS_ON, "email_org_activity": False}),
+     _prefs, False),
+    ("prefs-first-save-inserts-the-row",
+     _t("notification_preferences_update", **{**PREFS_ON, "in_app_cc_statement": False}), _none, False),
+]
+
+
+# ── the forecast plan and Plans tools (TBD-668) ───────────────────────────
+
+async def _fplan(f, a, status=PlanStatus.DRAFT):
+    """A plan for the open period with one generated item (Fun, 50.00)."""
+    async with f() as db:
+        pid = await db.scalar(select(BillingPeriod.id).where(BillingPeriod.org_id == a["org"]))
+    [a["plan"]] = await _ids(f, ForecastPlan(org_id=a["org"], billing_period_id=pid, status=status))
+    [a["item"]] = await _ids(f, ForecastPlanItem(
+        plan_id=a["plan"], org_id=a["org"], category_id=a["c2"], type=ForecastItemType.EXPENSE,
+        planned_amount=Decimal("50.00"), source=ItemSource.HISTORY))
+
+
+async def _fplan_with_manual(f, a):
+    """Plus a hand-set Rent item after it (a refresh keeps it)."""
+    await _seq(_fplan, _rent)(f, a)
+    await _add(f, ForecastPlanItem(plan_id=a["plan"], org_id=a["org"], category_id=a["rent"],
+                                   type=ForecastItemType.EXPENSE, planned_amount=Decimal("800.00")))
+
+
+async def _fplan_active(f, a):
+    await _fplan(f, a, PlanStatus.ACTIVE)
+
+
+async def _active_plan(f, a):
+    """A started plan on ``c1`` whose goal is funded by ``rec`` (``_series_matched``),
+    with the world's Budget in the open period (kept) and one in the next (deleted)."""
+    await _series_matched(f, a)
+    [a["scn"]] = await _ids(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP, params_json={},
+        horizon_months=24, status=ScenarioStatus.ACTIVE, currency="EUR", category_id=a["c1"]))
+    await _add(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], name="Fund", tier=PlanGoalTier.WANT,
+                           kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=Decimal("10.00"),
+                           funding_recurring_id=a["rec"]),
+               Budget(org_id=a["org"], category_id=a["c1"], amount=Decimal("10.00"),
+                      period_start=P_START + relativedelta(months=1)))
+
+
+async def _active_plan_funded(f, a):
+    """``_active_plan`` drawing on ``acct``: a goal started late gets a series."""
+    await _active_plan(f, a)
+    async with f() as db:
+        await db.execute(update(Scenario).where(Scenario.id == a["scn"]).values(funding_account_id=a["acct"]))
+        await db.commit()
+
+
+async def _started_with_a_disabled_goal(f, a):
+    """A started plan on a BOTH master (a transfer's category), funded from
+    ``acct``, with a disabled savings goal into ``savings`` ending in 3 months."""
+    await _savings(f, a)
+    [goals] = await _ids(f, Category(org_id=a["org"], name="Goals", type=CategoryType.BOTH))
+    [a["scn"]] = await _ids(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="House", scenario_type=ScenarioType.TRIP, params_json={},
+        horizon_months=24, status=ScenarioStatus.ACTIVE, currency="EUR", category_id=goals,
+        funding_account_id=a["acct"], monthly_budget=Decimal("100.00")))
+    [a["goal"]] = await _ids(f, PlanGoal(
+        org_id=a["org"], scenario_id=a["scn"], name="Deposit", tier=PlanGoalTier.WANT,
+        kind=PlanGoalKind.SAVINGS_TARGET, monthly_amount=Decimal("20.00"), account_id=a["savings"],
+        target_date=datetime.date.today() + relativedelta(months=3), enabled=False))
+
+
+def _draft(a, name, **kw):
+    return Scenario(org_id=a["org"], user_id=a["member"], name=name, scenario_type=ScenarioType.TRIP,
+                    params_json={}, horizon_months=24, currency="EUR", **kw)
+
+
+async def _draft_to_start(f, a):
+    """A draft with a cap, funded from ``acct``, and no category or tag: a
+    dated monthly spend, a savings goal into ``savings``, a lump in a later
+    period and a disabled goal (no steps)."""
+    await _savings(f, a)
+    [a["scn"]] = await _ids(f, _draft(a, "Lisbon Trip", funding_account_id=a["acct"],
+                                      monthly_budget=Decimal("100.00")))
+    goal = dict(org_id=a["org"], scenario_id=a["scn"], tier=PlanGoalTier.WANT)
+    await _add(f, PlanGoal(**goal, name="Food", kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=Decimal("25.00"),
+                           target_date=datetime.date.today() + relativedelta(months=2)),
+               PlanGoal(**goal, name="Pot", kind=PlanGoalKind.SAVINGS_TARGET, monthly_amount=Decimal("20.00"),
+                        account_id=a["savings"]),
+               PlanGoal(**goal, name="Flights", kind=PlanGoalKind.LUMP, target_amount=Decimal("300.00"),
+                        target_date=P_START + relativedelta(months=2, days=3)),
+               PlanGoal(**goal, name="Spa", kind=PlanGoalKind.MONTHLY_SPEND, monthly_amount=Decimal("9.00"),
+                        enabled=False))
+
+
+async def _draft_linked(f, a):
+    """A draft linked to a fresh BOTH master with a goal on its subcategory,
+    and a tag already named after it (adopted)."""
+    [master] = await _ids(f, Category(org_id=a["org"], name="House", type=CategoryType.BOTH))
+    [car] = await _ids(f, Category(org_id=a["org"], name="Car", type=CategoryType.BOTH, parent_id=master))
+    await _add(f, Tag(org_id=a["org"], name="house", name_normalized="house"))
+    [a["scn"]] = await _ids(f, _draft(a, "House", funding_account_id=a["acct"], category_id=master))
+    await _add(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], tier=PlanGoalTier.WANT, name="Car", kind=PlanGoalKind.MONTHLY_SPEND,
+        monthly_amount=Decimal("15.00"), category_id=car))
+
+
+async def _bare_draft(f, a):
+    [a["scn"]] = await _ids(f, _draft(a, "Someday"))
+
+
+async def _own_plan(f, a):
+    [a["scn"]] = await _ids(f, Scenario(
+        org_id=a["org"], user_id=a["member"], name="Trip", scenario_type=ScenarioType.TRIP,
+        params_json={}, horizon_months=24))
+    [a["goal"]] = await _ids(f, PlanGoal(org_id=a["org"], scenario_id=a["scn"], name="Fund",
+                                         tier=PlanGoalTier.WANT, kind=PlanGoalKind.SAVINGS_TARGET))
+
+
+_TRIP = {"scenario_type": "trip", "destination": "Lisbon", "start_date": (P_START + relativedelta(months=2)).isoformat(),
+         "duration_days": 5, "currency": "EUR", "transport_cost": "200.00", "accommodation_per_night": "90.00",
+         "daily_budget": "60.00", "source_account_id": "@acct"}
+
+FORECAST_PLAN_SCENARIOS = [
+    ("forecast-plan-populate-creates-the-plan", _tool("forecast_plan_populate"), _none, False),
+    ("forecast-plan-populate-adds-to-a-draft", _tool("forecast_plan_populate", period_start=P_START.isoformat()),
+     _fplan, False),
+    ("forecast-plan-refresh-replaces-generated-items", _tool("forecast_plan_refresh"), _fplan_with_manual, False),
+    ("forecast-plan-copy-into-a-new-plan", _tool("forecast_plan_copy", source_period_start=P_START.isoformat(),
+                                                 target_period_start=NEXT.isoformat()),
+     _seq(_fplan, _next_period), False),
+    ("forecast-plan-item-add-inserts", _tool("forecast_plan_item_add", plan_id="@plan", category_id="@c1",
+                                             type="expense", planned_amount="120.00"), _fplan, False),
+    ("forecast-plan-item-add-replaces", _tool("forecast_plan_item_add", plan_id="@plan", category_id="@c2",
+                                              type="expense", planned_amount="70.00"), _fplan, False),
+    ("forecast-plan-items-bulk", lambda a: ("forecast_plan_items_bulk", {"plan_id": a["plan"], "items": [
+        {"category_id": a["c1"], "type": "expense", "planned_amount": "10.00"},
+        {"category_id": a["c2"], "type": "expense", "planned_amount": "60.00"},
+        {"category_id": a["c1"], "type": "expense", "planned_amount": "15.00"},
+    ]}), _fplan, False),
+    ("forecast-plan-item-update", _tool("forecast_plan_item_update", plan_id="@plan", item_id="@item",
+                                        planned_amount="55.00"), _fplan, False),
+    ("forecast-plan-item-delete", _tool("forecast_plan_item_delete", plan_id="@plan", item_id="@item"),
+     _fplan, False),
+    ("forecast-plan-activate", _tool("forecast_plan_activate", plan_id="@plan"), _fplan, False),
+    ("forecast-plan-revert", _tool("forecast_plan_revert", plan_id="@plan"), _fplan_active, False),
+    ("forecast-plan-discard", _tool("forecast_plan_discard", plan_id="@plan"), _fplan, False),
+    ("scenario-create-a-trip", lambda a: ("scenarios_create", {
+        "name": "  Lisbon ", "scenario_type": "trip", "params": _resolve(a, _TRIP)}), _none, False),
+    ("scenario-update-name-and-horizon", _tool("scenarios_update", scenario_id="@scn", name="Porto",
+                                               horizon_months=36, is_active=False), _own_plan, False),
+    ("scenario-update-params", lambda a: ("scenarios_update", {
+        "scenario_id": a["scn"], "params": _resolve(a, _TRIP)}), _own_plan, False),
+    ("scenario-delete-removes-its-goals", _tool("scenarios_delete", scenario_id="@scn"), _own_plan, False),
+    # TBD-601 plan fields and goals: the currency is the org's, every link in the org.
+    ("scenario-create-with-plan-fields", lambda a: ("scenarios_create", {
+        "name": "Lisbon", "scenario_type": "trip", "params": _resolve(a, _TRIP), "monthly_budget": "500.00",
+        "return_pct": "4.00", "funding_account_id": a["acct"]}), _none, False),
+    ("scenario-update-plan-fields", _tool("scenarios_update", scenario_id="@scn", category_id="@c1",
+                                          inflation_pct="2.50"), _own_plan, False),
+    ("plan-goal-create", _tool("plan_goal_create", scenario_id="@scn", name="Car", tier="want",
+                               kind="savings_target", target_amount="1000.00", account_id="@acct"),
+     _own_plan, False),
+    ("plan-goal-update", _tool("plan_goal_update", scenario_id="@scn", goal_id="@goal", target_amount="250.00",
+                               enabled=False), _own_plan, False),
+    ("plan-goal-delete", _tool("plan_goal_delete", scenario_id="@scn", goal_id="@goal"), _own_plan, False),
+    # TBD-604: Finish, and Delete of a started plan, wind it down.
+    ("plan-finish-stops-its-series-and-drops-later-budgets", _tool("plans_finish", scenario_id="@scn"),
+     _active_plan, False),
+    ("scenario-delete-winds-a-started-plan-down", _tool("scenarios_delete", scenario_id="@scn"),
+     _active_plan, False),
+    # A started plan's new cap rewrites its Budgets from the open period on and
+    # makes the missing ones (two of the three later periods have none).
+    ("scenario-update-started-plan-budget-reaches-its-budgets", _tool(
+        "scenarios_update", scenario_id="@scn", monthly_budget="300.00", name="Porto", confirm=True),
+     _seq(_active_plan, _next_period), False),
+    # A goal added to a started plan gets Start's steps: its subcategory, its
+    # series, and the plan's Budgets recomputed with its spend.
+    ("plan-goal-create-on-a-started-plan-runs-starts-steps", _tool(
+        "plan_goal_create", scenario_id="@scn", name="Gym", tier="want", kind="monthly_spend",
+        monthly_amount="25.00", confirm=True), _seq(_active_plan_funded, _next_period), False),
+    # Enabling a savings goal there: its start balance, a transfer series that
+    # stops at the target date, and the cap's missing Budgets (no spend of its own).
+    ("plan-goal-update-enables-a-goal-on-a-started-plan", _tool(
+        "plan_goal_update", scenario_id="@scn", goal_id="@goal", enabled=True, name="Down payment",
+        confirm=True), _seq(_started_with_a_disabled_goal, _next_period), False),
+    # Start (architects' ruling on TBD-604): a new master and tag, each enabled
+    # goal's subcategory and series, the Budgets over every period.
+    ("plan-start-creates-master-tag-series-and-budgets", _tool("plans_start", scenario_id="@scn"),
+     _seq(_draft_to_start, _next_period), False),
+    ("plan-start-adopts-linked-master-and-tag", _tool("plans_start", scenario_id="@scn"),
+     _seq(_draft_linked, _next_period), False),
+    ("plan-start-bare-draft", _tool("plans_start", scenario_id="@scn"), _bare_draft, False),
 ]
 
 
@@ -1205,7 +1476,7 @@ SCENARIOS = [
     ("tx-update-description", _tx_description, _none, False),
     ("tx-update-description-auto", _tx_description, _none, True),
     ("tx-update-dates-of-a-settled-row", _tx_dates, _none, False),
-    ("tx-update-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
+    ("money-clears-a-pending-expected-date", _tx_clear_expected, _pending, False),
     ("tx-update-one-transfer-leg", _tx_description, _transfer_leg, False),
     *SENSITIVE_SCENARIOS,
     *RECURRING_SCENARIOS,
@@ -1213,15 +1484,18 @@ SCENARIOS = [
     *MONEY_ACCOUNT_SCENARIOS,
     *PLAN_LINK_SCENARIOS,
     *PLANNING_SCENARIOS,
+    *REPORT_SCENARIOS,
+    *FORECAST_PLAN_SCENARIOS,
 ]
 COVERED = {build(collections.defaultdict(int))[0] for _, build, _, _ in SCENARIOS}
 
 
 @pytest.mark.parametrize("sid,build,setup,auto", SCENARIOS, ids=[s[0] for s in SCENARIOS])
-async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, build, setup, auto):
+async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, monkeypatch, plans_entitled, sid, build, setup, auto):
     """FENCE T-A9 / GUARD T-A9c. Wrong implementation: any preview whose
     Changes differ from what execute writes (see the T-A10 mutants), or this
     fence going vacuous (window counts are asserted)."""
+    monkeypatch.setattr(app_settings, "feature_plans", True)  # Plans is off by default
     a = w["A"]
     await setup(factory, a)
     tool, args = build(a)
@@ -1266,6 +1540,25 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
         assert named[("budgets", "amount")] == "875.50"  # Rent's own item plus its subcategory's
     if sid == "budget-draft-writes-nothing":
         assert changes == []
+    if sid.startswith("plan-start-"):  # Start's steps were disclosed (TBD-604)
+        groups = collections.Counter((c["entity"], c["id"]) for c in changes)
+        kinds = collections.Counter(e for e, i in groups if isinstance(i, str))
+        expect = {"plan-start-creates-master-tag-series-and-budgets": {
+                      "categories": 4, "tags": 1, "recurring_transactions": 3, "budgets": 4},
+                  "plan-start-adopts-linked-master-and-tag": {"recurring_transactions": 1, "budgets": 4},
+                  "plan-start-bare-draft": {"categories": 1, "tags": 1}}[sid]
+        assert dict(kinds) == expect, kinds
+        assert named[("scenarios", "status")] == "active"
+        if sid == "plan-start-creates-master-tag-series-and-budgets":
+            assert named[("scenarios", "category_id")] == named[("categories", "parent_id")] == "new:category:master"
+            assert named[("plan_goals", "start_balance")] == "50.00"
+    if sid.startswith("plan-goal-") and "started-plan" in sid:  # Start's steps were disclosed (TBD-604)
+        assert {"categories", "recurring_transactions", "budgets"} <= {c["entity"] for c in changes}
+        assert named[("plan_goals", "funding_recurring_id")] == "new:series:1"
+        if sid == "plan-goal-update-enables-a-goal-on-a-started-plan":
+            assert named[("recurring_transactions", "type")] == "transfer"
+            assert named[("plan_goals", "start_balance")] == "50.00"
+            assert named[("recurring_transactions", "occurrence_count")] in (3, 4)
     if sid == "category-create-sub-takes-the-master-type":
         assert named[("categories", "type")] == "expense"
     if sid == "category-type-cascades-to-subs":
@@ -1280,6 +1573,9 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
                     if c["entity"] in ("scenarios", "plan_goals") and c["after"] is None}
         assert {e for e, _ in unlinked} == ({"plan_goals"} if sid.startswith("recurring") else
                                              {"plan_goals", "scenarios"}), unlinked
+    if sid == "category-delete-carries-the-plans-and-goals-on-it":
+        carried = {c["entity"]: c["after"] for c in changes if c["entity"] in ("scenarios", "plan_goals")}
+        assert carried == {"scenarios": a["c1"], "plan_goals": a["c1"]}, carried
     if sid.startswith("account-money-"):
         fields = {(c["entity"], c["field"]) for c in changes}
         moved = ("accounts", "balance_delta") in fields
@@ -1291,6 +1587,18 @@ async def test_ta9_every_write_tool_tells_the_truth(factory, w, windows, sid, bu
     if sid == "account-money-card-to-loan-with-an-opening-balance":
         assert named[("accounts", "balance_delta")] == "-300.00"
         assert ("accounts", "payment_source_account_id") not in named  # a loan keeps it
+    if sid == "report-layout-evicts-the-oldest-version":
+        gone = [c["id"] for c in changes if c["entity"] == "report_versions" and c["after"] is None]
+        assert gone == [a["version"]], gone
+    if sid in ("report-reset-to-the-original", "report-restore-a-version", "report-share-with-the-org"):
+        assert {c["entity"] for c in changes} == {"reports"}  # no version is saved
+    if sid == "report-delete-takes-its-versions":
+        assert sum(c["entity"] == "report_versions" for c in changes) == 2
+    if sid.startswith("prefs-"):
+        assert [c["field"] for c in changes] == (
+            ["email_org_activity"] if sid == "prefs-turn-one-off" else list(PREFS_ON))
+    if sid == "scenario-create-with-plan-fields":
+        assert named[("scenarios", "currency")] == "EUR"  # the org's scope, named though not sent
     if sid == "category-restore-recommended":
         parents = [c["after"] for c in changes if c["field"] == "parent_id"]
         assert any(isinstance(p, str) for p in parents) and any(isinstance(p, int) for p in parents)
@@ -1566,6 +1874,39 @@ async def test_ta10_green_for_two_inserts_that_name_each_other(factory, w, windo
     a = w["A"]
     name = mutant("m_pair_ok", lambda args: _pair_changes(a), _pair_execute(a, self_linked=False),
                   risk="sensitive")
+    await _run(factory, windows, w, name)
+
+
+def _relink_changes(a):
+    """Two inserted categories, and ``b1`` updated to point at the second (the
+    shape of a goal started late, linked to the subcategory it gets, TBD-604)."""
+    out = []
+    for gid, name in (("new:1", "Pets"), ("new:2", "Toys")):
+        out += [Change("categories", gid, "name", None, {"untrusted": name}),
+                Change("categories", gid, "type", None, "expense")]
+    return out + [Change("budgets", a["b1"], "category_id", a["c1"], "new:2")]
+
+
+def _relink_execute(a, *, right: bool):
+    async def ex(ctx, args):
+        pets, toys = (Category(org_id=a["org"], name=n, type=CategoryType.EXPENSE) for n in ("Pets", "Toys"))
+        ctx.db.add_all([pets, toys])
+        await ctx.db.flush()
+        await _b(ctx, a["b1"], category_id=(toys if right else pets).id)
+    return ex
+
+
+@_mutant("rule 4: budgets.category_id names 'new:2' but links elsewhere")
+def updated_link_points_elsewhere(a):
+    """Wrong implementation: an update disclosed as linking to one new row,
+    written linking to the other."""
+    return _relink_changes(a), _relink_execute(a, right=False), {}
+
+
+async def test_ta10_green_for_an_update_that_names_a_new_row(factory, w, windows, mutant):
+    """GUARD for ``updated_link_points_elsewhere``: the right link is green."""
+    a = w["A"]
+    name = mutant("m_relink_ok", lambda args: _relink_changes(a), _relink_execute(a, right=True))
     await _run(factory, windows, w, name)
 
 

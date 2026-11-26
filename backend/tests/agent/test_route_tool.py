@@ -353,11 +353,13 @@ def test_tb6_a_delete_carries_a_cascade_disclosure_covering_every_foreign_key():
     with pytest.raises(ToolRegistrationError, match="FK-cascade"):
         route_tool(**kw)
     link, tags = "transactions.linked_transaction_id", "transaction_tags.transaction_id"
+    bound = "transactions.bound_bank_tx_id"
     with pytest.raises(ToolRegistrationError, match=tags):
-        route_tool(**kw, cascade=CascadeDisclosure(covers=frozenset({link}), disclose=_nothing))
+        route_tool(**kw, cascade=CascadeDisclosure(covers=frozenset({link, bound}), disclose=_nothing))
     with pytest.raises(ToolRegistrationError, match="describe"):
-        route_tool(**{**kw, "describe": ()}, cascade=CascadeDisclosure(frozenset({link, tags}), _nothing))
-    route_tool(**kw, cascade=CascadeDisclosure(covers=frozenset({link, tags}), disclose=_nothing))
+        route_tool(**{**kw, "describe": ()},
+                   cascade=CascadeDisclosure(frozenset({link, tags, bound}), _nothing))
+    route_tool(**kw, cascade=CascadeDisclosure(covers=frozenset({link, tags, bound}), disclose=_nothing))
 
 
 def test_tb6_a_create_template_names_body_columns_of_its_entity():

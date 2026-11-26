@@ -68,6 +68,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   forecastExpenseItems: [],
   forecastChartRows: [],
   chartFilter: null,
+  chartFilterMatch: "exact",
   chartFilterName: null,
   setChartFilter: vi.fn(),
   // Phase 2c recent transactions

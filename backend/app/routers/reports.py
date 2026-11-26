@@ -48,7 +48,7 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.models.report import Report, ReportVersion, ReportVisibility
 from app.models.user import Organization, Role, User
-from app.rate_limit import limiter
+from app.rate_limit import limiter, user_rate_limit_key
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.reports.templates import get_report_templates
 from app.schemas.report import (
@@ -81,6 +81,7 @@ from app.services.sankey_service import build_sankey
 
 
 logger = logging.getLogger(__name__)
+
 
 
 router = APIRouter(
@@ -222,7 +223,11 @@ async def _run_source_query(db: AsyncSession, ast: ReportsQuery, *, org_id: int)
     response_model=ReportsQueryResponse,
     dependencies=[Depends(load_rate_limit_overrides)],
 )
-@limiter.limit(dynamic_limit("reports.query", "60/minute"))
+# Per user, not per address (TBD-669, as TBD-726): the agent's query tools draw
+# the same bucket (``app.agent.actions.route_gate``), which has no address. A
+# loose per-address backstop bounds one address spread across many accounts.
+@limiter.limit(dynamic_limit("reports.query", "60/minute"), key_func=user_rate_limit_key)
+@limiter.limit("300/minute")
 async def run_query(
     request: Request,
     body: ReportsQuery,
@@ -243,7 +248,8 @@ async def run_query(
     response_model=SankeyResponse,
     dependencies=[Depends(load_rate_limit_overrides)],
 )
-@limiter.limit(dynamic_limit("reports.sankey_query", "60/minute"))
+@limiter.limit(dynamic_limit("reports.sankey_query", "60/minute"), key_func=user_rate_limit_key)
+@limiter.limit("300/minute")
 async def run_sankey_query(
     request: Request,
     body: SankeyQuery,

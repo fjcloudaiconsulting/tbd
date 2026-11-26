@@ -328,42 +328,6 @@ async def test_delete_invitation_revokes(session_factory):
     assert res.status_code == 204
 
 
-# ── GET /invitations/preview ───────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_preview_returns_metadata_for_pending(session_factory):
-    seed = await _seed(session_factory)
-    async with session_factory() as db:
-        inv = await invitation_service.create_invitation(
-            db, org_id=seed["org_id"], created_by=seed["owner_id"],
-            email="pv@acme.io", role=Role.MEMBER,
-        )
-        await db.commit()
-        token = create_invitation_token(inv.id, inv.email)
-    # Public endpoint — no current_user
-    app = make_app(session_factory, _user_factory(Role.OWNER))
-    app.dependency_overrides.pop(get_current_user, None)
-    with TestClient(app) as client:
-        res = client.get(f"/api/v1/orgs/invitations/preview?token={token}")
-    assert res.status_code == 200
-    body = res.json()
-    assert body["org_name"] == "Acme"
-    assert body["email"] == "pv@acme.io"
-    assert body["is_reactivation"] is False
-
-
-@pytest.mark.asyncio
-async def test_preview_returns_410_for_invalid_token(session_factory):
-    await _seed(session_factory)
-    app = make_app(session_factory, _user_factory(Role.OWNER))
-    app.dependency_overrides.pop(get_current_user, None)
-    with TestClient(app) as client:
-        res = client.get("/api/v1/orgs/invitations/preview?token=not-a-jwt")
-    assert res.status_code == 410
-    assert res.json()["detail"]["code"] == "invitation_unavailable"
-
-
 # ── POST /invitations/preview (TBD-738: the token travels in the body) ─────
 
 
@@ -416,28 +380,24 @@ async def test_preview_by_body_rejects_a_malformed_body(session_factory, body):
 
 
 @pytest.mark.asyncio
-async def test_preview_query_and_body_share_one_budget(session_factory):
-    """The deprecated GET and the POST draw on ONE 30/minute bucket, so keeping
-    the GET for a release does not double the preview budget."""
+async def test_preview_by_body_is_rate_limited(session_factory):
     await _seed(session_factory)
     with TestClient(_public_app(session_factory)) as client:
-        statuses = []
-        for i in range(31):
-            if i % 2:
-                r = client.get("/api/v1/orgs/invitations/preview?token=not-a-jwt")
-            else:
-                r = client.post("/api/v1/orgs/invitations/preview", json={"token": "not-a-jwt"})
-            statuses.append(r.status_code)
+        statuses = [
+            client.post("/api/v1/orgs/invitations/preview", json={"token": "not-a-jwt"}).status_code
+            for _ in range(31)
+        ]
     assert statuses[:30] == [410] * 30
     assert statuses[30] == 429
 
 
-def test_preview_query_route_is_marked_deprecated():
+def test_preview_has_no_query_string_shape():
+    """TBD-751: the deprecated GET that took the token in the URL is gone."""
     from app.main import app
 
-    op = app.openapi()["paths"]["/api/v1/orgs/invitations/preview"]
-    assert op["get"].get("deprecated") is True
-    assert not op["post"].get("deprecated")
+    assert set(app.openapi()["paths"]["/api/v1/orgs/invitations/preview"]) == {"post"}
+    res = TestClient(app).get("/api/v1/orgs/invitations/preview?token=not-a-jwt")
+    assert res.status_code == 405
 
 
 # ── POST /invitations/accept ───────────────────────────────────────────────

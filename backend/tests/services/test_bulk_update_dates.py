@@ -10,9 +10,10 @@ fences here:
 - a PENDING row keeps its expected-settlement gap when its date moves; a
   SETTLED row whose new date would pass its settled_date is never auto-shifted:
   its date is skipped with a note.
-- settled_date applies only to rows that are, or are being, SETTLED; with
+- settled_date applies to rows that are, or are being, SETTLED; with
   status=settled the rows settle on the chosen date instead of today. A row
-  that stays pending gets a note.
+  being set to pending gets a note. (Rows that stay pending take it as their
+  expected settlement since TBD-791: test_pending_settlement_move.py.)
 - a row failing the ordering check is skipped with its reason; the rest of the
   batch proceeds.
 - ``accounts.balance`` does not move on a date or settled_date change.
@@ -360,27 +361,6 @@ async def test_status_settled_settles_on_the_chosen_date(db_session):
     assert await _balance(db_session, seed["src_id"]) == before - Decimal("10")
 
 
-async def test_pending_row_not_being_settled_gets_a_note(db_session):
-    seed = await _seed(db_session)
-    only = await _pending(db_session, seed, settled=date(2026, 5, 3))
-    with_cat = await _pending(db_session, seed, settled=date(2026, 5, 3))
-    note = "settlement date not applied: set status to settled to apply"
-
-    updated, skipped, _ = await _bulk(
-        db_session, seed, [only], settled_date=date(2026, 5, 9),
-    )
-    assert updated == 0 and skipped == [(only, note)]
-
-    updated, skipped, notes = await _bulk(
-        db_session, seed, [with_cat], settled_date=date(2026, 5, 9),
-        category_id=seed["dining_id"],
-    )
-    assert updated == 1 and skipped == []
-    assert notes == [(with_cat, note)]
-    for tx in (only, with_cat):
-        assert (await _get(db_session, tx)).settled_date == date(2026, 5, 3)
-
-
 async def test_settled_row_set_to_pending_does_not_take_the_settled_date(db_session):
     seed = await _seed(db_session)
     tx = await _settled(db_session, seed)
@@ -391,7 +371,7 @@ async def test_settled_row_set_to_pending_does_not_take_the_settled_date(db_sess
 
     assert updated == 1 and skipped == []
     assert notes == [
-        (tx, "settlement date not applied: set status to settled to apply"),
+        (tx, "settlement date not applied to rows being set to pending"),
     ]
     row = await _get(db_session, tx)
     assert row.status == TransactionStatus.PENDING

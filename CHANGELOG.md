@@ -1,5 +1,123 @@
 # Changelog
 
+## [0.314.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.313.0...v0.314.0) (2026-11-21)
+
+
+### Features
+
+* **import:** choose and undo the recurring occurrence a bank row settles (TBD-755) ([#1159](https://github.com/fjcloudaiconsulting/tbd/issues/1159)) ([566ace6](https://github.com/fjcloudaiconsulting/tbd/commit/566ace61ac347582fd7dd040036c44a2f5ad97cd))
+
+
+### Bug Fixes
+
+* **test:** force the bind-vs-generation interleaving in the MySQL fence (TBD-818) ([#1160](https://github.com/fjcloudaiconsulting/tbd/issues/1160)) ([f6902b3](https://github.com/fjcloudaiconsulting/tbd/commit/f6902b3239ee8e8d46f2c157e268dced3ccc29f3))
+
+## [0.313.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.312.1...v0.313.0) (2026-11-21)
+
+
+### Features
+
+* **agent:** plan goal create and edit on a started plan with confirm=true (TBD-604) ([#1154](https://github.com/fjcloudaiconsulting/tbd/issues/1154)) ([94d6778](https://github.com/fjcloudaiconsulting/tbd/commit/94d6778f889e8465087e3323274045df1dda4cf2))
+* **agent:** plans_start starts a draft plan, every step disclosed (TBD-604) ([#1155](https://github.com/fjcloudaiconsulting/tbd/issues/1155)) ([24a1112](https://github.com/fjcloudaiconsulting/tbd/commit/24a11129a5870f109211b854f02ebf02f71436ca))
+
+## [0.312.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.312.0...v0.312.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** land the open Renovate updates (TBD-812) ([#1152](https://github.com/fjcloudaiconsulting/tbd/issues/1152)) ([2d77831](https://github.com/fjcloudaiconsulting/tbd/commit/2d778319995dfd539375f994763b7898b2248ffb))
+
+## [0.312.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.311.0...v0.312.0) (2026-11-17)
+
+
+### Features
+
+* **agent:** scenarios_update edits a started plan with confirm=true (TBD-604) ([#1148](https://github.com/fjcloudaiconsulting/tbd/issues/1148)) ([3738f60](https://github.com/fjcloudaiconsulting/tbd/commit/3738f6030126bae6a2ea16d6cba29edcc8b81b3a))
+
+## [0.311.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.310.0...v0.311.0) (2026-11-17)
+
+
+### Features
+
+* **agent:** plans_finish tool, and scenarios_delete winds down a started plan (TBD-604) ([#1146](https://github.com/fjcloudaiconsulting/tbd/issues/1146)) ([fb52aed](https://github.com/fjcloudaiconsulting/tbd/commit/fb52aedbb61898467a5801bf5d6db966550fb593))
+
+## [0.310.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.309.1...v0.310.0) (2026-11-15)
+
+
+### Features
+
+* **import:** bind an imported bank row to the recurring occurrence it settles (TBD-755) ([#1139](https://github.com/fjcloudaiconsulting/tbd/issues/1139)) ([55be357](https://github.com/fjcloudaiconsulting/tbd/commit/55be357f12f25398235fbbd0c738012b72058c48))
+
+
+### Bug Fixes
+
+* **reconcile:** settle a recurring occurrence when a bank row is matched to it (TBD-755) ([#1137](https://github.com/fjcloudaiconsulting/tbd/issues/1137)) ([a80b57d](https://github.com/fjcloudaiconsulting/tbd/commit/a80b57de1c9e732ed1361cf1d1fd11c73f8612ca))
+
+## [0.309.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.309.0...v0.309.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **forecast:** key and guard forecast currencies on the canonical code (TBD-801) ([#1135](https://github.com/fjcloudaiconsulting/tbd/issues/1135)) ([81953ef](https://github.com/fjcloudaiconsulting/tbd/commit/81953ef0b4e62778b916237928f1adaa1fd3dcb6))
+* **plans:** harden the lifecycle lock and the Budget rollover, word the past-date refusal for the plan (TBD-803) ([#1136](https://github.com/fjcloudaiconsulting/tbd/issues/1136)) ([6cb5c4e](https://github.com/fjcloudaiconsulting/tbd/commit/6cb5c4e56818f59b5ba146789421c9461684f563))
+* **plans:** size plan Budgets to their spend goals and stop the rollover without Plans (TBD-802) ([#1133](https://github.com/fjcloudaiconsulting/tbd/issues/1133)) ([f5b527d](https://github.com/fjcloudaiconsulting/tbd/commit/f5b527d66a0e7a0d2326656730a85223e97d9585))
+
+## [0.309.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.308.0...v0.309.0) (2026-11-08)
+
+
+### Features
+
+* **plans:** Plans needs the paid plans entitlement as well as its switch (TBD-564) ([#1109](https://github.com/fjcloudaiconsulting/tbd/issues/1109)) ([173c2b7](https://github.com/fjcloudaiconsulting/tbd/commit/173c2b7586b5c3de18d7a743133d469e380ffa9d))
+
+
+### Bug Fixes
+
+* **a11y:** keep the closed mobile drawer out of the tab order (TBD-536) ([#1119](https://github.com/fjcloudaiconsulting/tbd/issues/1119)) ([bc728f3](https://github.com/fjcloudaiconsulting/tbd/commit/bc728f34e78d31c76f62409817c47e8634e91077))
+* **accounts:** lock the org before the one-currency check so concurrent first accounts don't deadlock (TBD-508) ([#1118](https://github.com/fjcloudaiconsulting/tbd/issues/1118)) ([efed703](https://github.com/fjcloudaiconsulting/tbd/commit/efed7036d3aa7769645cbaf45fc50b77ec534020))
+* **admin:** dispatch the superadmin-target refusal on its code, not its message (TBD-374) ([#1125](https://github.com/fjcloudaiconsulting/tbd/issues/1125)) ([53f5a8e](https://github.com/fjcloudaiconsulting/tbd/commit/53f5a8eeda8f848a6f6a3c47c1675fcded2c10ab))
+* **auth:** clear the SWR cache when the signed-in user leaves or changes (TBD-620) ([#1114](https://github.com/fjcloudaiconsulting/tbd/issues/1114)) ([6323e8a](https://github.com/fjcloudaiconsulting/tbd/commit/6323e8a63b5fcac6a78ec86d6560c11744ac6be2))
+* **auth:** keep restoring the session through a backend restart (TBD-625) ([#1113](https://github.com/fjcloudaiconsulting/tbd/issues/1113)) ([5f9f0cc](https://github.com/fjcloudaiconsulting/tbd/commit/5f9f0ccea32efb7cb5de3f716df796ee303ddef9))
+* **broadcasts:** refuse to resume a completed broadcast (TBD-348) ([#1122](https://github.com/fjcloudaiconsulting/tbd/issues/1122)) ([4924d77](https://github.com/fjcloudaiconsulting/tbd/commit/4924d776a185efff816bfff89f7b45ed3c1920d6))
+* **dashboard:** roll the spending donut up to main categories so it agrees with Budget Progress (TBD-339) ([#1129](https://github.com/fjcloudaiconsulting/tbd/issues/1129)) ([2e635cd](https://github.com/fjcloudaiconsulting/tbd/commit/2e635cde182402645de89000753069d23b3e3161))
+* **demo:** seed opening balances that satisfy the balance invariant (TBD-597) ([#1116](https://github.com/fjcloudaiconsulting/tbd/issues/1116)) ([2edfd5a](https://github.com/fjcloudaiconsulting/tbd/commit/2edfd5a23b004b5895f4f290c8bf2c8ba38b70c0))
+* **dev:** clear the dev mounts in the local prod rehearsal with !reset (TBD-799) ([#1130](https://github.com/fjcloudaiconsulting/tbd/issues/1130)) ([aa44e2c](https://github.com/fjcloudaiconsulting/tbd/commit/aa44e2ceb7300ef3603271489741e2a2ca939ff4))
+* **dev:** mount the checkout at /repo so the full backend suite passes in the dev container (TBD-612) ([#1124](https://github.com/fjcloudaiconsulting/tbd/issues/1124)) ([58b22e7](https://github.com/fjcloudaiconsulting/tbd/commit/58b22e7ca5353adbed134f6cd94e4f32431bf1cb))
+* **forecast:** stop a two-month-grace card paying a real payment twice (TBD-797) ([#1128](https://github.com/fjcloudaiconsulting/tbd/issues/1128)) ([62d918b](https://github.com/fjcloudaiconsulting/tbd/commit/62d918bbddbf3f69b7806844e835a4a73e3db01f))
+* **plans:** add card-charged plan spend back when its card payment leaves the pool (TBD-793) ([#1115](https://github.com/fjcloudaiconsulting/tbd/issues/1115)) ([85871e9](https://github.com/fjcloudaiconsulting/tbd/commit/85871e90038f407d30d5dada02d0439a8d1558c8))
+* **reports:** compare a whole-month window against the whole previous months (TBD-488) ([#1127](https://github.com/fjcloudaiconsulting/tbd/issues/1127)) ([9e321e3](https://github.com/fjcloudaiconsulting/tbd/commit/9e321e310472f79d2050ba232028dfcae2ba5e2a))
+* **reports:** fold currency case in the accounts, recurring and net-worth sources (TBD-550) ([#1117](https://github.com/fjcloudaiconsulting/tbd/issues/1117)) ([c39f3f0](https://github.com/fjcloudaiconsulting/tbd/commit/c39f3f0981ae9ed3142b2df67c397d951acf07c3))
+* **scripts:** dispose the engine in the CLI's own event loop (TBD-795) ([#1103](https://github.com/fjcloudaiconsulting/tbd/issues/1103)) ([7301657](https://github.com/fjcloudaiconsulting/tbd/commit/73016579f23e93f0399d37599b2c0ac086735976))
+* **tests:** stop the 081 currency test leaking an alembic.op stub into the plans migration tests (TBD-796) ([#1123](https://github.com/fjcloudaiconsulting/tbd/issues/1123)) ([2e96955](https://github.com/fjcloudaiconsulting/tbd/commit/2e96955df381392f741f60a1a34fa6519917435a))
+* **transactions:** drop the deep-link highlight tint that failed contrast (TBD-511) ([#1111](https://github.com/fjcloudaiconsulting/tbd/issues/1111)) ([c92095d](https://github.com/fjcloudaiconsulting/tbd/commit/c92095dc126dece2d30b70a90e918b7333913d39))
+* **transactions:** say a skipped balance adjustment was refused, not gone (TBD-491) ([#1112](https://github.com/fjcloudaiconsulting/tbd/issues/1112)) ([f3815fe](https://github.com/fjcloudaiconsulting/tbd/commit/f3815fe120d4f222665ccaa22472cf896e2cd753))
+
+## [0.308.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.307.0...v0.308.0) (2026-11-07)
+
+
+### Features
+
+* **plans:** compose goal overlays, per-currency reconciliation and toggles (TBD-562) ([#1098](https://github.com/fjcloudaiconsulting/tbd/issues/1098)) ([b7b69e2](https://github.com/fjcloudaiconsulting/tbd/commit/b7b69e226729ba927c2bfab8dc949bc1a163d93a))
+* **plans:** lifetime tier on an age axis, depletion age and required contribution (TBD-563) ([#1101](https://github.com/fjcloudaiconsulting/tbd/issues/1101)) ([f047054](https://github.com/fjcloudaiconsulting/tbd/commit/f04705442689fef875213546a6956f801e3a7e69))
+
+## [0.307.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.306.0...v0.307.0) (2026-11-07)
+
+
+### Features
+
+* **admin:** recover and detect a missing platform superadmin (TBD-443) ([#1091](https://github.com/fjcloudaiconsulting/tbd/issues/1091)) ([5100686](https://github.com/fjcloudaiconsulting/tbd/commit/5100686e31aa94fdc1b5c3dc9edcad9fa7ccdca0))
+* **agent:** agent parity for forecast plans, scenarios, reports and notification preferences (TBD-668, TBD-669, TBD-787) ([#1094](https://github.com/fjcloudaiconsulting/tbd/issues/1094)) ([0faa6d0](https://github.com/fjcloudaiconsulting/tbd/commit/0faa6d0434d03ccaeb621ed854302050962475cb))
+* **auth:** email-first sign-up, frontend (TBD-654) ([#1087](https://github.com/fjcloudaiconsulting/tbd/issues/1087)) ([cddbaf0](https://github.com/fjcloudaiconsulting/tbd/commit/cddbaf0f4d24e65e97c30badb6b7a0b605a81a2c))
+* **plans:** org-scoped plan and goal draft CRUD (TBD-601) ([#1090](https://github.com/fjcloudaiconsulting/tbd/issues/1090)) ([66e78e1](https://github.com/fjcloudaiconsulting/tbd/commit/66e78e1a90d70c7d6ee89289a877716e19005376))
+* **recurring:** recurring transfers into credit cards and loans (TBD-789) ([#1084](https://github.com/fjcloudaiconsulting/tbd/issues/1084)) ([c8233da](https://github.com/fjcloudaiconsulting/tbd/commit/c8233da5de5c11cf4725ef5c55882dccaff07e27))
+* **transactions:** move a pending row's expected settlement date (TBD-791) ([#1092](https://github.com/fjcloudaiconsulting/tbd/issues/1092)) ([7f1ac4c](https://github.com/fjcloudaiconsulting/tbd/commit/7f1ac4cb4b0011b30c2d9e9aadc82fa78310f684))
+
+
+### Bug Fixes
+
+* **recurring:** refuse moving the next due date back onto a spent occurrence (TBD-509) ([#1083](https://github.com/fjcloudaiconsulting/tbd/issues/1083)) ([f452c86](https://github.com/fjcloudaiconsulting/tbd/commit/f452c863714c8c9dfcc45f691924edb606591f26))
+* **security:** remove the deprecated GET invitation preview (TBD-751) ([#1093](https://github.com/fjcloudaiconsulting/tbd/issues/1093)) ([d212b20](https://github.com/fjcloudaiconsulting/tbd/commit/d212b20311a26e0833895f388a009fc6d1b1c2b0))
+* **transactions:** idempotency key on batch create (TBD-784) ([#1088](https://github.com/fjcloudaiconsulting/tbd/issues/1088)) ([eea6864](https://github.com/fjcloudaiconsulting/tbd/commit/eea686461b2561ebe93fa43f0f27beb740a5dc67))
+
 ## [0.306.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.305.0...v0.306.0) (2026-11-03)
 
 

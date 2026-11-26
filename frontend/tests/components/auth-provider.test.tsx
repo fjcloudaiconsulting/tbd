@@ -463,7 +463,11 @@ describe("AuthProvider", () => {
       .mockResolvedValueOnce({ needs_setup: false })
       .mockRejectedValueOnce(new ApiTimeoutError())
       .mockRejectedValueOnce(new ApiTimeoutError())
-      .mockRejectedValueOnce(new ApiTimeoutError());
+      .mockRejectedValueOnce(new ApiTimeoutError())
+      // TBD-625: the next restore pass, once the backend is back.
+      .mockResolvedValueOnce({ needs_setup: false })
+      .mockResolvedValueOnce({ access_token: "restored-token" })
+      .mockResolvedValueOnce(TEST_USER);
 
     // An exact clock (no shouldAdvanceTime) so the backoff schedule itself is
     // pinned: each retry fires on its 250ms / 500ms boundary, not before.
@@ -484,12 +488,17 @@ describe("AuthProvider", () => {
     await elapseBackoff(1);
     expect(apiFetchMock).toHaveBeenCalledTimes(4); // attempt 3 at 750ms
 
-    // Budget exhausted: nothing retries after it.
-    await elapseBackoff(1000);
+    // Budget exhausted: the spinner stays and nothing retries for 1s...
+    await elapseBackoff(999);
     expect(apiFetchMock).toHaveBeenCalledTimes(4);
-
     expect(screen.getByTestId("loading")).toHaveTextContent("true");
     expect(screen.getByTestId("user")).toHaveTextContent("none");
+
+    // ...then (TBD-625) a fresh restore pass signs the user in, no reload.
+    await elapseBackoff(1);
+    expect(apiFetchMock).toHaveBeenCalledTimes(8); // status, refresh, me, authed status
+    expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email);
+    expect(screen.getByTestId("loading")).toHaveTextContent("false");
   });
 
   it("retries /auth/me on transient timeout during restore", async () => {
@@ -816,8 +825,8 @@ describe("AuthProvider", () => {
 
     // Wait until all 5 calls completed (status + refresh + 3x /me).
     await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(5));
-    // Budget exhausted: nothing retries after it.
-    await elapseBackoff(1000);
+    // Budget exhausted: nothing retries within the next pass's 1s delay.
+    await elapseBackoff(900);
     expect(apiFetchMock).toHaveBeenCalledTimes(5);
 
     // accessToken set once with the restored token and NEVER cleared.

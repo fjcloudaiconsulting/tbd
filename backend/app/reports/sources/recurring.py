@@ -47,6 +47,7 @@ from app.schemas.reports_query import (
     MeasureField,
     ReportsQuery,
 )
+from app.services.transaction_filters import account_currency_key
 
 _DIMENSIONS = [
     SourceDimension("category", "Category", "category"),
@@ -79,7 +80,8 @@ _FILTERS = [
 _DIM_EXPR = {
     Dimension.CATEGORY: ("category", Category.name),
     Dimension.ACCOUNT: ("account", Account.name),
-    Dimension.CURRENCY: ("currency", Account.currency),
+    # TBD-550: canonical key, never the bare column (legacy lowercase rows).
+    Dimension.CURRENCY: ("currency", account_currency_key()),
     Dimension.TXN_TYPE: ("txn_type", RecurringTransaction.type),
     Dimension.FREQUENCY: ("frequency", RecurringTransaction.frequency),
     Dimension.RECURRING_ACTIVE: (
@@ -154,9 +156,9 @@ def _apply_filter(stmt, f, leg_account=None):
         raise ValueError(f"recurring: unsupported op {op.value!r} for category_id")
     if field is FilterField.CURRENCY:
         if op is FilterOp.IN:
-            return stmt.where(Account.currency.in_(value))
+            return stmt.where(account_currency_key().in_(value))
         if op is FilterOp.EQ:
-            return stmt.where(Account.currency == value)
+            return stmt.where(account_currency_key() == value)
         raise ValueError(f"recurring: unsupported op {op.value!r} for currency")
     if field is FilterField.TXN_TYPE:
         if op is FilterOp.IN:

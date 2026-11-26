@@ -9,3 +9,5 @@ from app.agent import recurring_tools  # noqa: F401,I001
 from app.agent import billing_tools  # noqa: F401,I001
 from app.agent import account_tools  # noqa: F401,I001  (TBD-665)
 from app.agent import budget_tools, category_tools  # noqa: F401,I001  (TBD-666)
+from app.agent import report_tools, preference_tools  # noqa: F401,I001  (TBD-669, TBD-787)
+from app.agent import forecast_plan_tools, scenario_tools  # noqa: F401,I001  (TBD-668)

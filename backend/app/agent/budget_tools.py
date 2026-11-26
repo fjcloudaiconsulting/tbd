@@ -34,6 +34,8 @@ ROUTER = budgets_router.router
 BUDGETS = Feature.BUDGETS
 WRITE_CONFIRM = "Returns a preview to confirm; nothing changes until it is confirmed."
 STUBS = "Also adds the next billing periods (a Budgets page visit adds them too)."
+# Known gap (TBD-604): adding the stubs also writes the active plans' Budgets
+# for them (plan_lifecycle_service.rollover), which the previews below do not name.
 
 # A period as ``(start_date, end_date, id)``; the id is None for a stub this call adds.
 Period = tuple[datetime.date, datetime.date | None, int | None]

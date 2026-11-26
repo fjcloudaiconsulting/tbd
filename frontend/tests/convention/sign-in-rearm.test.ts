@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
  * - a namespace destructure that renames it: `const { signInWithAccessToken: s } = api`
  *   (the un-renamed form IS counted, as is any `export { signInWithAccessToken }`);
  * - a barrel that re-exports it under another name and a caller importing that name;
- * - whether each of the four sites is the right moment to sign in.
+ * - whether each of the five sites is the right moment to sign in.
  */
 const ROOT = path.resolve(__dirname, "..", "..");
 const NAME = "signInWithAccessToken";
@@ -24,6 +24,7 @@ const SITES = [
   "app/mfa-verify/page.tsx",
   "components/auth/AcceptInviteBody.tsx",
   "components/auth/AuthProvider.tsx",
+  "components/auth/SignupCompleteBody.tsx",
 ];
 const SKIP = new Set(["node_modules", ".next", "out", "out-apex", "public", "coverage", "tests", "scripts"]);
 
@@ -79,8 +80,8 @@ function references(sf: ts.SourceFile): number {
   return count;
 }
 
-describe("TBD-623 F11: the pin is re-armed only by the four sign-in sites", () => {
-  it("callers of signInWithAccessToken in non-test source are exactly the four sign-in sites, once each", () => {
+describe("TBD-623 F11: the pin is re-armed only by the five sign-in sites", () => {
+  it("callers of signInWithAccessToken in non-test source are exactly the five sign-in sites, once each", () => {
     const found: Record<string, number> = {};
     for (const dir of ["app", "components", "lib"]) {
       for (const f of walk(path.join(ROOT, dir))) {

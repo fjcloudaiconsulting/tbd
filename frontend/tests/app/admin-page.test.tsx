@@ -113,6 +113,54 @@ describe("/admin page", () => {
     expect(apiFetch).toHaveBeenCalledWith("/api/v1/admin/dashboard");
   });
 
+  it("warns when only one active superadmin remains (TBD-443)", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: makeUser({ isSuperadmin: true }),
+      loading: false,
+    } as never);
+    vi.mocked(apiFetch).mockResolvedValue({
+      kpis: {
+        total_orgs: 1,
+        total_users: 3,
+        active_subscriptions: 0,
+        signups_last_7d: 0,
+        active_superadmins: 1,
+      },
+      health: { db: { ok: true, latency_ms: 1 } },
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(
+      await screen.findByText(/Only one active platform superadmin/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Superadmins")).toBeInTheDocument();
+  });
+
+  it("does not warn with two or more active superadmins", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: makeUser({ isSuperadmin: true }),
+      loading: false,
+    } as never);
+    vi.mocked(apiFetch).mockResolvedValue({
+      kpis: {
+        total_orgs: 1,
+        total_users: 3,
+        active_subscriptions: 0,
+        signups_last_7d: 0,
+        active_superadmins: 2,
+      },
+      health: { db: { ok: true, latency_ms: 1 } },
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(await screen.findByText("Superadmins")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Only one active platform superadmin/),
+    ).not.toBeInTheDocument();
+  });
+
   it("loads and renders dashboard data for superadmins", async () => {
     vi.mocked(useAuth).mockReturnValue({
       user: makeUser({ isSuperadmin: true }),

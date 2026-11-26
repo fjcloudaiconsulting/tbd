@@ -216,7 +216,7 @@ async def legacy_case(db) -> dict:
     # really does form its own GROUP BY partition and really does drop out of a
     # filter -- whereas the case half (``'eur'``) is folded by that same
     # collation and is a SQLite-only defect. Without this row, deleting
-    # ``func.trim`` from ``_currency_key()`` passes every test here.
+    # ``func.trim`` from ``account_currency_key()`` passes every test here.
     padded = await _account(db, bones, "Padded (EUR )", "EUR ")
     await _expense(db, bones, upper, EUR_MAIN)
     await _expense(db, bones, lower, EUR_SAVINGS)

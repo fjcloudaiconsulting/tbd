@@ -87,16 +87,24 @@ async def test_a_settled_row_keeps_its_settlement_date(factory, w):
     assert err.code == "invalid_arguments"
 
 
-async def test_a_pending_rows_expected_date_can_be_cleared(factory, w):
-    """FENCE (set-ness). An explicit null clears; an omitted key leaves alone."""
+async def test_a_pending_rows_expected_date_is_the_sensitive_tools(factory, w):
+    """FENCE (TBD-791). Wrong implementation: moving or clearing a pending
+    row's expected settlement at ``write`` tier. It schedules when auto-settle
+    moves the balance, so it is ``transactions_update_money``'s (browser-only
+    confirm); a description edit on the same row is still fine here."""
     a = w["A"]
     expected = P_START + datetime.timedelta(days=5)
     await _set(factory, Transaction, a["tx"], status=TransactionStatus.PENDING, settled_date=expected)
     await _apply(factory, a, description="Renamed")
     assert (await _tx(factory, a["tx"])).settled_date == expected
-    done = await _apply(factory, a, settled_date=None)
-    assert done["changes"][0]["before"] == expected.isoformat() and done["changes"][0]["after"] is None
-    assert (await _tx(factory, a["tx"])).settled_date is None
+    for value in (None, (expected + datetime.timedelta(days=3)).isoformat()):
+        err = await _refused(_stage(factory, a, settled_date=value))
+        assert (err.code, err.data.get("reason")) == ("unsupported_in_v1", "pending_settlement")
+    out = await _invoke(factory, a["member"], "transactions_update_money",
+                        {"transaction_id": a["tx"], "settled_date": None})
+    assert [(c["field"], c["before"], c["after"]) for c in out["changes"]] == [
+        ("settled_date", expected.isoformat(), None),
+    ]
 
 
 # ── refusals ──────────────────────────────────────────────────────────────
@@ -152,6 +160,23 @@ async def test_a_transfer_leg_description_edit_touches_only_that_leg(factory, w)
     partner, _ = await _make_pair(factory, a)
     await _apply(factory, a, description="To savings")
     assert (await _tx(factory, partner)).description == "FROM MAIN"
+
+
+async def test_a_pending_transfers_expected_date_is_refused_on_both_tools(factory, w):
+    """FENCE (TBD-791). Wrong implementation: staging a settlement move that
+    the service mirrors onto the partner leg the preview never listed."""
+    a = w["A"]
+    partner, _ = await _make_pair(factory, a)
+    pending = {"status": TransactionStatus.PENDING, "settled_date": None}
+    await _set(factory, Transaction, a["tx"], **pending)
+    await _set(factory, Transaction, partner, **pending)
+    later = (P_START + datetime.timedelta(days=4)).isoformat()
+    err = await _refused(_stage(factory, a, settled_date=later))
+    assert err.code == "unsupported_in_v1"
+    err = await _refused(_invoke(factory, a["member"], "transactions_update_money",
+                                 {"transaction_id": a["tx"], "settled_date": later}))
+    assert (err.code, err.data.get("reason")) == ("unsupported_in_v1", "linked_transaction")
+    assert (await _tx(factory, partner)).settled_date is None
 
 
 async def test_no_rule_is_learned(factory, w):

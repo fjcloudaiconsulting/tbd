@@ -583,6 +583,41 @@ async def _recompute_broadcast_counters(
     return int(counts.get(RecipientStatus.PENDING, 0))
 
 
+# Recipient statuses a resume re-batches (Ruling 12). The claim UPDATE re-checks
+# them, so the drain and ``retryable_recipient`` must share this one tuple.
+_RESUME_RECIPIENT_STATUSES = (RecipientStatus.PENDING, RecipientStatus.FAILED)
+
+
+def retryable_recipient(max_attempts: int):
+    """The rows a resume would re-batch: ``pending`` or ``failed``, below the
+    attempts cap (Ruling 12), and never reported on by a webhook (TBD-330).
+
+    The ONE definition, shared by the resume drain's eligibility SELECT and the
+    resume endpoint's ``completed`` gate (TBD-348), so the gate can never admit
+    a resume the drain would then find nothing to do for, or refuse one it
+    would act on. (The drain also ANDs the ``delivery_status`` term for the
+    fresh-send path; repeating it on resume is harmless.)
+    """
+    return and_(
+        EmailBroadcastRecipient.status.in_(_RESUME_RECIPIENT_STATUSES),
+        EmailBroadcastRecipient.attempts < max_attempts,
+        EmailBroadcastRecipient.delivery_status.is_(None),
+    )
+
+
+async def has_retryable_recipients(db: AsyncSession, broadcast_id: int) -> bool:
+    """Whether a resume of ``broadcast_id`` would have anything to send."""
+    found = await db.execute(
+        select(EmailBroadcastRecipient.id)
+        .where(
+            EmailBroadcastRecipient.broadcast_id == broadcast_id,
+            retryable_recipient(settings.broadcast_max_attempts),
+        )
+        .limit(1)
+    )
+    return found.first() is not None
+
+
 async def _run_drain_loop(
     db: AsyncSession, broadcast_id: int, *, only_retryable: bool
 ) -> None:
@@ -640,11 +675,8 @@ async def _run_drain_loop(
         # but only those still below the attempts cap (Ruling 12 / R3) — so a
         # row that keeps failing eventually reaches ``max_attempts`` and is left
         # alone rather than re-batched on every resume.
-        expected_statuses = [RecipientStatus.PENDING, RecipientStatus.FAILED]
-        eligible = and_(
-            EmailBroadcastRecipient.status.in_(expected_statuses),
-            EmailBroadcastRecipient.attempts < max_attempts,
-        )
+        expected_statuses = list(_RESUME_RECIPIENT_STATUSES)
+        eligible = retryable_recipient(max_attempts)
     else:
         # Fresh send: only ever batch ``pending`` rows. Retries are resume-only.
         expected_statuses = [RecipientStatus.PENDING]

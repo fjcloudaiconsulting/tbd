@@ -43,6 +43,8 @@ services:
       - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:-dev-only-shared-api-token-hmac-key-not-for-prod}
       # TBD-587: the OAuth server is off unless set (off in production).
       - MCP_OAUTH_ENABLED=${MCP_OAUTH_ENABLED:-true}
+      # TBD-612: where repo-root fences find the checkout (the /repo mount below).
+      - REPO_ROOT=/repo
     depends_on:
       mysql:
         condition: service_healthy
@@ -110,6 +112,13 @@ services:
       # Read-only so test_release_workflow.py and the frontend-contract tests
       # find the repo-root marker .github/workflows/ci.yml.
       - ./.github:/app/.github:ro
+      # TBD-612: the whole checkout, read-only, at its own path. /app is the
+      # backend dir, so repo-root files with no directory of their own
+      # (.release-please-manifest.json, version.txt) and frontend/package.json
+      # were otherwise missing in the container while present in CI. A
+      # DIRECTORY mount survives git checkout/pull, unlike the single-file
+      # mounts here. Tests that honour REPO_ROOT (set above) read from it.
+      - .:/repo:ro
       # TBD-391: read-only mount so test_await_test_run_gate.py can execute the
       # repo-root CI gate script. It cannot go to /app/scripts — that path is
       # already taken by ./backend/scripts above — hence the distinct mount
@@ -233,9 +242,8 @@ services:
       - ./frontend/tsconfig.json:/app/tsconfig.json
 
   nginx:
-    image: mirror.gcr.io/library/nginx:alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
-    # INF-10: loopback only. On all interfaces anyone on the same network reaches Swagger, the
-    # dev OAuth server, the public dev pepper and the demo superadmin.
+    image: mirror.gcr.io/library/nginx:alpine@sha256:fb4658584bd9a916ffb6f6e365f97c25cfdb2923801f551ea08356e695f14ff7
+    # INF-10 limits the development listener to loopback.
     ports:
       - "127.0.0.1:80:80"
     volumes:

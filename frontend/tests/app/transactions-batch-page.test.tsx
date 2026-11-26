@@ -439,4 +439,77 @@ describe("Batch entry page", () => {
       expect(screen.getByLabelText("Row 6 description")).toBeTruthy();
     });
   });
+
+  describe("Idempotency-Key (TBD-784)", () => {
+    const keysSent = () =>
+      vi
+        .mocked(apiFetch)
+        .mock.calls.filter(([p]) => p === "/api/v1/transactions/batch")
+        .map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+
+    function batchAnswers(...answers: Array<"fail" | "ok">) {
+      const queue = [...answers];
+      vi.mocked(apiFetch).mockImplementation((path: string) => {
+        if (path === "/api/v1/transactions/batch") {
+          return queue.shift() === "fail"
+            ? Promise.reject(new Error("network down"))
+            : Promise.resolve({
+                imported_count: 1,
+                error_count: 0,
+                results: [{ row_number: 1, transaction_id: 42 }],
+                errors: [],
+              });
+        }
+        if (path === "/api/v1/accounts") return Promise.resolve(ACCOUNTS);
+        if (path === "/api/v1/categories") return Promise.resolve(CATEGORIES);
+        return Promise.resolve([]);
+      });
+    }
+
+    async function submitAndSettle() {
+      const submit = screen.getByRole("button", { name: /^Submit/ });
+      await act(async () => {
+        submit.click();
+      });
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /^Submit/ })).not.toHaveTextContent(
+          /Submitting/,
+        ),
+      );
+    }
+
+    it("keeps the key across retries of the same rows, and drops it once answered", async () => {
+      render(<BatchEntryPage />);
+      await screen.findByLabelText("Row 1 description");
+      await fillRow(1);
+      batchAnswers("fail", "ok", "ok");
+
+      await submitAndSettle();
+      await submitAndSettle();
+      // Answered: the grid is cleared, the same rows typed again are new rows.
+      await fillRow(1);
+      await submitAndSettle();
+
+      const [first, retry, next] = keysSent();
+      expect(first).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+      expect(retry).toBe(first);
+      expect(next).not.toBe(first);
+    });
+
+    it("sends a new key when the rows change after a failed submit", async () => {
+      render(<BatchEntryPage />);
+      await screen.findByLabelText("Row 1 description");
+      await fillRow(1);
+      batchAnswers("fail", "ok");
+
+      await submitAndSettle();
+      fireEvent.change(screen.getByLabelText("Row 1 amount"), {
+        target: { value: "10.00" },
+      });
+      await submitAndSettle();
+
+      const [first, second] = keysSent();
+      expect(second).not.toBe(first);
+    });
+  });
 });
