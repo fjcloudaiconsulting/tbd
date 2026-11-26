@@ -290,7 +290,7 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | INF-12 | Legacy encrypted secrets in history | Info | Needs owner | | – | | Confirm the secrets in the legacy app spec were rotated | TBD-704 |
 | INF-13 | Commit metadata emails | Info | Partial | | – | | Identity chosen and the assessment branches re-authored; older history keeps earlier addresses; delete the stale `chore/graphify-refresh-2026-10-15` branch | TBD-707 |
 | INF-14 | `security.txt` | Info | Fixed | #1004 | 2026-10-24 | `0d284c22` | Enable GitHub private vulnerability reporting; renew `Expires` yearly | TBD-710 |
-| INF-15 | Dependency advisory audit | Info | Partial | #1007 | no | `f4b27914` | Decide on a `vite` override for dev-server advisories | TBD-712 |
+| INF-15 | Dependency advisory audit | Info | Partial | #1007 | no | `f4b27914` | None for `vite`: #1157 (TBD-816) moved the lockfile to a patched `vite` and closed every open Dependabot alert (0 open on 2026-11-23) | TBD-712 |
 | INF-16 | Settings outside this repo | Info | Needs owner | | – | | Add a minimum release age for uv in the shared Renovate preset | TBD-714 |
 
 ## Owner decision queue
@@ -345,6 +345,15 @@ titles only; the detail is in Jira.
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-11-23: Dependabot refresh (Claude Code, with Jira)
+
+- **Did:** #1157 (TBD-816) refreshed `frontend/pnpm-lock.yaml` within the
+  existing ranges, clearing the open Dependabot alerts, all in dev and
+  build tooling. Shipped in v0.313.0.
+- **Changed here:** INF-15 no longer needs a `vite` override decision. The
+  finding stays Partial until #1007 merges.
+- **Next:** nothing new for INF-15 beyond #1007.
 
 ### 2026-11-08, overnight round: coding session (Claude Code, with Jira access)
 
