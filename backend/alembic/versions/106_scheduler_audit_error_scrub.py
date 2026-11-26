@@ -3,9 +3,9 @@
 Revision ID: 106_scheduler_audit_error_scrub
 Revises: 105_transaction_occurrence_bind
 
-Keep an exception class from a leading ``(module.Class)`` prefix and replace
-every other scheduler failure error with ``redacted``. The original messages
-are discarded, so downgrade has no data to restore.
+Preserve existing summaries and recover the exception class and optional
+driver errno from a leading ``(module.Class)`` prefix. Replace other scheduler
+failure errors with ``redacted``. Downgrade has no original messages to restore.
 """
 from __future__ import annotations
 
@@ -20,7 +20,10 @@ branch_labels = None
 depends_on = None
 
 BATCH = 500
-_CLASS_PREFIX = re.compile(r"\((?:[A-Za-z_][A-Za-z0-9_]*\.)+([A-Za-z_][A-Za-z0-9_]*)\)")
+_SUMMARY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}(?: errno=-?\d+)?")
+_CLASS_PREFIX = re.compile(
+    r"\((?:[A-Za-z_][A-Za-z0-9_]*\.)+([A-Za-z_][A-Za-z0-9_]{0,99})\)(?: \((-?\d+),)?"
+)
 _audit = sa.table(
     "audit_events",
     sa.column("id", sa.BigInteger()),
@@ -51,10 +54,13 @@ def upgrade() -> None:
             if not isinstance(detail, dict) or "error" not in detail:
                 continue
             error = detail["error"]
+            if isinstance(error, str) and _SUMMARY.fullmatch(error):
+                continue
             match = _CLASS_PREFIX.match(error) if isinstance(error, str) else None
             summary = match[1] if match else "redacted"
-            if summary != error:
-                changes.append({"event_id": event_id, "detail": {**detail, "error": summary}})
+            if match and match[2] is not None:
+                summary = f"{summary} errno={match[2]}"
+            changes.append({"event_id": event_id, "detail": {**detail, "error": summary}})
         if changes:
             conn.execute(update, changes)
         query = page.where(_audit.c.id > rows[-1].id)
