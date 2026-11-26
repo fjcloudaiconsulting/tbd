@@ -124,6 +124,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
         "plan_goal_create", "plan_goal_update", "plan_goal_delete",
         "plans_finish", "plans_start",  # TBD-604
         "tags_create", "tags_rename", "tags_delete", "transactions_replace_tags",
+        "transactions_pair", "transactions_unpair",
     ])
     assert {t.name for t in TOOLS if t.risk == "write"} == {
         "budgets_update_amount", "transactions_set_category", "transactions_update",
@@ -139,7 +140,7 @@ def test_registry_ships_the_six_v1_reads_and_the_writes():
     # edit are writes with an inverse.
     assert {t.name for t in TOOLS if t.risk == "sensitive"} == {
         "transactions_update_money", "transactions_create", "transactions_delete",
-        "transactions_transfer",
+        "transactions_transfer", "transactions_pair", "transactions_unpair",
         "recurring_create", "recurring_update_money", "recurring_stop", "recurring_delete",
         "recurring_skip_next",
         "recurring_materialise_next", "recurring_generate", "billing_cycle_update",
@@ -393,6 +394,10 @@ def _valid_base(tool) -> dict:
         "tags_rename": {"tag_id": 1, "name": "Travel"},
         "tags_delete": {"tag_id": 1},
         "transactions_replace_tags": {"transaction_id": 1, "tag_names": ["Travel"]},
+        "transactions_pair": {"expense_id": 1, "income_id": 2},
+        "transactions_unpair": {
+            "transaction_id": 1, "expense_fallback_category_id": 1, "income_fallback_category_id": 2,
+        },
     }.get(tool.name, {})
 
 
