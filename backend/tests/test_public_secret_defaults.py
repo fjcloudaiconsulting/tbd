@@ -45,6 +45,8 @@ ENV_TO_FIELD = {name.upper(): name for name in SECRET_FIELDS} | ALIASES
 
 _VALID_JWT = "jwt-secret-key-at-least-32-characters-long-000"
 _VALID_PAT = "dedicated-pat-hmac-key-distinct-and-32plus-chars"
+# Production refuses the dev compose DSN (the field default), so give it a real one.
+_VALID_DSN = "mysql+aiomysql://tbd_app:a-real-generated-password@db.internal:3306/tbd"
 
 
 class _ComposeLoader(yaml.SafeLoader):
@@ -171,6 +173,7 @@ def _production(**overrides) -> Settings:
             "app_env": "production",
             "jwt_secret_key": _VALID_JWT,
             "api_token_hmac_key": _VALID_PAT,
+            "database_url": _VALID_DSN,
             **overrides,
         }
     )
@@ -201,6 +204,7 @@ def _refused_in_production(field: str, value: str) -> bool:
 
 # One test per property, looping over the literals: each failure message names the source.
 def test_production_refuses_every_committed_secret():
+    assert _production().app_env == "production"  # positive control: the base boots
     accepted = [
         (source, name)
         for source, name, value in _committed()

@@ -1,24 +1,28 @@
 # Post-release smoke test (shared smoke workflow, RELEASE_CONTRACT.md section 7): the published images by tag, no
 # build. The workflow runs `migrations` twice (the second must be a no-op), then `up --wait`, then asserts /health
 # reports the release's version and revision. APP_ENV=production so the backend boots with production validation and
-# does NOT migrate on startup. The database credentials are throwaway literals for a database that lives for one CI
-# run. JWT_SECRET_KEY and API_TOKEN_HMAC_KEY are generated in each container at start, because production refuses
-# every committed secret (INF-03) and the shared smoke workflow passes none. Each command then execs the image's own
-# CMD (backend/tests/test_public_secret_defaults.py checks both).
+# does NOT migrate on startup. Production refuses every committed database password (INF-04), so mysql writes a
+# random one to the smoke-db volume on its first start and the other containers read it from there. JWT_SECRET_KEY
+# and API_TOKEN_HMAC_KEY are generated in each container at start, because production refuses every committed secret
+# (INF-03) and the shared smoke workflow passes none. Each command then execs the image's own CMD
+# (backend/tests/test_public_secret_defaults.py checks both).
 x-backend-env: &backend-env
   APP_ENV: production
-  DATABASE_URL: mysql+aiomysql://tbd:smoke@mysql:3306/tbd
+  # The smoke has no Turnstile account; production requires the captcha unless this says false (INF-05).
+  CAPTCHA_REQUIRED: "false"
 
 services:
   mysql:
     image: mirror.gcr.io/library/mysql:8.4.13@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+    # The image's entrypoint and CMD, run with the generated password; kept across a restart, as the data is.
+    entrypoint: ["sh", "-c", "f=/smoke-db/password; [ -s $$f ] || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \\n' > $$f; export MYSQL_ROOT_PASSWORD=$$(cat $$f) MYSQL_PASSWORD=$$(cat $$f) && exec docker-entrypoint.sh mysqld"]
     environment:
-      MYSQL_ROOT_PASSWORD: smoke-root
       MYSQL_DATABASE: tbd
       MYSQL_USER: tbd
-      MYSQL_PASSWORD: smoke
+    volumes:
+      - smoke-db:/smoke-db
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-psmoke-root", "--silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$(cat /smoke-db/password)\" --silent"]
       interval: 2s
       timeout: 5s
       retries: 60
@@ -27,19 +31,23 @@ services:
   migrations:
     image: ${IMAGE_PREFIX}/migrations:${TAG}
     profiles: [migrate]
-    command: ["sh", "-c", "export JWT_SECRET_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') API_TOKEN_HMAC_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') && exec python /app/scripts/migrate.py"]
+    command: ["sh", "-c", "export DATABASE_URL=mysql+aiomysql://tbd:$$(cat /smoke-db/password)@mysql:3306/tbd JWT_SECRET_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') API_TOKEN_HMAC_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') && exec python /app/scripts/migrate.py"]
     depends_on:
       mysql:
         condition: service_healthy
     environment: *backend-env
+    volumes:
+      - smoke-db:/smoke-db:ro
 
   backend:
     image: ${IMAGE_PREFIX}/backend:${TAG}
-    command: ["sh", "-c", "export JWT_SECRET_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') API_TOKEN_HMAC_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --ws none --proxy-headers"]
+    command: ["sh", "-c", "export DATABASE_URL=mysql+aiomysql://tbd:$$(cat /smoke-db/password)@mysql:3306/tbd JWT_SECRET_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') API_TOKEN_HMAC_KEY=$$(python -c 'import secrets; print(secrets.token_hex(32))') && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --ws none --proxy-headers"]
     depends_on:
       mysql:
         condition: service_healthy
     environment: *backend-env
+    volumes:
+      - smoke-db:/smoke-db:ro
     ports:
       - "8000:8000"
     healthcheck:
@@ -61,3 +69,6 @@ services:
       interval: 5s
       start_period: 60s
       start_interval: 1s
+
+volumes:
+  smoke-db:

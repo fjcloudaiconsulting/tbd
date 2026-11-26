@@ -156,6 +156,8 @@ exploit detail into public issues, PRs or commit messages.
 | [#1008](https://github.com/fjcloudaiconsulting/tbd/pull/1008) | `security/egress-audit` | AI provider reads, CSP sink, admin, webhooks | BE-09, BE-10, BE-12, BE-20, BE-24, BE-29, BE-30, DB-02, FE-03 | Merged 2026-10-24 as `7f478681` |
 | [#1004](https://github.com/fjcloudaiconsulting/tbd/pull/1004) | `security/frontend` | CSV export, token URLs, apex CSP, security.txt | FE-01, FE-03, FE-04, INF-14 | Merged 2026-10-24 as `47b8e9f0` |
 | [#1007](https://github.com/fjcloudaiconsulting/tbd/pull/1007) | `security/config-infra` | Production config, compose, export CLI, apex deploy, dependencies | INF-01, INF-03, INF-04, INF-05, INF-07, INF-10, INF-11, INF-15, DB-05 | Open: waiting on the production secret check |
+| [#1089](https://github.com/fjcloudaiconsulting/tbd/pull/1089) | `security/config-infra-followups` | Org workflow pins, apex build/deploy split, per-run smoke secrets (stacked on #1007) | INF-03, INF-06, INF-07 | Open |
+| [#1096](https://github.com/fjcloudaiconsulting/tbd/pull/1096) | `security/config-infra-followups-2` | `APP_ENV` defaults to production, dev DB password and open captcha refused in production (stacked on #1089) | INF-04, INF-05 | Open: merge only after the prod-secrets check |
 | [#1010](https://github.com/fjcloudaiconsulting/tbd/pull/1010) | `docs/security-assessment-tracker` | This file | none | Merged 2026-10-24 as `35caaab9` |
 | [#1019](https://github.com/fjcloudaiconsulting/tbd/pull/1019) | `security/auth-audit-decisions` | Owner decisions: MFA email fallback, audit growth | BE-03, BE-10 | Merged 2026-10-24 as `a131686a` |
 | [#1020](https://github.com/fjcloudaiconsulting/tbd/pull/1020) | `security/tenant-data-decisions` | Owner decisions: billing entitlements, org names, email addresses, tag dictionary | BE-05, DB-03, DB-01, BE-18 | Merged 2026-10-24 as `9c6f8148` |
@@ -228,9 +230,9 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 |---|---|---|---|---|---|---|
 | High | 1 | 1 | 0 | 0 | 0 | 0 |
 | Medium | 11 | 8 | 3 | 0 | 0 | 0 |
-| Low | 33 | 23 | 8 | 2 | 0 | 0 |
+| Low | 33 | 25 | 6 | 2 | 0 | 0 |
 | Info | 13 | 4 | 5 | 2 | 1 | 1 |
-| **All** | **58** | **36** | **16** | **4** | **1** | **1** |
+| **All** | **58** | **38** | **14** | **4** | **1** | **1** |
 
 | ID | Title | Severity | Status | PR | Merged | Commit | Owner action | Jira |
 |---|---|---|---|---|---|---|---|---|
@@ -272,10 +274,10 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | DB-05 | Export CLI file permissions | Low | Fixed | #1007 | no | `d803ce12` | | TBD-722 |
 | INF-02 | MCP failed-auth ceiling keying | Low | Fixed | #1021 | 2026-10-24 | `e06d770a` | Carry the same setting to the production MCP when it deploys (TBD-610) | TBD-723 |
 | INF-03 | Production secret validation coverage | Low | Fixed | #1007 | no | `f5d32fec` | Deploy gate: check production secrets before releasing #1007 | TBD-724 |
-| INF-04 | `APP_ENV` default | Low | Partial | #1007 | no | `6c668014` | Make the default fail-safe; every production workload already sets `APP_ENV` | TBD-725 |
-| INF-05 | Captcha and first-user bootstrap defaults | Low | Partial | #1007 | no | `588344e3` | Decide on fail-closed captcha and a bootstrap token | TBD-673 |
+| INF-04 | `APP_ENV` default | Low | Fixed | #1007, #1096 | no | `6c668014`, `21476d7d` and its follow-up | Unset means production; an unrecognised value refuses to boot | TBD-725 |
+| INF-05 | Captcha and first-user bootstrap defaults | Low | Partial | #1007, #1096 | no | `588344e3`, `2e0ce55b` | Captcha fails closed in production (#1096); before it ships, `CAPTCHA_SECRET` must be a real secret on every backend and scheduler (prod-secrets check). Bootstrap token: TBD-654 PR 3 | TBD-673 |
 | INF-06 | Reusable workflow pinning and secret inheritance | Low | Partial | #1089 | no | `2301e541` | Known gap: nested org-workflow calls are still at `@v1`; pin them in `fjcloudaiconsulting/.github`, then bump tbd's pin to that release; drop `secrets: inherit` and confirm with one release run | TBD-675 |
-| INF-07 | Deploy secret isolation and wrangler pinning | Low | Partial | #1007 | no | `700aa0f3` | Split the apex build and deploy jobs | TBD-679 |
+| INF-07 | Deploy secret isolation and wrangler pinning | Low | Fixed | #1007, #1089 | no | `700aa0f3`, `79984cdd` | Watch the first apex deploy after merge: `build-apex` uploads and `deploy-worker` serves the commit | TBD-679 |
 | INF-08 | Smoke-account identifier in history | Low | Needs owner | | – | | Rotate the smoke account identifier | TBD-681 |
 | INF-09 | Health probe exposure | Low | Fixed | #1021 | 2026-10-24 | `f846e6e7` | | TBD-683 |
 | INF-10 | Dev compose network exposure | Low | Fixed | #1007 | no | `0751d31d` | | TBD-686 |
@@ -301,8 +303,10 @@ Ordered by urgency. Each item is also an **Owner action** above.
    in `_PUBLIC_SECRET_VALUES` or starts with `dev-only`. The backend Deployment
    uses `strategy: Recreate`, so a match stops the API until that secret is
    rotated.
-2. (TBD-745) INF-05: decide on fail-closed captcha and a bootstrap token. The
-   rest of the production configuration item (BE-13, INF-04, INF-09) is done.
+2. (TBD-745) INF-05: the captcha fails closed in production in #1096 (merge it only
+   after the prod-secrets check shows the DATABASE_URL and CAPTCHA_SECRET rows OK);
+   the bootstrap token goes into TBD-654 PR 3. The rest of the production
+   configuration item (BE-13, INF-04, INF-09) is done.
 3. (TBD-744) Production data clean-ups: stored CSP rows (FE-03), AI base URLs (DB-02),
    settings keys (BE-19).
 4. (TBD-742) BE-10: the CSP drop alert is applied (cloud-infra #281); confirm
