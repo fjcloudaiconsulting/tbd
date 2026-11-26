@@ -366,7 +366,7 @@ async def test_one_card_failure_does_not_block_the_other(session_factory, monkey
 
     async def _flaky_dispatch(db, **kwargs):
         if kwargs["title"].startswith("Bad Card"):
-            raise RuntimeError("boom")
+            raise RuntimeError("SECRET")
         calls.append(kwargs)
         return 1
 
@@ -386,5 +386,5 @@ async def test_one_card_failure_does_not_block_the_other(session_factory, monkey
 
     failures = await _failure_markers(session_factory, org.id)
     assert len(failures) == 1
-    assert failures[0].detail["account_id"] == bad.id
-    assert "boom" in failures[0].detail["error"]
+    assert "SECRET" not in str(failures[0].detail)
+    assert failures[0].detail == {"account_id": bad.id, "error": "RuntimeError"}

@@ -182,7 +182,7 @@ class CcStatementCloseJob:
                     job_type=self.job_type,
                     outcome="failure",
                     org=org,
-                    detail={"account_id": card.account_id, "error": str(exc)},
+                    detail={"account_id": card.account_id, "error": type(exc).__name__},
                 )
                 continue
 
