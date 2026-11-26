@@ -29,6 +29,7 @@ codes are precisely what the frontend branches on.
 from __future__ import annotations
 
 import datetime
+import json
 import types
 from collections.abc import AsyncIterator
 from decimal import Decimal
@@ -41,6 +42,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -581,7 +583,12 @@ async def test_close_period_writes_audit_row(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_close_period_audits_non_validation_failures(session_factory):
+@pytest.mark.parametrize("error", [
+    pytest.param(RuntimeError("period vanished with SECRET"), id="runtime"),
+    pytest.param(IntegrityError("INSERT INTO sample VALUES (:value)", {"value": "SECRET"},
+                                RuntimeError("driver returned SECRET")), id="integrity"),
+])
+async def test_close_period_audits_non_validation_failures(session_factory, error):
     """`close_period` can also raise RuntimeError (its row vanished after an
     IntegrityError retry) or IntegrityError from its second commit. Catching
     only ValidationError left those as unaudited 500s."""
@@ -591,18 +598,22 @@ async def test_close_period_audits_non_validation_failures(session_factory):
     client = TestClient(_make_app(session_factory, ids["owner"]))
 
     async def _boom(db, org_id, close_date=None):
-        raise RuntimeError("period vanished")
+        raise error
 
     with mock.patch.object(billing_service, "close_period", _boom):
-        with pytest.raises(RuntimeError):
+        with pytest.raises(type(error)):
             client.post("/api/v1/settings/billing-period/close")
 
     rows = await _audit_rows(session_factory, "org.billing_period.closed")
     assert len(rows) == 1
-    assert rows[0].outcome.value == "failure"
-    assert rows[0].detail["reason"] == "error"
-    assert rows[0].detail["error_type"] == "RuntimeError"
-    assert rows[0].detail["closed_period_id"] == period_id
+    row = rows[0]
+    audit = {column.key: getattr(row, column.key) for column in AuditEvent.__table__.columns}
+    assert "SECRET" not in json.dumps(audit, default=str)
+    assert row.outcome.value == "failure"
+    assert row.detail["reason"] == "error"
+    assert row.detail["error_type"] == type(error).__name__
+    assert row.detail["message"] == type(error).__name__
+    assert row.detail["closed_period_id"] == period_id
 
 
 @pytest.mark.asyncio
@@ -623,6 +634,7 @@ async def test_close_period_writes_failure_audit_row_on_rejection(session_factor
     assert len(rows) == 1
     assert rows[0].outcome.value == "failure"
     assert rows[0].detail["reason"] == "validation"
+    assert rows[0].detail["message"] == resp.json()["detail"]
 
 
 @pytest.mark.asyncio
