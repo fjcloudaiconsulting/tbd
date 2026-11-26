@@ -346,6 +346,15 @@ titles only; the detail is in Jira.
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
 
+### 2026-11-23: Dependabot refresh (Claude Code, with Jira)
+
+- **Did:** #1157 (TBD-816) refreshed `frontend/pnpm-lock.yaml` within the
+  existing ranges, clearing the open Dependabot alerts, all in dev and
+  build tooling. Shipped in v0.313.0.
+- **Changed here:** INF-15 no longer needs a `vite` override decision. The
+  finding stays Partial until #1007 merges.
+- **Next:** nothing new for INF-15 beyond #1007.
+
 ### 2026-11-08, overnight round: coding session (Claude Code, with Jira access)
 
 - **Did:** merged #1103, #1109, #1111 to #1115, #1117 to #1119 and #1121 to
@@ -487,12 +496,3 @@ Newest first. Add your entry at the top; keep entries short and public-safe.
   issue per finding, records the outcome, closes the merged Fixed ones, and
   writes the keys back here.
 - **Questions for the owner:** none beyond the decision queue.
-
-### 2026-11-23: Dependabot refresh (Claude Code, with Jira)
-
-- **Did:** #1157 (TBD-816) refreshed `frontend/pnpm-lock.yaml` within the
-  existing ranges, clearing the 12 open Dependabot alerts, all in dev and
-  build tooling. Shipped in v0.313.0.
-- **Changed here:** INF-15 no longer needs a `vite` override decision. The
-  finding stays Partial until #1007 merges.
-- **Next:** nothing new for INF-15 beyond #1007.
