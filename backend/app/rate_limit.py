@@ -29,9 +29,8 @@ Spoof resistance:
   trusted proxy. A caller reaching the backend over a public path
   (bypassing our proxy) cannot trigger the walk, so they cannot
   forge any value via XFF.
-- ``do-connecting-ip`` (DigitalOcean App Platform, decommissioned in
-  INFRA-44) is never read: anyone can send it, and nothing writes it now
-  (INF-01).
+- The decommissioned platform's connecting-IP header is ignored. Anyone
+  can send it, and nothing writes it now (INF-01, INFRA-44).
 - ``CLIENT_IP_HEADER`` is honoured only when set (by the deployment,
   never the request), and only for a value that parses as one IP.
   Set it only where the origin accepts requests from our own proxy zone
