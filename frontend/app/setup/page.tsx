@@ -1,10 +1,11 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import { apiFetch, ApiResponseError } from "@/lib/api";
 import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 import {
   USERNAME_MAX_LENGTH,
@@ -23,21 +24,52 @@ export default function SetupPage() {
   const [orgName, setOrgName] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // INF-05: production asks for the operator's SETUP_TOKEN. The backend says
+  // so only while the install has no user, which needs_setup already shows.
+  const [tokenRequired, setTokenRequired] = useState(false);
+  const [setupToken, setSetupToken] = useState("");
+  const [tokenInvalid, setTokenInvalid] = useState(false);
+  const tokenRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!loading && !needsSetup) router.replace("/");
   }, [loading, needsSetup, router]);
 
+  useEffect(() => {
+    if (tokenInvalid) tokenRef.current?.focus();
+  }, [tokenInvalid]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await apiFetch<{ setup_token_required?: boolean }>("/api/v1/auth/status");
+        if (!cancelled) setTokenRequired(Boolean(status.setup_token_required));
+      } catch {
+        // The backend still enforces the token; a refused submit says why.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    setTokenInvalid(false);
     if (password !== password2) { setError("Passwords do not match"); return; }
     setSubmitting(true);
     try {
-      await register(username, email, password, orgName || undefined);
+      await register(username, email, password, orgName || undefined, undefined, undefined, setupToken || undefined);
       await login(username, password);
       router.push("/dashboard");
     } catch (err) {
+      if (err instanceof ApiResponseError && err.code === "setup_token_invalid") {
+        // Shown even if status said no token was needed, so the field appears.
+        setTokenRequired(true);
+        setTokenInvalid(true);
+      }
       setError(err instanceof Error ? err.message : "Setup failed");
     } finally {
       setSubmitting(false);
@@ -63,7 +95,27 @@ export default function SetupPage() {
         </div>
         <div className="rounded-lg border border-border bg-surface p-6">
           <form onSubmit={handleSubmit} className="space-y-5">
-            {error && <div className={errorCls}>{error}</div>}
+            {error && <div id="setup-error" className={errorCls} role="alert">{error}</div>}
+            {tokenRequired && (
+              <div>
+                <label htmlFor="setup-token" className={label}>Setup Token</label>
+                <PasswordInput
+                  ref={tokenRef}
+                  id="setup-token"
+                  required
+                  maxLength={256}
+                  value={setupToken}
+                  onChange={(e) => { setSetupToken(e.target.value); setTokenInvalid(false); }}
+                  className={input}
+                  autoComplete="off"
+                  aria-invalid={tokenInvalid ? true : undefined}
+                  aria-describedby={tokenInvalid ? "setup-token-hint setup-error" : "setup-token-hint"}
+                />
+                <p id="setup-token-hint" className="mt-1.5 text-xs text-text-muted">
+                  The <code>SETUP_TOKEN</code> value set on the server.
+                </p>
+              </div>
+            )}
             <div>
               <label htmlFor="setup-username" className={label}>Username</label>
               <input

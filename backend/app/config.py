@@ -208,8 +208,14 @@ class Settings(BaseSettings):
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
     trial_duration_days: int = 14
 
+    # INF-05: the first-user bootstrap secret. With no user yet and any APP_ENV
+    # but development or test, ``POST /auth/register`` (the /setup page) must
+    # carry it, and an empty value refuses setup outright.
+    # TODO(#1007): add "setup_token" to SECRET_FIELDS once #1007 merges.
+    setup_token: str = ""
+
     # CAPTCHA (registration bot gate)
-    # When ``captcha_required`` is True the ``/api/v1/auth/register`` handler
+    # When ``captcha_required`` is True the ``/api/v1/auth/signup/start`` handler
     # calls ``app.captcha.verify_captcha`` BEFORE any DB work or email send,
     # and refuses registration on any non-OK result (rejection, timeout,
     # mismatch). When False the verify call short-circuits to ok=disabled and
@@ -239,7 +245,7 @@ class Settings(BaseSettings):
     # verified against a real drip-feed server on the Google OAuth
     # exchange and TBD-266 closed on the Mailgun sends. This site is
     # worse than either: the verify is inline on the synchronous, public,
-    # pre-auth ``POST /api/v1/auth/register``, so an unbounded call parks
+    # pre-auth ``POST /api/v1/auth/signup/start``, so an unbounded call parks
     # a worker per registration attempt on an unauthenticated endpoint.
     #
     # A *setting* rather than the module constant TBD-179 and TBD-266
@@ -521,6 +527,19 @@ class Settings(BaseSettings):
                 "defeats the decoupling. Generate a distinct secret via: "
                 "python -c 'import secrets; print(secrets.token_urlsafe(64))'"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_setup_token(self) -> "Settings":
+        # INF-05. Optional (empty refuses setup outside dev and test), but a set
+        # value must be strong and exactly what the operator will type: a
+        # stray newline from a secret file would make setup unreachable.
+        token = self.setup_token
+        if token:
+            if token != token.strip():
+                raise ValueError("SETUP_TOKEN must not start or end with whitespace")
+            if len(token) < 32:
+                raise ValueError("SETUP_TOKEN must be at least 32 characters")
         return self
 
     @model_validator(mode="after")

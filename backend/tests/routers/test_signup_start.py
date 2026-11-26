@@ -32,7 +32,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers import auth as auth_module
 from app.routers.auth import router as auth_router
-from app.security import hash_password
+from app.security import create_signup_token, hash_password
 from app.services import signup_service
 
 START = "/api/v1/auth/signup/start"
@@ -216,7 +216,7 @@ async def test_start_inactive_and_capped_send_nothing(session_factory, captcha_o
 
 
 @pytest.mark.asyncio
-async def test_start_stores_nothing(session_factory, captcha_ok, senders, monkeypatch):
+async def test_start_stores_nothing(session_factory, captcha_ok, senders):
     """No user, org, username or org name exists or is reserved after step 1."""
     await _seed(session_factory)
     users, orgs = await _count(session_factory, User), await _count(session_factory, Organization)
@@ -231,12 +231,11 @@ async def test_start_stores_nothing(session_factory, captcha_ok, senders, monkey
             "/api/v1/auth/login", json={"login": "fresh@example.com", "password": "whatever-1"}
         )
         assert login.status_code == 401
-        monkeypatch.setattr(app_settings, "captcha_required", False)
-        reg = client.post("/api/v1/auth/register", json={
-            "username": "fresh", "email": "other@example.com",
+        reg = client.post("/api/v1/auth/signup/complete", json={
+            "token": create_signup_token("other@example.com"), "username": "fresh",
             "password": "another-password-1", "org_name": "Fresh Org",
         })
-        assert reg.status_code == 201, reg.text
+        assert reg.status_code == 200, reg.text
 
 
 @pytest.mark.asyncio
