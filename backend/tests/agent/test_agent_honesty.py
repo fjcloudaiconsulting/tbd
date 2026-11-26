@@ -1629,6 +1629,8 @@ async def _match_to_pair_leg(f, a, *, bound=False):
     ("pair", "foreign", "not_found", None),
     ("pair", "missing_category", "unsupported_in_v1", "no_transfer_category"),
     ("unpair", "reconcile_target", "conflict", "reconciliation_match"),
+    ("unpair", "leg_matched", "conflict", "reconciliation_match"),
+    ("unpair", "bank_bound", "conflict", "transaction_bound"),
     ("unpair", "one_way", "invalid_arguments", None),
     ("unpair", "foreign", "not_found", None),
 ])
@@ -1639,16 +1641,22 @@ async def test_transaction_pair_refusal_writes_nothing(factory, w, operation, ca
     else:
         await _unlinked_transactions(factory, a)
     tool, args = (_PAIR_TOOL if operation == "pair" else _UNPAIR_TOOL)(a)
-    if case in ("reconcile_target", "bank_bound"):
-        await _match_to_pair_leg(factory, a, bound=case == "bank_bound")
+    if case == "reconcile_target":
+        await _match_to_pair_leg(factory, a)
+    elif operation == "pair" and case == "bank_bound":
+        await _match_to_pair_leg(factory, a, bound=True)
     elif case == "foreign":
         args["income_id" if operation == "pair" else "transaction_id"] = w["B"]["tx"]
-    elif case in ("one_way", "missing_category"):
+    elif case in ("one_way", "missing_category", "leg_matched", "bank_bound"):
         async with factory() as db:
             if case == "one_way":
                 (await db.get(Transaction, a["income_tx"])).linked_transaction_id = a["tx"]
-            else:
+            elif case == "missing_category":
                 (await db.get(Category, a["transfer_cat"])).slug = "other"
+            elif case == "leg_matched":
+                (await db.get(Transaction, a["tx"])).reconciliation_state = "matched"
+            else:
+                (await db.get(Transaction, a["income_tx"])).bind_prev_status = TransactionStatus.PENDING
             await db.commit()
     async with factory() as db:
         before = await _snap(await db.connection())
