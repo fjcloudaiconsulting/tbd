@@ -20,7 +20,15 @@ exploit detail into public issues, PRs or commit messages.
 
 ## Current state
 
-- **2026-11-03 (latest):**
+- **2026-11-26 (latest):**
+  - **#1007, #1089 and #1096 are merged** (2026-11-26) after the owner's
+    production checks: the committed-secret check (TBD-739), then the
+    `APP_ENV`, database-password and captcha check for #1096. They ship in
+    v0.315.0, which is released but not yet deployed.
+  - **Still Partial:** INF-05 (the first-user bootstrap token is in #1095,
+    open) and INF-06 (nested org-workflow pins, TBD-826, and dropping
+    `secrets: inherit` on the release job).
+- **2026-11-03:**
   - **Register response (TBD-654 item 2):** PR 1 of 4, the backend
     email-first sign-up endpoints, merged as #1077. It ships in v0.306.0.
     The frontend (PR 2) must wait until that release is live. #1045 stays
@@ -155,9 +163,9 @@ exploit detail into public issues, PRs or commit messages.
 | [#1005](https://github.com/fjcloudaiconsulting/tbd/pull/1005) | `security/tenant-logic` | Billing, invitations, accounts, settings | BE-05, BE-06, BE-14, BE-15, BE-17, BE-19, BE-23 | Merged 2026-10-24 as `772ab8e3` |
 | [#1008](https://github.com/fjcloudaiconsulting/tbd/pull/1008) | `security/egress-audit` | AI provider reads, CSP sink, admin, webhooks | BE-09, BE-10, BE-12, BE-20, BE-24, BE-29, BE-30, DB-02, FE-03 | Merged 2026-10-24 as `7f478681` |
 | [#1004](https://github.com/fjcloudaiconsulting/tbd/pull/1004) | `security/frontend` | CSV export, token URLs, apex CSP, security.txt | FE-01, FE-03, FE-04, INF-14 | Merged 2026-10-24 as `47b8e9f0` |
-| [#1007](https://github.com/fjcloudaiconsulting/tbd/pull/1007) | `security/config-infra` | Production config, compose, export CLI, apex deploy, dependencies | INF-01, INF-03, INF-04, INF-05, INF-07, INF-10, INF-11, INF-15, DB-05 | Open: waiting on the production secret check |
-| [#1089](https://github.com/fjcloudaiconsulting/tbd/pull/1089) | `security/config-infra-followups` | Org workflow pins, apex build/deploy split, per-run smoke secrets (stacked on #1007) | INF-03, INF-06, INF-07 | Open |
-| [#1096](https://github.com/fjcloudaiconsulting/tbd/pull/1096) | `security/config-infra-followups-2` | `APP_ENV` defaults to production, dev DB password and open captcha refused in production (stacked on #1089) | INF-04, INF-05 | Open: merge only after the prod-secrets check |
+| [#1007](https://github.com/fjcloudaiconsulting/tbd/pull/1007) | `security/config-infra` | Production config, compose, export CLI, apex deploy, dependencies | INF-01, INF-03, INF-04, INF-05, INF-07, INF-10, INF-11, INF-15, DB-05 | Merged 2026-11-26 as `f54d37da` |
+| [#1089](https://github.com/fjcloudaiconsulting/tbd/pull/1089) | `security/config-infra-followups` | Org workflow pins, apex build/deploy split, per-run smoke secrets (stacked on #1007) | INF-03, INF-06, INF-07 | Merged 2026-11-26 as `2155bd52` |
+| [#1096](https://github.com/fjcloudaiconsulting/tbd/pull/1096) | `security/config-infra-followups-2` | `APP_ENV` defaults to production, dev DB password and open captcha refused in production (stacked on #1089) | INF-04, INF-05 | Merged 2026-11-26 as `a76290b1` |
 | [#1010](https://github.com/fjcloudaiconsulting/tbd/pull/1010) | `docs/security-assessment-tracker` | This file | none | Merged 2026-10-24 as `35caaab9` |
 | [#1019](https://github.com/fjcloudaiconsulting/tbd/pull/1019) | `security/auth-audit-decisions` | Owner decisions: MFA email fallback, audit growth | BE-03, BE-10 | Merged 2026-10-24 as `a131686a` |
 | [#1020](https://github.com/fjcloudaiconsulting/tbd/pull/1020) | `security/tenant-data-decisions` | Owner decisions: billing entitlements, org names, email addresses, tag dictionary | BE-05, DB-03, DB-01, BE-18 | Merged 2026-10-24 as `9c6f8148` |
@@ -271,16 +279,16 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | DB-02 | Credentials in AI provider base URLs | Low | Partial | #1008 | 2026-10-24 | `29cefd9e` | Find stored base URLs with credentials and ask those orgs to rotate | TBD-711 |
 | DB-03 | Org-name uniqueness scope | Low | Fixed | #1020 | 2026-10-24 | `8cc501b0` | | TBD-715 |
 | DB-04 | Database principal separation | Low | Needs owner | | – | | Split migrator and runtime database users (cloud-infra) | TBD-721 |
-| DB-05 | Export CLI file permissions | Low | Fixed | #1007 | no | `d803ce12` | | TBD-722 |
+| DB-05 | Export CLI file permissions | Low | Fixed | #1007 | 2026-11-26 | `d803ce12` | | TBD-722 |
 | INF-02 | MCP failed-auth ceiling keying | Low | Fixed | #1021 | 2026-10-24 | `e06d770a` | Carry the same setting to the production MCP when it deploys (TBD-610) | TBD-723 |
-| INF-03 | Production secret validation coverage | Low | Fixed | #1007 | no | `f5d32fec` | Deploy gate: check production secrets before releasing #1007 | TBD-724 |
-| INF-04 | `APP_ENV` default | Low | Fixed | #1007, #1096 | no | `6c668014`, `21476d7d` and its follow-up | Unset means production; an unrecognised value refuses to boot | TBD-725 |
-| INF-05 | Captcha and first-user bootstrap defaults | Low | Partial | #1007, #1096 | no | `588344e3`, `2e0ce55b` | Captcha fails closed in production (#1096); before it ships, `CAPTCHA_SECRET` must be a real secret on every backend and scheduler (prod-secrets check). Bootstrap token: TBD-654 PR 3 | TBD-673 |
-| INF-06 | Reusable workflow pinning and secret inheritance | Low | Partial | #1089 | no | `2301e541` | Known gap: nested org-workflow calls are still at `@v1`; pin them in `fjcloudaiconsulting/.github`, then bump tbd's pin to that release; drop `secrets: inherit` and confirm with one release run | TBD-675 |
-| INF-07 | Deploy secret isolation and wrangler pinning | Low | Fixed | #1007, #1089 | no | `700aa0f3`, `79984cdd` | Watch the first apex deploy after merge: `build-apex` uploads and `deploy-worker` serves the commit | TBD-679 |
+| INF-03 | Production secret validation coverage | Low | Fixed | #1007 | 2026-11-26 | `f5d32fec` | Deploy gate passed: the owner checked the production secrets before the merge (TBD-739) | TBD-724 |
+| INF-04 | `APP_ENV` default | Low | Fixed | #1007, #1096 | 2026-11-26 | `6c668014`, `21476d7d` and its follow-up | Unset means production; an unrecognised value refuses to boot | TBD-725 |
+| INF-05 | Captcha and first-user bootstrap defaults | Low | Partial | #1007, #1096 | 2026-11-26 | `588344e3`, `2e0ce55b` | Captcha fails closed in production (#1096); before it ships, `CAPTCHA_SECRET` must be a real secret on every backend and scheduler (prod-secrets check). Bootstrap token: TBD-654 PR 3 | TBD-673 |
+| INF-06 | Reusable workflow pinning and secret inheritance | Low | Partial | #1089 | 2026-11-26 | `2301e541` | Known gap: nested org-workflow calls are still at `@v1`; pin them in `fjcloudaiconsulting/.github`, then bump tbd's pin to that release; drop `secrets: inherit` and confirm with one release run | TBD-675 |
+| INF-07 | Deploy secret isolation and wrangler pinning | Low | Fixed | #1007, #1089 | 2026-11-26 | `700aa0f3`, `79984cdd` | The first split apex deploy after the merge succeeded on `2155bd52` | TBD-679 |
 | INF-08 | Smoke-account identifier in history | Low | Needs owner | | – | | Rotate the smoke account identifier | TBD-681 |
 | INF-09 | Health probe exposure | Low | Fixed | #1021 | 2026-10-24 | `f846e6e7` | | TBD-683 |
-| INF-10 | Dev compose network exposure | Low | Fixed | #1007 | no | `0751d31d` | | TBD-686 |
+| INF-10 | Dev compose network exposure | Low | Fixed | #1007 | 2026-11-26 | `0751d31d` | | TBD-686 |
 | BE-26 | TOTP step reuse | Info | Partial | #1009 | 2026-10-24 | `82c7c52e` | Follow-up: apply the TOTP replay guard to the MFA checks on token minting | TBD-688, follow-up TBD-716 |
 | BE-27 | LIKE escaping and free-text bounds | Info | Partial | #1006 | 2026-10-24 | `331053c0` | Follow-up: escape the tag-suggestion prefix | TBD-691, follow-up TBD-718 |
 | BE-28 | Merchant dictionary vote attribution | Info | Fixed | #1041 | 2026-11-01 | `70209de3` | Follow-up: lock ordering between opt-out and import | TBD-692, follow-up TBD-766 |
@@ -288,11 +296,11 @@ shows the date every listed PR reached `main`, `partly` when only some have,
 | BE-30 | Typed superadmin-guard errors | Info | Fixed | #1008 | 2026-10-24 | `9885ea52` | | TBD-695 |
 | BE-31 | `agent:auto` scope behaviour | Info | Accepted | | – | | By design: reversible writes without confirmation | TBD-698 |
 | DB-06 | Step-up token storage and key fingerprint | Info | Partial | #1009, #1043 | 2026-10-24, 2026-11-01 | `95d3bc67`, `78e82e4b` | Follow-up: clear the fingerprints stored before the HMAC | TBD-700, TBD-719, follow-up TBD-767 |
-| INF-11 | `seed.py` in production images | Info | Fixed | #1007 | no | `412d4c33` | | TBD-703 |
+| INF-11 | `seed.py` in production images | Info | Fixed | #1007 | 2026-11-26 | `412d4c33` | | TBD-703 |
 | INF-12 | Legacy encrypted secrets in history | Info | Needs owner | | – | | Confirm the secrets in the legacy app spec were rotated | TBD-704 |
 | INF-13 | Commit metadata emails | Info | Partial | | – | | Identity chosen and the assessment branches re-authored; older history keeps earlier addresses; delete the stale `chore/graphify-refresh-2026-10-15` branch | TBD-707 |
 | INF-14 | `security.txt` | Info | Fixed | #1004 | 2026-10-24 | `0d284c22` | Enable GitHub private vulnerability reporting; renew `Expires` yearly | TBD-710 |
-| INF-15 | Dependency advisory audit | Info | Partial | #1007 | no | `f4b27914` | None for `vite`: #1157 (TBD-816) moved the lockfile to a patched `vite` and closed every open Dependabot alert (0 open on 2026-11-23) | TBD-712 |
+| INF-15 | Dependency advisory audit | Info | Fixed | #1007 | 2026-11-26 | `f4b27914` | None for `vite`: #1157 (TBD-816) moved the lockfile to a patched `vite` and closed every open Dependabot alert (0 open on 2026-11-23) | TBD-712 |
 | INF-16 | Settings outside this repo | Info | Needs owner | | – | | Add a minimum release age for uv in the shared Renovate preset | TBD-714 |
 
 ## Owner decision queue
@@ -349,6 +357,15 @@ titles only; the detail is in Jira.
 ## Handoff log
 
 Newest first. Add your entry at the top; keep entries short and public-safe.
+
+### 2026-11-26: wave A and B merge (Claude Code, with Jira)
+
+- **Did:** merged #1007, #1089 and #1096 in order, each after an
+  adversarial review, plus #1164. Released v0.315.0.
+- **Changed here:** merge dates for INF-03 to INF-07, INF-10, INF-11,
+  INF-15 and DB-05; INF-15 is now Fixed; INF-07's apex deploy check passed.
+- **Next:** INF-05's bootstrap token (#1095, after #1087 is live) and
+  INF-06's nested pins (TBD-826). Jira handoff: TBD-830.
 
 ### 2026-11-23: Dependabot refresh (Claude Code, with Jira)
 
